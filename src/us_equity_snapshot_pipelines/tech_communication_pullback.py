@@ -7,7 +7,7 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-from us_equity_strategies.snapshots.qqq_tech_enhancement import (
+from .qqq_tech_enhancement_snapshot import (
     build_feature_snapshot,
     read_table,
     write_table,

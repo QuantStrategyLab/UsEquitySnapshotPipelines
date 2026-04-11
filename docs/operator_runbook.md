@@ -31,6 +31,17 @@ python scripts/build_russell_1000_feature_snapshot.py \
   --output-dir data/output/russell_1000_multi_factor_defensive
 ```
 
+Russell 1000 backtest:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_russell_1000_multi_factor_defensive.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_universe_history.csv \
+  --start 2019-01-01 \
+  --output-dir data/output/russell_1000_multi_factor_defensive_backtest
+```
+
 ## Manual GitHub Actions build
 
 Use the `Publish Snapshot Artifacts` workflow.

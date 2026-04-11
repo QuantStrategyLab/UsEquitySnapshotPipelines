@@ -7,7 +7,7 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 
-from us_equity_strategies.data_prep.russell_1000_history import (
+from .russell_1000_history import (
     backfill_universe_history_start,
     build_interval_universe_history,
     build_symbol_alias_candidates,
@@ -15,8 +15,8 @@ from us_equity_strategies.data_prep.russell_1000_history import (
     collect_symbol_universe,
     download_ishares_historical_universe_snapshots,
 )
-from us_equity_strategies.data_prep.yfinance_prices import download_price_history
-from us_equity_strategies.snapshots.russell_1000_multi_factor_defensive import write_table, read_table
+from .yfinance_prices import download_price_history
+from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
 
 DEFAULT_EXTRA_SYMBOLS = ("QQQ", "SPY", "BOXX")
 

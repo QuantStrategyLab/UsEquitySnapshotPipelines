@@ -7,7 +7,7 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-from us_equity_strategies.snapshots.russell_1000_multi_factor_defensive import (
+from .russell_1000_multi_factor_defensive_snapshot import (
     build_feature_snapshot,
     read_table,
     write_table,

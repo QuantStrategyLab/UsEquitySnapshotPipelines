@@ -4,29 +4,31 @@
 
 | Profile | Current migration state | Current upstream inputs |
 | --- | --- | --- |
-| `tech_communication_pullback_enhancement` | Initial pipeline moved here | price history, active universe with sector, canonical growth-pullback config |
-| `russell_1000_multi_factor_defensive` | Initial snapshot artifact pipeline moved here; data-prep/backtest wrappers still pending | Russell 1000 universe history, price history |
+| `tech_communication_pullback_enhancement` | Snapshot feature builder, ranking, release summary, publish flow moved here | price history, active universe with sector, canonical growth-pullback config |
+| `russell_1000_multi_factor_defensive` | Source-input refresh, snapshot feature builder, ranking, release summary, backtest CLI, publish flow moved here | Russell 1000 universe history, price history |
 
-## Existing source files to migrate in phases
+## Local owner modules
 
 ### `tech_communication_pullback_enhancement`
 
-- `UsEquityStrategies/scripts/generate_qqq_tech_enhancement_feature_snapshot.py`
-- `UsEquityStrategies/src/us_equity_strategies/snapshots/qqq_tech_enhancement.py`
-- `InteractiveBrokersPlatform/research/configs/growth_pullback_tech_communication_pullback_enhancement.json`
-- `LongBridgePlatform/research/configs/growth_pullback_tech_communication_pullback_enhancement.json`
-- `CharlesSchwabPlatform/research/configs/growth_pullback_tech_communication_pullback_enhancement.json`
+- `src/us_equity_snapshot_pipelines/qqq_tech_enhancement_snapshot.py`
+- `src/us_equity_snapshot_pipelines/tech_communication_pullback.py`
+- `scripts/build_tech_communication_pullback_snapshot.py`
 
 ### `russell_1000_multi_factor_defensive`
 
-- `UsEquityStrategies/scripts/build_russell_1000_universe_history.py`
-- `UsEquityStrategies/scripts/fetch_russell_1000_price_history.py`
-- `UsEquityStrategies/scripts/generate_russell_1000_feature_snapshot.py`
-- `UsEquityStrategies/scripts/run_russell_1000_data_prep_task.py`
-- `UsEquityStrategies/scripts/run_russell_1000_snapshot_task.py`
-- `UsEquityStrategies/src/us_equity_strategies/data_prep/russell_1000_history.py`
-- `UsEquityStrategies/src/us_equity_strategies/snapshots/russell_1000_multi_factor_defensive.py`
-- `UsEquityStrategies/src/us_equity_strategies/backtests/russell_1000_multi_factor_defensive.py`
+- `src/us_equity_snapshot_pipelines/russell_1000_history.py`
+- `src/us_equity_snapshot_pipelines/yfinance_prices.py`
+- `src/us_equity_snapshot_pipelines/russell_1000_multi_factor_defensive_snapshot.py`
+- `src/us_equity_snapshot_pipelines/russell_1000_multi_factor_defensive.py`
+- `src/us_equity_snapshot_pipelines/russell_1000_multi_factor_backtest.py`
+- `scripts/update_russell_1000_input_data.py`
+- `scripts/build_russell_1000_feature_snapshot.py`
+- `scripts/backtest_russell_1000_multi_factor_defensive.py`
+
+## Remaining intentional dependency
+
+This repository still imports `us_equity_strategies.strategies.*` for runtime constants and signal/weight calculation. That keeps the offline snapshot preview aligned with the live strategy engine without moving broker execution code here.
 
 ## Execution repos remain downstream only
 

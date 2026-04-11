@@ -27,8 +27,8 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 
 | Profile | Status | Notes |
 | --- | --- | --- |
-| `tech_communication_pullback_enhancement` | initial upstream pipeline | HK live profile; keeps current GCS filename contract |
-| `russell_1000_multi_factor_defensive` | initial upstream pipeline | Russell feature-snapshot builder now has standard artifacts |
+| `tech_communication_pullback_enhancement` | migrated upstream pipeline | snapshot builder, ranking, release summary, publish flow live here |
+| `russell_1000_multi_factor_defensive` | migrated upstream pipeline | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
 
 ## Local smoke command
 
@@ -84,4 +84,15 @@ python scripts/build_russell_1000_feature_snapshot.py \
   --universe /path/to/r1000_universe_history.csv \
   --as-of 2026-04-01 \
   --output-dir data/output/russell_1000_multi_factor_defensive
+```
+
+Backtest Russell 1000 from the same input files:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_russell_1000_multi_factor_defensive.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_universe_history.csv \
+  --start 2019-01-01 \
+  --output-dir data/output/russell_1000_multi_factor_defensive_backtest
 ```
