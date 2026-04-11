@@ -54,6 +54,8 @@ The command writes:
 - `tech_communication_pullback_enhancement_ranking_latest.csv`
 - `release_status_summary.json`
 
+See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
+
 
 Build a Russell 1000 snapshot:
 

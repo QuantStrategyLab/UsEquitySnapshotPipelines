@@ -1,0 +1,197 @@
+name: Publish Snapshot Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Snapshot profile to build
+        required: true
+        default: tech_communication_pullback_enhancement
+        type: choice
+        options:
+          - tech_communication_pullback_enhancement
+          - russell_1000_multi_factor_defensive
+      prices_path:
+        description: Price history file path inside the checked-out workspace
+        required: true
+        type: string
+      universe_path:
+        description: Universe file path inside the checked-out workspace
+        required: true
+        type: string
+      as_of_date:
+        description: Optional snapshot date, for example 2026-04-01
+        required: false
+        type: string
+      artifact_dir:
+        description: Optional artifact output directory; defaults to data/output/<profile>
+        required: false
+        type: string
+      gcs_prefix:
+        description: Optional GCS prefix. Leave blank to only build and upload GitHub artifact.
+        required: false
+        type: string
+      execute_publish:
+        description: Actually upload to GCS. false only prints the publish plan.
+        required: true
+        default: false
+        type: boolean
+      config_path:
+        description: Optional tech pullback config path. Leave blank for bundled/default lookup.
+        required: false
+        type: string
+      current_holdings:
+        description: Optional comma-separated holdings used only for hold-bonus preview.
+        required: false
+        type: string
+      portfolio_total_equity:
+        description: Optional equity for tech pullback dynamic position-count preview.
+        required: false
+        type: string
+      min_adv20_usd:
+        description: Optional Russell min ADV override.
+        required: false
+        type: string
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      PROFILE: ${{ inputs.profile }}
+      PRICES_PATH: ${{ inputs.prices_path }}
+      UNIVERSE_PATH: ${{ inputs.universe_path }}
+      AS_OF_DATE: ${{ inputs.as_of_date }}
+      ARTIFACT_DIR_INPUT: ${{ inputs.artifact_dir }}
+      GCS_PREFIX: ${{ inputs.gcs_prefix }}
+      EXECUTE_PUBLISH: ${{ inputs.execute_publish }}
+      CONFIG_PATH: ${{ inputs.config_path }}
+      CURRENT_HOLDINGS: ${{ inputs.current_holdings }}
+      PORTFOLIO_TOTAL_EQUITY: ${{ inputs.portfolio_total_equity }}
+      MIN_ADV20_USD: ${{ inputs.min_adv20_usd }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Build snapshot artifacts
+        id: build
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PRICES_PATH:-}" ] || [ ! -f "${PRICES_PATH}" ]; then
+            echo "prices_path is required and must point to a file in this workspace: ${PRICES_PATH:-<empty>}" >&2
+            exit 1
+          fi
+          if [ -z "${UNIVERSE_PATH:-}" ] || [ ! -f "${UNIVERSE_PATH}" ]; then
+            echo "universe_path is required and must point to a file in this workspace: ${UNIVERSE_PATH:-<empty>}" >&2
+            exit 1
+          fi
+
+          artifact_dir="${ARTIFACT_DIR_INPUT:-data/output/${PROFILE}}"
+          mkdir -p "${artifact_dir}"
+          common_args=(
+            --prices "${PRICES_PATH}"
+            --universe "${UNIVERSE_PATH}"
+            --output-dir "${artifact_dir}"
+          )
+          if [ -n "${AS_OF_DATE:-}" ]; then
+            common_args+=(--as-of "${AS_OF_DATE}")
+          fi
+          if [ -n "${CURRENT_HOLDINGS:-}" ]; then
+            common_args+=(--current-holdings "${CURRENT_HOLDINGS}")
+          fi
+
+          case "${PROFILE}" in
+            tech_communication_pullback_enhancement)
+              if [ -n "${CONFIG_PATH:-}" ]; then
+                common_args+=(--config-path "${CONFIG_PATH}")
+              fi
+              if [ -n "${PORTFOLIO_TOTAL_EQUITY:-}" ]; then
+                common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
+              fi
+              python scripts/build_tech_communication_pullback_snapshot.py "${common_args[@]}"
+              ;;
+            russell_1000_multi_factor_defensive)
+              if [ -n "${MIN_ADV20_USD:-}" ]; then
+                common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")
+              fi
+              python scripts/build_russell_1000_feature_snapshot.py "${common_args[@]}"
+              ;;
+            *)
+              echo "Unsupported profile: ${PROFILE}" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "artifact_dir=${artifact_dir}"
+            echo "artifact_name=us-equity-snapshot-${PROFILE}-${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: ${{ inputs.execute_publish && inputs.gcs_prefix != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: ${{ inputs.execute_publish && inputs.gcs_prefix != '' }}
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Publish or print GCS plan
+        if: ${{ inputs.gcs_prefix != '' }}
+        run: |
+          set -euo pipefail
+          args=(
+            --profile "${PROFILE}"
+            --artifact-dir "${{ steps.build.outputs.artifact_dir }}"
+            --gcs-prefix "${GCS_PREFIX}"
+          )
+          if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+            args+=(--execute)
+          fi
+          python scripts/publish_snapshot_artifacts.py "${args[@]}"
+
+      - name: Upload generated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: ${{ steps.build.outputs.artifact_dir }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Append job summary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Snapshot artifact run"
+            echo
+            echo "- profile: \`${PROFILE}\`"
+            echo "- artifact_dir: \`${{ steps.build.outputs.artifact_dir }}\`"
+            echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
+            echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
+            echo
+            echo "Generated files:"
+            find "${{ steps.build.outputs.artifact_dir }}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
