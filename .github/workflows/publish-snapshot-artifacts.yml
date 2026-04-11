@@ -17,11 +17,11 @@ on:
         default: false
         type: boolean
       prices_path:
-        description: Price history file path inside the checked-out workspace. Required unless use_sample_data=true.
+        description: Local, gs://, or http(s) price history path. Required unless use_sample_data=true.
         required: false
         type: string
       universe_path:
-        description: Universe file path inside the checked-out workspace. Required unless use_sample_data=true.
+        description: Local, gs://, or http(s) universe path. Required unless use_sample_data=true.
         required: false
         type: string
       as_of_date:
@@ -42,7 +42,7 @@ on:
         default: false
         type: boolean
       config_path:
-        description: Optional tech pullback config path. Leave blank for bundled/default lookup.
+        description: Optional local, gs://, or http(s) tech pullback config path. Leave blank for bundled/default lookup.
         required: false
         type: string
       current_holdings:
@@ -96,6 +96,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
+      - name: Check whether Google Cloud auth is needed
+        id: gcp-auth-check
+        run: |
+          set -euo pipefail
+          needed=false
+          for value in "${PRICES_PATH:-}" "${UNIVERSE_PATH:-}" "${CONFIG_PATH:-}"; do
+            case "${value}" in
+              gs://*) needed=true ;;
+            esac
+          done
+          if [ "${EXECUTE_PUBLISH}" = "true" ] && [ -n "${GCS_PREFIX:-}" ]; then
+            needed=true
+          fi
+          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
       - name: Build snapshot artifacts
         id: build
         run: |
@@ -106,14 +135,29 @@ jobs:
             python scripts/write_sample_input_data.py --profile "${PROFILE}" --output-dir "${sample_input_dir}"
             PRICES_PATH="${sample_input_dir}/prices.csv"
             UNIVERSE_PATH="${sample_input_dir}/universe.csv"
+          else
+            resolved_input_dir="data/input/resolved/${PROFILE}"
+            resolved_env="${RUNNER_TEMP:-/tmp}/resolved_snapshot_inputs.env"
+            resolve_args=(
+              --prices "${PRICES_PATH}"
+              --universe "${UNIVERSE_PATH}"
+              --output-dir "${resolved_input_dir}"
+              --env-output "${resolved_env}"
+            )
+            if [ -n "${CONFIG_PATH:-}" ]; then
+              resolve_args+=(--config "${CONFIG_PATH}")
+            fi
+            python scripts/resolve_snapshot_inputs.py "${resolve_args[@]}"
+            # shellcheck disable=SC1090
+            source "${resolved_env}"
           fi
 
           if [ -z "${PRICES_PATH:-}" ] || [ ! -f "${PRICES_PATH}" ]; then
-            echo "prices_path is required and must point to a file in this workspace unless use_sample_data=true: ${PRICES_PATH:-<empty>}" >&2
+            echo "prices_path is required and must resolve to a local file unless use_sample_data=true: ${PRICES_PATH:-<empty>}" >&2
             exit 1
           fi
           if [ -z "${UNIVERSE_PATH:-}" ] || [ ! -f "${UNIVERSE_PATH}" ]; then
-            echo "universe_path is required and must point to a file in this workspace unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
+            echo "universe_path is required and must resolve to a local file unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
             exit 1
           fi
 
@@ -157,20 +201,6 @@ jobs:
             echo "artifact_dir=${artifact_dir}"
             echo "artifact_name=us-equity-snapshot-${PROFILE}-${GITHUB_RUN_ID}"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Authenticate to Google Cloud
-        if: ${{ inputs.execute_publish && inputs.gcs_prefix != '' }}
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
-
-      - name: Set up gcloud
-        if: ${{ inputs.execute_publish && inputs.gcs_prefix != '' }}
-        uses: google-github-actions/setup-gcloud@v3
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-          version: '>= 416.0.0'
 
       - name: Publish or print GCS plan
         if: ${{ inputs.gcs_prefix != '' }}

@@ -44,6 +44,8 @@ For production data, set both:
 - `prices_path`
 - `universe_path`
 
+Each can be a checked-out local path, a `gs://...` path, or an `http(s)://...` URL. For `tech_communication_pullback_enhancement`, `config_path` also supports local / `gs://` / `http(s)` sources.
+
 For workflow smoke tests, set `use_sample_data=true`; then `prices_path` and `universe_path` can stay blank.
 
 Optional inputs:
@@ -57,6 +59,20 @@ Optional inputs:
 - `min_adv20_usd` for Russell testing / overrides
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
+
+Production-source dry-run example:
+
+```bash
+gh workflow run "Publish Snapshot Artifacts" \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines \
+  -f profile=tech_communication_pullback_enhancement \
+  -f use_sample_data=false \
+  -f prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv \
+  -f universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv \
+  -f config_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json \
+  -f gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging \
+  -f execute_publish=false
+```
 
 Smoke-test command:
 
