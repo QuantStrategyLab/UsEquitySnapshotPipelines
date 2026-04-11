@@ -38,8 +38,13 @@ Use the `Publish Snapshot Artifacts` workflow.
 Required inputs:
 
 - `profile`
+
+For production data, set both:
+
 - `prices_path`
 - `universe_path`
+
+For workflow smoke tests, set `use_sample_data=true`; then `prices_path` and `universe_path` can stay blank.
 
 Optional inputs:
 
@@ -52,6 +57,17 @@ Optional inputs:
 - `min_adv20_usd` for Russell testing / overrides
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
+
+Smoke-test command:
+
+```bash
+gh workflow run "Publish Snapshot Artifacts" \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines \
+  -f profile=tech_communication_pullback_enhancement \
+  -f use_sample_data=true \
+  -f gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/workflow_smoke/tech_communication_pullback_enhancement \
+  -f execute_publish=false
+```
 
 ## Publishing mode
 

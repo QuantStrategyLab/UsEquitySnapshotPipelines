@@ -11,13 +11,18 @@ on:
         options:
           - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
-      prices_path:
-        description: Price history file path inside the checked-out workspace
+      use_sample_data:
+        description: Generate synthetic input data for a workflow smoke test
         required: true
+        default: false
+        type: boolean
+      prices_path:
+        description: Price history file path inside the checked-out workspace. Required unless use_sample_data=true.
+        required: false
         type: string
       universe_path:
-        description: Universe file path inside the checked-out workspace
-        required: true
+        description: Universe file path inside the checked-out workspace. Required unless use_sample_data=true.
+        required: false
         type: string
       as_of_date:
         description: Optional snapshot date, for example 2026-04-01
@@ -64,6 +69,7 @@ jobs:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ inputs.profile }}
+      USE_SAMPLE_DATA: ${{ inputs.use_sample_data }}
       PRICES_PATH: ${{ inputs.prices_path }}
       UNIVERSE_PATH: ${{ inputs.universe_path }}
       AS_OF_DATE: ${{ inputs.as_of_date }}
@@ -95,12 +101,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ "${USE_SAMPLE_DATA}" = "true" ]; then
+            sample_input_dir="data/input/sample/${PROFILE}"
+            python scripts/write_sample_input_data.py --profile "${PROFILE}" --output-dir "${sample_input_dir}"
+            PRICES_PATH="${sample_input_dir}/prices.csv"
+            UNIVERSE_PATH="${sample_input_dir}/universe.csv"
+          fi
+
           if [ -z "${PRICES_PATH:-}" ] || [ ! -f "${PRICES_PATH}" ]; then
-            echo "prices_path is required and must point to a file in this workspace: ${PRICES_PATH:-<empty>}" >&2
+            echo "prices_path is required and must point to a file in this workspace unless use_sample_data=true: ${PRICES_PATH:-<empty>}" >&2
             exit 1
           fi
           if [ -z "${UNIVERSE_PATH:-}" ] || [ ! -f "${UNIVERSE_PATH}" ]; then
-            echo "universe_path is required and must point to a file in this workspace: ${UNIVERSE_PATH:-<empty>}" >&2
+            echo "universe_path is required and must point to a file in this workspace unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
             exit 1
           fi
 
@@ -189,6 +202,7 @@ jobs:
             echo
             echo "- profile: \`${PROFILE}\`"
             echo "- artifact_dir: \`${{ steps.build.outputs.artifact_dir }}\`"
+            echo "- use_sample_data: \`${USE_SAMPLE_DATA}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
             echo
