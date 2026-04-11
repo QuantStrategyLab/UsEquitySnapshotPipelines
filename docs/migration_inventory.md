@@ -11,7 +11,7 @@
 
 ### `tech_communication_pullback_enhancement`
 
-- `src/us_equity_snapshot_pipelines/qqq_tech_enhancement_snapshot.py`
+- `src/us_equity_snapshot_pipelines/tech_communication_pullback_snapshot.py`
 - `src/us_equity_snapshot_pipelines/tech_communication_pullback.py`
 - `scripts/build_tech_communication_pullback_snapshot.py`
 
