@@ -73,6 +73,28 @@ def _config_for_signal(runtime_params: Mapping[str, Any], *, portfolio_total_equ
     return config
 
 
+def _resolve_effective_as_of_date(
+    price_history: pd.DataFrame,
+    universe_snapshot: pd.DataFrame,
+    as_of_date: str | None,
+) -> str | None:
+    if as_of_date:
+        return as_of_date
+    if not ({"start_date", "end_date"} & set(universe_snapshot.columns)):
+        return None
+    if price_history.empty or "as_of" not in price_history.columns:
+        return None
+    latest = (
+        pd.to_datetime(price_history["as_of"], utc=False)
+        .dt.tz_localize(None)
+        .dt.normalize()
+        .max()
+    )
+    if pd.isna(latest):
+        return None
+    return f"{latest:%Y-%m-%d}"
+
+
 def build_candidate_ranking(
     snapshot: pd.DataFrame,
     current_holdings: Iterable[str] | None,
@@ -148,10 +170,13 @@ def build_artifacts(
 
     price_history = read_table(prices_path)
     universe_snapshot = read_table(universe_path)
+    effective_as_of_date = _resolve_effective_as_of_date(
+        price_history, universe_snapshot, as_of_date
+    )
     snapshot = build_feature_snapshot(
         price_history,
         universe_snapshot,
-        as_of_date=as_of_date,
+        as_of_date=effective_as_of_date,
         benchmark_symbol=str(runtime_params.get("benchmark_symbol") or strategy.BENCHMARK_SYMBOL),
         safe_haven=str(runtime_params.get("safe_haven") or strategy.SAFE_HAVEN),
         sector_whitelist=tuple(runtime_params.get("sector_whitelist") or strategy.DEFAULT_SECTOR_WHITELIST),

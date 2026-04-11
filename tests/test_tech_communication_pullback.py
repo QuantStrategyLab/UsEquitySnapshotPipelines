@@ -44,6 +44,31 @@ def _sample_universe() -> pd.DataFrame:
     )
 
 
+def _sample_universe_history() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "symbol": "AAPL",
+                "sector": "Information Technology",
+                "start_date": "2024-01-02",
+                "end_date": None,
+            },
+            {
+                "symbol": "MSFT",
+                "sector": "Information Technology",
+                "start_date": "2024-01-02",
+                "end_date": None,
+            },
+            {
+                "symbol": "META",
+                "sector": "Communication",
+                "start_date": "2024-01-02",
+                "end_date": None,
+            },
+        ]
+    )
+
+
 def test_builds_tech_pullback_artifact_contract(tmp_path) -> None:
     prices_path = tmp_path / "prices.csv"
     universe_path = tmp_path / "universe.csv"
@@ -77,3 +102,23 @@ def test_builds_tech_pullback_artifact_contract(tmp_path) -> None:
     assert manifest["row_count"] == len(snapshot)
     assert manifest["source_project"] == "UsEquitySnapshotPipelines"
     assert summary["release_status"] == "ready"
+
+
+def test_builds_tech_pullback_with_universe_history_without_explicit_as_of(tmp_path) -> None:
+    prices_path = tmp_path / "prices.csv"
+    universe_path = tmp_path / "universe.csv"
+    output_dir = tmp_path / "output"
+    _sample_prices().to_csv(prices_path, index=False)
+    _sample_universe_history().to_csv(universe_path, index=False)
+
+    result = build_artifacts(
+        prices_path=prices_path,
+        universe_path=universe_path,
+        output_dir=output_dir,
+        use_default_config=False,
+    )
+
+    assert result.snapshot_path.exists()
+    snapshot = pd.read_csv(result.snapshot_path)
+    assert snapshot["as_of"].nunique() == 1
+    assert snapshot["as_of"].iloc[0] == "2025-03-24"
