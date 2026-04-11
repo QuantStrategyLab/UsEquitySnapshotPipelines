@@ -79,25 +79,34 @@ have the reference symbols they need.
 
 `Publish Snapshot Artifacts` then runs automatically on weekdays at `23:30 UTC`
 (`07:30` the next day in Asia/Shanghai), leaving time for the source-input
-refresh to finish first.
-
-The scheduled run uses real GCS inputs by default:
+refresh to finish first. Scheduled publish builds both migrated snapshot profiles
+from the same refreshed source inputs:
 
 ```text
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
-config_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json
-gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging
 execute_publish=true
 ```
 
+Default scheduled output prefixes:
+
+| Profile | Extra config | GCS prefix |
+| --- | --- | --- |
+| `tech_communication_pullback_enhancement` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging` |
+| `russell_1000_multi_factor_defensive` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging` |
+
 These defaults can be overridden with repository variables:
 
-- `SCHEDULED_US_EQUITY_SNAPSHOT_PROFILE`
 - `SCHEDULED_US_EQUITY_PRICES_PATH`
 - `SCHEDULED_US_EQUITY_UNIVERSE_PATH`
-- `SCHEDULED_US_EQUITY_CONFIG_PATH`
-- `SCHEDULED_US_EQUITY_GCS_PREFIX`
+- `SCHEDULED_TECH_COMMUNICATION_PULLBACK_CONFIG_PATH`
+- `SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX`
+- `SCHEDULED_RUSSELL_1000_CONFIG_PATH`
+- `SCHEDULED_RUSSELL_1000_GCS_PREFIX`
+
+The older `SCHEDULED_US_EQUITY_CONFIG_PATH` and
+`SCHEDULED_US_EQUITY_GCS_PREFIX` variables are still honored for
+`tech_communication_pullback_enhancement`.
 
 If the input refresh fails, the snapshot publish workflow can still run against
 the last successfully published source inputs. Check `Update Source Input Data`
@@ -132,6 +141,19 @@ gh workflow run "Publish Snapshot Artifacts" \
   -f execute_publish=false
 ```
 
+Russell 1000 production-source dry-run example:
+
+```bash
+gh workflow run "Publish Snapshot Artifacts" \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines \
+  -f profile=russell_1000_multi_factor_defensive \
+  -f use_sample_data=false \
+  -f prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv \
+  -f universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv \
+  -f gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging \
+  -f execute_publish=false
+```
+
 Smoke-test command:
 
 ```bash
@@ -152,10 +174,11 @@ When the dry-run plan looks correct, rerun with:
 - `gcs_prefix` set to the target GCS prefix
 - `execute_publish=true`
 
-The initial migration should publish to a staging prefix first, for example:
+The initial migration should publish to staging prefixes first, for example:
 
 ```text
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging
 ```
 
 Do not overwrite the current HK production prefix until the platform guard has been tested against the staging artifact.

@@ -55,6 +55,7 @@ The command writes:
 - `release_status_summary.json`
 
 See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
+The scheduled publish workflow now builds both migrated snapshot profiles from the shared Russell 1000 input refresh.
 
 Prepare / refresh shared Russell 1000 source inputs:
 

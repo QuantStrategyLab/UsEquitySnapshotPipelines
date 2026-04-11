@@ -60,6 +60,58 @@ def _runtime_config(**overrides: Any) -> dict[str, Any]:
     return config
 
 
+def _resolve_effective_as_of_date(
+    price_history: pd.DataFrame,
+    universe_snapshot: pd.DataFrame,
+    as_of_date: str | None,
+) -> str | None:
+    if as_of_date:
+        return as_of_date
+    if not ({"start_date", "end_date"} & set(universe_snapshot.columns)):
+        return None
+    if price_history.empty or "as_of" not in price_history.columns:
+        return None
+    latest = (
+        pd.to_datetime(price_history["as_of"], utc=False)
+        .dt.tz_localize(None)
+        .dt.normalize()
+        .max()
+    )
+    if pd.isna(latest):
+        return None
+    return f"{latest:%Y-%m-%d}"
+
+
+def _filter_universe_for_as_of(
+    universe_snapshot: pd.DataFrame, as_of_date: str | None
+) -> pd.DataFrame:
+    has_interval_columns = {"start_date", "end_date"} & set(universe_snapshot.columns)
+    if as_of_date is None or not has_interval_columns:
+        return universe_snapshot
+
+    as_of = pd.Timestamp(as_of_date).normalize()
+    universe = universe_snapshot.copy()
+    start_dates = (
+        pd.to_datetime(universe["start_date"], utc=False, errors="coerce")
+        if "start_date" in universe.columns
+        else pd.Series(pd.NaT, index=universe.index)
+    )
+    end_dates = (
+        pd.to_datetime(universe["end_date"], utc=False, errors="coerce")
+        if "end_date" in universe.columns
+        else pd.Series(pd.NaT, index=universe.index)
+    )
+    active = (start_dates.isna() | (start_dates <= as_of)) & (
+        end_dates.isna() | (end_dates >= as_of)
+    )
+    filtered = universe.loc[active].copy()
+    if filtered.empty:
+        raise ValueError(
+            f"universe_snapshot has no active rows for as_of_date={as_of:%Y-%m-%d}"
+        )
+    return filtered
+
+
 def build_candidate_ranking(
     snapshot: pd.DataFrame,
     current_holdings: Iterable[str] | None,
@@ -157,10 +209,16 @@ def build_artifacts(
     )
     price_history = read_table(prices_path)
     universe_snapshot = read_table(universe_path)
+    effective_as_of_date = _resolve_effective_as_of_date(
+        price_history, universe_snapshot, as_of_date
+    )
+    effective_universe = _filter_universe_for_as_of(
+        universe_snapshot, effective_as_of_date
+    )
     snapshot = build_feature_snapshot(
         price_history,
-        universe_snapshot,
-        as_of_date=as_of_date,
+        effective_universe,
+        as_of_date=effective_as_of_date,
         benchmark_symbol=str(runtime_params["benchmark_symbol"]),
         min_price_usd=float(min_price_usd),
         min_adv20_usd=float(min_adv20_usd),
