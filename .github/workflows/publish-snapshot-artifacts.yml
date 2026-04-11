@@ -1,6 +1,9 @@
 name: Publish Snapshot Artifacts
 
 on:
+  schedule:
+    # 22:30 UTC is after the regular US close in both EDT and EST.
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
     inputs:
       profile:
@@ -80,6 +83,11 @@ jobs:
       CURRENT_HOLDINGS: ${{ inputs.current_holdings }}
       PORTFOLIO_TOTAL_EQUITY: ${{ inputs.portfolio_total_equity }}
       MIN_ADV20_USD: ${{ inputs.min_adv20_usd }}
+      SCHEDULED_PROFILE: ${{ vars.SCHEDULED_US_EQUITY_SNAPSHOT_PROFILE || 'tech_communication_pullback_enhancement' }}
+      SCHEDULED_PRICES_PATH: ${{ vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
+      SCHEDULED_UNIVERSE_PATH: ${{ vars.SCHEDULED_US_EQUITY_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv' }}
+      SCHEDULED_CONFIG_PATH: ${{ vars.SCHEDULED_US_EQUITY_CONFIG_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json' }}
+      SCHEDULED_GCS_PREFIX: ${{ vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
 
     steps:
       - name: Checkout
@@ -95,6 +103,48 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e .
+
+      - name: Apply scheduled defaults
+        run: |
+          set -euo pipefail
+
+          profile="${PROFILE:-tech_communication_pullback_enhancement}"
+          use_sample_data="${USE_SAMPLE_DATA:-false}"
+          prices_path="${PRICES_PATH:-}"
+          universe_path="${UNIVERSE_PATH:-}"
+          config_path="${CONFIG_PATH:-}"
+          gcs_prefix="${GCS_PREFIX:-}"
+          execute_publish="${EXECUTE_PUBLISH:-false}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            profile="${PROFILE:-${SCHEDULED_PROFILE}}"
+            use_sample_data="false"
+            prices_path="${PRICES_PATH:-${SCHEDULED_PRICES_PATH}}"
+            universe_path="${UNIVERSE_PATH:-${SCHEDULED_UNIVERSE_PATH}}"
+            config_path="${CONFIG_PATH:-${SCHEDULED_CONFIG_PATH}}"
+            gcs_prefix="${GCS_PREFIX:-${SCHEDULED_GCS_PREFIX}}"
+            execute_publish="${EXECUTE_PUBLISH:-true}"
+          fi
+
+          {
+            echo "PROFILE=${profile}"
+            echo "USE_SAMPLE_DATA=${use_sample_data}"
+            echo "PRICES_PATH=${prices_path}"
+            echo "UNIVERSE_PATH=${universe_path}"
+            echo "CONFIG_PATH=${config_path}"
+            echo "GCS_PREFIX=${gcs_prefix}"
+            echo "EXECUTE_PUBLISH=${execute_publish}"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo "profile=${profile}"
+            echo "use_sample_data=${use_sample_data}"
+            echo "prices_path=${prices_path:-<empty>}"
+            echo "universe_path=${universe_path:-<empty>}"
+            echo "config_path=${config_path:-<empty>}"
+            echo "gcs_prefix=${gcs_prefix:-<empty>}"
+            echo "execute_publish=${execute_publish}"
+          }
 
       - name: Check whether Google Cloud auth is needed
         id: gcp-auth-check
@@ -203,9 +253,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish or print GCS plan
-        if: ${{ inputs.gcs_prefix != '' }}
         run: |
           set -euo pipefail
+          if [ -z "${GCS_PREFIX:-}" ]; then
+            echo "gcs_prefix is not set; skipping GCS publish."
+            exit 0
+          fi
           args=(
             --profile "${PROFILE}"
             --artifact-dir "${{ steps.build.outputs.artifact_dir }}"

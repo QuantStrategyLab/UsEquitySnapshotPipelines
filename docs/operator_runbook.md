@@ -60,6 +60,34 @@ Optional inputs:
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
 
+## Scheduled publish
+
+`Publish Snapshot Artifacts` also runs automatically on weekdays at `22:30 UTC`
+(`06:30` the next day in Asia/Shanghai). This is after the regular US market
+close in both EDT and EST.
+
+The scheduled run uses real GCS inputs by default:
+
+```text
+prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
+universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+config_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json
+gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging
+execute_publish=true
+```
+
+These defaults can be overridden with repository variables:
+
+- `SCHEDULED_US_EQUITY_SNAPSHOT_PROFILE`
+- `SCHEDULED_US_EQUITY_PRICES_PATH`
+- `SCHEDULED_US_EQUITY_UNIVERSE_PATH`
+- `SCHEDULED_US_EQUITY_CONFIG_PATH`
+- `SCHEDULED_US_EQUITY_GCS_PREFIX`
+
+Keep the source price / universe files updated before this scheduled workflow
+runs; otherwise the workflow will succeed but publish a snapshot based on older
+source data.
+
 Production-source dry-run example:
 
 ```bash
@@ -102,11 +130,17 @@ gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_
 
 Do not overwrite the current HK production prefix until the platform guard has been tested against the staging artifact.
 
-## Current production path policy
+## Current HK path policy
 
-Do not change Cloud Run env in this step. HK can keep reading the existing production path until the new upstream publisher has been verified.
+HK currently reads the neutral staging prefix produced by this workflow:
 
-Current HK production path:
+```text
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging/tech_communication_pullback_enhancement_feature_snapshot_latest.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging/tech_communication_pullback_enhancement_feature_snapshot_latest.csv.manifest.json
+```
+
+The older Interactive Brokers scoped path should not be used for new LongBridge
+deployments:
 
 ```text
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/interactive_brokers/tech_communication_pullback_enhancement/tech_communication_pullback_enhancement_feature_snapshot_latest.csv
