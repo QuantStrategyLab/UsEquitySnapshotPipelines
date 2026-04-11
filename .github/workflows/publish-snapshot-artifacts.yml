@@ -2,8 +2,8 @@ name: Publish Snapshot Artifacts
 
 on:
   schedule:
-    # 22:30 UTC is after the regular US close in both EDT and EST.
-    - cron: '30 22 * * 1-5'
+    # 23:30 UTC leaves time for the source-input refresh after the regular US close.
+    - cron: '30 23 * * 1-5'
   workflow_dispatch:
     inputs:
       profile:

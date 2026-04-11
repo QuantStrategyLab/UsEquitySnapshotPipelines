@@ -62,9 +62,24 @@ The workflow always uploads the generated files as a GitHub Actions artifact.
 
 ## Scheduled publish
 
-`Publish Snapshot Artifacts` also runs automatically on weekdays at `22:30 UTC`
-(`06:30` the next day in Asia/Shanghai). This is after the regular US market
-close in both EDT and EST.
+`Update Source Input Data` runs automatically on weekdays at `22:30 UTC`
+(`06:30` the next day in Asia/Shanghai). It refreshes the shared Russell 1000
+source inputs used by snapshot profiles:
+
+```text
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+```
+
+The refresh workflow downloads the existing price history first, refreshes the
+latest overlap window, downloads full history for newly discovered symbols, and
+then publishes the merged input files. It also forces `QQQ`, `SPY`, and `BOXX`
+into the price input so both QQQ-benchmark and SPY-benchmark snapshot profiles
+have the reference symbols they need.
+
+`Publish Snapshot Artifacts` then runs automatically on weekdays at `23:30 UTC`
+(`07:30` the next day in Asia/Shanghai), leaving time for the source-input
+refresh to finish first.
 
 The scheduled run uses real GCS inputs by default:
 
@@ -84,9 +99,24 @@ These defaults can be overridden with repository variables:
 - `SCHEDULED_US_EQUITY_CONFIG_PATH`
 - `SCHEDULED_US_EQUITY_GCS_PREFIX`
 
-Keep the source price / universe files updated before this scheduled workflow
-runs; otherwise the workflow will succeed but publish a snapshot based on older
-source data.
+If the input refresh fails, the snapshot publish workflow can still run against
+the last successfully published source inputs. Check `Update Source Input Data`
+before trusting a new snapshot after data-provider errors.
+
+Manual source-input dry-run example:
+
+```bash
+gh workflow run "Update Source Input Data" \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines \
+  -f execute_publish=false \
+  -f output_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias \
+  -f universe_start=2018-01-01 \
+  -f price_start=2018-01-01 \
+  -f price_overlap_days=10 \
+  -f benchmark_symbol=QQQ \
+  -f safe_haven=BOXX \
+  -f extra_symbols=QQQ,SPY,BOXX
+```
 
 Production-source dry-run example:
 

@@ -1,0 +1,193 @@
+name: Update Source Input Data
+
+on:
+  schedule:
+    # Run after the regular US close; snapshot publish runs later and consumes these inputs.
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      execute_publish:
+        description: Actually upload refreshed source inputs to GCS. false only builds local artifacts.
+        required: true
+        default: false
+        type: boolean
+      output_prefix:
+        description: GCS prefix for refreshed source inputs.
+        required: false
+        default: gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias
+        type: string
+      universe_start:
+        description: Earliest iShares monthly universe snapshot request date.
+        required: false
+        default: '2018-01-01'
+        type: string
+      universe_end:
+        description: Optional latest iShares monthly universe snapshot request date.
+        required: false
+        type: string
+      price_start:
+        description: Earliest yfinance price download date for new symbols or full rebuild.
+        required: false
+        default: '2018-01-01'
+        type: string
+      price_end:
+        description: Optional yfinance price download end date.
+        required: false
+        type: string
+      price_overlap_days:
+        description: Number of previous calendar days to refresh when existing prices are available.
+        required: false
+        default: '10'
+        type: string
+      benchmark_symbol:
+        description: Benchmark symbol to force into source prices.
+        required: false
+        default: QQQ
+        type: string
+      safe_haven:
+        description: Safe-haven symbol to force into source prices.
+        required: false
+        default: BOXX
+        type: string
+      extra_symbols:
+        description: Comma-separated extra symbols to force into source prices.
+        required: false
+        default: QQQ,SPY,BOXX
+        type: string
+      chunk_size:
+        description: yfinance download chunk size.
+        required: false
+        default: '100'
+        type: string
+
+jobs:
+  update-inputs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      OUTPUT_PREFIX: ${{ inputs.output_prefix || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias' }}
+      EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
+      UNIVERSE_START: ${{ inputs.universe_start || '2018-01-01' }}
+      UNIVERSE_END: ${{ inputs.universe_end }}
+      PRICE_START: ${{ inputs.price_start || '2018-01-01' }}
+      PRICE_END: ${{ inputs.price_end }}
+      PRICE_OVERLAP_DAYS: ${{ inputs.price_overlap_days || '10' }}
+      BENCHMARK_SYMBOL: ${{ inputs.benchmark_symbol || 'QQQ' }}
+      SAFE_HAVEN: ${{ inputs.safe_haven || 'BOXX' }}
+      EXTRA_SYMBOLS: ${{ inputs.extra_symbols || 'QQQ,SPY,BOXX' }}
+      CHUNK_SIZE: ${{ inputs.chunk_size || '100' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Download existing price history if present
+        run: |
+          set -euo pipefail
+          mkdir -p data/input/current
+          existing_prices="data/input/current/r1000_price_history.csv"
+          if gcloud storage cp "${OUTPUT_PREFIX%/}/r1000_price_history.csv" "${existing_prices}"; then
+            echo "EXISTING_PRICES=${existing_prices}" >> "$GITHUB_ENV"
+          else
+            echo "No existing price history found at ${OUTPUT_PREFIX%/}/r1000_price_history.csv; building from price_start."
+          fi
+
+      - name: Build refreshed source input data
+        run: |
+          set -euo pipefail
+          args=(
+            --output-dir data/input/refreshed/r1000_official_monthly_v2_alias
+            --universe-start "${UNIVERSE_START}"
+            --price-start "${PRICE_START}"
+            --price-overlap-days "${PRICE_OVERLAP_DAYS}"
+            --benchmark-symbol "${BENCHMARK_SYMBOL}"
+            --safe-haven "${SAFE_HAVEN}"
+            --extra-symbols "${EXTRA_SYMBOLS}"
+            --chunk-size "${CHUNK_SIZE}"
+          )
+          if [ -n "${UNIVERSE_END:-}" ]; then
+            args+=(--universe-end "${UNIVERSE_END}")
+          fi
+          if [ -n "${PRICE_END:-}" ]; then
+            args+=(--price-end "${PRICE_END}")
+          fi
+          if [ -n "${EXISTING_PRICES:-}" ]; then
+            args+=(--existing-prices "${EXISTING_PRICES}")
+          fi
+          python scripts/update_russell_1000_input_data.py "${args[@]}"
+
+      - name: Publish refreshed source input data
+        run: |
+          set -euo pipefail
+          output_dir="data/input/refreshed/r1000_official_monthly_v2_alias"
+          files=(
+            r1000_universe_history.csv
+            r1000_price_history.csv
+            r1000_symbol_aliases.csv
+            r1000_universe_snapshot_metadata.csv
+          )
+          for file in "${files[@]}"; do
+            source_path="${output_dir}/${file}"
+            target_path="${OUTPUT_PREFIX%/}/${file}"
+            if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+              gcloud storage cp "${source_path}" "${target_path}"
+            else
+              echo "DRY-RUN gcloud storage cp ${source_path} ${target_path}"
+            fi
+          done
+
+      - name: Upload generated input artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-equity-source-inputs-${{ github.run_id }}
+          path: data/input/refreshed/r1000_official_monthly_v2_alias
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Append job summary
+        run: |
+          set -euo pipefail
+          output_dir="data/input/refreshed/r1000_official_monthly_v2_alias"
+          {
+            echo "## Source input data refresh"
+            echo
+            echo "- output_prefix: \`${OUTPUT_PREFIX}\`"
+            echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
+            echo "- universe_start: \`${UNIVERSE_START}\`"
+            echo "- price_start: \`${PRICE_START}\`"
+            echo "- price_overlap_days: \`${PRICE_OVERLAP_DAYS}\`"
+            echo "- benchmark_symbol: \`${BENCHMARK_SYMBOL}\`"
+            echo "- safe_haven: \`${SAFE_HAVEN}\`"
+            echo "- extra_symbols: \`${EXTRA_SYMBOLS}\`"
+            echo
+            echo "Generated files:"
+            find "${output_dir}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"

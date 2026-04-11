@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "pandas>=2.0",
+  "yfinance>=0.2.40",
   "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@v0.7.21",
 ]
 
@@ -20,6 +21,7 @@ test = ["pytest>=8"]
 useq-build-tech-communication-pullback-snapshot = "us_equity_snapshot_pipelines.tech_communication_pullback:main"
 useq-build-russell-1000-snapshot = "us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
+useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

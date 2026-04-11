@@ -56,6 +56,23 @@ The command writes:
 
 See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
 
+Prepare / refresh shared Russell 1000 source inputs:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/update_russell_1000_input_data.py \
+  --output-dir data/input/refreshed/r1000_official_monthly_v2_alias \
+  --universe-start 2018-01-01 \
+  --price-start 2018-01-01 \
+  --extra-symbols QQQ,SPY,BOXX
+```
+
+The source-input refresh writes:
+
+- `r1000_price_history.csv`
+- `r1000_universe_history.csv`
+- `r1000_symbol_aliases.csv`
+- `r1000_universe_snapshot_metadata.csv`
 
 Build a Russell 1000 snapshot:
 
