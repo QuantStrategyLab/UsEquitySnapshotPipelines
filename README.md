@@ -29,6 +29,7 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 | --- | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
 | `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
+| `mega_cap_leader_rotation_dynamic_top20` | selectable upstream pipeline | monthly manual publish | snapshot builder, ranking, release summary, and publish flow live here; requires a dynamic top20 universe history or ranked Russell universe |
 
 This table describes artifact publishing cadence only. Strategy-level cadence remains documented in `UsEquityStrategies`; broker execution schedules should follow that strategy-layer source.
 
@@ -57,7 +58,7 @@ The command writes:
 - `release_status_summary.json`
 
 See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
-The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, then they build and publish both migrated snapshot profiles from those refreshed inputs.
+The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, then they build and publish migrated scheduled snapshot profiles from those refreshed inputs.
 
 Prepare / refresh shared Russell 1000 source inputs:
 
@@ -88,6 +89,23 @@ python scripts/build_russell_1000_feature_snapshot.py \
   --output-dir data/output/russell_1000_multi_factor_defensive
 ```
 
+
+Build a mega-cap dynamic top20 snapshot from a previously prepared dynamic universe history:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py \
+  --prices /path/to/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe /path/to/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --as-of 2026-04-01 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top20
+```
+
+The dynamic top20 builder intentionally requires `mega_rank`, `source_weight`,
+`weight`, `source_market_value`, or `market_value` when the active universe has
+more than 20 names. This prevents accidentally publishing a broad Russell 1000
+snapshot under the concentrated mega-cap profile.
+
 Backtest Russell 1000 from the same input files:
 
 ```bash
@@ -101,9 +119,8 @@ python scripts/backtest_russell_1000_multi_factor_defensive.py \
 
 ## Research-only backtests
 
-`mega_cap_leader_rotation` is a research candidate documented in
-`../UsEquityStrategies/docs/research/mega_cap_leader_rotation.md`. It is not a
-published snapshot profile and is not wired into broker runtimes.
+`mega_cap_leader_rotation_dynamic_top20` is now a selectable snapshot-backed profile documented in
+`../UsEquityStrategies/docs/research/mega_cap_leader_rotation.md`. Static `mega_cap_leader_rotation` pools remain research-only.
 
 Run the first-pass mega-cap leader rotation backtest with local input files:
 

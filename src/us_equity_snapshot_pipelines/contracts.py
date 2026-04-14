@@ -7,6 +7,7 @@ from pathlib import Path
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
+MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE = "mega_cap_leader_rotation_dynamic_top20"
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,19 @@ _PROFILE_CONTRACTS = {
             "russell_1000_multi_factor_defensive"
         ),
         manifest_required_by_runtime=False,
+    ),
+    MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE: SnapshotProfileContract(
+        profile=MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
+        display_name="Mega Cap Leader Rotation Dynamic Top20",
+        contract_version="mega_cap_leader_rotation_dynamic_top20.feature_snapshot.v1",
+        snapshot_filename="mega_cap_leader_rotation_dynamic_top20_feature_snapshot_latest.csv",
+        manifest_filename="mega_cap_leader_rotation_dynamic_top20_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="mega_cap_leader_rotation_dynamic_top20_ranking_latest.csv",
+        neutral_gcs_prefix_hint=(
+            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
+            "mega_cap_leader_rotation_dynamic_top20"
+        ),
+        manifest_required_by_runtime=True,
     ),
 }
 

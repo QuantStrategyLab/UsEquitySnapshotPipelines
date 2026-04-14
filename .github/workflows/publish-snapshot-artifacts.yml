@@ -14,6 +14,7 @@ on:
         options:
           - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
+          - mega_cap_leader_rotation_dynamic_top20
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
         required: true
@@ -53,7 +54,7 @@ on:
         required: false
         type: string
       portfolio_total_equity:
-        description: Optional equity for tech pullback dynamic position-count preview.
+        description: Optional equity for dynamic position-count preview.
         required: false
         type: string
       min_adv20_usd:
@@ -306,6 +307,15 @@ jobs:
                 common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")
               fi
               python scripts/build_russell_1000_feature_snapshot.py "${common_args[@]}"
+              ;;
+            mega_cap_leader_rotation_dynamic_top20)
+              if [ -n "${MIN_ADV20_USD:-}" ]; then
+                common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")
+              fi
+              if [ -n "${PORTFOLIO_TOTAL_EQUITY:-}" ]; then
+                common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
+              fi
+              python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py "${common_args[@]}"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

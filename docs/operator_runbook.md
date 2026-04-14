@@ -6,6 +6,7 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 
 - `tech_communication_pullback_enhancement`
 - `russell_1000_multi_factor_defensive`
+- `mega_cap_leader_rotation_dynamic_top20`
 
 ## Manual local build
 
@@ -30,6 +31,22 @@ python scripts/build_russell_1000_feature_snapshot.py \
   --as-of 2026-04-01 \
   --output-dir data/output/russell_1000_multi_factor_defensive
 ```
+
+
+Mega-cap dynamic top20:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py \
+  --prices /path/to/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe /path/to/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --as-of 2026-04-01 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top20
+```
+
+The universe input must already be the dynamic top20 history, or a ranked
+Russell universe containing `mega_rank`, `source_weight`, `weight`,
+`source_market_value`, or `market_value`.
 
 Russell 1000 backtest:
 
@@ -67,7 +84,7 @@ Optional inputs:
 - `config_path` for `tech_communication_pullback_enhancement`
 - `current_holdings` for hold-bonus preview
 - `portfolio_total_equity` for tech pullback dynamic position-count preview
-- `min_adv20_usd` for Russell testing / overrides
+- `min_adv20_usd` for Russell / mega-cap testing overrides
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
 

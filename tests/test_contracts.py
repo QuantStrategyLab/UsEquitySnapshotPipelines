@@ -14,3 +14,4 @@ def test_lists_snapshot_profile_contracts() -> None:
     profiles = {contract.profile for contract in list_profile_contracts()}
     assert "tech_communication_pullback_enhancement" in profiles
     assert "russell_1000_multi_factor_defensive" in profiles
+    assert "mega_cap_leader_rotation_dynamic_top20" in profiles
