@@ -153,6 +153,7 @@ jobs:
             r1000_price_history.csv
             r1000_symbol_aliases.csv
             r1000_universe_snapshot_metadata.csv
+            r1000_latest_holdings_snapshot.csv
           )
           for file in "${files[@]}"; do
             source_path="${output_dir}/${file}"

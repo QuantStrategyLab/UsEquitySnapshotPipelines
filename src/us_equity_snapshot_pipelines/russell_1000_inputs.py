@@ -28,6 +28,7 @@ class Russell1000InputDataResult:
     price_history_path: Path
     alias_output_path: Path
     metadata_output_path: Path
+    latest_snapshot_output_path: Path
     snapshot_dir: Path
     universe_rows: int
     price_rows: int
@@ -129,6 +130,7 @@ def prepare_russell_1000_input_data(
     price_history_path = root / "r1000_price_history.csv"
     alias_output_path = root / "r1000_symbol_aliases.csv"
     metadata_output_path = root / "r1000_universe_snapshot_metadata.csv"
+    latest_snapshot_output_path = root / "r1000_latest_holdings_snapshot.csv"
 
     snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
         start_date=universe_start,
@@ -138,6 +140,11 @@ def prepare_russell_1000_input_data(
     for as_of_date, snapshot in snapshot_tables:
         write_table(snapshot, snapshot_dir / f"r1000_{pd.Timestamp(as_of_date):%Y-%m-%d}.csv")
     write_table(metadata, metadata_output_path)
+    _latest_snapshot_date, latest_snapshot = max(
+        snapshot_tables,
+        key=lambda item: pd.Timestamp(item[0]).normalize(),
+    )
+    write_table(latest_snapshot, latest_snapshot_output_path)
 
     universe_history = build_interval_universe_history(snapshot_tables)
     if universe_backfill_start:
@@ -192,6 +199,7 @@ def prepare_russell_1000_input_data(
         price_history_path=price_history_path,
         alias_output_path=alias_output_path,
         metadata_output_path=metadata_output_path,
+        latest_snapshot_output_path=latest_snapshot_output_path,
         snapshot_dir=snapshot_dir,
         universe_rows=int(len(universe_history)),
         price_rows=int(len(merged_prices)),
@@ -240,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote price history: {result.price_rows} rows -> {result.price_history_path}")
     print(f"wrote aliases -> {result.alias_output_path}")
     print(f"wrote metadata -> {result.metadata_output_path}")
+    print(f"wrote latest weighted holdings snapshot -> {result.latest_snapshot_output_path}")
     print(
         f"downloaded/updated {result.symbol_count} symbols from {result.download_start}; "
         f"missing_full_history={result.missing_symbol_count}"

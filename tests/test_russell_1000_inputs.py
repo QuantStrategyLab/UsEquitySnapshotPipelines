@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from us_equity_snapshot_pipelines.russell_1000_history import parse_ishares_holdings_json_snapshot
+from us_equity_snapshot_pipelines import russell_1000_inputs
 from us_equity_snapshot_pipelines.russell_1000_inputs import (
     collect_download_symbols,
     incremental_start_date,
@@ -117,3 +118,57 @@ def test_ishares_json_parser_preserves_rank_metrics() -> None:
     assert row["market_value"] == 100.0
     assert row["shares"] == 10.0
     assert row["price"] == 10.0
+
+
+
+def test_prepare_russell_1000_input_data_writes_latest_weighted_snapshot(tmp_path, monkeypatch) -> None:
+    snapshots = [
+        (
+            pd.Timestamp("2026-03-31"),
+            pd.DataFrame(
+                [
+                    {"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0, "market_value": 100.0},
+                ]
+            ),
+        ),
+        (
+            pd.Timestamp("2026-04-30"),
+            pd.DataFrame(
+                [
+                    {"symbol": "MSFT", "sector": "Information Technology", "weight": 6.0, "market_value": 120.0},
+                ]
+            ),
+        ),
+    ]
+
+    def fake_download_snapshots(**_kwargs):
+        return snapshots, pd.DataFrame([{"snapshot_date": "2026-04-30", "status": "ok"}])
+
+    def fake_download_prices(symbols, *, start, **_kwargs):
+        return pd.DataFrame(
+            [
+                {"symbol": symbol, "as_of": start, "close": 100.0, "volume": 1_000}
+                for symbol in symbols
+            ]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fake_download_snapshots,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
+
+    result = russell_1000_inputs.prepare_russell_1000_input_data(
+        output_dir=tmp_path,
+        universe_start="2026-03-01",
+        price_start="2026-01-01",
+        extra_symbols=("QQQ",),
+    )
+
+    latest = pd.read_csv(result.latest_snapshot_output_path)
+
+    assert result.latest_snapshot_output_path.name == "r1000_latest_holdings_snapshot.csv"
+    assert latest.loc[0, "symbol"] == "MSFT"
+    assert float(latest.loc[0, "weight"]) == 6.0
+    assert float(latest.loc[0, "market_value"]) == 120.0

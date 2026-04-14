@@ -68,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
     permissions:
       contents: read
       id-token: write
@@ -94,6 +94,9 @@ jobs:
       SCHEDULED_TECH_GCS_PREFIX: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX || vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
       SCHEDULED_RUSSELL_CONFIG_PATH: ${{ vars.SCHEDULED_RUSSELL_1000_CONFIG_PATH || '' }}
       SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
+      SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
+      SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
+      SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_dynamic_top20_staging' }}
 
     steps:
       - name: Checkout
@@ -135,6 +138,12 @@ jobs:
               russell_1000_multi_factor_defensive)
                 config_path="${CONFIG_PATH:-${SCHEDULED_RUSSELL_CONFIG_PATH}}"
                 gcs_prefix="${GCS_PREFIX:-${SCHEDULED_RUSSELL_GCS_PREFIX}}"
+                ;;
+              mega_cap_leader_rotation_dynamic_top20)
+                prices_path="${PRICES_PATH:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH}}"
+                universe_path="${UNIVERSE_PATH:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH}}"
+                config_path=""
+                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX}}"
                 ;;
               *)
                 echo "Unsupported scheduled profile: ${profile}" >&2
@@ -244,7 +253,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${PROFILE}" in
-              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive)
+              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"

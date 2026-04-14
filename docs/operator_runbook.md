@@ -46,7 +46,8 @@ python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py \
 
 The universe input must already be the dynamic top20 history, or a ranked
 Russell universe containing `mega_rank`, `source_weight`, `weight`,
-`source_market_value`, or `market_value`.
+`source_market_value`, or `market_value`. The scheduled GitHub Actions path uses
+`r1000_latest_holdings_snapshot.csv` from the monthly source-input refresh.
 
 Russell 1000 backtest:
 
@@ -85,6 +86,12 @@ Optional inputs:
 - `current_holdings` for hold-bonus preview
 - `portfolio_total_equity` for tech pullback dynamic position-count preview
 - `min_adv20_usd` for Russell / mega-cap testing overrides
+
+Scheduled monthly publish includes `tech_communication_pullback_enhancement`,
+`russell_1000_multi_factor_defensive`, and
+`mega_cap_leader_rotation_dynamic_top20`. The mega-cap scheduled path consumes
+`r1000_price_history.csv` plus `r1000_latest_holdings_snapshot.csv` from the
+source-input refresh workflow.
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
 
