@@ -4,7 +4,9 @@ from datetime import date
 
 import pandas as pd
 
+from us_equity_snapshot_pipelines.contracts import MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE
 from us_equity_snapshot_pipelines.monthly_publish_window import (
+    MONTHLY_SNAPSHOT_PROFILES,
     evaluate_monthly_publish_decision,
     resolve_month_end_trading_day,
 )
@@ -42,3 +44,7 @@ def test_uses_nyse_holiday_fallback_for_good_friday_month_end() -> None:
 
     assert month_end_trading_day == date(2024, 3, 28)
     assert calendar_source in {"nyse_holiday_fallback", "pandas_market_calendars:NYSE"}
+
+
+def test_mega_cap_profile_is_monthly_snapshot_profile() -> None:
+    assert MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE in MONTHLY_SNAPSHOT_PROFILES
