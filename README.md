@@ -98,3 +98,64 @@ python scripts/backtest_russell_1000_multi_factor_defensive.py \
   --start 2019-01-01 \
   --output-dir data/output/russell_1000_multi_factor_defensive_backtest
 ```
+
+## Research-only backtests
+
+`mega_cap_leader_rotation` is a research candidate documented in
+`../UsEquityStrategies/docs/research/mega_cap_leader_rotation.md`. It is not a
+published snapshot profile and is not wired into broker runtimes.
+
+Run the first-pass mega-cap leader rotation backtest with local input files:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation.py \
+  --prices /path/to/mega_cap_price_history.csv \
+  --universe /path/to/mega_cap_universe.csv \
+  --pool expanded \
+  --start 2016-01-01 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_backtest
+```
+
+Or let the research CLI download the static pool through yfinance:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation.py \
+  --download \
+  --pool expanded \
+  --price-start 2015-01-01 \
+  --start 2016-01-01 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_backtest
+```
+
+The command writes `summary.csv`, `portfolio_returns.csv`,
+`weights_history.csv`, `turnover_history.csv`, `candidate_scores.csv`,
+`trades.csv`, `exposure_history.csv`, and `reference_returns.csv`.
+
+Run the default robustness matrix across `mag7` / `expanded`, top 3 / 4 / 5,
+single-name caps 25% / 30% / 35%, and defense on / off:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation_robustness.py \
+  --prices data/output/mega_cap_leader_rotation_backtest/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --output-dir data/output/mega_cap_leader_rotation_robustness
+```
+
+Or download the union research pool and run the matrix in one step:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation_robustness.py \
+  --download \
+  --price-start 2015-01-01 \
+  --start 2016-01-01 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_robustness
+```
+
+The robustness command writes `robustness_summary.csv` sorted by Sharpe, CAGR,
+drawdown, and turnover, plus `robustness_summary_by_run.csv` in raw run order.

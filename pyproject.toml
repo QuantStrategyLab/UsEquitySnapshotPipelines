@@ -20,6 +20,8 @@ test = ["pytest>=8"]
 [project.scripts]
 useq-build-tech-communication-pullback-snapshot = "us_equity_snapshot_pipelines.tech_communication_pullback:main"
 useq-build-russell-1000-snapshot = "us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive:main"
+useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
+useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 
