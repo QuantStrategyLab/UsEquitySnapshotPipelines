@@ -230,6 +230,55 @@ jobs:
 
           artifact_dir="${ARTIFACT_DIR_INPUT:-data/output/${PROFILE}}"
           mkdir -p "${artifact_dir}"
+          {
+            echo "artifact_dir=${artifact_dir}"
+            echo "artifact_name=us-equity-snapshot-${PROFILE}-${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+          should_publish="true"
+          publish_reason="not_a_scheduled_monthly_profile"
+          snapshot_as_of=""
+          month_end_trading_day=""
+          calendar_source=""
+
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            case "${PROFILE}" in
+              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive)
+                monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
+                monthly_args=(
+                  --prices "${PRICES_PATH}"
+                  --env-output "${monthly_publish_env}"
+                )
+                if [ -n "${AS_OF_DATE:-}" ]; then
+                  monthly_args+=(--as-of "${AS_OF_DATE}")
+                fi
+                python scripts/check_monthly_snapshot_publish_window.py "${monthly_args[@]}"
+                # shellcheck disable=SC1090
+                source "${monthly_publish_env}"
+                ;;
+            esac
+          fi
+
+          {
+            echo "should_publish=${should_publish}"
+            echo "publish_reason=${publish_reason}"
+            echo "snapshot_as_of=${snapshot_as_of}"
+            echo "month_end_trading_day=${month_end_trading_day}"
+            echo "calendar_source=${calendar_source}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${should_publish}" != "true" ]; then
+            cat > "${artifact_dir}/SKIPPED_MONTHLY_SNAPSHOT_PUBLISH.txt" <<EOF
+          profile=${PROFILE}
+          reason=${publish_reason}
+          snapshot_as_of=${snapshot_as_of}
+          month_end_trading_day=${month_end_trading_day}
+          calendar_source=${calendar_source}
+          EOF
+            echo "Skipping monthly snapshot publish: ${publish_reason}; snapshot_as_of=${snapshot_as_of}; month_end_trading_day=${month_end_trading_day}"
+            exit 0
+          fi
+
           common_args=(
             --prices "${PRICES_PATH}"
             --universe "${UNIVERSE_PATH}"
@@ -264,12 +313,8 @@ jobs:
               ;;
           esac
 
-          {
-            echo "artifact_dir=${artifact_dir}"
-            echo "artifact_name=us-equity-snapshot-${PROFILE}-${GITHUB_RUN_ID}"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Publish or print GCS plan
+        if: steps.build.outputs.should_publish != 'false'
         run: |
           set -euo pipefail
           if [ -z "${GCS_PREFIX:-}" ]; then
@@ -305,6 +350,11 @@ jobs:
             echo "- use_sample_data: \`${USE_SAMPLE_DATA}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
+            echo "- should_publish: \`${{ steps.build.outputs.should_publish }}\`"
+            echo "- publish_reason: \`${{ steps.build.outputs.publish_reason }}\`"
+            echo "- snapshot_as_of: \`${{ steps.build.outputs.snapshot_as_of }}\`"
+            echo "- month_end_trading_day: \`${{ steps.build.outputs.month_end_trading_day }}\`"
+            echo "- calendar_source: \`${{ steps.build.outputs.calendar_source }}\`"
             echo
             echo "Generated files:"
             find "${{ steps.build.outputs.artifact_dir }}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'
