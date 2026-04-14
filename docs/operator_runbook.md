@@ -73,9 +73,10 @@ The workflow always uploads the generated files as a GitHub Actions artifact.
 
 ## Scheduled publish
 
-`Update Source Input Data` runs automatically on weekdays at `22:30 UTC`
-(`06:30` the next day in Asia/Shanghai). It refreshes the shared Russell 1000
-source inputs used by snapshot profiles:
+`Update Source Input Data` runs automatically once per month at `00:15 UTC` on
+the 1st day of the month (`08:15` the same day in Asia/Shanghai). This is after
+the regular US close for the prior US trading date and refreshes the shared
+Russell 1000 source inputs used by monthly snapshot profiles:
 
 ```text
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
@@ -88,16 +89,22 @@ then publishes the merged input files. It also forces `QQQ`, `SPY`, and `BOXX`
 into the price input so both QQQ-benchmark and SPY-benchmark snapshot profiles
 have the reference symbols they need.
 
-`Publish Snapshot Artifacts` then runs automatically on weekdays at `23:30 UTC`
-(`07:30` the next day in Asia/Shanghai), leaving time for the source-input
-refresh to finish first. Scheduled publish builds both migrated snapshot profiles
-from the same refreshed source inputs:
+`Publish Snapshot Artifacts` then runs automatically once per month at
+`00:45 UTC` on the 1st day of the month (`08:45` the same day in
+Asia/Shanghai), leaving time for the source-input refresh to finish first.
+Scheduled publish builds both migrated snapshot profiles from the same refreshed
+source inputs:
 
 ```text
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
 execute_publish=true
 ```
+
+The scheduled publish path is intentionally monthly. It also keeps a defensive
+month-end trading-day guard: if the resolved `snapshot_as_of` is not the last
+NYSE trading day of that snapshot month, the workflow writes a skip artifact and
+does not publish to GCS.
 
 Default scheduled output prefixes:
 

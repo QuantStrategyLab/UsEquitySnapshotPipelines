@@ -2,8 +2,8 @@ name: Update Source Input Data
 
 on:
   schedule:
-    # Run after the regular US close; snapshot publish runs later and consumes these inputs.
-    - cron: '30 22 * * 1-5'
+    # Monthly refresh after the regular US close; snapshot publish runs later and consumes these inputs.
+    - cron: '15 0 1 * *'
   workflow_dispatch:
     inputs:
       execute_publish:

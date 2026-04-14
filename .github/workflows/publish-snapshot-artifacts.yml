@@ -2,8 +2,8 @@ name: Publish Snapshot Artifacts
 
 on:
   schedule:
-    # 23:30 UTC leaves time for the source-input refresh after the regular US close.
-    - cron: '30 23 * * 1-5'
+    # Monthly publish after the source-input refresh and the regular US close.
+    - cron: '45 0 1 * *'
   workflow_dispatch:
     inputs:
       profile:

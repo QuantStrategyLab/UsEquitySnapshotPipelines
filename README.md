@@ -25,10 +25,10 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 
 ## Current migrated profile
 
-| Profile | Status | Notes |
-| --- | --- | --- |
-| `tech_communication_pullback_enhancement` | migrated upstream pipeline | snapshot builder, ranking, release summary, publish flow live here |
-| `russell_1000_multi_factor_defensive` | migrated upstream pipeline | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
+| Profile | Status | Scheduled cadence | Notes |
+| --- | --- | --- | --- |
+| `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
+| `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
 
 ## Local smoke command
 
@@ -55,7 +55,7 @@ The command writes:
 - `release_status_summary.json`
 
 See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
-The scheduled publish workflow now builds both migrated snapshot profiles from the shared Russell 1000 input refresh.
+The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, then they build and publish both migrated snapshot profiles from those refreshed inputs.
 
 Prepare / refresh shared Russell 1000 source inputs:
 
