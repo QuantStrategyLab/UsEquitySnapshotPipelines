@@ -77,6 +77,7 @@ The source-input refresh writes:
 - `r1000_universe_history.csv`
 - `r1000_symbol_aliases.csv`
 - `r1000_universe_snapshot_metadata.csv`
+- `r1000_latest_holdings_snapshot.csv` for scheduled mega-cap dynamic top20 ranking
 
 Build a Russell 1000 snapshot:
 

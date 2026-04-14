@@ -84,7 +84,7 @@ Optional inputs:
 - `gcs_prefix`
 - `config_path` for `tech_communication_pullback_enhancement`
 - `current_holdings` for hold-bonus preview
-- `portfolio_total_equity` for tech pullback dynamic position-count preview
+- `portfolio_total_equity` for dynamic position-count preview
 - `min_adv20_usd` for Russell / mega-cap testing overrides
 
 Scheduled monthly publish includes `tech_communication_pullback_enhancement`,
@@ -105,6 +105,9 @@ Russell 1000 source inputs used by monthly snapshot profiles:
 ```text
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_symbol_aliases.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_snapshot_metadata.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 ```
 
 The refresh workflow downloads the existing price history first, refreshes the
@@ -116,12 +119,14 @@ have the reference symbols they need.
 `Publish Snapshot Artifacts` then runs automatically once per month at
 `00:45 UTC` on the 1st day of the month (`08:45` the same day in
 Asia/Shanghai), leaving time for the source-input refresh to finish first.
-Scheduled publish builds both migrated snapshot profiles from the same refreshed
+Scheduled publish builds all three scheduled snapshot profiles from the refreshed
 source inputs:
 
 ```text
+profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_dynamic_top20
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
-universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+tech_and_russell_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+mega_dynamic_top20_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
 ```
 
