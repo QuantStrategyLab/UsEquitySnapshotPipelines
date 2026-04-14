@@ -6,6 +6,7 @@ from us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest import (
     BACKTEST_SUMMARY_COLUMNS,
     _normalize_price_history,
     _precompute_symbol_feature_history,
+    build_dynamic_mega_universe_history,
     build_feature_snapshot_for_backtest,
     build_static_universe,
     build_target_weights,
@@ -86,6 +87,43 @@ def test_build_target_weights_lowers_top_n_for_small_accounts() -> None:
     assert metadata["requested_top_n"] == 4
     assert metadata["effective_top_n"] == 2
     assert len(metadata["selected_symbols"]) == 2
+
+
+def test_build_dynamic_mega_universe_history_ranks_each_snapshot() -> None:
+    snapshots = [
+        (
+            pd.Timestamp("2024-01-31"),
+            pd.DataFrame(
+                [
+                    {"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0},
+                    {"symbol": "GOOG", "sector": "Communication Services", "weight": 4.8},
+                    {"symbol": "GOOGL", "sector": "Communication Services", "weight": 4.7},
+                    {"symbol": "MSFT", "sector": "Information Technology", "weight": 4.0},
+                    {"symbol": "XOM", "sector": "Energy", "weight": 1.0},
+                ]
+            ),
+        ),
+        (
+            pd.Timestamp("2024-02-29"),
+            pd.DataFrame(
+                [
+                    {"symbol": "AAPL", "sector": "Information Technology", "weight": 4.0},
+                    {"symbol": "MSFT", "sector": "Information Technology", "weight": 5.0},
+                    {"symbol": "XOM", "sector": "Energy", "weight": 2.0},
+                ]
+            ),
+        ),
+    ]
+
+    history = build_dynamic_mega_universe_history(snapshots, universe_size=3)
+
+    first = history.loc[history["start_date"] == pd.Timestamp("2024-01-31")]
+    second = history.loc[history["start_date"] == pd.Timestamp("2024-02-29")]
+    assert first["symbol"].tolist() == ["AAPL", "GOOG", "MSFT"]
+    assert second["symbol"].tolist() == ["MSFT", "AAPL", "XOM"]
+    assert "GOOGL" not in set(first["symbol"])
+    assert first["end_date"].iloc[0] == pd.Timestamp("2024-02-28")
+    assert pd.isna(second["end_date"].iloc[0])
 
 
 def test_cli_writes_backtest_artifacts(tmp_path) -> None:

@@ -30,12 +30,19 @@ ISHARES_SNAPSHOT_OPTIONAL_COLUMN_SOURCES = (
     ("ISIN", "isin"),
     ("CUSIP", "cusip"),
     ("SEDOL", "sedol"),
+    ("Market Value", "market_value"),
+    ("Weight (%)", "weight"),
+    ("Weight", "weight"),
+    ("Notional Value", "notional_value"),
+    ("Shares", "shares"),
+    ("Price", "price"),
     ("Exchange", "exchange"),
     ("Location", "country"),
     ("Country", "country"),
     ("Currency", "currency"),
     ("Market Currency", "market_currency"),
 )
+ISHARES_SNAPSHOT_NUMERIC_COLUMNS = ("market_value", "weight", "notional_value", "shares", "price")
 WAYBACK_CDX_API_URL = "https://web.archive.org/cdx/search/cdx"
 DEFAULT_HTTP_USER_AGENT = "Mozilla/5.0 (compatible; UsEquitySnapshotPipelines/0.1.0)"
 
@@ -161,6 +168,15 @@ def _fetch_text(url: str, *, timeout: int = 60, user_agent: str = DEFAULT_HTTP_U
         return response.read().decode(encoding, errors="replace")
 
 
+def _normalize_ishares_numeric_value(value) -> float:
+    raw_value = value.get("raw") if isinstance(value, dict) else value
+    if pd.isna(raw_value):
+        return float("nan")
+    text = str(raw_value).strip().strip('"').replace("$", "").replace(",", "").replace("%", "")
+    numeric = pd.to_numeric(text, errors="coerce")
+    return float(numeric) if pd.notna(numeric) else float("nan")
+
+
 def _finalize_ishares_holdings_snapshot_frame(frame) -> pd.DataFrame:
     normalized = pd.DataFrame(frame).copy()
     if "Ticker" not in normalized.columns or "Sector" not in normalized.columns:
@@ -196,7 +212,10 @@ def _finalize_ishares_holdings_snapshot_frame(frame) -> pd.DataFrame:
 
     snapshot = normalized.rename(columns=rename_map).loc[:, selected_columns].copy()
     for column in selected_columns:
-        snapshot[column] = snapshot[column].astype(str).str.strip().replace({"": pd.NA, "-": pd.NA})
+        if column in ISHARES_SNAPSHOT_NUMERIC_COLUMNS:
+            snapshot[column] = snapshot[column].map(_normalize_ishares_numeric_value)
+        else:
+            snapshot[column] = snapshot[column].astype(str).str.strip().replace({"": pd.NA, "-": pd.NA})
     snapshot["symbol"] = snapshot["symbol"].astype(str).str.upper()
     snapshot["sector"] = snapshot["sector"].fillna("unknown")
     snapshot["name"] = snapshot["name"].fillna("")
@@ -248,9 +267,14 @@ def parse_ishares_holdings_json_snapshot(json_text: str, *, as_of_date) -> tuple
                 "Name": row[1] if len(row) > 1 else "",
                 "Sector": row[2] if len(row) > 2 else "",
                 "Asset Class": row[3] if len(row) > 3 else "",
+                "Market Value": row[4] if len(row) > 4 else "",
+                "Weight (%)": row[5] if len(row) > 5 else "",
+                "Notional Value": row[6] if len(row) > 6 else "",
+                "Shares": row[7] if len(row) > 7 else "",
                 "CUSIP": row[8] if len(row) > 8 else "",
                 "ISIN": row[9] if len(row) > 9 else "",
                 "SEDOL": row[10] if len(row) > 10 else "",
+                "Price": row[11] if len(row) > 11 else "",
                 "Location": row[12] if len(row) > 12 else "",
                 "Exchange": row[13] if len(row) > 13 else "",
                 "Currency": row[14] if len(row) > 14 else "",
@@ -267,9 +291,14 @@ def parse_ishares_holdings_json_snapshot(json_text: str, *, as_of_date) -> tuple
                 "Name",
                 "Sector",
                 "Asset Class",
+                "Market Value",
+                "Weight (%)",
+                "Notional Value",
+                "Shares",
                 "CUSIP",
                 "ISIN",
                 "SEDOL",
+                "Price",
                 "Location",
                 "Exchange",
                 "Currency",

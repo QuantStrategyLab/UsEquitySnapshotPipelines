@@ -9,6 +9,10 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from .russell_1000_history import (
+    build_symbol_alias_candidates,
+    download_ishares_historical_universe_snapshots,
+)
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
 from .yfinance_prices import download_price_history
 
@@ -33,6 +37,18 @@ EXPANDED_POOL = (
     "BRK.B",
     "LLY",
 )
+DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE = 20
+DYNAMIC_MEGA_ISSUER_ALIASES = {
+    "GOOG": "GOOGL",
+    "GOOGL": "GOOGL",
+    "BRK.A": "BRK.B",
+    "BRK-B": "BRK.B",
+    "BRKB": "BRK.B",
+    "FOX": "FOXA",
+    "FOXA": "FOXA",
+    "NWS": "NWSA",
+    "NWSA": "NWSA",
+}
 DEFAULT_SECTORS = {
     "AAPL": "Information Technology",
     "MSFT": "Information Technology",
@@ -86,6 +102,19 @@ class MegaCapResearchDataResult:
     symbols: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class MegaCapDynamicUniverseResearchDataResult:
+    output_dir: Path
+    prices_path: Path
+    universe_path: Path
+    metadata_path: Path
+    snapshot_dir: Path
+    price_rows: int
+    universe_rows: int
+    snapshot_count: int
+    symbols: tuple[str, ...]
+
+
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
     if raw_symbols is None:
         return ()
@@ -114,6 +143,84 @@ def build_static_universe(pool: str = "expanded", *, symbols: Sequence[str] | st
         for symbol in pool_symbols
     ]
     return pd.DataFrame(rows, columns=["symbol", "sector"])
+
+
+def _resolve_dynamic_universe_rank_metric(frame: pd.DataFrame, preferred_column: str) -> tuple[str, pd.Series]:
+    preferred = str(preferred_column or "").strip()
+    fallback_columns = tuple(dict.fromkeys([preferred, "weight", "market_value"]))
+    for column in fallback_columns:
+        if not column or column not in frame.columns:
+            continue
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        if numeric.notna().any():
+            return column, numeric
+    available = ", ".join(sorted(frame.columns))
+    raise ValueError(
+        "dynamic mega universe snapshots must include a usable ranking column "
+        f"({preferred_column!r}, weight, or market_value); available columns: {available}"
+    )
+
+
+def _dynamic_mega_issuer_key(symbol: str) -> str:
+    symbol_text = _normalize_symbol(symbol)
+    return DYNAMIC_MEGA_ISSUER_ALIASES.get(symbol_text, symbol_text)
+
+
+def build_dynamic_mega_universe_history(
+    snapshot_tables: list[tuple[pd.Timestamp, pd.DataFrame]],
+    *,
+    universe_size: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    ranking_column: str = "weight",
+) -> pd.DataFrame:
+    if not snapshot_tables:
+        raise ValueError("snapshot_tables must not be empty")
+    if universe_size <= 0:
+        raise ValueError("universe_size must be positive")
+
+    normalized: list[tuple[pd.Timestamp, pd.DataFrame]] = []
+    for snapshot_date, snapshot in snapshot_tables:
+        frame = pd.DataFrame(snapshot).copy()
+        required = {"symbol", "sector"}
+        missing = required - set(frame.columns)
+        if missing:
+            missing_text = ", ".join(sorted(missing))
+            raise ValueError(f"dynamic universe snapshot missing required columns: {missing_text}")
+        frame["symbol"] = frame["symbol"].map(_normalize_symbol)
+        frame["sector"] = frame["sector"].fillna("unknown").astype(str).str.strip().replace("", "unknown")
+        metric_column, metric = _resolve_dynamic_universe_rank_metric(frame, ranking_column)
+        frame["_rank_metric"] = metric
+        frame["_issuer_key"] = frame["symbol"].map(_dynamic_mega_issuer_key)
+        frame = frame.loc[frame["symbol"].ne("") & frame["_rank_metric"].notna()].copy()
+        frame = frame.sort_values(["_rank_metric", "symbol"], ascending=[False, True])
+        frame = frame.drop_duplicates(subset=["_issuer_key"], keep="first").head(int(universe_size))
+        frame.insert(0, "mega_rank", range(1, len(frame) + 1))
+        frame["ranking_column"] = metric_column
+        normalized.append((pd.Timestamp(snapshot_date).normalize(), frame))
+
+    normalized.sort(key=lambda item: item[0])
+    rows: list[dict[str, object]] = []
+    for index, (snapshot_date, frame) in enumerate(normalized):
+        next_snapshot_date = normalized[index + 1][0] if index + 1 < len(normalized) else None
+        end_date = next_snapshot_date - pd.Timedelta(days=1) if next_snapshot_date is not None else pd.NaT
+        for row in frame.itertuples(index=False):
+            source_weight = getattr(row, "weight", float("nan"))
+            source_market_value = getattr(row, "market_value", float("nan"))
+            rows.append(
+                {
+                    "symbol": row.symbol,
+                    "sector": row.sector,
+                    "start_date": snapshot_date,
+                    "end_date": end_date,
+                    "mega_rank": int(row.mega_rank),
+                    "source_weight": float(source_weight) if pd.notna(source_weight) else float("nan"),
+                    "source_market_value": (
+                        float(source_market_value) if pd.notna(source_market_value) else float("nan")
+                    ),
+                    "ranking_column": row.ranking_column,
+                }
+            )
+
+    return pd.DataFrame(rows).sort_values(["start_date", "mega_rank", "symbol"]).reset_index(drop=True)
 
 
 def prepare_research_input_data(
@@ -154,6 +261,81 @@ def prepare_research_input_data(
         prices_path=prices_path,
         universe_path=universe_path,
         price_rows=int(len(prices)),
+        symbols=download_symbols,
+    )
+
+
+def prepare_dynamic_mega_universe_research_input_data(
+    *,
+    output_dir: str | Path,
+    universe_start: str = "2017-09-01",
+    universe_end: str | None = None,
+    price_start: str = "2015-01-01",
+    price_end: str | None = None,
+    universe_size: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    ranking_column: str = "weight",
+    max_lookback_days: int = 7,
+    benchmark_symbol: str = BENCHMARK_SYMBOL,
+    broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
+    safe_haven: str = SAFE_HAVEN,
+    chunk_size: int = 100,
+) -> MegaCapDynamicUniverseResearchDataResult:
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = root / "universe_snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
+        start_date=universe_start,
+        end_date=universe_end,
+        max_lookback_days=max_lookback_days,
+    )
+    for as_of_date, snapshot in snapshot_tables:
+        write_table(snapshot, snapshot_dir / f"iwb_{pd.Timestamp(as_of_date):%Y-%m-%d}.csv")
+    metadata_path = root / f"{PROFILE}_dynamic_iwb_snapshot_metadata.csv"
+    write_table(metadata, metadata_path)
+
+    universe = build_dynamic_mega_universe_history(
+        snapshot_tables,
+        universe_size=int(universe_size),
+        ranking_column=ranking_column,
+    )
+    universe_path = root / f"{PROFILE}_dynamic_top{int(universe_size)}_universe_history.csv"
+    write_table(universe, universe_path)
+
+    benchmark_symbol = _normalize_symbol(benchmark_symbol)
+    broad_benchmark_symbol = _normalize_symbol(broad_benchmark_symbol)
+    safe_haven = _normalize_symbol(safe_haven)
+    download_symbols = tuple(
+        dict.fromkeys(
+            [
+                *universe["symbol"].astype(str).tolist(),
+                benchmark_symbol,
+                broad_benchmark_symbol,
+                safe_haven,
+            ]
+        )
+    )
+    symbol_aliases = build_symbol_alias_candidates(snapshot_tables)
+    prices = download_price_history(
+        list(download_symbols),
+        start=price_start,
+        end=price_end,
+        chunk_size=int(chunk_size),
+        symbol_aliases=symbol_aliases,
+    )
+    prices_path = root / f"{PROFILE}_dynamic_top{int(universe_size)}_price_history.csv"
+    write_table(prices, prices_path)
+
+    return MegaCapDynamicUniverseResearchDataResult(
+        output_dir=root,
+        prices_path=prices_path,
+        universe_path=universe_path,
+        metadata_path=metadata_path,
+        snapshot_dir=snapshot_dir,
+        price_rows=int(len(prices)),
+        universe_rows=int(len(universe)),
+        snapshot_count=int(len(snapshot_tables)),
         symbols=download_symbols,
     )
 
@@ -933,6 +1115,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbols", help="Comma-separated custom pool; overrides --pool")
     parser.add_argument("--price-start", default="2015-01-01", help="Download start date used with --download")
     parser.add_argument("--price-end", help="Download end date used with --download")
+    parser.add_argument(
+        "--dynamic-universe",
+        action="store_true",
+        help="With --download, build a historical top-weight Russell 1000 mega-cap universe instead of a static pool",
+    )
+    parser.add_argument("--universe-start", default="2017-09-01", help="First iShares snapshot date for dynamic universe")
+    parser.add_argument("--universe-end", help="Last iShares snapshot date for dynamic universe")
+    parser.add_argument("--mega-universe-size", type=int, default=DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE)
+    parser.add_argument("--mega-universe-rank-column", default="weight", choices=["weight", "market_value"])
+    parser.add_argument("--max-lookback-days", type=int, default=7)
+    parser.add_argument("--chunk-size", type=int, default=100)
     parser.add_argument("--start", dest="start_date", default="2016-01-01", help="Backtest start date")
     parser.add_argument("--end", dest="end_date", help="Backtest end date")
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
@@ -973,29 +1166,58 @@ def main(argv: list[str] | None = None) -> int:
     if args.download:
         if output_dir is None:
             raise EnvironmentError("--output-dir is required when --download is used")
-        prepared = prepare_research_input_data(
-            output_dir=output_dir / "input",
-            pool=args.pool,
-            symbols=args.symbols,
-            price_start=args.price_start,
-            price_end=args.price_end,
-            benchmark_symbol=args.benchmark_symbol,
-            broad_benchmark_symbol=args.broad_benchmark_symbol,
-            safe_haven=args.safe_haven,
-        )
-        prices = read_table(prepared.prices_path)
-        universe = read_table(args.universe) if args.universe else read_table(prepared.universe_path)
-        print(f"downloaded {prepared.price_rows} price rows -> {prepared.prices_path}")
-        print(f"wrote universe -> {prepared.universe_path}")
+        if args.dynamic_universe:
+            prepared = prepare_dynamic_mega_universe_research_input_data(
+                output_dir=output_dir / "input",
+                universe_start=args.universe_start,
+                universe_end=args.universe_end,
+                price_start=args.price_start,
+                price_end=args.price_end,
+                universe_size=args.mega_universe_size,
+                ranking_column=args.mega_universe_rank_column,
+                max_lookback_days=args.max_lookback_days,
+                benchmark_symbol=args.benchmark_symbol,
+                broad_benchmark_symbol=args.broad_benchmark_symbol,
+                safe_haven=args.safe_haven,
+                chunk_size=args.chunk_size,
+            )
+            prices = read_table(prepared.prices_path)
+            universe = read_table(args.universe) if args.universe else read_table(prepared.universe_path)
+            print(
+                f"downloaded {prepared.snapshot_count} dynamic universe snapshots "
+                f"({prepared.universe_rows} rows) -> {prepared.universe_path}"
+            )
+            print(f"wrote snapshot metadata -> {prepared.metadata_path}")
+            print(f"downloaded {prepared.price_rows} price rows -> {prepared.prices_path}")
+        else:
+            prepared = prepare_research_input_data(
+                output_dir=output_dir / "input",
+                pool=args.pool,
+                symbols=args.symbols,
+                price_start=args.price_start,
+                price_end=args.price_end,
+                benchmark_symbol=args.benchmark_symbol,
+                broad_benchmark_symbol=args.broad_benchmark_symbol,
+                safe_haven=args.safe_haven,
+            )
+            prices = read_table(prepared.prices_path)
+            universe = read_table(args.universe) if args.universe else read_table(prepared.universe_path)
+            print(f"downloaded {prepared.price_rows} price rows -> {prepared.prices_path}")
+            print(f"wrote universe -> {prepared.universe_path}")
     else:
         prices = read_table(args.prices)
 
+    pool_name = (
+        f"dynamic_top{int(args.mega_universe_size)}"
+        if args.dynamic_universe
+        else args.pool if not args.symbols else "custom"
+    )
     result = run_backtest(
         prices,
         universe,
         start_date=args.start_date,
         end_date=args.end_date,
-        pool_name=args.pool if not args.symbols else "custom",
+        pool_name=pool_name,
         benchmark_symbol=args.benchmark_symbol,
         broad_benchmark_symbol=args.broad_benchmark_symbol,
         safe_haven=args.safe_haven,

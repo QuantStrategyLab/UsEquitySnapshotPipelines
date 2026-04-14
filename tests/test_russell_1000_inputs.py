@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
+from us_equity_snapshot_pipelines.russell_1000_history import parse_ishares_holdings_json_snapshot
 from us_equity_snapshot_pipelines.russell_1000_inputs import (
     collect_download_symbols,
     incremental_start_date,
@@ -78,3 +81,39 @@ def test_normalize_price_history_rejects_missing_columns() -> None:
         assert "as_of" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_ishares_json_parser_preserves_rank_metrics() -> None:
+    payload = {
+        "aaData": [
+            [
+                "AAPL",
+                "APPLE INC",
+                "Information Technology",
+                "Equity",
+                {"display": "$100.00", "raw": 100.0},
+                {"display": "5.00", "raw": 5.0},
+                {"display": "$100.00", "raw": 100.0},
+                {"display": "10.00", "raw": 10.0},
+                "037833100",
+                "US0378331005",
+                "2046251",
+                {"display": "10.00", "raw": 10.0},
+                "United States",
+                "NASDAQ",
+                "USD",
+                "1.00",
+                "-",
+            ]
+        ]
+    }
+
+    as_of, snapshot = parse_ishares_holdings_json_snapshot(json.dumps(payload), as_of_date="2024-01-31")
+
+    assert as_of == pd.Timestamp("2024-01-31")
+    row = snapshot.iloc[0]
+    assert row["symbol"] == "AAPL"
+    assert row["weight"] == 5.0
+    assert row["market_value"] == 100.0
+    assert row["shares"] == 10.0
+    assert row["price"] == 10.0

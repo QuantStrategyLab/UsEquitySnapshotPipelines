@@ -135,6 +135,28 @@ The command writes `summary.csv`, `portfolio_returns.csv`,
 `weights_history.csv`, `turnover_history.csv`, `candidate_scores.csv`,
 `trades.csv`, `exposure_history.csv`, and `reference_returns.csv`.
 
+To reduce today's-winners look-ahead bias, run the historical dynamic mega-cap
+variant. It downloads monthly iShares Russell 1000 holdings snapshots and uses
+the top fund-weight names available at each rebalance. The documented start
+uses the earliest monthly iShares JSON snapshot range that resolved reliably in
+research. Known duplicate share classes such as `GOOG` / `GOOGL` are collapsed
+to one issuer before taking the top-N universe:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation.py \
+  --download \
+  --dynamic-universe \
+  --universe-start 2017-09-01 \
+  --price-start 2015-01-01 \
+  --start 2017-10-01 \
+  --mega-universe-size 20 \
+  --top-n 4 \
+  --single-name-cap 0.25 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest
+```
+
 For small paper/live accounts, add `--portfolio-total-equity` and
 `--min-position-value-usd` to let the research backtest reduce the effective
 top-N when the configured account size cannot support the requested number of
