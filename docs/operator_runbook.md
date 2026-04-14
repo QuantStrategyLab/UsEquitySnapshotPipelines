@@ -101,10 +101,12 @@ universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/u
 execute_publish=true
 ```
 
-The scheduled publish path is intentionally monthly. It also keeps a defensive
-month-end trading-day guard: if the resolved `snapshot_as_of` is not the last
-NYSE trading day of that snapshot month, the workflow writes a skip artifact and
-does not publish to GCS.
+The scheduled publish path is intentionally monthly. This describes artifact
+publishing cadence only; strategy-level cadence remains documented in
+`UsEquityStrategies`. The publish workflow also keeps a defensive month-end
+trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading
+day of that snapshot month, the workflow writes a skip artifact and does not
+publish to GCS.
 
 Default scheduled output prefixes:
 

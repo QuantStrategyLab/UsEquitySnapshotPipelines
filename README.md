@@ -25,10 +25,12 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 
 ## Current migrated profile
 
-| Profile | Status | Scheduled cadence | Notes |
+| Profile | Status | Scheduled artifact cadence | Notes |
 | --- | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
 | `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
+
+This table describes artifact publishing cadence only. Strategy-level cadence remains documented in `UsEquityStrategies`; broker execution schedules should follow that strategy-layer source.
 
 ## Local smoke command
 
