@@ -4,7 +4,11 @@ import pandas as pd
 
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest import (
     BACKTEST_SUMMARY_COLUMNS,
+    _normalize_price_history,
+    _precompute_symbol_feature_history,
+    build_feature_snapshot_for_backtest,
     build_static_universe,
+    build_target_weights,
     main,
     run_backtest,
 )
@@ -59,6 +63,29 @@ def test_run_backtest_builds_research_outputs() -> None:
     assert not result["trades"].empty
     assert {"QQQ", "SPY", "equal_weight_mag7"} <= set(result["reference_returns"].columns)
     assert result["exposure_history"]["selected_symbols"].astype(str).str.contains("NVDA").any()
+
+
+def test_build_target_weights_lowers_top_n_for_small_accounts() -> None:
+    prices = _normalize_price_history(_sample_prices())
+    feature_history = _precompute_symbol_feature_history(prices)
+    snapshot = build_feature_snapshot_for_backtest(
+        prices["as_of"].max(),
+        build_static_universe("mag7"),
+        feature_history,
+        min_adv20_usd=1_000_000.0,
+    )
+
+    _weights, _ranked, metadata = build_target_weights(
+        snapshot,
+        top_n=4,
+        single_name_cap=0.50,
+        portfolio_total_equity=5_000.0,
+        min_position_value_usd=2_000.0,
+    )
+
+    assert metadata["requested_top_n"] == 4
+    assert metadata["effective_top_n"] == 2
+    assert len(metadata["selected_symbols"]) == 2
 
 
 def test_cli_writes_backtest_artifacts(tmp_path) -> None:

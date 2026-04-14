@@ -39,6 +39,8 @@ def test_run_robustness_matrix_ranks_parameter_grid() -> None:
         end_date="2024-12-31",
         min_adv20_usd=1_000_000.0,
         turnover_cost_bps=0.0,
+        portfolio_total_equity=5_000.0,
+        min_position_value_usd=2_000.0,
     )
     ranked = rank_robustness_summary(summary)
 
@@ -48,6 +50,8 @@ def test_run_robustness_matrix_ranks_parameter_grid() -> None:
     assert {"on", "off"} == set(ranked["Defense Mode"])
     assert {3, 4} == set(ranked["Top N"])
     assert "Run" in ranked.columns
+    assert set(ranked["Portfolio Total Equity"]) == {5_000.0}
+    assert set(ranked["Min Position Value USD"]) == {2_000.0}
 
 
 def test_robustness_cli_writes_matrix_outputs(tmp_path) -> None:
@@ -77,6 +81,10 @@ def test_robustness_cli_writes_matrix_outputs(tmp_path) -> None:
             "1000000",
             "--turnover-cost-bps",
             "0",
+            "--portfolio-total-equity",
+            "5000",
+            "--min-position-value-usd",
+            "2000",
         ]
     )
 

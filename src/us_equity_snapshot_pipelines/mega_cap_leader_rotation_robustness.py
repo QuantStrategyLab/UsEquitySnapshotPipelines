@@ -39,6 +39,8 @@ ROBUSTNESS_SUMMARY_COLUMNS = (
     "Top N",
     "Single Name Cap",
     "Hold Buffer",
+    "Portfolio Total Equity",
+    "Min Position Value USD",
     "Turnover Cost Bps",
     "CAGR",
     "Max Drawdown",
@@ -250,6 +252,8 @@ def _run_context_backtest(
     hard_defense_exposure: float,
     soft_breadth_threshold: float,
     hard_breadth_threshold: float,
+    portfolio_total_equity: float | None,
+    min_position_value_usd: float,
     turnover_cost_bps: float,
 ) -> dict[str, float | str]:
     weights_history = pd.DataFrame(0.0, index=context.index, columns=context.symbols)
@@ -280,6 +284,8 @@ def _run_context_backtest(
                 hard_defense_exposure=hard_defense_exposure,
                 soft_breadth_threshold=soft_breadth_threshold,
                 hard_breadth_threshold=hard_breadth_threshold,
+                portfolio_total_equity=portfolio_total_equity,
+                min_position_value_usd=min_position_value_usd,
             )
             turnover = _compute_turnover(current_weights, target_weights)
             turnover_history.at[next_date] = turnover
@@ -336,6 +342,8 @@ def run_robustness_matrix(
     min_adv20_usd: float = 20_000_000.0,
     min_history_days: int = 273,
     turnover_cost_bps: float = 5.0,
+    portfolio_total_equity: float | None = None,
+    min_position_value_usd: float = 0.0,
 ) -> pd.DataFrame:
     pool_values = parse_csv_strings(tuple(pools), default=DEFAULT_POOLS)
     top_n_candidates = tuple(int(value) for value in top_n_values)
@@ -387,6 +395,8 @@ def run_robustness_matrix(
                         hold_bonus=hold_bonus,
                         soft_breadth_threshold=soft_breadth_threshold,
                         hard_breadth_threshold=hard_breadth_threshold,
+                        portfolio_total_equity=portfolio_total_equity,
+                        min_position_value_usd=float(min_position_value_usd),
                         turnover_cost_bps=turnover_cost_bps,
                         **defense_config,
                     )
@@ -403,6 +413,8 @@ def run_robustness_matrix(
                             "Top N": int(top_n),
                             "Single Name Cap": float(single_name_cap),
                             "Hold Buffer": int(hold_buffer),
+                            "Portfolio Total Equity": portfolio_total_equity,
+                            "Min Position Value USD": float(min_position_value_usd),
                             "Turnover Cost Bps": float(turnover_cost_bps),
                         }
                     )
@@ -453,6 +465,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-adv20-usd", type=float, default=20_000_000.0)
     parser.add_argument("--min-history-days", type=int, default=273)
     parser.add_argument("--turnover-cost-bps", type=float, default=5.0)
+    parser.add_argument(
+        "--portfolio-total-equity",
+        type=float,
+        help="Optional account equity used to lower top-N when a minimum position size is required",
+    )
+    parser.add_argument(
+        "--min-position-value-usd",
+        type=float,
+        default=0.0,
+        help="Optional minimum target stock position size; disabled when <= 0",
+    )
     parser.add_argument("--print-top", type=int, default=10)
     return parser
 
@@ -512,6 +535,8 @@ def main(argv: list[str] | None = None) -> int:
         min_adv20_usd=args.min_adv20_usd,
         min_history_days=args.min_history_days,
         turnover_cost_bps=args.turnover_cost_bps,
+        portfolio_total_equity=args.portfolio_total_equity,
+        min_position_value_usd=args.min_position_value_usd,
     )
     ranked = rank_robustness_summary(summary)
 

@@ -135,6 +135,12 @@ The command writes `summary.csv`, `portfolio_returns.csv`,
 `weights_history.csv`, `turnover_history.csv`, `candidate_scores.csv`,
 `trades.csv`, `exposure_history.csv`, and `reference_returns.csv`.
 
+For small paper/live accounts, add `--portfolio-total-equity` and
+`--min-position-value-usd` to let the research backtest reduce the effective
+top-N when the configured account size cannot support the requested number of
+minimum-sized stock positions. The per-rebalance effective count is written to
+`exposure_history.csv`.
+
 Run the default robustness matrix across `mag7` / `expanded`, top 3 / 4 / 5,
 single-name caps 25% / 30% / 35%, and defense on / off:
 

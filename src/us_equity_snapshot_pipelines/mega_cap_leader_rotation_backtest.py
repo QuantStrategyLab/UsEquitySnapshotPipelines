@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -515,6 +516,28 @@ def _resolve_stock_exposure(
     return float(risk_on_exposure), "risk_on", breadth_ratio, benchmark_trend_positive
 
 
+def _resolve_effective_top_n(
+    *,
+    top_n: int,
+    stock_exposure: float,
+    portfolio_total_equity: float | None,
+    min_position_value_usd: float,
+) -> int:
+    requested_top_n = int(top_n)
+    if requested_top_n <= 0:
+        raise ValueError("top_n must be positive")
+    if stock_exposure <= 0:
+        return 0
+    if portfolio_total_equity is None or min_position_value_usd <= 0:
+        return requested_top_n
+
+    target_stock_value = float(portfolio_total_equity) * float(stock_exposure)
+    if target_stock_value <= 0:
+        return 0
+    count_by_value = max(1, int(math.floor(target_stock_value / float(min_position_value_usd))))
+    return max(1, min(requested_top_n, count_by_value))
+
+
 def build_target_weights(
     snapshot: pd.DataFrame,
     current_holdings: Iterable[str] | None = None,
@@ -531,6 +554,8 @@ def build_target_weights(
     hard_defense_exposure: float = 0.20,
     soft_breadth_threshold: float = 0.50,
     hard_breadth_threshold: float = 0.30,
+    portfolio_total_equity: float | None = None,
+    min_position_value_usd: float = 0.0,
 ) -> tuple[dict[str, float], pd.DataFrame, dict[str, object]]:
     if top_n <= 0:
         raise ValueError("top_n must be positive")
@@ -546,6 +571,12 @@ def build_target_weights(
         soft_defense_exposure=float(soft_defense_exposure),
         hard_defense_exposure=float(hard_defense_exposure),
     )
+    effective_top_n = _resolve_effective_top_n(
+        top_n=int(top_n),
+        stock_exposure=stock_exposure,
+        portfolio_total_equity=portfolio_total_equity,
+        min_position_value_usd=float(min_position_value_usd),
+    )
     ranked = score_candidates(
         snapshot,
         current_holdings,
@@ -559,29 +590,33 @@ def build_target_weights(
         "breadth_ratio": breadth_ratio,
         "benchmark_trend_positive": benchmark_trend_positive,
         "stock_exposure": stock_exposure,
+        "requested_top_n": int(top_n),
+        "effective_top_n": int(effective_top_n),
+        "portfolio_total_equity": portfolio_total_equity,
+        "min_position_value_usd": float(min_position_value_usd),
         "selected_symbols": (),
     }
-    if ranked.empty or stock_exposure <= 0:
+    if ranked.empty or stock_exposure <= 0 or effective_top_n <= 0:
         return {safe_haven: 1.0}, ranked, metadata
 
     current_holdings_set = set(split_symbols(current_holdings))
     ranked_symbols = ranked["symbol"].astype(str).tolist()
     rank_map = dict(zip(ranked["symbol"].astype(str), ranked["rank"].astype(int)))
-    max_hold_rank = int(top_n) + max(int(hold_buffer), 0)
+    max_hold_rank = int(effective_top_n) + max(int(hold_buffer), 0)
     selected = [
         symbol
         for symbol in ranked_symbols
         if symbol in current_holdings_set and rank_map[symbol] <= max_hold_rank
     ]
     for symbol in ranked_symbols:
-        if len(selected) >= int(top_n):
+        if len(selected) >= int(effective_top_n):
             break
         if symbol not in selected:
             selected.append(symbol)
 
     if not selected:
         return {safe_haven: 1.0}, ranked, metadata
-    selected = selected[: int(top_n)]
+    selected = selected[: int(effective_top_n)]
     per_name_weight = min(float(single_name_cap), stock_exposure / len(selected))
     weights = {symbol: per_name_weight for symbol in selected}
     safe_weight = max(0.0, 1.0 - sum(weights.values()))
@@ -711,6 +746,8 @@ def run_backtest(
     min_adv20_usd: float = 20_000_000.0,
     min_history_days: int = 273,
     turnover_cost_bps: float = 5.0,
+    portfolio_total_equity: float | None = None,
+    min_position_value_usd: float = 0.0,
 ):
     prices = _normalize_price_history(price_history)
     universe = _normalize_universe(universe_snapshot)
@@ -778,6 +815,8 @@ def run_backtest(
                 hard_defense_exposure=float(hard_defense_exposure),
                 soft_breadth_threshold=float(soft_breadth_threshold),
                 hard_breadth_threshold=float(hard_breadth_threshold),
+                portfolio_total_equity=portfolio_total_equity,
+                min_position_value_usd=float(min_position_value_usd),
             )
             turnover = _compute_turnover(current_weights, target_weights)
             turnover_history.at[next_date] = turnover
@@ -809,6 +848,10 @@ def run_backtest(
                     "safe_haven_weight": float(target_weights.get(safe_haven, 0.0)),
                     "breadth_ratio": metadata.get("breadth_ratio"),
                     "benchmark_trend_positive": metadata.get("benchmark_trend_positive"),
+                    "requested_top_n": metadata.get("requested_top_n"),
+                    "effective_top_n": metadata.get("effective_top_n"),
+                    "portfolio_total_equity": metadata.get("portfolio_total_equity"),
+                    "min_position_value_usd": metadata.get("min_position_value_usd"),
                     "selected_symbols": ",".join(metadata.get("selected_symbols", ())),
                     "turnover": turnover,
                 }
@@ -909,6 +952,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-adv20-usd", type=float, default=20_000_000.0)
     parser.add_argument("--min-history-days", type=int, default=273)
     parser.add_argument("--turnover-cost-bps", type=float, default=5.0)
+    parser.add_argument(
+        "--portfolio-total-equity",
+        type=float,
+        help="Optional account equity used to lower top-N when a minimum position size is required",
+    )
+    parser.add_argument(
+        "--min-position-value-usd",
+        type=float,
+        default=0.0,
+        help="Optional minimum target stock position size; disabled when <= 0",
+    )
     return parser
 
 
@@ -958,6 +1012,8 @@ def main(argv: list[str] | None = None) -> int:
         min_adv20_usd=args.min_adv20_usd,
         min_history_days=args.min_history_days,
         turnover_cost_bps=args.turnover_cost_bps,
+        portfolio_total_equity=args.portfolio_total_equity,
+        min_position_value_usd=args.min_position_value_usd,
     )
 
     summary_frame = _format_summary(result["summary"])
