@@ -7,6 +7,7 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 - `tech_communication_pullback_enhancement`
 - `russell_1000_multi_factor_defensive`
 - `mega_cap_leader_rotation_dynamic_top20`
+- `dynamic_mega_leveraged_pullback`
 
 ## Manual local build
 
@@ -49,6 +50,23 @@ Russell universe containing `mega_rank`, `source_weight`, `weight`,
 `source_market_value`, or `market_value`. The scheduled GitHub Actions path uses
 `r1000_latest_holdings_snapshot.csv` from the monthly source-input refresh.
 
+Dynamic mega leveraged pullback:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_dynamic_mega_leveraged_pullback_snapshot.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_latest_holdings_snapshot.csv \
+  --product-map /path/to/dynamic_mega_2x_product_map.csv \
+  --as-of 2026-04-01 \
+  --output-dir data/output/dynamic_mega_leveraged_pullback
+```
+
+The product map is required for this profile. The builder does not fall back to
+buying the underlying stock when a 2x product mapping is missing; unmapped rows
+are marked unavailable, and available rows must point to approximately 2x long
+products.
+
 Russell 1000 backtest:
 
 ```bash
@@ -83,15 +101,18 @@ Optional inputs:
 - `artifact_dir`
 - `gcs_prefix`
 - `config_path` for `tech_communication_pullback_enhancement`
+- `product_map_path` for `dynamic_mega_leveraged_pullback`
 - `current_holdings` for hold-bonus preview
 - `portfolio_total_equity` for dynamic position-count preview
 - `min_adv20_usd` for Russell / mega-cap testing overrides
 
 Scheduled monthly publish includes `tech_communication_pullback_enhancement`,
 `russell_1000_multi_factor_defensive`, and
-`mega_cap_leader_rotation_dynamic_top20`. The mega-cap scheduled path consumes
+`mega_cap_leader_rotation_dynamic_top20`, and
+`dynamic_mega_leveraged_pullback`. The two mega-cap scheduled paths consume
 `r1000_price_history.csv` plus `r1000_latest_holdings_snapshot.csv` from the
-source-input refresh workflow.
+source-input refresh workflow. `dynamic_mega_leveraged_pullback` also requires
+`SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH`.
 
 The workflow always uploads the generated files as a GitHub Actions artifact.
 
@@ -119,14 +140,15 @@ have the reference symbols they need.
 `Publish Snapshot Artifacts` then runs automatically once per month at
 `00:45 UTC` on the 1st day of the month (`08:45` the same day in
 Asia/Shanghai), leaving time for the source-input refresh to finish first.
-Scheduled publish builds all three scheduled snapshot profiles from the refreshed
+Scheduled publish builds all scheduled snapshot profiles from the refreshed
 source inputs:
 
 ```text
-profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_dynamic_top20
+profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_dynamic_top20,dynamic_mega_leveraged_pullback
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 tech_and_russell_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
 mega_dynamic_top20_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
+dynamic_mega_leveraged_product_map_path=<operator managed gs://.../dynamic_mega_2x_product_map.csv>
 execute_publish=true
 ```
 
@@ -143,6 +165,8 @@ Default scheduled output prefixes:
 | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging` |
 | `russell_1000_multi_factor_defensive` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging` |
+| `mega_cap_leader_rotation_dynamic_top20` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_dynamic_top20_staging` |
+| `dynamic_mega_leveraged_pullback` | `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/dynamic_mega_leveraged_pullback_staging` |
 
 These defaults can be overridden with repository variables:
 
@@ -152,6 +176,13 @@ These defaults can be overridden with repository variables:
 - `SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX`
 - `SCHEDULED_RUSSELL_1000_CONFIG_PATH`
 - `SCHEDULED_RUSSELL_1000_GCS_PREFIX`
+- `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH`
+- `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH`
+- `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX`
+- `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH`
+- `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH`
+- `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH`
+- `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_GCS_PREFIX`
 
 The older `SCHEDULED_US_EQUITY_CONFIG_PATH` and
 `SCHEDULED_US_EQUITY_GCS_PREFIX` variables are still honored for
@@ -203,6 +234,20 @@ gh workflow run "Publish Snapshot Artifacts" \
   -f execute_publish=false
 ```
 
+Dynamic mega leveraged production-source dry-run example:
+
+```bash
+gh workflow run "Publish Snapshot Artifacts" \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines \
+  -f profile=dynamic_mega_leveraged_pullback \
+  -f use_sample_data=false \
+  -f prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv \
+  -f universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv \
+  -f product_map_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/dynamic_mega_leveraged_pullback/dynamic_mega_2x_product_map.csv \
+  -f gcs_prefix=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/dynamic_mega_leveraged_pullback_staging \
+  -f execute_publish=false
+```
+
 Smoke-test command:
 
 ```bash
@@ -228,6 +273,7 @@ The initial migration should publish to staging prefixes first, for example:
 ```text
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/dynamic_mega_leveraged_pullback_staging
 ```
 
 Do not overwrite the current HK production prefix until the platform guard has been tested against the staging artifact.

@@ -8,6 +8,7 @@ SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
 MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE = "mega_cap_leader_rotation_dynamic_top20"
+DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE = "dynamic_mega_leveraged_pullback"
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,19 @@ _PROFILE_CONTRACTS = {
         neutral_gcs_prefix_hint=(
             "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
             "mega_cap_leader_rotation_dynamic_top20"
+        ),
+        manifest_required_by_runtime=True,
+    ),
+    DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE: SnapshotProfileContract(
+        profile=DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE,
+        display_name="Dynamic Mega Leveraged Pullback",
+        contract_version="dynamic_mega_leveraged_pullback.feature_snapshot.v1",
+        snapshot_filename="dynamic_mega_leveraged_pullback_feature_snapshot_latest.csv",
+        manifest_filename="dynamic_mega_leveraged_pullback_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="dynamic_mega_leveraged_pullback_ranking_latest.csv",
+        neutral_gcs_prefix_hint=(
+            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
+            "dynamic_mega_leveraged_pullback"
         ),
         manifest_required_by_runtime=True,
     ),

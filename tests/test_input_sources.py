@@ -35,6 +35,7 @@ def test_resolves_gcs_inputs_with_supplied_copy_function(tmp_path) -> None:
         prices_source="gs://bucket/raw/prices.csv",
         universe_source="gs://bucket/raw/universe.csv",
         config_source="gs://bucket/raw/config.json",
+        product_map_source="gs://bucket/raw/product_map.csv",
         output_dir=tmp_path / "resolved",
         gcs_copy=fake_copy,
     )
@@ -42,10 +43,12 @@ def test_resolves_gcs_inputs_with_supplied_copy_function(tmp_path) -> None:
     assert resolved.prices_path == tmp_path / "resolved" / "prices.csv"
     assert resolved.universe_path == tmp_path / "resolved" / "universe.csv"
     assert resolved.config_path == tmp_path / "resolved" / "config.json"
+    assert resolved.product_map_path == tmp_path / "resolved" / "product_map.csv"
     assert [source for source, _target in calls] == [
         "gs://bucket/raw/prices.csv",
         "gs://bucket/raw/universe.csv",
         "gs://bucket/raw/config.json",
+        "gs://bucket/raw/product_map.csv",
     ]
 
 

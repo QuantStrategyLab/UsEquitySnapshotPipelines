@@ -15,6 +15,7 @@ on:
           - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
           - mega_cap_leader_rotation_dynamic_top20
+          - dynamic_mega_leveraged_pullback
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
         required: true
@@ -26,6 +27,10 @@ on:
         type: string
       universe_path:
         description: Local, gs://, or http(s) universe path. Required unless use_sample_data=true.
+        required: false
+        type: string
+      product_map_path:
+        description: Optional local, gs://, or http(s) underlying-to-2x-product map path.
         required: false
         type: string
       as_of_date:
@@ -68,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20","dynamic_mega_leveraged_pullback"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
     permissions:
       contents: read
       id-token: write
@@ -80,6 +85,7 @@ jobs:
       USE_SAMPLE_DATA: ${{ inputs.use_sample_data }}
       PRICES_PATH: ${{ inputs.prices_path }}
       UNIVERSE_PATH: ${{ inputs.universe_path }}
+      PRODUCT_MAP_PATH: ${{ inputs.product_map_path }}
       AS_OF_DATE: ${{ inputs.as_of_date }}
       ARTIFACT_DIR_INPUT: ${{ inputs.artifact_dir }}
       GCS_PREFIX: ${{ inputs.gcs_prefix }}
@@ -97,6 +103,10 @@ jobs:
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_dynamic_top20_staging' }}
+      SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
+      SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
+      SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH || '' }}
+      SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_GCS_PREFIX: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/dynamic_mega_leveraged_pullback_staging' }}
 
     steps:
       - name: Checkout
@@ -121,6 +131,7 @@ jobs:
           use_sample_data="${USE_SAMPLE_DATA:-false}"
           prices_path="${PRICES_PATH:-}"
           universe_path="${UNIVERSE_PATH:-}"
+          product_map_path="${PRODUCT_MAP_PATH:-}"
           config_path="${CONFIG_PATH:-}"
           gcs_prefix="${GCS_PREFIX:-}"
           execute_publish="${EXECUTE_PUBLISH:-false}"
@@ -145,6 +156,13 @@ jobs:
                 config_path=""
                 gcs_prefix="${GCS_PREFIX:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX}}"
                 ;;
+              dynamic_mega_leveraged_pullback)
+                prices_path="${PRICES_PATH:-${SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH}}"
+                universe_path="${UNIVERSE_PATH:-${SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH}}"
+                product_map_path="${PRODUCT_MAP_PATH:-${SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH}}"
+                config_path=""
+                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_GCS_PREFIX}}"
+                ;;
               *)
                 echo "Unsupported scheduled profile: ${profile}" >&2
                 exit 1
@@ -158,6 +176,7 @@ jobs:
             echo "USE_SAMPLE_DATA=${use_sample_data}"
             echo "PRICES_PATH=${prices_path}"
             echo "UNIVERSE_PATH=${universe_path}"
+            echo "PRODUCT_MAP_PATH=${product_map_path}"
             echo "CONFIG_PATH=${config_path}"
             echo "GCS_PREFIX=${gcs_prefix}"
             echo "EXECUTE_PUBLISH=${execute_publish}"
@@ -168,6 +187,7 @@ jobs:
             echo "use_sample_data=${use_sample_data}"
             echo "prices_path=${prices_path:-<empty>}"
             echo "universe_path=${universe_path:-<empty>}"
+            echo "product_map_path=${product_map_path:-<empty>}"
             echo "config_path=${config_path:-<empty>}"
             echo "gcs_prefix=${gcs_prefix:-<empty>}"
             echo "execute_publish=${execute_publish}"
@@ -178,7 +198,7 @@ jobs:
         run: |
           set -euo pipefail
           needed=false
-          for value in "${PRICES_PATH:-}" "${UNIVERSE_PATH:-}" "${CONFIG_PATH:-}"; do
+          for value in "${PRICES_PATH:-}" "${UNIVERSE_PATH:-}" "${CONFIG_PATH:-}" "${PRODUCT_MAP_PATH:-}"; do
             case "${value}" in
               gs://*) needed=true ;;
             esac
@@ -212,6 +232,9 @@ jobs:
             python scripts/write_sample_input_data.py --profile "${PROFILE}" --output-dir "${sample_input_dir}"
             PRICES_PATH="${sample_input_dir}/prices.csv"
             UNIVERSE_PATH="${sample_input_dir}/universe.csv"
+            if [ "${PROFILE}" = "dynamic_mega_leveraged_pullback" ]; then
+              PRODUCT_MAP_PATH="${sample_input_dir}/product_map.csv"
+            fi
           else
             resolved_input_dir="data/input/resolved/${PROFILE}"
             resolved_env="${RUNNER_TEMP:-/tmp}/resolved_snapshot_inputs.env"
@@ -224,6 +247,9 @@ jobs:
             if [ -n "${CONFIG_PATH:-}" ]; then
               resolve_args+=(--config "${CONFIG_PATH}")
             fi
+            if [ -n "${PRODUCT_MAP_PATH:-}" ]; then
+              resolve_args+=(--product-map "${PRODUCT_MAP_PATH}")
+            fi
             python scripts/resolve_snapshot_inputs.py "${resolve_args[@]}"
             # shellcheck disable=SC1090
             source "${resolved_env}"
@@ -235,6 +261,10 @@ jobs:
           fi
           if [ -z "${UNIVERSE_PATH:-}" ] || [ ! -f "${UNIVERSE_PATH}" ]; then
             echo "universe_path is required and must resolve to a local file unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
+            exit 1
+          fi
+          if [ "${PROFILE}" = "dynamic_mega_leveraged_pullback" ] && { [ -z "${PRODUCT_MAP_PATH:-}" ] || [ ! -f "${PRODUCT_MAP_PATH}" ]; }; then
+            echo "product_map_path is required and must resolve to a local file for dynamic_mega_leveraged_pullback: ${PRODUCT_MAP_PATH:-<empty>}" >&2
             exit 1
           fi
 
@@ -253,7 +283,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${PROFILE}" in
-              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20)
+              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20|dynamic_mega_leveraged_pullback)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"
@@ -326,6 +356,10 @@ jobs:
               fi
               python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py "${common_args[@]}"
               ;;
+            dynamic_mega_leveraged_pullback)
+              common_args+=(--product-map "${PRODUCT_MAP_PATH}")
+              python scripts/build_dynamic_mega_leveraged_pullback_snapshot.py "${common_args[@]}"
+              ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2
               exit 1
@@ -367,6 +401,7 @@ jobs:
             echo "- profile: \`${PROFILE}\`"
             echo "- artifact_dir: \`${{ steps.build.outputs.artifact_dir }}\`"
             echo "- use_sample_data: \`${USE_SAMPLE_DATA}\`"
+            echo "- product_map_path: \`${PRODUCT_MAP_PATH:-<not set>}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
             echo "- should_publish: \`${{ steps.build.outputs.should_publish }}\`"

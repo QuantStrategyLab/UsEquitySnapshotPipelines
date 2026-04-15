@@ -9,6 +9,7 @@ import pandas as pd
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
 MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE = "mega_cap_leader_rotation_dynamic_top20"
+DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE = "dynamic_mega_leveraged_pullback"
 
 
 def _price_rows(symbols: dict[str, tuple[float, float]], *, periods: int = 320) -> list[dict[str, object]]:
@@ -107,6 +108,19 @@ def _mega_universe() -> pd.DataFrame:
     )
 
 
+def _dynamic_mega_product_map() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"underlying_symbol": "NVDA", "trade_symbol": "NVDL", "product_leverage": 2.0, "product_available": True},
+            {"underlying_symbol": "MSFT", "trade_symbol": "MSFU", "product_leverage": 2.0, "product_available": True},
+            {"underlying_symbol": "AAPL", "trade_symbol": "AAPU", "product_leverage": 2.0, "product_available": True},
+            {"underlying_symbol": "META", "trade_symbol": "FBL", "product_leverage": 2.0, "product_available": True},
+            {"underlying_symbol": "AMZN", "trade_symbol": "AMZU", "product_leverage": 2.0, "product_available": True},
+            {"underlying_symbol": "TSLA", "trade_symbol": "TSLL", "product_leverage": 2.0, "product_available": True},
+        ]
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Write synthetic input data for snapshot workflow smoke tests.")
     parser.add_argument("--profile", required=True)
@@ -126,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     elif profile == RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE:
         prices = _russell_prices()
         universe = _russell_universe()
-    elif profile == MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE:
+    elif profile in {MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE, DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE}:
         prices = _mega_prices()
         universe = _mega_universe()
     else:
@@ -138,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     universe.to_csv(universe_path, index=False)
     print(f"wrote sample prices -> {prices_path}")
     print(f"wrote sample universe -> {universe_path}")
+    if profile == DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE:
+        product_map_path = output_dir / "product_map.csv"
+        _dynamic_mega_product_map().to_csv(product_map_path, index=False)
+        print(f"wrote sample product map -> {product_map_path}")
     return 0
 
 
