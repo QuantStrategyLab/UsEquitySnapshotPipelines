@@ -20,6 +20,7 @@ class ResolvedInputSources:
     prices_path: Path
     universe_path: Path
     config_path: Path | None = None
+    product_map_path: Path | None = None
 
 
 def is_gcs_uri(source: str) -> bool:
@@ -99,6 +100,7 @@ def resolve_input_sources(
     universe_source: str | Path,
     output_dir: str | Path,
     config_source: str | Path | None = None,
+    product_map_source: str | Path | None = None,
     gcs_copy: CopyFn | None = None,
     http_copy: CopyFn | None = None,
 ) -> ResolvedInputSources:
@@ -127,7 +129,21 @@ def resolve_input_sources(
             gcs_copy=gcs_copy,
             http_copy=http_copy,
         )
-    return ResolvedInputSources(prices_path=prices_path, universe_path=universe_path, config_path=config_path)
+    product_map_path = None
+    if str(product_map_source or "").strip():
+        product_map_path = resolve_input_source(
+            str(product_map_source),
+            output_dir=output_dir,
+            stem="product_map",
+            gcs_copy=gcs_copy,
+            http_copy=http_copy,
+        )
+    return ResolvedInputSources(
+        prices_path=prices_path,
+        universe_path=universe_path,
+        config_path=config_path,
+        product_map_path=product_map_path,
+    )
 
 
 def _write_shell_env(path: str | Path, resolved: ResolvedInputSources) -> None:
@@ -139,6 +155,8 @@ def _write_shell_env(path: str | Path, resolved: ResolvedInputSources) -> None:
     ]
     if resolved.config_path is not None:
         lines.append(f"CONFIG_PATH={shlex.quote(str(resolved.config_path))}")
+    if resolved.product_map_path is not None:
+        lines.append(f"PRODUCT_MAP_PATH={shlex.quote(str(resolved.product_map_path))}")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -147,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prices", required=True, help="Local, gs://, or http(s) price history source")
     parser.add_argument("--universe", required=True, help="Local, gs://, or http(s) universe source")
     parser.add_argument("--config", help="Optional local, gs://, or http(s) JSON config source")
+    parser.add_argument("--product-map", help="Optional local, gs://, or http(s) product map table source")
     parser.add_argument("--output-dir", required=True, help="Directory for downloaded remote inputs")
     parser.add_argument("--env-output", help="Optional shell env file to write resolved PRICES_PATH/UNIVERSE_PATH/CONFIG_PATH")
     return parser
@@ -158,12 +177,15 @@ def main(argv: list[str] | None = None) -> int:
         prices_source=args.prices,
         universe_source=args.universe,
         config_source=args.config,
+        product_map_source=args.product_map,
         output_dir=args.output_dir,
     )
     print(f"resolved prices -> {resolved.prices_path}")
     print(f"resolved universe -> {resolved.universe_path}")
     if resolved.config_path is not None:
         print(f"resolved config -> {resolved.config_path}")
+    if resolved.product_map_path is not None:
+        print(f"resolved product map -> {resolved.product_map_path}")
     if args.env_output:
         _write_shell_env(args.env_output, resolved)
         print(f"wrote resolved env -> {args.env_output}")

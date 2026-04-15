@@ -9,13 +9,17 @@ import pandas as pd
 
 from .artifacts import write_release_status_summary, write_snapshot_manifest
 from .contracts import MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE, SnapshotProfileContract, get_profile_contract
+from .dynamic_mega_universe import (
+    normalize_price_history,
+    ranked_active_dynamic_universe,
+    resolve_effective_as_of_date,
+)
 from .mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
     SAFE_HAVEN,
     _dynamic_mega_issuer_key,
-    _normalize_price_history,
     _normalize_universe,
     _precompute_symbol_feature_history,
     build_feature_snapshot_for_backtest,
@@ -162,9 +166,9 @@ def build_artifacts(
     ranking_path = Path(ranking_output) if ranking_output else paths["ranking"]
     release_summary_path = Path(release_summary_output) if release_summary_output else paths["release_summary"]
 
-    price_history = _normalize_price_history(read_table(prices_path))
-    effective_as_of_date = _resolve_effective_as_of_date(price_history, as_of_date)
-    active_universe = _ranked_active_dynamic_universe(
+    price_history = normalize_price_history(read_table(prices_path))
+    effective_as_of_date = resolve_effective_as_of_date(price_history, as_of_date)
+    active_universe = ranked_active_dynamic_universe(
         read_table(universe_path),
         as_of_date=effective_as_of_date,
         universe_size=int(dynamic_universe_size),

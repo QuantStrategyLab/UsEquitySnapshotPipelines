@@ -36,6 +36,16 @@ Migration starts by keeping the existing platform GCS paths unchanged. For the H
 gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/interactive_brokers/tech_communication_pullback_enhancement/tech_communication_pullback_enhancement_feature_snapshot_latest.csv
 ```
 
+## Profile-specific input notes
+
+`dynamic_mega_leveraged_pullback` publishes the same standard snapshot,
+manifest, ranking, and release summary files as other snapshot profiles. Its
+builder additionally requires an operator-maintained product map with
+`underlying_symbol`, `trade_symbol`, `product_leverage`, and optional
+`product_available` / `product_expense_ratio` columns. Missing mappings never
+fall back to underlying stocks, and available rows must be approximately 2x
+long products.
+
 A later cleanup can move to a neutral prefix such as:
 
 ```text

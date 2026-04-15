@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "pandas>=2.0",
   "yfinance>=0.2.40",
-  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@v0.7.22",
+  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@v0.7.24",
 ]
 
 [project.optional-dependencies]
@@ -21,8 +21,11 @@ test = ["pytest>=8"]
 useq-build-tech-communication-pullback-snapshot = "us_equity_snapshot_pipelines.tech_communication_pullback:main"
 useq-build-russell-1000-snapshot = "us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive:main"
 useq-build-mega-cap-leader-rotation-dynamic-top20-snapshot = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_top20:main"
+useq-build-dynamic-mega-leveraged-pullback-snapshot = "us_equity_snapshot_pipelines.dynamic_mega_leveraged_pullback:main"
 useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
 useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
+useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
+useq-backtest-dynamic-mega-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 

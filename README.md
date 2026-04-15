@@ -207,3 +207,67 @@ python scripts/backtest_mega_cap_leader_rotation_robustness.py \
 
 The robustness command writes `robustness_summary.csv` sorted by Sharpe, CAGR,
 drawdown, and turnover, plus `robustness_summary_by_run.csv` in raw run order.
+
+Run the research-only MAG7 leveraged pullback / high-trim backtest from an
+existing MAG7 price-history file:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mag7_leveraged_pullback.py \
+  --prices data/output/mega_cap_leader_rotation_mag7_backtest/input/mega_cap_leader_rotation_mag7_price_history.csv \
+  --start 2016-01-01 \
+  --frequency weekly \
+  --top-n 3 \
+  --leverage-multiple 2.0 \
+  --max-product-exposure 0.7 \
+  --soft-product-exposure 0.5 \
+  --hard-product-exposure 0.15 \
+  --leveraged-expense-rate 0.01 \
+  --single-name-cap 0.25 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mag7_leveraged_pullback_backtest
+```
+
+This strategy is not a live profile. It buys strong MAG7 names on controlled
+pullbacks, trims exposure near short-term highs, caps single-name exposure, and
+models the invested sleeve as daily-reset 2x long products rather than margin
+borrowing. The command writes
+`summary.csv`, `portfolio_returns.csv`, `weights_history.csv`,
+`turnover_history.csv`, `candidate_scores.csv`, `trades.csv`,
+`exposure_history.csv`, and `reference_returns.csv`.
+
+To test a point-in-time dynamic leader pool instead of the static MAG7 list,
+pass a universe history. The same CLI can also read a concatenated Roundhill
+MAGS holdings CSV directly; rows with `Account=MAGS` are mapped back to the
+seven underlying stocks, and swap exposure is combined with stock exposure:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_dynamic_mega_leveraged_pullback.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --start 2023-12-01 \
+  --candidate-universe-size 10 \
+  --top-n 3 \
+  --leverage-multiple 2.0 \
+  --return-mode leveraged_product \
+  --output-dir data/output/dynamic_mega_leveraged_pullback_backtest
+```
+
+Use `--return-mode margin_stock --margin-borrow-rate 0.055` to test the same
+selection and risk gate as 2x margin-financed underlying stock exposure. The
+default mode remains daily-reset 2x long products with `--leveraged-expense-rate`.
+
+Run a small parameter matrix:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_dynamic_mega_leveraged_pullback_matrix.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --start 2017-10-02 \
+  --candidate-universe-sizes 7,10,15,20 \
+  --top-n-values 2,3,4 \
+  --return-mode leveraged_product \
+  --output-dir data/output/dynamic_mega_leveraged_pullback_matrix
+```

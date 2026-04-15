@@ -15,3 +15,4 @@ def test_lists_snapshot_profile_contracts() -> None:
     assert "tech_communication_pullback_enhancement" in profiles
     assert "russell_1000_multi_factor_defensive" in profiles
     assert "mega_cap_leader_rotation_dynamic_top20" in profiles
+    assert "dynamic_mega_leveraged_pullback" in profiles
