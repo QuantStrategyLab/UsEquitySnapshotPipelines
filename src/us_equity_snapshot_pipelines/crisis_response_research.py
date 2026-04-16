@@ -71,6 +71,12 @@ DEFAULT_RESPONSE_SAFE_SYMBOL = "SHY"
 ROUTE_TACO = "taco_fake_crisis"
 ROUTE_TRUE_CRISIS = "true_crisis"
 ROUTE_NO_ACTION = "no_action"
+CRISIS_CONTEXT_MODE_V1_AI_RUBRIC = "v1_ai_rubric"
+CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK = "v2_context_pack"
+CRISIS_CONTEXT_MODES = (CRISIS_CONTEXT_MODE_V1_AI_RUBRIC, CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK)
+DEFAULT_CONTEXT_FINANCIAL_SYMBOLS = ("XLF", "KRE")
+DEFAULT_CONTEXT_CREDIT_PAIRS = (("HYG", "IEF"), ("LQD", "IEF"))
+DEFAULT_CONTEXT_RATE_SYMBOLS = ("IEF", "TLT")
 
 
 def _normalize_close(close: pd.DataFrame) -> pd.DataFrame:
@@ -95,6 +101,138 @@ def _series_from_ai_allowed(ai_opinions: pd.DataFrame, index: pd.DatetimeIndex) 
     opinion_dates = pd.to_datetime(ai_opinions["as_of"]).dt.normalize()
     output.loc[opinion_dates] = ai_opinions["final_context_allowed"].to_numpy(dtype=bool)
     return output
+
+
+def _parse_credit_pairs(raw: str | Sequence[str | Sequence[str]]) -> tuple[tuple[str, str], ...]:
+    values = raw.split(",") if isinstance(raw, str) else list(raw)
+    pairs: list[tuple[str, str]] = []
+    for value in values:
+        parts = value.replace("/", ":").split(":") if isinstance(value, str) else list(value)
+        if len(parts) != 2:
+            raise ValueError(f"Credit pair must use NUMERATOR:DENOMINATOR syntax: {value!r}")
+        numerator = str(parts[0]).strip().upper()
+        denominator = str(parts[1]).strip().upper()
+        if numerator and denominator and (numerator, denominator) not in pairs:
+            pairs.append((numerator, denominator))
+    return tuple(pairs)
+
+
+def _parse_upper_str_tuple(raw: str | Sequence[str]) -> tuple[str, ...]:
+    values = raw.split(",") if isinstance(raw, str) else list(raw)
+    output: list[str] = []
+    for value in values:
+        text = str(value).strip().upper()
+        if text and text not in output:
+            output.append(text)
+    return tuple(output)
+
+
+def _build_v2_context_opinions(
+    close: pd.DataFrame,
+    price_signal: pd.Series,
+    *,
+    events: Sequence[TradeWarEvent],
+    start_date: str,
+    end_date: str | None,
+    benchmark_symbol: str,
+    market_symbol: str,
+    financial_symbols: Sequence[str],
+    credit_pairs: Sequence[tuple[str, str]],
+    rate_symbols: Sequence[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from .crisis_context_research import build_crisis_context_features
+
+    context_features = build_crisis_context_features(
+        close,
+        events=events,
+        start_date=start_date,
+        end_date=end_date,
+        benchmark_symbol=benchmark_symbol,
+        market_symbol=market_symbol,
+        financial_symbols=financial_symbols,
+        credit_pairs=credit_pairs,
+        rate_symbols=rate_symbols,
+    )
+    columns = [
+        "strategy",
+        "as_of",
+        "price_crisis_confirmed",
+        "suggested_route",
+        "bubble_context",
+        "financial_context",
+        "credit_context",
+        "financial_system_context",
+        "systemic_financial_crisis_context",
+        "rate_context",
+        "policy_context",
+        "exogenous_context",
+        "policy_rescue_context",
+        "exogenous_policy_rescue_context",
+        "proposer_verdict",
+        "auditor_verdict",
+        "crisis_type",
+        "final_context_allowed",
+        "confidence",
+        "reason",
+    ]
+    if context_features.empty:
+        return pd.DataFrame(columns=columns), context_features
+
+    price = pd.Series(price_signal).fillna(False).astype(bool).copy()
+    price.index = pd.to_datetime(price.index).tz_localize(None).normalize()
+    features = context_features.copy()
+    features["as_of"] = pd.to_datetime(features["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    features = features.dropna(subset=["as_of"]).set_index("as_of").sort_index()
+    index = pd.DatetimeIndex(features.index)
+    price = price.reindex(index).ffill().fillna(False)
+    opinion_index = index[price]
+
+    rows: list[dict[str, object]] = []
+    for date in opinion_index:
+        feature_row = features.loc[date]
+        route = str(feature_row.get("suggested_route", ROUTE_NO_ACTION))
+        final_allowed = route == ROUTE_TRUE_CRISIS
+        if final_allowed:
+            proposer_verdict = "allow_guard"
+            auditor_verdict = "approve"
+            confidence = 0.84
+        elif route == ROUTE_TACO:
+            proposer_verdict = "watch_only"
+            auditor_verdict = "veto_policy_fake_crisis_context"
+            confidence = 0.76
+        else:
+            proposer_verdict = "watch_only"
+            auditor_verdict = "veto_v2_context_route"
+            confidence = 0.72
+        rows.append(
+            {
+                "strategy": "unified_crisis_response_v2_context",
+                "as_of": pd.Timestamp(date).date().isoformat(),
+                "price_crisis_confirmed": True,
+                "suggested_route": route,
+                "bubble_context": bool(feature_row.get("bubble_context", False)),
+                "financial_context": bool(feature_row.get("financial_context", False)),
+                "credit_context": bool(feature_row.get("credit_context", False)),
+                "financial_system_context": bool(feature_row.get("financial_system_context", False)),
+                "systemic_financial_crisis_context": bool(
+                    feature_row.get("systemic_financial_crisis_context", False)
+                ),
+                "rate_context": bool(feature_row.get("rate_context", False)),
+                "policy_context": bool(feature_row.get("policy_context", False)),
+                "exogenous_context": bool(feature_row.get("exogenous_context", False)),
+                "policy_rescue_context": bool(feature_row.get("policy_rescue_context", False)),
+                "exogenous_policy_rescue_context": bool(
+                    feature_row.get("exogenous_policy_rescue_context", False)
+                ),
+                "proposer_verdict": proposer_verdict,
+                "auditor_verdict": auditor_verdict,
+                "crisis_type": feature_row.get("suggested_context_label"),
+                "final_context_allowed": final_allowed,
+                "confidence": confidence,
+                "reason": feature_row.get("suggested_reason"),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns), context_features
 
 
 def build_event_response_decisions(
@@ -251,6 +389,10 @@ def run_crisis_response_research(
     ma_slope_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
     financial_symbol: str = DEFAULT_FINANCIAL_SYMBOL,
     market_symbol: str = DEFAULT_MARKET_SYMBOL,
+    crisis_context_mode: str = CRISIS_CONTEXT_MODE_V1_AI_RUBRIC,
+    context_financial_symbols: Sequence[str] = DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
+    context_credit_pairs: Sequence[tuple[str, str]] = DEFAULT_CONTEXT_CREDIT_PAIRS,
+    context_rate_symbols: Sequence[str] = DEFAULT_CONTEXT_RATE_SYMBOLS,
     turnover_cost_bps: float = DEFAULT_TURNOVER_COST_BPS,
 ) -> dict[str, object]:
     close = price_history_to_close_matrix(price_history)
@@ -294,17 +436,35 @@ def run_crisis_response_research(
         ma_slope_days=int(ma_slope_days),
     )
     confirmed_crisis_signal = _apply_confirm_days(raw_crisis_signal, int(crisis_confirm_days))
-    ai_opinions = build_ai_crisis_opinions(
-        close,
-        confirmed_crisis_signal,
-        strategy_name="unified_crisis_response_ai",
-        start_date=start_date,
-        end_date=end_date,
-        benchmark_symbol=benchmark_symbol,
-        financial_symbol=financial_symbol,
-        market_symbol=market_symbol,
-        trigger_only=True,
-    )
+    crisis_context_mode = str(crisis_context_mode).strip().lower()
+    if crisis_context_mode not in CRISIS_CONTEXT_MODES:
+        raise ValueError(f"Unsupported crisis_context_mode: {crisis_context_mode!r}")
+    if crisis_context_mode == CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK:
+        ai_opinions, crisis_context_features = _build_v2_context_opinions(
+            close,
+            confirmed_crisis_signal,
+            events=events,
+            start_date=start_date,
+            end_date=end_date,
+            benchmark_symbol=benchmark_symbol,
+            market_symbol=market_symbol,
+            financial_symbols=_parse_upper_str_tuple(context_financial_symbols),
+            credit_pairs=_parse_credit_pairs(context_credit_pairs),
+            rate_symbols=_parse_upper_str_tuple(context_rate_symbols),
+        )
+    else:
+        ai_opinions = build_ai_crisis_opinions(
+            close,
+            confirmed_crisis_signal,
+            strategy_name="unified_crisis_response_ai",
+            start_date=start_date,
+            end_date=end_date,
+            benchmark_symbol=benchmark_symbol,
+            financial_symbol=financial_symbol,
+            market_symbol=market_symbol,
+            trigger_only=True,
+        )
+        crisis_context_features = pd.DataFrame()
     ai_context = _series_from_ai_allowed(ai_opinions, confirmed_crisis_signal.index)
     true_crisis_signal = apply_context_gate_to_signal(confirmed_crisis_signal, ai_context)
 
@@ -432,6 +592,7 @@ def run_crisis_response_research(
         "crisis_guard_diagnostics": crisis_diagnostics,
         "response_decisions": decisions,
         "ai_opinions": ai_opinions,
+        "crisis_context_features": crisis_context_features,
         "scan_days": scan_days,
         "confirmed_crisis_signal": confirmed_crisis_signal,
         "true_crisis_signal": true_crisis_signal,
@@ -465,6 +626,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--crisis-confirm-days", type=int, default=DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS)
     parser.add_argument("--financial-symbol", default=DEFAULT_FINANCIAL_SYMBOL)
     parser.add_argument("--market-symbol", default=DEFAULT_MARKET_SYMBOL)
+    parser.add_argument(
+        "--crisis-context-mode",
+        choices=CRISIS_CONTEXT_MODES,
+        default=CRISIS_CONTEXT_MODE_V1_AI_RUBRIC,
+        help="Research context used after the confirmed crisis-price scanner opens",
+    )
+    parser.add_argument("--context-financial-symbols", default=",".join(DEFAULT_CONTEXT_FINANCIAL_SYMBOLS))
+    parser.add_argument(
+        "--context-credit-pairs",
+        default=",".join(f"{numerator}:{denominator}" for numerator, denominator in DEFAULT_CONTEXT_CREDIT_PAIRS),
+    )
+    parser.add_argument("--context-rate-symbols", default=",".join(DEFAULT_CONTEXT_RATE_SYMBOLS))
     parser.add_argument("--turnover-cost-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
     parser.add_argument("--output-dir", required=True)
     return parser
@@ -477,6 +650,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.download:
         symbols = [args.benchmark_symbol, args.safe_symbol, args.financial_symbol, args.market_symbol]
+        context_financial_symbols = _parse_upper_str_tuple(args.context_financial_symbols)
+        context_credit_pairs = _parse_credit_pairs(args.context_credit_pairs)
+        context_rate_symbols = _parse_upper_str_tuple(args.context_rate_symbols)
+        if args.crisis_context_mode == CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK:
+            symbols.extend([*context_financial_symbols, *context_rate_symbols])
+            for numerator, denominator in context_credit_pairs:
+                symbols.extend([numerator, denominator])
         if float(args.synthetic_attack_multiple) > 0.0:
             symbols.append(args.synthetic_attack_from)
         else:
@@ -513,6 +693,10 @@ def main(argv: list[str] | None = None) -> int:
         crisis_confirm_days=int(args.crisis_confirm_days),
         financial_symbol=args.financial_symbol,
         market_symbol=args.market_symbol,
+        crisis_context_mode=args.crisis_context_mode,
+        context_financial_symbols=_parse_upper_str_tuple(args.context_financial_symbols),
+        context_credit_pairs=_parse_credit_pairs(args.context_credit_pairs),
+        context_rate_symbols=_parse_upper_str_tuple(args.context_rate_symbols),
         turnover_cost_bps=float(args.turnover_cost_bps),
     )
     print("\nSummary:")
@@ -530,6 +714,9 @@ def main(argv: list[str] | None = None) -> int:
     result["crisis_guard_diagnostics"].to_csv(output_dir / "crisis_guard_diagnostics.csv", index=False)
     result["response_decisions"].to_csv(output_dir / "response_decisions.csv", index=False)
     result["ai_opinions"].to_csv(output_dir / "ai_opinions.csv", index=False)
+    context_features = result["crisis_context_features"]
+    if isinstance(context_features, pd.DataFrame) and not context_features.empty:
+        context_features.to_csv(output_dir / "crisis_context_features.csv", index=False)
     result["recognized_events"].to_csv(output_dir / "recognized_event_calendar.csv", index=False)
     result["taco_events"].to_csv(output_dir / "taco_event_calendar.csv", index=False)
     result["scan_days"].rename("price_stress_scan").to_csv(output_dir / "price_stress_scan_days.csv")
@@ -548,6 +735,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "CRISIS_CONTEXT_MODE_V1_AI_RUBRIC",
+    "CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK",
+    "CRISIS_CONTEXT_MODES",
     "ROUTE_NO_ACTION",
     "ROUTE_TACO",
     "ROUTE_TRUE_CRISIS",

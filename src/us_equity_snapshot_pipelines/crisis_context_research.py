@@ -29,6 +29,7 @@ DEFAULT_FINANCIAL_SYMBOLS = ("XLF", "KRE")
 DEFAULT_CREDIT_PAIRS = (("HYG", "IEF"), ("LQD", "IEF"))
 DEFAULT_RATE_SYMBOLS = ("IEF", "TLT")
 DEFAULT_BUBBLE_LOOKBACK_DAYS = 252
+DEFAULT_BUBBLE_PERSISTENCE_DAYS = 126
 DEFAULT_BUBBLE_RETURN_THRESHOLD = 0.75
 DEFAULT_BUBBLE_RELATIVE_RETURN_THRESHOLD = 0.30
 DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD = -0.25
@@ -372,6 +373,7 @@ def build_crisis_context_features(
     credit_pairs: Sequence[tuple[str, str]] = DEFAULT_CREDIT_PAIRS,
     rate_symbols: Sequence[str] = DEFAULT_RATE_SYMBOLS,
     bubble_lookback_days: int = DEFAULT_BUBBLE_LOOKBACK_DAYS,
+    bubble_persistence_days: int = DEFAULT_BUBBLE_PERSISTENCE_DAYS,
     bubble_return_threshold: float = DEFAULT_BUBBLE_RETURN_THRESHOLD,
     bubble_relative_return_threshold: float = DEFAULT_BUBBLE_RELATIVE_RETURN_THRESHOLD,
     financial_drawdown_threshold: float = DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD,
@@ -405,10 +407,16 @@ def build_crisis_context_features(
     )
     benchmark_drawdown = _rolling_drawdown(benchmark).reindex(index).rename(f"{benchmark_symbol}_drawdown_252d")
 
-    bubble_context = (
+    raw_bubble_context = (
         benchmark_return.ge(float(bubble_return_threshold))
         | benchmark_relative_return.ge(float(bubble_relative_return_threshold))
     ).fillna(False)
+    if int(bubble_persistence_days) > 0:
+        bubble_context = (
+            raw_bubble_context.rolling(int(bubble_persistence_days) + 1, min_periods=1).max().astype(bool)
+        )
+    else:
+        bubble_context = raw_bubble_context
 
     financial_drawdowns: dict[str, pd.Series] = {}
     financial_relative_returns: dict[str, pd.Series] = {}
@@ -594,6 +602,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(f"{numerator}:{denominator}" for numerator, denominator in DEFAULT_CREDIT_PAIRS),
     )
     parser.add_argument("--rate-symbols", default=",".join(DEFAULT_RATE_SYMBOLS))
+    parser.add_argument("--bubble-persistence-days", type=int, default=DEFAULT_BUBBLE_PERSISTENCE_DAYS)
     parser.add_argument(
         "--systemic-financial-drawdown-threshold",
         type=float,
@@ -660,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
         financial_symbols=financial_symbols,
         credit_pairs=credit_pairs,
         rate_symbols=rate_symbols,
+        bubble_persistence_days=int(args.bubble_persistence_days),
         systemic_financial_drawdown_threshold=float(args.systemic_financial_drawdown_threshold),
         systemic_credit_relative_return_threshold=float(args.systemic_credit_relative_return_threshold),
         policy_event_window_days=int(args.policy_event_window_days),
@@ -686,6 +696,7 @@ __all__ = [
     "CONTEXT_LABEL_POLICY_SHOCK",
     "CONTEXT_LABEL_RATE_BEAR",
     "CONTEXT_LABEL_VALUATION_BUBBLE",
+    "DEFAULT_BUBBLE_PERSISTENCE_DAYS",
     "DEFAULT_CRISIS_CONTEXT_EVENTS",
     "EVENT_KIND_EXOGENOUS_SHOCK",
     "EVENT_KIND_POLICY_RESCUE",

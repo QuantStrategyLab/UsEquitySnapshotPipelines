@@ -40,6 +40,28 @@ def test_crisis_context_features_detect_valuation_bubble_route() -> None:
     assert row["suggested_route"] == ROUTE_TRUE_CRISIS
 
 
+def test_crisis_context_features_persists_bubble_context_after_raw_return_fades() -> None:
+    dates = pd.bdate_range("1999-01-04", periods=270)
+    qqq = pd.Series(100.0, index=dates)
+    qqq.iloc[252] = 180.0
+    qqq.iloc[253:] = 120.0
+    close = pd.DataFrame({"QQQ": qqq, "SPY": 100.0}, index=dates)
+
+    features = build_crisis_context_features(
+        close,
+        events=(),
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        bubble_persistence_days=10,
+    )
+    persisted_row = features.loc[pd.to_datetime(features["as_of"]).eq(dates[260])].iloc[0]
+
+    assert bool(persisted_row["bubble_context"])
+    assert persisted_row["suggested_route"] == ROUTE_TRUE_CRISIS
+
+
 def test_crisis_context_features_detect_financial_and_credit_stress() -> None:
     dates = pd.bdate_range("2008-01-02", periods=90)
     xlf = [100.0] * 30 + [99.0 - idx for idx in range(60)]
