@@ -4,6 +4,9 @@ This note is for post-V1 research. The frozen V1 contract lives in
 `docs/crisis-response-v1.md`; future work should add evidence around it rather
 than silently changing V1 semantics.
 
+Live promotion and shadow-plugin work must follow
+`docs/crisis-response-live-promotion-spec.md`.
+
 ## Research question
 
 Can AI classify historical market shocks into `true_crisis`,

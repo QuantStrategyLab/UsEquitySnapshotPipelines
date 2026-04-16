@@ -5,6 +5,9 @@ contract. V2 does not change live routing and does not change V1 parameters. It
 builds a point-in-time context pack that can be reviewed by AI only after a
 scanner opens.
 
+Any shadow, advisory, or live-promotion work must follow
+`docs/crisis-response-live-promotion-spec.md`.
+
 ## Goal
 
 Turn historical crash explanations into auditable context features:
