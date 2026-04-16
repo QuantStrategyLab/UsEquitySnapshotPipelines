@@ -67,6 +67,17 @@ Required properties:
 - Explicit kill switch when evidence is missing, stale, contradictory, or
   unavailable.
 
+Runtime integration:
+
+- Schedule the shadow builder on the same daily cadence as the TQQQ strategy
+  artifact pipeline after prices and external context are refreshed.
+- Keep the log namespace separate as `crisis_response_shadow`; it is an
+  observation stream, not a trading signal stream.
+- Downstream notification systems may include the latest shadow route in the
+  TQQQ status message, but the notification must label it as `shadow_only`.
+- This repository must not add Telegram, broker, or order-routing writes for
+  the shadow plugin. It only writes artifacts for downstream readers.
+
 Suggested output directory shape:
 
 ```text
@@ -272,8 +283,10 @@ Future AI agents must follow these constraints:
 
 Recommended next tasks:
 
-1. Implement `crisis_response_shadow_plugin` as log-only.
-2. Add tests proving the shadow plugin cannot place orders or mutate live
-   allocation.
-3. Add AI replay prompt generation from the shadow JSON.
+1. Run `crisis_response_shadow_plugin` daily with current prices and authorized
+   external context.
+2. Start Phase 2 AI replay after at least 20 shadow trading days, or
+   immediately after a high-volatility `would_trade_if_enabled=true` day with
+   complete logs.
+3. Keep AI replay outputs separate from raw shadow signals.
 4. Run shadow-only for 30 to 60 trading days before advisory mode.

@@ -518,3 +518,26 @@ External valuation context stays audit-only unless explicitly enabled. To test
 historical PE/CAPE/earnings-quality context, pass an `as_of` CSV with columns
 such as `nasdaq_100_trailing_pe`, then add `--external-context` and
 `--external-valuation-mode price_or_external` or `price_and_external`.
+
+Build the Phase 1 log-only Crisis Response shadow signal after the TQQQ daily
+price/context refresh:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_crisis_response_shadow_signal.py \
+  --prices data/output/crisis_response_shadow/input/price_history.csv \
+  --external-context data/output/crisis_response_shadow/input/external_context.csv \
+  --event-set full \
+  --start 1999-03-10 \
+  --output-dir data/output/crisis_response_shadow
+```
+
+This writes `latest_signal.json`, dated JSON/CSV signal files, an evidence CSV,
+and an AI replay prompt under `data/output/crisis_response_shadow/`. The shadow
+builder is designed to run on the same daily cadence as the TQQQ artifact
+pipeline, but it is `shadow_only`: no broker writes, no order placement, and no
+live allocation mutation. Downstream notifications may read the latest JSON and
+display it as an observation beside the TQQQ status, not as an executable trade
+instruction. Begin AI replay after 20 shadow trading days, or sooner after any
+high-volatility `would_trade_if_enabled=true` day with complete logs; advisory
+mode still requires 30 to 60 shadow trading days and written approval.
