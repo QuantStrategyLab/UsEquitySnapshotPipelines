@@ -26,6 +26,11 @@ useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_
 useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-dynamic-mega-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
+useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
+useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_panic_rebound_backtest:main"
+useq-backtest-taco-panic-rebound-overlay-compare = "us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare:main"
+useq-backtest-crisis-regime-guard = "us_equity_snapshot_pipelines.crisis_regime_guard_research:main"
+useq-backtest-crisis-response = "us_equity_snapshot_pipelines.crisis_response_research:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 
