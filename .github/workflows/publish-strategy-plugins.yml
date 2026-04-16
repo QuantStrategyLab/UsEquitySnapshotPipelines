@@ -1,0 +1,219 @@
+name: Publish Strategy Plugins
+
+on:
+  schedule:
+    # Weekdays after the regular US close. The plugin itself enforces freshness.
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      execute_publish:
+        description: Actually upload plugin artifacts to GCS. false only builds and uploads a GitHub artifact.
+        required: true
+        default: false
+        type: boolean
+      price_start:
+        description: Earliest yfinance price download date.
+        required: false
+        default: '2010-01-01'
+        type: string
+      price_end:
+        description: Optional yfinance price download end date.
+        required: false
+        type: string
+      gcs_prefix:
+        description: Optional GCS prefix for the plugin artifact directory.
+        required: false
+        type: string
+
+jobs:
+  crisis-response-shadow:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
+      PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
+      PRICE_END: ${{ inputs.price_end }}
+      GCS_PREFIX: ${{ inputs.gcs_prefix || vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
+      YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
+      STRATEGY_PROFILE: tqqq_growth_income
+      PLUGIN_NAME: crisis_response_shadow
+      PRICE_INPUT_DIR: data/input/strategy_plugins/crisis_response_shadow
+      PLUGIN_OUTPUT_DIR: data/output/tqqq_growth_income/plugins/crisis_response_shadow
+      RUNNER_OUTPUT_DIR: data/output/strategy_plugins
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Check whether Google Cloud auth is needed
+        id: gcp-auth-check
+        run: |
+          set -euo pipefail
+          needed=false
+          if [ "${EXECUTE_PUBLISH}" = "true" ] && [ -n "${GCS_PREFIX:-}" ]; then
+            needed=true
+          fi
+          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Download plugin price inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "${PRICE_INPUT_DIR}"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.crisis_response_shadow_plugin import (
+              DEFAULT_ATTACK_SYMBOL,
+              DEFAULT_BENCHMARK_SYMBOL,
+              DEFAULT_CONTEXT_CREDIT_PAIRS,
+              DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
+              DEFAULT_CONTEXT_RATE_SYMBOLS,
+              DEFAULT_MARKET_SYMBOL,
+          )
+          from us_equity_snapshot_pipelines.yfinance_prices import download_price_history
+
+          symbols = [
+              DEFAULT_BENCHMARK_SYMBOL,
+              DEFAULT_ATTACK_SYMBOL,
+              DEFAULT_MARKET_SYMBOL,
+              *DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
+              *DEFAULT_CONTEXT_RATE_SYMBOLS,
+          ]
+          for numerator, denominator in DEFAULT_CONTEXT_CREDIT_PAIRS:
+              symbols.extend([numerator, denominator])
+          symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
+
+          output_path = Path(os.environ["PRICE_INPUT_DIR"]) / "crisis_response_shadow_price_history.csv"
+          prices = download_price_history(
+              symbols,
+              start=os.environ.get("PRICE_START") or "2010-01-01",
+              end=os.environ.get("PRICE_END") or None,
+              proxy=os.environ.get("YFINANCE_PROXY") or None,
+          )
+          prices.to_csv(output_path, index=False)
+          print(f"downloaded {len(prices)} price rows -> {output_path}")
+          PY
+
+      - name: Build strategy plugin artifact
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_OUTPUT_DIR}" "${PLUGIN_OUTPUT_DIR}"
+          config_path="${RUNNER_TEMP:-/tmp}/strategy_plugins.toml"
+          prices_path="${PRICE_INPUT_DIR}/crisis_response_shadow_price_history.csv"
+          cat > "${config_path}" <<EOF
+          output_dir = "${RUNNER_OUTPUT_DIR}"
+          default_mode = "shadow"
+
+          [[strategy_plugins]]
+          strategy = "${STRATEGY_PROFILE}"
+          plugin = "${PLUGIN_NAME}"
+          enabled = true
+
+          [strategy_plugins.inputs]
+          prices = "${prices_path}"
+          event_set = "full"
+          financial_symbols = ["XLF", "KRE"]
+          credit_pairs = ["HYG:IEF", "LQD:IEF"]
+          rate_symbols = ["IEF", "TLT"]
+
+          [strategy_plugins.outputs]
+          output_dir = "${PLUGIN_OUTPUT_DIR}"
+          EOF
+          python scripts/run_strategy_plugins.py --config "${config_path}" --strategies "${STRATEGY_PROFILE}" --plugins "${PLUGIN_NAME}"
+          test -f "${PLUGIN_OUTPUT_DIR}/latest_signal.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads((Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "latest_signal.json").read_text(encoding="utf-8"))
+          if payload.get("strategy") != os.environ["STRATEGY_PROFILE"]:
+              raise SystemExit(f"unexpected strategy: {payload.get('strategy')!r}")
+          if payload.get("plugin") != os.environ["PLUGIN_NAME"]:
+              raise SystemExit(f"unexpected plugin: {payload.get('plugin')!r}")
+          if payload.get("effective_mode") != "shadow":
+              raise SystemExit(f"unexpected effective_mode: {payload.get('effective_mode')!r}")
+          print(
+              "validated latest_signal "
+              f"as_of={payload.get('as_of')} route={payload.get('canonical_route')} "
+              f"action={payload.get('suggested_action')}"
+          )
+          PY
+
+      - name: Publish or print GCS plan
+        run: |
+          set -euo pipefail
+          if [ -z "${GCS_PREFIX:-}" ]; then
+            echo "GCS_PREFIX is not set; skipping GCS publish."
+            exit 0
+          fi
+
+          normalized_prefix="${GCS_PREFIX%/}"
+          while IFS= read -r -d '' source_path; do
+            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            destination="${normalized_prefix}/${relative_path}"
+            if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+              gcloud storage cp "${source_path}" "${destination}"
+            else
+              echo "DRY-RUN gcloud storage cp ${source_path} ${destination}"
+            fi
+          done < <(find "${PLUGIN_OUTPUT_DIR}" -type f -print0 | sort -z)
+
+      - name: Upload generated artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: strategy-plugin-crisis-response-shadow-${{ github.run_id }}
+          path: |
+            ${{ env.PRICE_INPUT_DIR }}
+            ${{ env.PLUGIN_OUTPUT_DIR }}
+            ${{ env.RUNNER_OUTPUT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Append job summary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Strategy plugin publish"
+            echo
+            echo "- strategy: \`${STRATEGY_PROFILE}\`"
+            echo "- plugin: \`${PLUGIN_NAME}\`"
+            echo "- mode: \`shadow\`"
+            echo "- plugin_output_dir: \`${PLUGIN_OUTPUT_DIR}\`"
+            echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
+            echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
+            echo
+            echo "Generated plugin files:"
+            find "${PLUGIN_OUTPUT_DIR}" -type f -print | sort | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
