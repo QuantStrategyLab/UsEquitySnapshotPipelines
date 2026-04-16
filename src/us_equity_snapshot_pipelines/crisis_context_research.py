@@ -36,6 +36,13 @@ DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD = 60.0
 DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD = 45.0
 DEFAULT_EXTERNAL_CAPE_THRESHOLD = 45.0
 DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD = 0.35
+DEFAULT_EXTERNAL_PCT_ABOVE_200D_THRESHOLD = 0.45
+DEFAULT_EXTERNAL_PCT_ABOVE_50D_THRESHOLD = 0.35
+DEFAULT_EXTERNAL_NEW_HIGH_NEW_LOW_SPREAD_THRESHOLD = -0.10
+DEFAULT_EXTERNAL_ADVANCE_DECLINE_DRAWDOWN_THRESHOLD = -0.10
+DEFAULT_EXTERNAL_NEGATIVE_EARNINGS_SHARE_THRESHOLD = 0.25
+DEFAULT_EXTERNAL_EARNINGS_REVISION_3M_THRESHOLD = -0.05
+DEFAULT_EXTERNAL_MARGIN_REVISION_3M_THRESHOLD = -0.02
 DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD = -0.25
 DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS = 126
 DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD = -0.10
@@ -76,6 +83,10 @@ CONTEXT_BOOL_COLUMNS = (
     "external_cape_extreme_context",
     "external_speculative_quality_context",
     "external_valuation_context",
+    "external_breadth_weak_context",
+    "external_earnings_quality_weak_context",
+    "external_breadth_or_quality_context",
+    "external_confirmed_bubble_fragility_context",
     "bubble_context",
     "financial_context",
     "credit_context",
@@ -371,6 +382,66 @@ def build_external_valuation_context(
     )
 
 
+def build_external_breadth_quality_context(
+    frame: pd.DataFrame,
+    *,
+    pct_above_200d_threshold: float = DEFAULT_EXTERNAL_PCT_ABOVE_200D_THRESHOLD,
+    pct_above_50d_threshold: float = DEFAULT_EXTERNAL_PCT_ABOVE_50D_THRESHOLD,
+    new_high_new_low_spread_threshold: float = DEFAULT_EXTERNAL_NEW_HIGH_NEW_LOW_SPREAD_THRESHOLD,
+    advance_decline_drawdown_threshold: float = DEFAULT_EXTERNAL_ADVANCE_DECLINE_DRAWDOWN_THRESHOLD,
+    negative_earnings_share_threshold: float = DEFAULT_EXTERNAL_NEGATIVE_EARNINGS_SHARE_THRESHOLD,
+    unprofitable_growth_threshold: float = DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
+    earnings_revision_3m_threshold: float = DEFAULT_EXTERNAL_EARNINGS_REVISION_3M_THRESHOLD,
+    margin_revision_3m_threshold: float = DEFAULT_EXTERNAL_MARGIN_REVISION_3M_THRESHOLD,
+) -> pd.DataFrame:
+    index = pd.DatetimeIndex(frame.index)
+    pct_above_200d = _external_numeric_column(frame, "external_nasdaq_100_pct_above_200d", index)
+    pct_above_50d = _external_numeric_column(frame, "external_nasdaq_100_pct_above_50d", index)
+    new_high_new_low_spread = _external_numeric_column(
+        frame,
+        "external_nasdaq_100_new_high_new_low_spread",
+        index,
+    )
+    advance_decline_drawdown = _external_numeric_column(
+        frame,
+        "external_nasdaq_100_advance_decline_line_drawdown",
+        index,
+    )
+    negative_earnings_share = _external_numeric_column(
+        frame,
+        "external_nasdaq_100_negative_earnings_share",
+        index,
+    )
+    unprofitable_growth = _external_numeric_column(frame, "external_unprofitable_growth_proxy", index)
+    earnings_revision_3m = _external_numeric_column(frame, "external_nasdaq_100_earnings_revision_3m", index)
+    margin_revision_3m = _external_numeric_column(frame, "external_nasdaq_100_margin_revision_3m", index)
+
+    breadth_weak = (
+        pct_above_200d.le(float(pct_above_200d_threshold))
+        | pct_above_50d.le(float(pct_above_50d_threshold))
+        | new_high_new_low_spread.le(float(new_high_new_low_spread_threshold))
+        | advance_decline_drawdown.le(float(advance_decline_drawdown_threshold))
+    ).fillna(False)
+    earnings_quality_weak = (
+        negative_earnings_share.ge(float(negative_earnings_share_threshold))
+        | unprofitable_growth.ge(float(unprofitable_growth_threshold))
+        | earnings_revision_3m.le(float(earnings_revision_3m_threshold))
+        | margin_revision_3m.le(float(margin_revision_3m_threshold))
+    ).fillna(False)
+    breadth_or_quality = (breadth_weak | earnings_quality_weak).fillna(False)
+    valuation = frame.get("external_valuation_context", pd.Series(False, index=index))
+    confirmed_fragility = pd.Series(valuation, index=index).fillna(False).astype(bool) & breadth_or_quality
+    return pd.DataFrame(
+        {
+            "external_breadth_weak_context": breadth_weak,
+            "external_earnings_quality_weak_context": earnings_quality_weak,
+            "external_breadth_or_quality_context": breadth_or_quality,
+            "external_confirmed_bubble_fragility_context": confirmed_fragility,
+        },
+        index=index,
+    )
+
+
 def _combine_bubble_context(
     price_bubble_context: pd.Series,
     external_valuation_context: pd.Series,
@@ -459,6 +530,13 @@ def build_crisis_context_features(
     external_forward_pe_threshold: float = DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD,
     external_cape_threshold: float = DEFAULT_EXTERNAL_CAPE_THRESHOLD,
     external_unprofitable_growth_threshold: float = DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
+    external_pct_above_200d_threshold: float = DEFAULT_EXTERNAL_PCT_ABOVE_200D_THRESHOLD,
+    external_pct_above_50d_threshold: float = DEFAULT_EXTERNAL_PCT_ABOVE_50D_THRESHOLD,
+    external_new_high_new_low_spread_threshold: float = DEFAULT_EXTERNAL_NEW_HIGH_NEW_LOW_SPREAD_THRESHOLD,
+    external_advance_decline_drawdown_threshold: float = DEFAULT_EXTERNAL_ADVANCE_DECLINE_DRAWDOWN_THRESHOLD,
+    external_negative_earnings_share_threshold: float = DEFAULT_EXTERNAL_NEGATIVE_EARNINGS_SHARE_THRESHOLD,
+    external_earnings_revision_3m_threshold: float = DEFAULT_EXTERNAL_EARNINGS_REVISION_3M_THRESHOLD,
+    external_margin_revision_3m_threshold: float = DEFAULT_EXTERNAL_MARGIN_REVISION_3M_THRESHOLD,
     financial_drawdown_threshold: float = DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD,
     financial_relative_lookback_days: int = DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS,
     financial_relative_return_threshold: float = DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD,
@@ -599,6 +677,18 @@ def build_crisis_context_features(
         unprofitable_growth_threshold=float(external_unprofitable_growth_threshold),
     )
     output = output.join(external_valuation)
+    external_breadth_quality = build_external_breadth_quality_context(
+        output,
+        pct_above_200d_threshold=float(external_pct_above_200d_threshold),
+        pct_above_50d_threshold=float(external_pct_above_50d_threshold),
+        new_high_new_low_spread_threshold=float(external_new_high_new_low_spread_threshold),
+        advance_decline_drawdown_threshold=float(external_advance_decline_drawdown_threshold),
+        negative_earnings_share_threshold=float(external_negative_earnings_share_threshold),
+        unprofitable_growth_threshold=float(external_unprofitable_growth_threshold),
+        earnings_revision_3m_threshold=float(external_earnings_revision_3m_threshold),
+        margin_revision_3m_threshold=float(external_margin_revision_3m_threshold),
+    )
+    output = output.join(external_breadth_quality)
     output["bubble_context"] = _combine_bubble_context(
         output["price_bubble_context"],
         output["external_valuation_context"],
@@ -714,6 +804,41 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
     )
     parser.add_argument(
+        "--external-pct-above-200d-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_PCT_ABOVE_200D_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-pct-above-50d-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_PCT_ABOVE_50D_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-new-high-new-low-spread-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_NEW_HIGH_NEW_LOW_SPREAD_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-advance-decline-drawdown-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_ADVANCE_DECLINE_DRAWDOWN_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-negative-earnings-share-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_NEGATIVE_EARNINGS_SHARE_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-earnings-revision-3m-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_EARNINGS_REVISION_3M_THRESHOLD,
+    )
+    parser.add_argument(
+        "--external-margin-revision-3m-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_MARGIN_REVISION_3M_THRESHOLD,
+    )
+    parser.add_argument(
         "--systemic-financial-drawdown-threshold",
         type=float,
         default=DEFAULT_SYSTEMIC_FINANCIAL_DRAWDOWN_THRESHOLD,
@@ -785,6 +910,13 @@ def main(argv: list[str] | None = None) -> int:
         external_forward_pe_threshold=float(args.external_forward_pe_threshold),
         external_cape_threshold=float(args.external_cape_threshold),
         external_unprofitable_growth_threshold=float(args.external_unprofitable_growth_threshold),
+        external_pct_above_200d_threshold=float(args.external_pct_above_200d_threshold),
+        external_pct_above_50d_threshold=float(args.external_pct_above_50d_threshold),
+        external_new_high_new_low_spread_threshold=float(args.external_new_high_new_low_spread_threshold),
+        external_advance_decline_drawdown_threshold=float(args.external_advance_decline_drawdown_threshold),
+        external_negative_earnings_share_threshold=float(args.external_negative_earnings_share_threshold),
+        external_earnings_revision_3m_threshold=float(args.external_earnings_revision_3m_threshold),
+        external_margin_revision_3m_threshold=float(args.external_margin_revision_3m_threshold),
         systemic_financial_drawdown_threshold=float(args.systemic_financial_drawdown_threshold),
         systemic_credit_relative_return_threshold=float(args.systemic_credit_relative_return_threshold),
         policy_event_window_days=int(args.policy_event_window_days),
@@ -823,6 +955,7 @@ __all__ = [
     "build_context_diagnostics",
     "build_crisis_context_features",
     "build_event_context_flags",
+    "build_external_breadth_quality_context",
     "build_external_valuation_context",
     "main",
 ]
