@@ -111,8 +111,18 @@ trailing return peak is still present.
 ## External Context Schema
 
 Optional `--external-context` accepts a CSV with an `as_of` column. Columns are
-forward-filled point-in-time and written with an `external_` prefix. The V2 code
-does not route on these columns yet; they are context for later validation.
+forward-filled point-in-time and written with an `external_` prefix. By default,
+external valuation fields are audit-only and do not change routing. To test PE
+or valuation data in research, set `--external-valuation-mode` explicitly:
+
+- `off`: default; write external fields and valuation flags, but keep routing
+  based on price bubble / financial / policy / exogenous context.
+- `price_or_external`: route to valuation-bubble context when either price
+  bubble proxy or external valuation context is extreme.
+- `price_and_external`: route to valuation-bubble context only when both price
+  bubble proxy and external valuation context are active.
+- `external_only`: route valuation-bubble context from external valuation
+  context alone.
 
 Suggested external columns:
 
@@ -129,6 +139,48 @@ Suggested external columns:
 - `policy_shock_score`
 - `exogenous_shock_score`
 - `policy_rescue_score`
+
+Default external valuation thresholds:
+
+- `nasdaq_100_trailing_pe >= 60`
+- `nasdaq_100_forward_pe >= 45`
+- `nasdaq_100_cape_proxy >= 45`
+- `unprofitable_growth_proxy >= 0.35`
+
+Example PE-enabled context pack run:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_crisis_context_pack.py \
+  --prices data/output/crisis_response_1999_synthetic_v2_context/input/crisis_response_price_history.csv \
+  --external-context data/input/research/nasdaq_100_valuation_context.csv \
+  --event-set full \
+  --start 1999-03-10 \
+  --external-valuation-mode price_or_external \
+  --output-dir data/output/crisis_context_v2_valuation
+```
+
+Example unified response run with the same explicit PE mode:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --prices data/output/crisis_response_1999_synthetic_v2_context/input/crisis_response_price_history.csv \
+  --external-context data/input/research/nasdaq_100_valuation_context.csv \
+  --event-set full \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --crisis-confirm-days 5 \
+  --crisis-context-mode v2_context_pack \
+  --external-valuation-mode price_or_external \
+  --output-dir data/output/crisis_response_1999_synthetic_v2_valuation
+```
 
 ## Route Priority
 

@@ -32,6 +32,10 @@ DEFAULT_BUBBLE_LOOKBACK_DAYS = 252
 DEFAULT_BUBBLE_PERSISTENCE_DAYS = 126
 DEFAULT_BUBBLE_RETURN_THRESHOLD = 0.75
 DEFAULT_BUBBLE_RELATIVE_RETURN_THRESHOLD = 0.30
+DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD = 60.0
+DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD = 45.0
+DEFAULT_EXTERNAL_CAPE_THRESHOLD = 45.0
+DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD = 0.35
 DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD = -0.25
 DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS = 126
 DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD = -0.10
@@ -45,6 +49,17 @@ DEFAULT_POLICY_EVENT_WINDOW_DAYS = 10
 DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS = 21
 DEFAULT_POLICY_RESCUE_EVENT_WINDOW_DAYS = 63
 
+EXTERNAL_VALUATION_MODE_OFF = "off"
+EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL = "price_or_external"
+EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL = "price_and_external"
+EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY = "external_only"
+EXTERNAL_VALUATION_MODES = (
+    EXTERNAL_VALUATION_MODE_OFF,
+    EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+    EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
+    EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY,
+)
+
 CONTEXT_LABEL_VALUATION_BUBBLE = "valuation_bubble"
 CONTEXT_LABEL_FINANCIAL_CRISIS = "financial_crisis"
 CONTEXT_LABEL_POLICY_SHOCK = "policy_shock"
@@ -55,6 +70,12 @@ CONTEXT_LABEL_RATE_BEAR = "rate_bear"
 CONTEXT_LABEL_NORMAL = "normal"
 
 CONTEXT_BOOL_COLUMNS = (
+    "price_bubble_context",
+    "external_trailing_pe_extreme_context",
+    "external_forward_pe_extreme_context",
+    "external_cape_extreme_context",
+    "external_speculative_quality_context",
+    "external_valuation_context",
     "bubble_context",
     "financial_context",
     "credit_context",
@@ -313,6 +334,63 @@ def _prepare_external_context(context: pd.DataFrame | None, index: pd.DatetimeIn
     return frame.reindex(full_index).ffill().reindex(index)
 
 
+def _external_numeric_column(frame: pd.DataFrame, column: str, index: pd.DatetimeIndex) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(float("nan"), index=index, name=column)
+    return pd.to_numeric(frame[column], errors="coerce").reindex(index).rename(column)
+
+
+def build_external_valuation_context(
+    frame: pd.DataFrame,
+    *,
+    trailing_pe_threshold: float = DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD,
+    forward_pe_threshold: float = DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD,
+    cape_threshold: float = DEFAULT_EXTERNAL_CAPE_THRESHOLD,
+    unprofitable_growth_threshold: float = DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
+) -> pd.DataFrame:
+    index = pd.DatetimeIndex(frame.index)
+    trailing_pe = _external_numeric_column(frame, "external_nasdaq_100_trailing_pe", index)
+    forward_pe = _external_numeric_column(frame, "external_nasdaq_100_forward_pe", index)
+    cape = _external_numeric_column(frame, "external_nasdaq_100_cape_proxy", index)
+    unprofitable_growth = _external_numeric_column(frame, "external_unprofitable_growth_proxy", index)
+
+    trailing_pe_context = trailing_pe.ge(float(trailing_pe_threshold)).fillna(False)
+    forward_pe_context = forward_pe.ge(float(forward_pe_threshold)).fillna(False)
+    cape_context = cape.ge(float(cape_threshold)).fillna(False)
+    speculative_quality_context = unprofitable_growth.ge(float(unprofitable_growth_threshold)).fillna(False)
+    valuation_context = trailing_pe_context | forward_pe_context | cape_context | speculative_quality_context
+    return pd.DataFrame(
+        {
+            "external_trailing_pe_extreme_context": trailing_pe_context,
+            "external_forward_pe_extreme_context": forward_pe_context,
+            "external_cape_extreme_context": cape_context,
+            "external_speculative_quality_context": speculative_quality_context,
+            "external_valuation_context": valuation_context,
+        },
+        index=index,
+    )
+
+
+def _combine_bubble_context(
+    price_bubble_context: pd.Series,
+    external_valuation_context: pd.Series,
+    *,
+    external_valuation_mode: str,
+) -> pd.Series:
+    mode = str(external_valuation_mode).strip().lower()
+    if mode not in EXTERNAL_VALUATION_MODES:
+        raise ValueError(f"Unsupported external_valuation_mode: {external_valuation_mode!r}")
+    price = pd.Series(price_bubble_context).fillna(False).astype(bool)
+    external = pd.Series(external_valuation_context).reindex(price.index).fillna(False).astype(bool)
+    if mode == EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL:
+        return (price | external).rename("bubble_context")
+    if mode == EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL:
+        return (price & external).rename("bubble_context")
+    if mode == EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY:
+        return external.rename("bubble_context")
+    return price.rename("bubble_context")
+
+
 def _suggest_label_and_route(row: pd.Series) -> tuple[str, str, str]:
     if bool(row["exogenous_policy_rescue_context"]):
         return (
@@ -376,6 +454,11 @@ def build_crisis_context_features(
     bubble_persistence_days: int = DEFAULT_BUBBLE_PERSISTENCE_DAYS,
     bubble_return_threshold: float = DEFAULT_BUBBLE_RETURN_THRESHOLD,
     bubble_relative_return_threshold: float = DEFAULT_BUBBLE_RELATIVE_RETURN_THRESHOLD,
+    external_valuation_mode: str = EXTERNAL_VALUATION_MODE_OFF,
+    external_trailing_pe_threshold: float = DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD,
+    external_forward_pe_threshold: float = DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD,
+    external_cape_threshold: float = DEFAULT_EXTERNAL_CAPE_THRESHOLD,
+    external_unprofitable_growth_threshold: float = DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
     financial_drawdown_threshold: float = DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD,
     financial_relative_lookback_days: int = DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS,
     financial_relative_return_threshold: float = DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD,
@@ -412,11 +495,11 @@ def build_crisis_context_features(
         | benchmark_relative_return.ge(float(bubble_relative_return_threshold))
     ).fillna(False)
     if int(bubble_persistence_days) > 0:
-        bubble_context = (
+        price_bubble_context = (
             raw_bubble_context.rolling(int(bubble_persistence_days) + 1, min_periods=1).max().astype(bool)
         )
     else:
-        bubble_context = raw_bubble_context
+        price_bubble_context = raw_bubble_context
 
     financial_drawdowns: dict[str, pd.Series] = {}
     financial_relative_returns: dict[str, pd.Series] = {}
@@ -487,7 +570,7 @@ def build_crisis_context_features(
             f"financial_relative_return_min_{int(financial_relative_lookback_days)}d": financial_relative_return_min,
             f"credit_relative_return_min_{int(credit_relative_lookback_days)}d": credit_relative_return_min,
             f"rate_proxy_return_min_{int(rate_lookback_days)}d": rate_proxy_return_min,
-            "bubble_context": bubble_context,
+            "price_bubble_context": price_bubble_context,
             "financial_context": financial_context,
             "credit_context": credit_context,
             "financial_system_context": financial_system_context,
@@ -508,6 +591,19 @@ def build_crisis_context_features(
     external = _prepare_external_context(external_context, index)
     if not external.empty:
         output = output.join(external)
+    external_valuation = build_external_valuation_context(
+        output,
+        trailing_pe_threshold=float(external_trailing_pe_threshold),
+        forward_pe_threshold=float(external_forward_pe_threshold),
+        cape_threshold=float(external_cape_threshold),
+        unprofitable_growth_threshold=float(external_unprofitable_growth_threshold),
+    )
+    output = output.join(external_valuation)
+    output["bubble_context"] = _combine_bubble_context(
+        output["price_bubble_context"],
+        output["external_valuation_context"],
+        external_valuation_mode=external_valuation_mode,
+    )
 
     suggestions = output.apply(_suggest_label_and_route, axis=1, result_type="expand")
     suggestions.columns = ["suggested_context_label", "suggested_route", "suggested_reason"]
@@ -604,6 +700,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-symbols", default=",".join(DEFAULT_RATE_SYMBOLS))
     parser.add_argument("--bubble-persistence-days", type=int, default=DEFAULT_BUBBLE_PERSISTENCE_DAYS)
     parser.add_argument(
+        "--external-valuation-mode",
+        choices=EXTERNAL_VALUATION_MODES,
+        default=EXTERNAL_VALUATION_MODE_OFF,
+        help="How optional external valuation context participates in the research bubble route",
+    )
+    parser.add_argument("--external-trailing-pe-threshold", type=float, default=DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD)
+    parser.add_argument("--external-forward-pe-threshold", type=float, default=DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD)
+    parser.add_argument("--external-cape-threshold", type=float, default=DEFAULT_EXTERNAL_CAPE_THRESHOLD)
+    parser.add_argument(
+        "--external-unprofitable-growth-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
+    )
+    parser.add_argument(
         "--systemic-financial-drawdown-threshold",
         type=float,
         default=DEFAULT_SYSTEMIC_FINANCIAL_DRAWDOWN_THRESHOLD,
@@ -670,6 +780,11 @@ def main(argv: list[str] | None = None) -> int:
         credit_pairs=credit_pairs,
         rate_symbols=rate_symbols,
         bubble_persistence_days=int(args.bubble_persistence_days),
+        external_valuation_mode=args.external_valuation_mode,
+        external_trailing_pe_threshold=float(args.external_trailing_pe_threshold),
+        external_forward_pe_threshold=float(args.external_forward_pe_threshold),
+        external_cape_threshold=float(args.external_cape_threshold),
+        external_unprofitable_growth_threshold=float(args.external_unprofitable_growth_threshold),
         systemic_financial_drawdown_threshold=float(args.systemic_financial_drawdown_threshold),
         systemic_credit_relative_return_threshold=float(args.systemic_credit_relative_return_threshold),
         policy_event_window_days=int(args.policy_event_window_days),
@@ -698,10 +813,16 @@ __all__ = [
     "CONTEXT_LABEL_VALUATION_BUBBLE",
     "DEFAULT_BUBBLE_PERSISTENCE_DAYS",
     "DEFAULT_CRISIS_CONTEXT_EVENTS",
+    "EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY",
+    "EXTERNAL_VALUATION_MODE_OFF",
+    "EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL",
+    "EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL",
+    "EXTERNAL_VALUATION_MODES",
     "EVENT_KIND_EXOGENOUS_SHOCK",
     "EVENT_KIND_POLICY_RESCUE",
     "build_context_diagnostics",
     "build_crisis_context_features",
     "build_event_context_flags",
+    "build_external_valuation_context",
     "main",
 ]

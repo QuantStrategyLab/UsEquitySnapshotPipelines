@@ -4,6 +4,7 @@ import pandas as pd
 
 from us_equity_snapshot_pipelines.crisis_response_research import (
     CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
+    EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
     ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
     build_event_response_decisions,
@@ -596,6 +597,55 @@ def test_unified_crisis_response_can_use_v2_context_pack() -> None:
     assert "suggested_route" in result["ai_opinions"].columns
     assert result["ai_opinions"]["final_context_allowed"].any()
     assert {ROUTE_TACO, ROUTE_TRUE_CRISIS}.issubset(set(result["response_decisions"]["route"]))
+
+
+def test_unified_crisis_response_can_use_external_valuation_context() -> None:
+    dates = pd.bdate_range("2000-01-03", periods=120)
+    qqq = []
+    for idx, _date in enumerate(dates):
+        if idx < 60:
+            qqq.append(100.0)
+        else:
+            qqq.append(max(60.0, 100.0 - (idx - 59) * 0.8))
+    rows = []
+    for as_of, qqq_close in zip(dates, qqq, strict=True):
+        rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
+        rows.append({"symbol": "SHY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "XLF", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "SPY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+    external = pd.DataFrame(
+        {
+            "as_of": [dates[55]],
+            "nasdaq_100_trailing_pe": [82.0],
+            "unprofitable_growth_proxy": [0.45],
+        }
+    )
+
+    result = run_crisis_response_research(
+        pd.DataFrame(rows),
+        events=(),
+        external_context=external,
+        start_date=str(dates[0].date()),
+        benchmark_symbol="QQQ",
+        attack_symbol="SYNTH_TQQQ",
+        safe_symbol="SHY",
+        overlay_sleeve_ratios=(0.05,),
+        crisis_context_mode=CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
+        external_valuation_mode=EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+        crisis_drawdown=-0.20,
+        crisis_risk_multiplier=0.25,
+        crisis_confirm_days=3,
+        ma_days=20,
+        ma_slope_days=3,
+        turnover_cost_bps=0.0,
+    )
+
+    opinions = result["ai_opinions"]
+    assert not opinions.empty
+    assert opinions["final_context_allowed"].any()
+    assert opinions["external_valuation_context"].any()
+    assert opinions["external_trailing_pe_extreme_context"].any()
+    assert result["true_crisis_signal"].any()
 
 
 def test_guard_transition_events_records_on_off_edges() -> None:

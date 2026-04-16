@@ -77,6 +77,20 @@ CRISIS_CONTEXT_MODES = (CRISIS_CONTEXT_MODE_V1_AI_RUBRIC, CRISIS_CONTEXT_MODE_V2
 DEFAULT_CONTEXT_FINANCIAL_SYMBOLS = ("XLF", "KRE")
 DEFAULT_CONTEXT_CREDIT_PAIRS = (("HYG", "IEF"), ("LQD", "IEF"))
 DEFAULT_CONTEXT_RATE_SYMBOLS = ("IEF", "TLT")
+DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD = 60.0
+DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD = 45.0
+DEFAULT_EXTERNAL_CAPE_THRESHOLD = 45.0
+DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD = 0.35
+EXTERNAL_VALUATION_MODE_OFF = "off"
+EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL = "price_or_external"
+EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL = "price_and_external"
+EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY = "external_only"
+EXTERNAL_VALUATION_MODES = (
+    EXTERNAL_VALUATION_MODE_OFF,
+    EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+    EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
+    EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY,
+)
 
 
 def _normalize_close(close: pd.DataFrame) -> pd.DataFrame:
@@ -132,6 +146,7 @@ def _build_v2_context_opinions(
     price_signal: pd.Series,
     *,
     events: Sequence[TradeWarEvent],
+    external_context: pd.DataFrame | None,
     start_date: str,
     end_date: str | None,
     benchmark_symbol: str,
@@ -139,12 +154,18 @@ def _build_v2_context_opinions(
     financial_symbols: Sequence[str],
     credit_pairs: Sequence[tuple[str, str]],
     rate_symbols: Sequence[str],
+    external_valuation_mode: str,
+    external_trailing_pe_threshold: float,
+    external_forward_pe_threshold: float,
+    external_cape_threshold: float,
+    external_unprofitable_growth_threshold: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     from .crisis_context_research import build_crisis_context_features
 
     context_features = build_crisis_context_features(
         close,
         events=events,
+        external_context=external_context,
         start_date=start_date,
         end_date=end_date,
         benchmark_symbol=benchmark_symbol,
@@ -152,12 +173,23 @@ def _build_v2_context_opinions(
         financial_symbols=financial_symbols,
         credit_pairs=credit_pairs,
         rate_symbols=rate_symbols,
+        external_valuation_mode=external_valuation_mode,
+        external_trailing_pe_threshold=float(external_trailing_pe_threshold),
+        external_forward_pe_threshold=float(external_forward_pe_threshold),
+        external_cape_threshold=float(external_cape_threshold),
+        external_unprofitable_growth_threshold=float(external_unprofitable_growth_threshold),
     )
     columns = [
         "strategy",
         "as_of",
         "price_crisis_confirmed",
         "suggested_route",
+        "price_bubble_context",
+        "external_valuation_context",
+        "external_trailing_pe_extreme_context",
+        "external_forward_pe_extreme_context",
+        "external_cape_extreme_context",
+        "external_speculative_quality_context",
         "bubble_context",
         "financial_context",
         "credit_context",
@@ -210,6 +242,18 @@ def _build_v2_context_opinions(
                 "as_of": pd.Timestamp(date).date().isoformat(),
                 "price_crisis_confirmed": True,
                 "suggested_route": route,
+                "price_bubble_context": bool(feature_row.get("price_bubble_context", False)),
+                "external_valuation_context": bool(feature_row.get("external_valuation_context", False)),
+                "external_trailing_pe_extreme_context": bool(
+                    feature_row.get("external_trailing_pe_extreme_context", False)
+                ),
+                "external_forward_pe_extreme_context": bool(
+                    feature_row.get("external_forward_pe_extreme_context", False)
+                ),
+                "external_cape_extreme_context": bool(feature_row.get("external_cape_extreme_context", False)),
+                "external_speculative_quality_context": bool(
+                    feature_row.get("external_speculative_quality_context", False)
+                ),
                 "bubble_context": bool(feature_row.get("bubble_context", False)),
                 "financial_context": bool(feature_row.get("financial_context", False)),
                 "credit_context": bool(feature_row.get("credit_context", False)),
@@ -390,9 +434,15 @@ def run_crisis_response_research(
     financial_symbol: str = DEFAULT_FINANCIAL_SYMBOL,
     market_symbol: str = DEFAULT_MARKET_SYMBOL,
     crisis_context_mode: str = CRISIS_CONTEXT_MODE_V1_AI_RUBRIC,
+    external_context: pd.DataFrame | None = None,
     context_financial_symbols: Sequence[str] = DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
     context_credit_pairs: Sequence[tuple[str, str]] = DEFAULT_CONTEXT_CREDIT_PAIRS,
     context_rate_symbols: Sequence[str] = DEFAULT_CONTEXT_RATE_SYMBOLS,
+    external_valuation_mode: str = EXTERNAL_VALUATION_MODE_OFF,
+    external_trailing_pe_threshold: float = DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD,
+    external_forward_pe_threshold: float = DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD,
+    external_cape_threshold: float = DEFAULT_EXTERNAL_CAPE_THRESHOLD,
+    external_unprofitable_growth_threshold: float = DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
     turnover_cost_bps: float = DEFAULT_TURNOVER_COST_BPS,
 ) -> dict[str, object]:
     close = price_history_to_close_matrix(price_history)
@@ -444,6 +494,7 @@ def run_crisis_response_research(
             close,
             confirmed_crisis_signal,
             events=events,
+            external_context=external_context,
             start_date=start_date,
             end_date=end_date,
             benchmark_symbol=benchmark_symbol,
@@ -451,6 +502,11 @@ def run_crisis_response_research(
             financial_symbols=_parse_upper_str_tuple(context_financial_symbols),
             credit_pairs=_parse_credit_pairs(context_credit_pairs),
             rate_symbols=_parse_upper_str_tuple(context_rate_symbols),
+            external_valuation_mode=external_valuation_mode,
+            external_trailing_pe_threshold=float(external_trailing_pe_threshold),
+            external_forward_pe_threshold=float(external_forward_pe_threshold),
+            external_cape_threshold=float(external_cape_threshold),
+            external_unprofitable_growth_threshold=float(external_unprofitable_growth_threshold),
         )
     else:
         ai_opinions = build_ai_crisis_opinions(
@@ -608,6 +664,11 @@ def build_parser() -> argparse.ArgumentParser:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--prices", help="Existing long price-history CSV with symbol/as_of/close columns")
     input_group.add_argument("--download", action="store_true", help="Download adjusted price history through yfinance")
+    parser.add_argument(
+        "--external-context",
+        default=None,
+        help="Optional point-in-time context CSV with an as_of column for V2 context research",
+    )
     parser.add_argument("--event-set", choices=tuple(sorted(TRADE_WAR_EVENT_SETS)), default=DEFAULT_EVENT_SET)
     parser.add_argument("--price-start", default=DEFAULT_PRICE_START_DATE)
     parser.add_argument("--price-end", default=None)
@@ -638,6 +699,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(f"{numerator}:{denominator}" for numerator, denominator in DEFAULT_CONTEXT_CREDIT_PAIRS),
     )
     parser.add_argument("--context-rate-symbols", default=",".join(DEFAULT_CONTEXT_RATE_SYMBOLS))
+    parser.add_argument(
+        "--external-valuation-mode",
+        choices=EXTERNAL_VALUATION_MODES,
+        default=EXTERNAL_VALUATION_MODE_OFF,
+        help="How optional external valuation context participates in the V2 research bubble route",
+    )
+    parser.add_argument("--external-trailing-pe-threshold", type=float, default=DEFAULT_EXTERNAL_TRAILING_PE_THRESHOLD)
+    parser.add_argument("--external-forward-pe-threshold", type=float, default=DEFAULT_EXTERNAL_FORWARD_PE_THRESHOLD)
+    parser.add_argument("--external-cape-threshold", type=float, default=DEFAULT_EXTERNAL_CAPE_THRESHOLD)
+    parser.add_argument(
+        "--external-unprofitable-growth-threshold",
+        type=float,
+        default=DEFAULT_EXTERNAL_UNPROFITABLE_GROWTH_THRESHOLD,
+    )
     parser.add_argument("--turnover-cost-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
     parser.add_argument("--output-dir", required=True)
     return parser
@@ -675,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"downloaded {len(price_history)} price rows -> {prices_path}")
     else:
         price_history = read_table(args.prices)
+    external_context = read_table(args.external_context) if args.external_context else None
 
     result = run_crisis_response_research(
         price_history,
@@ -694,9 +770,15 @@ def main(argv: list[str] | None = None) -> int:
         financial_symbol=args.financial_symbol,
         market_symbol=args.market_symbol,
         crisis_context_mode=args.crisis_context_mode,
+        external_context=external_context,
         context_financial_symbols=_parse_upper_str_tuple(args.context_financial_symbols),
         context_credit_pairs=_parse_credit_pairs(args.context_credit_pairs),
         context_rate_symbols=_parse_upper_str_tuple(args.context_rate_symbols),
+        external_valuation_mode=args.external_valuation_mode,
+        external_trailing_pe_threshold=float(args.external_trailing_pe_threshold),
+        external_forward_pe_threshold=float(args.external_forward_pe_threshold),
+        external_cape_threshold=float(args.external_cape_threshold),
+        external_unprofitable_growth_threshold=float(args.external_unprofitable_growth_threshold),
         turnover_cost_bps=float(args.turnover_cost_bps),
     )
     print("\nSummary:")
@@ -738,6 +820,11 @@ __all__ = [
     "CRISIS_CONTEXT_MODE_V1_AI_RUBRIC",
     "CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK",
     "CRISIS_CONTEXT_MODES",
+    "EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY",
+    "EXTERNAL_VALUATION_MODE_OFF",
+    "EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL",
+    "EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL",
+    "EXTERNAL_VALUATION_MODES",
     "ROUTE_NO_ACTION",
     "ROUTE_TACO",
     "ROUTE_TRUE_CRISIS",
