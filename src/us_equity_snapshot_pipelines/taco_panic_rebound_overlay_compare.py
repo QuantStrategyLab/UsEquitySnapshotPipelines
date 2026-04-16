@@ -279,7 +279,7 @@ def _format_crisis_windows(windows: Sequence[tuple[str, str, str]]) -> str:
     return ",".join(f"{name}:{start}:{end}" for name, start, end in windows)
 
 
-def build_dual_ai_audit_decisions(
+def build_dual_audit_decisions(
     recognized_events: Sequence[TradeWarEvent],
     scan_days: pd.Series,
     *,
@@ -340,7 +340,7 @@ def build_dual_ai_audit_decisions(
                 "auditor_verdict": "pass" if passed else "veto",
                 "veto_reason": ";".join(veto_reasons),
                 "final_event_included": passed,
-                "backtest_note": "deterministic_dual_ai_review_proxy",
+                "backtest_note": "deterministic_dual_audit_review_proxy",
             }
         )
     columns = (
@@ -968,7 +968,7 @@ def run_overlay_comparison(
     weights_by_strategy: dict[str, pd.DataFrame] = {"base": base_weights_history}
     trades_by_strategy: dict[str, pd.DataFrame] = {}
     _add_overlay_strategy_returns(
-        scenario_prefix="price_stress_ai_taco",
+        scenario_prefix="price_stress_taco",
         taco_result=taco_result,
         returns=returns,
         base_weights=base_weights,
@@ -1012,7 +1012,7 @@ def run_overlay_comparison(
         returns_by_strategy["price_crisis_guard_base"] = crisis_base_returns
         weights_by_strategy["price_crisis_guard_base"] = crisis_base_weights_history
         _add_overlay_strategy_returns(
-            scenario_prefix="price_crisis_guard_ai_taco",
+            scenario_prefix="price_crisis_guard_taco",
             taco_result=taco_result,
             returns=returns,
             base_weights=crisis_base_weights,
@@ -1028,16 +1028,16 @@ def run_overlay_comparison(
         )
 
     audit_decisions_by_mode: list[pd.DataFrame] = []
-    taco_trades_by_scenario = [taco_result["trades"].assign(scenario="price_stress_ai_taco")]
-    taco_summaries_by_scenario = [taco_result["summary"].assign(scenario="price_stress_ai_taco")]
+    taco_trades_by_scenario = [taco_result["trades"].assign(scenario="price_stress_taco")]
+    taco_summaries_by_scenario = [taco_result["summary"].assign(scenario="price_stress_taco")]
     taco_period_summaries_by_scenario = [
-        taco_result["period_summary"].assign(scenario="price_stress_ai_taco")
+        taco_result["period_summary"].assign(scenario="price_stress_taco")
     ]
     for raw_mode in _parse_str_tuple(audit_modes):
         audit_mode = str(raw_mode).strip().lower()
         if audit_mode == AUDIT_MODE_OFF:
             continue
-        audited_events, audit_decisions = build_dual_ai_audit_decisions(
+        audited_events, audit_decisions = build_dual_audit_decisions(
             recognized_events,
             scan_days,
             audit_mode=audit_mode,
@@ -1056,7 +1056,7 @@ def run_overlay_comparison(
             cash_symbol=cash_symbol,
             turnover_cost_bps=turnover_cost_bps,
         )
-        scenario_prefix = f"dual_ai_{audit_mode}_taco"
+        scenario_prefix = f"dual_audit_{audit_mode}_taco"
         _add_overlay_strategy_returns(
             scenario_prefix=scenario_prefix,
             taco_result=audit_result,
@@ -1311,7 +1311,7 @@ __all__ = [
     "build_crisis_guard_diagnostics",
     "build_deltas_vs_base",
     "build_diagnostics",
-    "build_dual_ai_audit_decisions",
+    "build_dual_audit_decisions",
     "build_period_summary",
     "build_price_crisis_guard_signal",
     "build_price_stress_scan",

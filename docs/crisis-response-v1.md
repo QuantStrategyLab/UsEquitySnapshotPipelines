@@ -90,7 +90,7 @@ python scripts/backtest_crisis_response.py \
 
 - `response_decisions.csv`: main route audit; each candidate must land in
   `true_crisis`, `taco_fake_crisis`, or `no_action`.
-- `ai_opinions.csv`: legacy filename for sparse rubric/context opinions only on
+- `context_opinions.csv`: sparse rubric/context opinions only on
   confirmed crisis-price trigger days.
 - `true_crisis_signal.csv`: final crisis-guard active series.
 - `taco_event_calendar.csv`: events allowed into the TACO sleeve.

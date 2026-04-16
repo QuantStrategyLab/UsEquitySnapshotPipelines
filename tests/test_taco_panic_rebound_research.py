@@ -9,16 +9,16 @@ from us_equity_snapshot_pipelines.crisis_response_research import (
     ROUTE_SYSTEMIC_STRESS_WATCH,
     ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
-    build_ai_audit_effectiveness_reports,
+    build_route_audit_effectiveness_reports,
     build_event_response_decisions,
     run_crisis_response_research,
 )
 from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
-    CONTEXT_GATE_AI_RUBRIC,
+    CONTEXT_GATE_RUBRIC,
     CONTEXT_GATE_BUBBLE,
     CONTEXT_GATE_BUBBLE_OR_FINANCIAL,
     apply_context_gate_to_signal,
-    build_ai_crisis_opinions,
+    build_crisis_context_opinions,
     build_bubble_context_gate,
     build_crisis_guard_specs,
     build_financial_context_gate,
@@ -105,7 +105,7 @@ from us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare import (
     AUDIT_MODE_CRISIS_VETO,
     add_synthetic_attack_close,
     apply_price_crisis_guard_to_weights,
-    build_dual_ai_audit_decisions,
+    build_dual_audit_decisions,
     build_price_crisis_guard_signal,
     build_price_stress_scan,
     filter_events_by_price_stress,
@@ -122,7 +122,7 @@ def test_full_event_set_includes_presidential_period_events() -> None:
     assert any(event.event_date.startswith("2025-") for event in full)
 
 
-def test_price_stress_scan_filters_ai_event_calendar() -> None:
+def test_price_stress_scan_filters_event_calendar() -> None:
     close = price_history_to_close_matrix(_sample_prices())
     events = (
         TradeWarEvent(
@@ -152,7 +152,7 @@ def test_price_stress_scan_filters_ai_event_calendar() -> None:
     assert tuple(event.event_id for event in filtered) == ("stress-shock",)
 
 
-def test_overlay_comparison_keeps_base_and_adds_price_stress_ai_scenario() -> None:
+def test_overlay_comparison_keeps_base_and_adds_price_stress_scenario() -> None:
     prices = _sample_prices()
     events = (
         TradeWarEvent(
@@ -180,8 +180,8 @@ def test_overlay_comparison_keeps_base_and_adds_price_stress_ai_scenario() -> No
 
     assert set(summary["Strategy"]) == {
         "base",
-        "price_stress_ai_taco_5pct",
-        "dual_ai_crisis_veto_taco_5pct",
+        "price_stress_taco_5pct",
+        "dual_audit_crisis_veto_taco_5pct",
     }
     assert not recognized_events.empty
     assert recognized_events["event_id"].tolist() == ["stress-shock"]
@@ -189,7 +189,7 @@ def test_overlay_comparison_keeps_base_and_adds_price_stress_ai_scenario() -> No
     assert not result["audit_decisions"].empty
 
 
-def test_dual_ai_audit_proxy_can_veto_recognized_taco_event() -> None:
+def test_dual_audit_proxy_can_veto_recognized_taco_event() -> None:
     close = price_history_to_close_matrix(_sample_prices())
     events = (
         TradeWarEvent(
@@ -205,7 +205,7 @@ def test_dual_ai_audit_proxy_can_veto_recognized_taco_event() -> None:
 
     scan_days = build_price_stress_scan(close, start_date="2019-05-03")
     recognized = filter_events_by_price_stress(events, scan_days)
-    audited_events, audit_decisions = build_dual_ai_audit_decisions(
+    audited_events, audit_decisions = build_dual_audit_decisions(
         recognized,
         scan_days,
         audit_mode=AUDIT_MODE_CRISIS_VETO,
@@ -375,7 +375,7 @@ def test_context_gate_latches_after_contextual_entry_until_price_signal_off() ->
     assert gated.tolist() == [False, True, True, True, False, False]
 
 
-def test_ai_crisis_opinion_proxy_approves_bubble_and_vetoes_plain_price_crisis() -> None:
+def test_crisis_context_opinion_proxy_approves_bubble_and_vetoes_plain_price_crisis() -> None:
     dates = pd.bdate_range("1999-01-04", periods=270)
     qqq = pd.Series(100.0, index=dates)
     qqq.iloc[252:] = 180.0
@@ -390,7 +390,7 @@ def test_ai_crisis_opinion_proxy_approves_bubble_and_vetoes_plain_price_crisis()
     price_signal = pd.Series(False, index=dates)
     price_signal.iloc[260] = True
 
-    opinions = build_ai_crisis_opinions(
+    opinions = build_crisis_context_opinions(
         close,
         price_signal,
         start_date=str(dates[0].date()),
@@ -406,7 +406,7 @@ def test_ai_crisis_opinion_proxy_approves_bubble_and_vetoes_plain_price_crisis()
     assert bool(row["final_context_allowed"])
 
     plain_close = pd.DataFrame({"QQQ": 100.0, "XLF": 100.0, "SPY": 100.0}, index=dates)
-    plain_opinions = build_ai_crisis_opinions(
+    plain_opinions = build_crisis_context_opinions(
         plain_close,
         price_signal,
         start_date=str(dates[0].date()),
@@ -421,7 +421,7 @@ def test_ai_crisis_opinion_proxy_approves_bubble_and_vetoes_plain_price_crisis()
     assert not bool(plain_row["final_context_allowed"])
 
 
-def test_ai_rubric_context_gate_writes_opinion_rows() -> None:
+def test_rubric_context_gate_writes_opinion_rows() -> None:
     dates = pd.bdate_range("1999-01-04", periods=320)
     qqq = []
     for idx, _date in enumerate(dates):
@@ -444,7 +444,7 @@ def test_ai_rubric_context_gate_writes_opinion_rows() -> None:
         benchmark_symbol="QQQ",
         attack_symbol="SYNTH_TQQQ",
         safe_symbol="SHY",
-        context_gates=(CONTEXT_GATE_AI_RUBRIC,),
+        context_gates=(CONTEXT_GATE_RUBRIC,),
         drawdown_thresholds=(-0.20,),
         risk_multipliers=(0.25,),
         ma_days=20,
@@ -452,9 +452,9 @@ def test_ai_rubric_context_gate_writes_opinion_rows() -> None:
         turnover_cost_bps=0.0,
     )
 
-    assert "crisis_guard_ai_rubric_dd20_risk25" in set(result["summary"]["Strategy"])
-    assert not result["ai_opinions"].empty
-    assert result["ai_opinions"]["final_context_allowed"].any()
+    assert "crisis_guard_rubric_dd20_risk25" in set(result["summary"]["Strategy"])
+    assert not result["context_opinions"].empty
+    assert result["context_opinions"]["final_context_allowed"].any()
 
 
 def test_event_response_decisions_route_taco_or_true_crisis() -> None:
@@ -541,7 +541,7 @@ def test_unified_crisis_response_combines_taco_and_true_crisis_routes() -> None:
 
     assert "unified_response_5pct" in set(result["summary"]["Strategy"])
     assert {ROUTE_TACO, ROUTE_TRUE_CRISIS}.issubset(set(result["response_decisions"]["route"]))
-    assert not result["ai_opinions"].empty
+    assert not result["context_opinions"].empty
 
 
 def test_unified_crisis_response_can_use_v2_context_pack() -> None:
@@ -597,8 +597,8 @@ def test_unified_crisis_response_can_use_v2_context_pack() -> None:
 
     assert "unified_response_5pct" in set(result["summary"]["Strategy"])
     assert not result["crisis_context_features"].empty
-    assert "suggested_route" in result["ai_opinions"].columns
-    assert result["ai_opinions"]["final_context_allowed"].any()
+    assert "suggested_route" in result["context_opinions"].columns
+    assert result["context_opinions"]["final_context_allowed"].any()
     assert {ROUTE_TACO, ROUTE_TRUE_CRISIS}.issubset(set(result["response_decisions"]["route"]))
 
 
@@ -643,7 +643,7 @@ def test_unified_crisis_response_can_use_external_valuation_context() -> None:
         turnover_cost_bps=0.0,
     )
 
-    opinions = result["ai_opinions"]
+    opinions = result["context_opinions"]
     assert not opinions.empty
     assert opinions["final_context_allowed"].any()
     assert opinions["external_valuation_context"].any()
@@ -803,7 +803,7 @@ def test_unified_crisis_response_can_reduce_bubble_fragility_before_true_crisis(
     assert fragility_risk < normal_risk
 
 
-def test_ai_audit_effectiveness_keeps_2022_rate_bear_out_of_true_crisis() -> None:
+def test_route_audit_effectiveness_keeps_2022_rate_bear_out_of_true_crisis() -> None:
     dates = pd.bdate_range("2022-01-03", periods=6)
     features = pd.DataFrame(
         {
@@ -818,7 +818,7 @@ def test_ai_audit_effectiveness_keeps_2022_rate_bear_out_of_true_crisis() -> Non
     base_returns = pd.Series([0.0, -0.02, 0.01, -0.01, 0.02, -0.01], index=dates)
     strategy_returns = pd.Series([0.0, -0.02, 0.01, -0.01, 0.02, -0.01], index=dates)
 
-    reports = build_ai_audit_effectiveness_reports(
+    reports = build_route_audit_effectiveness_reports(
         features,
         confirmed_crisis_signal=confirmed,
         true_crisis_signal=true_crisis,
@@ -827,15 +827,15 @@ def test_ai_audit_effectiveness_keeps_2022_rate_bear_out_of_true_crisis() -> Non
             ("biden_2022_bear", "2022-01-03", "2022-01-10", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
         ),
     )
-    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
+    effectiveness = reports["route_audit_effectiveness"].iloc[0]
 
     assert effectiveness["Status"] == "pass"
     assert effectiveness["False Positive True Crisis Days"] == 0
     assert effectiveness["Confirmed Price Crisis Days"] == len(dates)
-    assert reports["ai_false_positive_true_crisis"].empty
+    assert reports["route_audit_false_positive_true_crisis"].empty
 
 
-def test_ai_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() -> None:
+def test_route_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() -> None:
     dates = pd.bdate_range("2000-03-24", periods=5)
     features = pd.DataFrame(
         {
@@ -866,7 +866,7 @@ def test_ai_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() ->
     confirmed = pd.Series([True] * len(dates), index=dates)
     true_crisis = pd.Series([True, True, False, True, True], index=dates)
 
-    reports = build_ai_audit_effectiveness_reports(
+    reports = build_route_audit_effectiveness_reports(
         features,
         confirmed_crisis_signal=confirmed,
         true_crisis_signal=true_crisis,
@@ -874,15 +874,15 @@ def test_ai_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() ->
             ("dotcom_bubble_burst", "2000-03-24", "2000-03-30", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
         ),
     )
-    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
-    false_negatives = reports["ai_false_negative_true_crisis"]
+    effectiveness = reports["route_audit_effectiveness"].iloc[0]
+    false_negatives = reports["route_audit_false_negative_true_crisis"]
 
     assert effectiveness["False Negative True Crisis Days"] == 1
     assert false_negatives["as_of"].tolist() == ["2000-03-28"]
     assert false_negatives["Suggested Route"].tolist() == [ROUTE_NO_ACTION]
 
 
-def test_ai_audit_effectiveness_treats_2011_as_stress_watch_until_price_confirms() -> None:
+def test_route_audit_effectiveness_treats_2011_as_stress_watch_until_price_confirms() -> None:
     dates = pd.bdate_range("2011-07-22", periods=5)
     features = pd.DataFrame(
         {
@@ -913,7 +913,7 @@ def test_ai_audit_effectiveness_treats_2011_as_stress_watch_until_price_confirms
     confirmed = pd.Series([False] * len(dates), index=dates)
     true_crisis = pd.Series([False] * len(dates), index=dates)
 
-    reports = build_ai_audit_effectiveness_reports(
+    reports = build_route_audit_effectiveness_reports(
         features,
         confirmed_crisis_signal=confirmed,
         true_crisis_signal=true_crisis,
@@ -927,13 +927,13 @@ def test_ai_audit_effectiveness_treats_2011_as_stress_watch_until_price_confirms
             ),
         ),
     )
-    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
+    effectiveness = reports["route_audit_effectiveness"].iloc[0]
 
     assert effectiveness["Status"] == "pass"
     assert effectiveness["Expected Route"] == ROUTE_SYSTEMIC_STRESS_WATCH
     assert effectiveness["Suggested Acceptable Days"] == len(dates)
     assert effectiveness["False Positive True Crisis Days"] == 0
-    assert reports["ai_false_positive_true_crisis"].empty
+    assert reports["route_audit_false_positive_true_crisis"].empty
 
 
 def test_guard_transition_events_records_on_off_edges() -> None:

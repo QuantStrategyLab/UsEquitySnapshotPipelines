@@ -98,25 +98,24 @@ python scripts/backtest_crisis_response.py \
 ```
 
 This writes the normal unified response outputs plus
-`crisis_context_features.csv`. `ai_opinions.csv` remains sparse and is written
-only for confirmed crisis-price trigger days. The filename is retained for
-compatibility with earlier research outputs.
+`crisis_context_features.csv`. `context_opinions.csv` remains sparse and is written
+only for confirmed crisis-price trigger days.
 
 The unified response run also writes audit-effectiveness reports. These are
 research-only checks for stability of the context / audit layer, not new
 trading rules:
 
-- `ai_audit_effectiveness.csv`: expected historical route versus actual audit
+- `route_audit_effectiveness.csv`: expected historical route versus actual audit
   behavior, including false-positive true-crisis days in control windows and
   false-negative true-crisis days after the price scanner has confirmed.
-- `ai_route_period_summary.csv`: period-level counts for suggested
+- `route_audit_period_summary.csv`: period-level counts for suggested
   `true_crisis`, `taco_fake_crisis`, and `no_action` routes.
-- `ai_route_confusion_matrix.csv`: expected route versus suggested route counts.
-- `ai_false_positive_true_crisis.csv`: dates where a no-action or TACO control
+- `route_audit_confusion_matrix.csv`: expected route versus suggested route counts.
+- `route_audit_false_positive_true_crisis.csv`: dates where a no-action or TACO control
   window still activated the true-crisis guard.
-- `ai_false_negative_true_crisis.csv`: dates where an expected true-crisis
+- `route_audit_false_negative_true_crisis.csv`: dates where an expected true-crisis
   window had a confirmed price-crisis signal but the audit route vetoed defense.
-- `ai_decision_pnl_attribution.csv`: base versus unified-response returns on
+- `route_decision_pnl_attribution.csv`: base versus unified-response returns on
   true-crisis, bubble-fragility, and normal / TACO decision buckets.
 
 The key stability check for 2022 is that `biden_2022_bear` can show rate-bear
