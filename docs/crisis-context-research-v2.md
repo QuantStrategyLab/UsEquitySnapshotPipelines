@@ -189,6 +189,46 @@ python scripts/backtest_crisis_response.py \
   --output-dir data/output/crisis_response_1999_synthetic_v2_valuation
 ```
 
+Optional severe valuation-bubble research overlay:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --prices data/output/crisis_response_1999_synthetic_v2_context/input/crisis_response_price_history.csv \
+  --external-context data/input/research/nasdaq_100_valuation_context.csv \
+  --event-set full \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --severe-crisis-risk-multiplier 0.10 \
+  --severe-crisis-context valuation_bubble \
+  --crisis-confirm-days 5 \
+  --crisis-context-mode v2_context_pack \
+  --external-valuation-mode price_or_external \
+  --output-dir data/output/crisis_response_1999_synthetic_v2_valuation_severe
+```
+
+Provisional severe trials with the same non-committed P/E sample:
+
+| Variant | Dot-com burst MDD | Dot-com full-cycle return | Lost decade return | GFC MDD | 2015-to-date return |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V2 context, no external valuation | -87.63% | -65.16% | -18.60% | -41.52% | +2241.24% |
+| `price_or_external`, 0.25 crisis risk | -78.54% | -39.54% | +3.09% | -41.52% | +2241.24% |
+| External-valuation severe 0.10 | -76.82% | -34.54% | +4.33% | -41.52% | +2241.24% |
+| Valuation-bubble severe 0.10 | -73.09% | -23.98% | +21.16% | -41.52% | +2241.24% |
+| Valuation-bubble severe 0.00 | -86.15% | -60.98% | -26.11% | -41.52% | +2241.24% |
+
+The 0.10 valuation-bubble severe setting is the best provisional compromise in
+this matrix. It only tightens true-crisis days routed as `valuation_bubble`, so
+the GFC financial-system route and post-2015 windows remain unchanged in this
+sample. A full exit at 0.00 is worse because the signal arrives late enough that
+missing intermediate rebounds matters.
+
 ## Route Priority
 
 The V2 context pack uses conservative research labels:

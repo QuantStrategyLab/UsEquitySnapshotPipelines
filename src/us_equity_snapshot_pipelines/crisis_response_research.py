@@ -91,6 +91,13 @@ EXTERNAL_VALUATION_MODES = (
     EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
     EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY,
 )
+SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION = "external_valuation"
+SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE = "valuation_bubble"
+SEVERE_CRISIS_CONTEXTS = (
+    SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION,
+    SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE,
+)
+DEFAULT_SEVERE_CRISIS_CONTEXT = SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION
 
 
 def _normalize_close(close: pd.DataFrame) -> pd.DataFrame:
@@ -114,6 +121,58 @@ def _series_from_ai_allowed(ai_opinions: pd.DataFrame, index: pd.DatetimeIndex) 
         return output
     opinion_dates = pd.to_datetime(ai_opinions["as_of"]).dt.normalize()
     output.loc[opinion_dates] = ai_opinions["final_context_allowed"].to_numpy(dtype=bool)
+    return output
+
+
+def _series_from_ai_bool_column(
+    ai_opinions: pd.DataFrame,
+    index: pd.DatetimeIndex,
+    column: str,
+    *,
+    require_final_allowed: bool = True,
+) -> pd.Series:
+    output = pd.Series(False, index=index, name=str(column))
+    if ai_opinions.empty or column not in ai_opinions.columns:
+        return output
+
+    frame = ai_opinions.copy()
+    frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    frame = frame.dropna(subset=["as_of"])
+    if frame.empty:
+        return output
+
+    values = frame[column].fillna(False).astype(bool)
+    if require_final_allowed and "final_context_allowed" in frame.columns:
+        values = values & frame["final_context_allowed"].fillna(False).astype(bool)
+    daily_values = pd.Series(values.to_numpy(dtype=bool), index=frame["as_of"]).groupby(level=0).max()
+    aligned = daily_values.reindex(output.index).fillna(False).astype(bool)
+    output.loc[aligned.index] = aligned.to_numpy(dtype=bool)
+    return output
+
+
+def _series_from_ai_valuation_bubble(ai_opinions: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
+    output = pd.Series(False, index=index, name="valuation_bubble_context")
+    if ai_opinions.empty:
+        return output
+
+    frame = ai_opinions.copy()
+    frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    frame = frame.dropna(subset=["as_of"])
+    if frame.empty:
+        return output
+
+    if "crisis_type" in frame.columns:
+        values = frame["crisis_type"].fillna("").astype(str).str.lower().eq("valuation_bubble")
+    elif "bubble_context" in frame.columns:
+        values = frame["bubble_context"].fillna(False).astype(bool)
+    else:
+        return output
+    if "final_context_allowed" in frame.columns:
+        values = values & frame["final_context_allowed"].fillna(False).astype(bool)
+
+    daily_values = pd.Series(values.to_numpy(dtype=bool), index=frame["as_of"]).groupby(level=0).max()
+    aligned = daily_values.reindex(output.index).fillna(False).astype(bool)
+    output.loc[aligned.index] = aligned.to_numpy(dtype=bool)
     return output
 
 
@@ -428,6 +487,8 @@ def run_crisis_response_research(
     synthetic_attack_expense_rate: float = DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     crisis_drawdown: float = DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN,
     crisis_risk_multiplier: float = DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER,
+    severe_crisis_risk_multiplier: float | None = None,
+    severe_crisis_context: str = DEFAULT_SEVERE_CRISIS_CONTEXT,
     crisis_confirm_days: int = DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS,
     ma_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_DAYS,
     ma_slope_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
@@ -523,6 +584,22 @@ def run_crisis_response_research(
         crisis_context_features = pd.DataFrame()
     ai_context = _series_from_ai_allowed(ai_opinions, confirmed_crisis_signal.index)
     true_crisis_signal = apply_context_gate_to_signal(confirmed_crisis_signal, ai_context)
+    severe_crisis_context = str(severe_crisis_context).strip().lower()
+    if severe_crisis_context not in SEVERE_CRISIS_CONTEXTS:
+        raise ValueError(f"Unsupported severe_crisis_context: {severe_crisis_context!r}")
+    if severe_crisis_risk_multiplier is None:
+        severe_crisis_signal = pd.Series(False, index=true_crisis_signal.index, name="severe_crisis")
+    else:
+        if severe_crisis_context == SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE:
+            severe_context = _series_from_ai_valuation_bubble(ai_opinions, confirmed_crisis_signal.index)
+        else:
+            severe_context = _series_from_ai_bool_column(
+                ai_opinions,
+                confirmed_crisis_signal.index,
+                "external_valuation_context",
+                require_final_allowed=True,
+            )
+        severe_crisis_signal = apply_context_gate_to_signal(true_crisis_signal, severe_context).rename("severe_crisis")
 
     decisions = build_event_response_decisions(
         recognized_events,
@@ -586,6 +663,18 @@ def run_crisis_response_research(
         cash_symbol=cash_symbol,
         risk_multiplier=float(crisis_risk_multiplier),
     ).reindex(index[:-1]).ffill().fillna(0.0)
+    if severe_crisis_risk_multiplier is not None and bool(severe_crisis_signal.any()):
+        severe_weights = apply_price_crisis_guard_to_weights(
+            base_weights,
+            severe_crisis_signal,
+            benchmark_symbol=benchmark_symbol,
+            attack_symbol=attack_symbol,
+            safe_symbol=safe_symbol,
+            cash_symbol=cash_symbol,
+            risk_multiplier=float(severe_crisis_risk_multiplier),
+        ).reindex(index[:-1]).ffill().fillna(0.0)
+        severe_mask = severe_crisis_signal.reindex(index[:-1]).ffill().fillna(False).astype(bool)
+        crisis_weights.loc[severe_mask] = severe_weights.loc[severe_mask]
     crisis_returns, crisis_weights_history = _weights_to_returns(
         returns,
         crisis_weights,
@@ -652,6 +741,7 @@ def run_crisis_response_research(
         "scan_days": scan_days,
         "confirmed_crisis_signal": confirmed_crisis_signal,
         "true_crisis_signal": true_crisis_signal,
+        "severe_crisis_signal": severe_crisis_signal,
         "recognized_events": events_to_frame(recognized_events),
         "taco_events": events_to_frame(taco_events),
         "returns_by_strategy": returns_by_strategy,
@@ -684,6 +774,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--synthetic-attack-expense-rate", type=float, default=DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE)
     parser.add_argument("--crisis-drawdown", type=float, default=DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN)
     parser.add_argument("--crisis-risk-multiplier", type=float, default=DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER)
+    parser.add_argument(
+        "--severe-crisis-risk-multiplier",
+        type=float,
+        default=None,
+        help=(
+            "Optional research-only risk multiplier for selected severe true-crisis days; "
+            "disabled by default"
+        ),
+    )
+    parser.add_argument(
+        "--severe-crisis-context",
+        choices=SEVERE_CRISIS_CONTEXTS,
+        default=DEFAULT_SEVERE_CRISIS_CONTEXT,
+        help="Context subset eligible for --severe-crisis-risk-multiplier",
+    )
     parser.add_argument("--crisis-confirm-days", type=int, default=DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS)
     parser.add_argument("--financial-symbol", default=DEFAULT_FINANCIAL_SYMBOL)
     parser.add_argument("--market-symbol", default=DEFAULT_MARKET_SYMBOL)
@@ -766,6 +871,8 @@ def main(argv: list[str] | None = None) -> int:
         synthetic_attack_expense_rate=float(args.synthetic_attack_expense_rate),
         crisis_drawdown=float(args.crisis_drawdown),
         crisis_risk_multiplier=float(args.crisis_risk_multiplier),
+        severe_crisis_risk_multiplier=args.severe_crisis_risk_multiplier,
+        severe_crisis_context=args.severe_crisis_context,
         crisis_confirm_days=int(args.crisis_confirm_days),
         financial_symbol=args.financial_symbol,
         market_symbol=args.market_symbol,
@@ -804,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
     result["scan_days"].rename("price_stress_scan").to_csv(output_dir / "price_stress_scan_days.csv")
     result["confirmed_crisis_signal"].rename("confirmed_crisis").to_csv(output_dir / "confirmed_crisis_signal.csv")
     result["true_crisis_signal"].rename("true_crisis").to_csv(output_dir / "true_crisis_signal.csv")
+    result["severe_crisis_signal"].rename("severe_crisis").to_csv(output_dir / "severe_crisis_signal.csv")
     returns_dir = output_dir / "returns"
     weights_dir = output_dir / "weights"
     returns_dir.mkdir(exist_ok=True)
@@ -828,6 +936,9 @@ __all__ = [
     "ROUTE_NO_ACTION",
     "ROUTE_TACO",
     "ROUTE_TRUE_CRISIS",
+    "SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION",
+    "SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE",
+    "SEVERE_CRISIS_CONTEXTS",
     "build_event_response_decisions",
     "main",
     "run_crisis_response_research",
