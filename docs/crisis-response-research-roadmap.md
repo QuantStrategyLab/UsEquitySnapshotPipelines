@@ -43,6 +43,8 @@ Purpose: distinguish 2000-style bubble-burst risk from an ordinary correction.
 - HYG / IEF and LQD / IEF relative strength.
 - A stricter systemic threshold that distinguishes ordinary bank / credit
   weakness from 2008-style crisis stress.
+- A joint financial-sector plus credit-stress confirmation so early 2008 can be
+  recognized before either single-family proxy reaches a severe threshold.
 - Credit spreads and funding stress if the data source is stable.
 - Bank-stock drawdowns and bank news summaries.
 
