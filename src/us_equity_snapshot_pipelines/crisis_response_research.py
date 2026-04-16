@@ -118,6 +118,71 @@ FRAGILITY_CONTEXTS = (
     FRAGILITY_CONTEXT_EXTERNAL_BREADTH_OR_QUALITY,
 )
 DEFAULT_FRAGILITY_CONTEXT = FRAGILITY_CONTEXT_EXTERNAL_VALUATION
+DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS: tuple[tuple[str, str, str | None, str, str], ...] = (
+    ("dotcom_bubble_burst", "2000-03-24", "2002-10-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
+    ("gfc_peak_to_trough", "2007-10-09", "2009-03-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
+    ("covid_crash_2020", "2020-02-18", "2020-04-30", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
+    ("biden_2022_bear", "2022-01-03", "2022-12-30", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
+    ("trade_war_2018_2019", "2018-01-02", "2019-12-31", ROUTE_TACO, f"{ROUTE_TACO},{ROUTE_NO_ACTION}"),
+    ("trump_2_to_date", "2025-01-21", None, ROUTE_TACO, f"{ROUTE_TACO},{ROUTE_NO_ACTION}"),
+)
+
+AI_AUDIT_EFFECTIVENESS_COLUMNS = (
+    "Period",
+    "Start",
+    "End",
+    "Expected Route",
+    "Acceptable Routes",
+    "Trading Days",
+    "Suggested Acceptable Days",
+    "Suggested Acceptable Ratio",
+    "Confirmed Price Crisis Days",
+    "True Crisis Days",
+    "False Positive True Crisis Days",
+    "False Negative True Crisis Days",
+    "TACO Route Days",
+    "No Action Route Days",
+    "Status",
+)
+
+AI_ROUTE_PERIOD_SUMMARY_COLUMNS = (
+    "Period",
+    "Start",
+    "End",
+    "Trading Days",
+    "Suggested True Crisis Days",
+    "Suggested TACO Days",
+    "Suggested No Action Days",
+    "Confirmed Price Crisis Days",
+    "True Crisis Signal Days",
+    "True Crisis Signal Ratio",
+)
+
+AI_ROUTE_CONFUSION_COLUMNS = (
+    "Period",
+    "Expected Route",
+    "Suggested Route",
+    "Days",
+    "Trading Days",
+    "Active Ratio",
+)
+
+AI_AUDIT_EXCEPTION_COLUMNS = (
+    "Period",
+    "as_of",
+    "Expected Route",
+    "Suggested Route",
+    "Suggested Context Label",
+    "Reason",
+)
+
+AI_DECISION_PNL_ATTRIBUTION_COLUMNS = (
+    "Decision Bucket",
+    "Trading Days",
+    "Base Total Return",
+    "Strategy Total Return",
+    "Delta Total Return",
+)
 
 
 def _normalize_close(close: pd.DataFrame) -> pd.DataFrame:
@@ -314,6 +379,293 @@ def _parse_upper_str_tuple(raw: str | Sequence[str]) -> tuple[str, ...]:
         if text and text not in output:
             output.append(text)
     return tuple(output)
+
+
+def _parse_route_tuple(raw: str | Sequence[str]) -> tuple[str, ...]:
+    values = raw.split(",") if isinstance(raw, str) else list(raw)
+    output: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in output:
+            output.append(text)
+    return tuple(output)
+
+
+def _empty_ai_audit_reports() -> dict[str, pd.DataFrame]:
+    return {
+        "ai_audit_effectiveness": pd.DataFrame(columns=list(AI_AUDIT_EFFECTIVENESS_COLUMNS)),
+        "ai_route_period_summary": pd.DataFrame(columns=list(AI_ROUTE_PERIOD_SUMMARY_COLUMNS)),
+        "ai_route_confusion_matrix": pd.DataFrame(columns=list(AI_ROUTE_CONFUSION_COLUMNS)),
+        "ai_false_positive_true_crisis": pd.DataFrame(columns=list(AI_AUDIT_EXCEPTION_COLUMNS)),
+        "ai_false_negative_true_crisis": pd.DataFrame(columns=list(AI_AUDIT_EXCEPTION_COLUMNS)),
+        "ai_decision_pnl_attribution": pd.DataFrame(columns=list(AI_DECISION_PNL_ATTRIBUTION_COLUMNS)),
+    }
+
+
+def _prepare_audit_feature_frame(
+    context_features: pd.DataFrame,
+    index: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    frame = pd.DataFrame(index=pd.DatetimeIndex(index))
+    frame.index = pd.to_datetime(frame.index).tz_localize(None).normalize()
+    frame["suggested_route"] = ""
+    frame["suggested_context_label"] = ""
+    frame["suggested_reason"] = ""
+    if context_features.empty or "as_of" not in context_features.columns:
+        return frame
+
+    features = context_features.copy()
+    features["as_of"] = pd.to_datetime(features["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    features = features.dropna(subset=["as_of"]).set_index("as_of").sort_index()
+    features = features.loc[~features.index.duplicated(keep="last")]
+    for column in ("suggested_route", "suggested_context_label", "suggested_reason"):
+        if column in features.columns:
+            frame[column] = features[column].reindex(frame.index).fillna("")
+    return frame
+
+
+def _period_end(raw_end: str | None, global_end: pd.Timestamp) -> pd.Timestamp:
+    return min(pd.Timestamp(raw_end).normalize(), global_end) if raw_end is not None else global_end
+
+
+def _signal_to_bool_series(signal: pd.Series, index: pd.DatetimeIndex, *, name: str) -> pd.Series:
+    series = pd.Series(signal).fillna(False).astype(bool).copy()
+    series.index = pd.to_datetime(series.index).tz_localize(None).normalize()
+    return series.reindex(index).ffill().fillna(False).rename(name)
+
+
+def _compound_return(returns: pd.Series) -> float:
+    if returns.empty:
+        return 0.0
+    return float((1.0 + pd.to_numeric(returns, errors="coerce").fillna(0.0)).prod() - 1.0)
+
+
+def _audit_exception_rows(
+    *,
+    period_name: str,
+    expected_route: str,
+    dates: pd.DatetimeIndex,
+    features: pd.DataFrame,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for date in dates:
+        feature_row = features.loc[date]
+        rows.append(
+            {
+                "Period": period_name,
+                "as_of": pd.Timestamp(date).date().isoformat(),
+                "Expected Route": expected_route,
+                "Suggested Route": feature_row.get("suggested_route", ""),
+                "Suggested Context Label": feature_row.get("suggested_context_label", ""),
+                "Reason": feature_row.get("suggested_reason", ""),
+            }
+        )
+    return rows
+
+
+def build_ai_audit_effectiveness_reports(
+    context_features: pd.DataFrame,
+    *,
+    confirmed_crisis_signal: pd.Series,
+    true_crisis_signal: pd.Series,
+    returns_by_strategy: Mapping[str, pd.Series] | None = None,
+    target_strategy: str = "unified_response_5pct",
+    base_strategy: str = "base",
+    bubble_fragility_signal: pd.Series | None = None,
+    route_expectations: Sequence[tuple[str, str, str | None, str, str | Sequence[str]]] = DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS,
+) -> dict[str, pd.DataFrame]:
+    """Build research-only audit reports for context-route stability.
+
+    The reports validate the context/audit layer, not the trading parameters:
+    true-crisis false positives are measured in no-action windows such as 2022,
+    while false negatives are measured only after the price-crisis scanner is
+    already confirmed in expected true-crisis windows.
+    """
+    if context_features is None:
+        context_features = pd.DataFrame()
+    if context_features.empty and pd.Series(confirmed_crisis_signal).empty and pd.Series(true_crisis_signal).empty:
+        return _empty_ai_audit_reports()
+
+    signal_indexes = []
+    for signal in (confirmed_crisis_signal, true_crisis_signal, bubble_fragility_signal):
+        if signal is None or pd.Series(signal).empty:
+            continue
+        series = pd.Series(signal)
+        index = pd.to_datetime(series.index).tz_localize(None).normalize()
+        signal_indexes.append(pd.DatetimeIndex(index))
+    if context_features is not None and not context_features.empty and "as_of" in context_features.columns:
+        feature_dates = pd.to_datetime(context_features["as_of"], errors="coerce").dropna().dt.tz_localize(None)
+        if not feature_dates.empty:
+            signal_indexes.append(pd.DatetimeIndex(feature_dates.dt.normalize()))
+    if not signal_indexes:
+        return _empty_ai_audit_reports()
+
+    index = signal_indexes[0]
+    for extra_index in signal_indexes[1:]:
+        index = pd.DatetimeIndex(index.union(extra_index)).sort_values()
+    index = pd.DatetimeIndex(index).sort_values()
+    global_end = pd.Timestamp(index.max()).normalize()
+    features = _prepare_audit_feature_frame(context_features, index)
+    confirmed = _signal_to_bool_series(confirmed_crisis_signal, index, name="confirmed_crisis")
+    true_crisis = _signal_to_bool_series(true_crisis_signal, index, name="true_crisis")
+    fragility = (
+        _signal_to_bool_series(bubble_fragility_signal, index, name="bubble_fragility")
+        if bubble_fragility_signal is not None
+        else pd.Series(False, index=index, name="bubble_fragility")
+    )
+
+    effectiveness_rows: list[dict[str, object]] = []
+    route_summary_rows: list[dict[str, object]] = []
+    confusion_rows: list[dict[str, object]] = []
+    false_positive_rows: list[dict[str, object]] = []
+    false_negative_rows: list[dict[str, object]] = []
+
+    for period_name, raw_start, raw_end, expected_route, raw_acceptable_routes in route_expectations:
+        start = pd.Timestamp(raw_start).normalize()
+        end = _period_end(raw_end, global_end)
+        if end < start:
+            continue
+        mask = (index >= start) & (index <= end)
+        period_index = index[mask]
+        if period_index.empty:
+            continue
+        period_features = features.loc[period_index]
+        routes = period_features["suggested_route"].fillna("").astype(str)
+        confirmed_window = confirmed.loc[period_index]
+        true_window = true_crisis.loc[period_index]
+        trading_days = int(len(period_index))
+        acceptable_routes = _parse_route_tuple(raw_acceptable_routes)
+        acceptable_days = int(routes.isin(acceptable_routes).sum())
+        true_crisis_days = int(true_window.sum())
+        confirmed_days = int(confirmed_window.sum())
+        false_positive_dates = pd.DatetimeIndex([])
+        false_negative_dates = pd.DatetimeIndex([])
+        if expected_route != ROUTE_TRUE_CRISIS:
+            false_positive_dates = pd.DatetimeIndex(true_window.index[true_window])
+        else:
+            false_negative_dates = pd.DatetimeIndex(confirmed_window.index[confirmed_window & ~true_window])
+        false_positive_days = int(len(false_positive_dates))
+        false_negative_days = int(len(false_negative_dates))
+        if expected_route == ROUTE_TRUE_CRISIS:
+            status = "pass" if true_crisis_days > 0 and false_negative_days == 0 else "review"
+        else:
+            status = "pass" if false_positive_days == 0 else "review"
+
+        route_summary_rows.append(
+            {
+                "Period": period_name,
+                "Start": start.date().isoformat(),
+                "End": end.date().isoformat(),
+                "Trading Days": trading_days,
+                "Suggested True Crisis Days": int(routes.eq(ROUTE_TRUE_CRISIS).sum()),
+                "Suggested TACO Days": int(routes.eq(ROUTE_TACO).sum()),
+                "Suggested No Action Days": int(routes.eq(ROUTE_NO_ACTION).sum()),
+                "Confirmed Price Crisis Days": confirmed_days,
+                "True Crisis Signal Days": true_crisis_days,
+                "True Crisis Signal Ratio": true_crisis_days / trading_days if trading_days else float("nan"),
+            }
+        )
+        effectiveness_rows.append(
+            {
+                "Period": period_name,
+                "Start": start.date().isoformat(),
+                "End": end.date().isoformat(),
+                "Expected Route": expected_route,
+                "Acceptable Routes": ",".join(acceptable_routes),
+                "Trading Days": trading_days,
+                "Suggested Acceptable Days": acceptable_days,
+                "Suggested Acceptable Ratio": acceptable_days / trading_days if trading_days else float("nan"),
+                "Confirmed Price Crisis Days": confirmed_days,
+                "True Crisis Days": true_crisis_days,
+                "False Positive True Crisis Days": false_positive_days,
+                "False Negative True Crisis Days": false_negative_days,
+                "TACO Route Days": int(routes.eq(ROUTE_TACO).sum()),
+                "No Action Route Days": int(routes.eq(ROUTE_NO_ACTION).sum()),
+                "Status": status,
+            }
+        )
+        for suggested_route, count in routes.value_counts(dropna=False).items():
+            confusion_rows.append(
+                {
+                    "Period": period_name,
+                    "Expected Route": expected_route,
+                    "Suggested Route": str(suggested_route),
+                    "Days": int(count),
+                    "Trading Days": trading_days,
+                    "Active Ratio": int(count) / trading_days if trading_days else float("nan"),
+                }
+            )
+        false_positive_rows.extend(
+            _audit_exception_rows(
+                period_name=period_name,
+                expected_route=expected_route,
+                dates=false_positive_dates,
+                features=features,
+            )
+        )
+        false_negative_rows.extend(
+            _audit_exception_rows(
+                period_name=period_name,
+                expected_route=expected_route,
+                dates=false_negative_dates,
+                features=features,
+            )
+        )
+
+    pnl_rows: list[dict[str, object]] = []
+    if returns_by_strategy and base_strategy in returns_by_strategy:
+        strategy_name = target_strategy
+        if strategy_name not in returns_by_strategy:
+            strategy_name = next(
+                (name for name in returns_by_strategy if name.startswith("unified_response_")),
+                base_strategy,
+            )
+        base_returns = returns_by_strategy[base_strategy].copy()
+        strategy_returns = returns_by_strategy[strategy_name].copy()
+        base_returns.index = pd.to_datetime(base_returns.index).tz_localize(None).normalize()
+        strategy_returns.index = pd.to_datetime(strategy_returns.index).tz_localize(None).normalize()
+        pnl_index = pd.DatetimeIndex(base_returns.index.intersection(strategy_returns.index)).sort_values()
+        true_for_pnl = true_crisis.reindex(pnl_index).ffill().fillna(False)
+        fragility_for_pnl = fragility.reindex(pnl_index).ffill().fillna(False)
+        buckets = {
+            "true_crisis_active": true_for_pnl,
+            "bubble_fragility_only": fragility_for_pnl & ~true_for_pnl,
+            "normal_or_taco": ~(true_for_pnl | fragility_for_pnl),
+        }
+        for bucket_name, bucket_mask in buckets.items():
+            bucket_mask = pd.Series(bucket_mask, index=pnl_index).fillna(False).astype(bool)
+            bucket_index = pd.DatetimeIndex(pnl_index[bucket_mask.to_numpy()])
+            base_bucket_returns = base_returns.reindex(bucket_index).fillna(0.0)
+            strategy_bucket_returns = strategy_returns.reindex(bucket_index).fillna(0.0)
+            base_total_return = _compound_return(base_bucket_returns)
+            strategy_total_return = _compound_return(strategy_bucket_returns)
+            pnl_rows.append(
+                {
+                    "Decision Bucket": bucket_name,
+                    "Trading Days": int(len(bucket_index)),
+                    "Base Total Return": base_total_return,
+                    "Strategy Total Return": strategy_total_return,
+                    "Delta Total Return": strategy_total_return - base_total_return,
+                }
+            )
+
+    reports = _empty_ai_audit_reports()
+    reports["ai_audit_effectiveness"] = pd.DataFrame(effectiveness_rows, columns=list(AI_AUDIT_EFFECTIVENESS_COLUMNS))
+    reports["ai_route_period_summary"] = pd.DataFrame(route_summary_rows, columns=list(AI_ROUTE_PERIOD_SUMMARY_COLUMNS))
+    reports["ai_route_confusion_matrix"] = pd.DataFrame(confusion_rows, columns=list(AI_ROUTE_CONFUSION_COLUMNS))
+    reports["ai_false_positive_true_crisis"] = pd.DataFrame(
+        false_positive_rows,
+        columns=list(AI_AUDIT_EXCEPTION_COLUMNS),
+    )
+    reports["ai_false_negative_true_crisis"] = pd.DataFrame(
+        false_negative_rows,
+        columns=list(AI_AUDIT_EXCEPTION_COLUMNS),
+    )
+    reports["ai_decision_pnl_attribution"] = pd.DataFrame(
+        pnl_rows,
+        columns=list(AI_DECISION_PNL_ATTRIBUTION_COLUMNS),
+    )
+    return reports
 
 
 def _build_v2_context_opinions(
@@ -946,6 +1298,13 @@ def run_crisis_response_research(
     deltas = build_deltas_vs_base(summary)
     diagnostics = build_diagnostics(scan_days=scan_days, recognized_events=recognized_events, trades=taco_only_result["trades"])
     crisis_diagnostics = build_crisis_guard_diagnostics(true_crisis_signal)
+    audit_reports = build_ai_audit_effectiveness_reports(
+        crisis_context_features,
+        confirmed_crisis_signal=confirmed_crisis_signal,
+        true_crisis_signal=true_crisis_signal,
+        returns_by_strategy=returns_by_strategy,
+        bubble_fragility_signal=bubble_fragility_signal,
+    )
     return {
         "summary": summary,
         "deltas_vs_base": deltas,
@@ -959,6 +1318,7 @@ def run_crisis_response_research(
         "true_crisis_signal": true_crisis_signal,
         "severe_crisis_signal": severe_crisis_signal,
         "bubble_fragility_signal": bubble_fragility_signal,
+        **audit_reports,
         "recognized_events": events_to_frame(recognized_events),
         "taco_events": events_to_frame(taco_events),
         "returns_by_strategy": returns_by_strategy,
@@ -1186,11 +1546,21 @@ def main(argv: list[str] | None = None) -> int:
     decisions = result["response_decisions"]
     if isinstance(decisions, pd.DataFrame) and not decisions.empty:
         print(decisions.groupby(["source", "route", "action"]).size().reset_index(name="count").to_string(index=False))
+    audit_effectiveness = result["ai_audit_effectiveness"]
+    if isinstance(audit_effectiveness, pd.DataFrame) and not audit_effectiveness.empty:
+        print("\nAI audit effectiveness:")
+        print(audit_effectiveness.to_string(index=False))
 
     result["summary"].to_csv(output_dir / "summary.csv", index=False)
     result["deltas_vs_base"].to_csv(output_dir / "deltas_vs_base.csv", index=False)
     result["diagnostics"].to_csv(output_dir / "diagnostics.csv", index=False)
     result["crisis_guard_diagnostics"].to_csv(output_dir / "crisis_guard_diagnostics.csv", index=False)
+    result["ai_audit_effectiveness"].to_csv(output_dir / "ai_audit_effectiveness.csv", index=False)
+    result["ai_route_period_summary"].to_csv(output_dir / "ai_route_period_summary.csv", index=False)
+    result["ai_route_confusion_matrix"].to_csv(output_dir / "ai_route_confusion_matrix.csv", index=False)
+    result["ai_false_positive_true_crisis"].to_csv(output_dir / "ai_false_positive_true_crisis.csv", index=False)
+    result["ai_false_negative_true_crisis"].to_csv(output_dir / "ai_false_negative_true_crisis.csv", index=False)
+    result["ai_decision_pnl_attribution"].to_csv(output_dir / "ai_decision_pnl_attribution.csv", index=False)
     result["response_decisions"].to_csv(output_dir / "response_decisions.csv", index=False)
     result["ai_opinions"].to_csv(output_dir / "ai_opinions.csv", index=False)
     context_features = result["crisis_context_features"]
@@ -1219,6 +1589,7 @@ __all__ = [
     "CRISIS_CONTEXT_MODE_V1_AI_RUBRIC",
     "CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK",
     "CRISIS_CONTEXT_MODES",
+    "DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS",
     "EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY",
     "EXTERNAL_VALUATION_MODE_OFF",
     "EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL",
@@ -1234,6 +1605,7 @@ __all__ = [
     "SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION",
     "SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE",
     "SEVERE_CRISIS_CONTEXTS",
+    "build_ai_audit_effectiveness_reports",
     "build_event_response_decisions",
     "main",
     "run_crisis_response_research",

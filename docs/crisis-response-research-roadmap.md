@@ -106,6 +106,27 @@ A new AI feature cannot affect live routing unless it passes all checks:
 7. Keep `response_decisions.csv` and `crisis_context_features.csv` as the main
    artifacts for every experiment.
 
+## AI audit effectiveness checks
+
+The research backtest now writes explicit audit-stability reports so that a
+better equity curve is not mistaken for proof that the AI audit layer is
+reliable:
+
+- `ai_audit_effectiveness.csv` measures expected historical route versus actual
+  audit behavior. No-action controls such as 2020 and 2022 should have zero
+  false-positive true-crisis days.
+- `ai_route_period_summary.csv` and `ai_route_confusion_matrix.csv` show whether
+  each historical period is being classified for the right reason.
+- `ai_false_positive_true_crisis.csv` and
+  `ai_false_negative_true_crisis.csv` list the exact dates that need review.
+- `ai_decision_pnl_attribution.csv` separates investment impact from
+  classification quality by bucket.
+
+For 2022 specifically, the acceptance target is stable `rate_bear` /
+`no_action` classification unless financial-system stress evidence also appears.
+The strategy may lose money in that rate-bear year; the audit failure would be
+misclassifying it as a broad `true_crisis`.
+
 ## Provisional Valuation Trial
 
 An initial PE-enabled trial used a temporary, non-committed Nasdaq-100 monthly
