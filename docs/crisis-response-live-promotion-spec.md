@@ -201,8 +201,8 @@ The shadow and replay process must keep these windows visible:
 | 2018-2019 trade war | TACO or `no_action`, not main-book defense |
 | 2025+ policy shocks | TACO or `no_action`, with small-sleeve discipline |
 
-Add `2011_debt_euro_stress` to audit reports before using shadow logs for
-promotion decisions.
+`2011_debt_euro_stress` is included in the audit reports as a
+`systemic_stress_watch` control.
 
 ## Promotion Gates
 
@@ -272,9 +272,8 @@ Future AI agents must follow these constraints:
 
 Recommended next tasks:
 
-1. Add `2011_debt_euro_stress` to the audit-effectiveness report.
-2. Implement `crisis_response_shadow_plugin` as log-only.
-3. Add tests proving the shadow plugin cannot place orders or mutate live
+1. Implement `crisis_response_shadow_plugin` as log-only.
+2. Add tests proving the shadow plugin cannot place orders or mutate live
    allocation.
-4. Add AI replay prompt generation from the shadow JSON.
-5. Run shadow-only for 30 to 60 trading days before advisory mode.
+3. Add AI replay prompt generation from the shadow JSON.
+4. Run shadow-only for 30 to 60 trading days before advisory mode.
