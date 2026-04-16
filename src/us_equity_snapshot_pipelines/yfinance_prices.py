@@ -105,6 +105,16 @@ def _resolve_yfinance_proxy(proxy: str | None = None) -> str | None:
     return None
 
 
+def _build_yfinance_proxy_config(proxy: str | None = None) -> dict[str, str] | None:
+    resolved_proxy = _resolve_yfinance_proxy(proxy)
+    if resolved_proxy is None:
+        return None
+    return {
+        "http": resolved_proxy,
+        "https": resolved_proxy,
+    }
+
+
 def normalize_yfinance_download(data, symbols) -> pd.DataFrame:
     symbol_pairs = _normalize_input_symbols(symbols)
     if data is None or len(symbol_pairs) == 0:
@@ -162,9 +172,11 @@ def download_price_history(
     if download_fn is None:
         import yfinance as yf
 
-        resolved_proxy = _resolve_yfinance_proxy(proxy)
-        if resolved_proxy and hasattr(yf, "set_config"):
-            yf.set_config(proxy=resolved_proxy)
+        proxy_config = _build_yfinance_proxy_config(proxy)
+        if proxy_config and hasattr(yf, "config") and hasattr(yf.config, "network"):
+            yf.config.network.proxy = proxy_config
+        elif proxy_config and hasattr(yf, "set_config"):
+            yf.set_config(proxy=proxy_config)
         download_fn = yf.download
 
     symbol_pairs = _normalize_input_symbols(symbols, symbol_aliases=symbol_aliases)
