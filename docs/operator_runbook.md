@@ -50,6 +50,21 @@ Russell universe containing `mega_rank`, `source_weight`, `weight`,
 `source_market_value`, or `market_value`. The scheduled GitHub Actions path uses
 `r1000_latest_holdings_snapshot.csv` from the monthly source-input refresh.
 
+Mega-cap aggressive:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_mega_cap_leader_rotation_aggressive_snapshot.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_latest_holdings_snapshot.csv \
+  --as-of 2026-04-01 \
+  --dynamic-universe-size 50 \
+  --output-dir data/output/mega_cap_leader_rotation_aggressive
+```
+
+This publishes the separate `mega_cap_leader_rotation_aggressive` artifact
+contract for the top-3/no-defense runtime profile.
+
 Dynamic mega leveraged pullback:
 
 ```bash

@@ -131,6 +131,7 @@ def _build_signal_description(metadata: Mapping[str, object], ranking: pd.DataFr
 
 def build_artifacts(
     *,
+    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
     prices_path: str | Path,
     universe_path: str | Path,
     output_dir: str | Path,
@@ -159,7 +160,7 @@ def build_artifacts(
     min_adv20_usd: float = DEFAULT_MIN_ADV20_USD,
     min_history_days: int = 273,
 ) -> MegaCapDynamicTop20BuildResult:
-    contract = get_profile_contract(MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE)
+    contract = get_profile_contract(profile)
     paths = contract.artifact_paths(output_dir)
     snapshot_path = Path(snapshot_output) if snapshot_output else paths["snapshot"]
     manifest_path = Path(manifest_output) if manifest_output else paths["manifest"]
@@ -258,11 +259,21 @@ def build_artifacts(
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    contract: SnapshotProfileContract = get_profile_contract(MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE)
-    parser = argparse.ArgumentParser(description="Build mega_cap_leader_rotation_dynamic_top20 snapshot artifacts.")
+def build_parser(
+    *,
+    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
+    dynamic_universe_size_default: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
+    single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,
+    soft_defense_exposure_default: float = DEFAULT_SOFT_DEFENSE_EXPOSURE,
+    hard_defense_exposure_default: float = DEFAULT_HARD_DEFENSE_EXPOSURE,
+    soft_breadth_threshold_default: float = DEFAULT_SOFT_BREADTH_THRESHOLD,
+    hard_breadth_threshold_default: float = DEFAULT_HARD_BREADTH_THRESHOLD,
+) -> argparse.ArgumentParser:
+    contract: SnapshotProfileContract = get_profile_contract(profile)
+    parser = argparse.ArgumentParser(description=f"Build {contract.profile} snapshot artifacts.")
     parser.add_argument("--prices", required=True, help="Input price history file (.csv/.json/.jsonl/.parquet)")
-    parser.add_argument("--universe", required=True, help="Dynamic top20 universe history, or ranked Russell universe file")
+    parser.add_argument("--universe", required=True, help="Ranked mega-cap universe history or latest holdings file")
     parser.add_argument("--output-dir", required=True, help="Directory for the standard artifact filenames")
     parser.add_argument("--snapshot-output", help=f"Snapshot output path; default: <output-dir>/{contract.snapshot_filename}")
     parser.add_argument("--manifest-output", help=f"Manifest output path; default: <output-dir>/{contract.manifest_filename}")
@@ -273,9 +284,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark-symbol", default=BENCHMARK_SYMBOL)
     parser.add_argument("--broad-benchmark-symbol", default=BROAD_BENCHMARK_SYMBOL)
     parser.add_argument("--safe-haven", default=SAFE_HAVEN)
-    parser.add_argument("--dynamic-universe-size", type=int, default=DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE)
-    parser.add_argument("--holdings-count", type=int, default=DEFAULT_HOLDINGS_COUNT)
-    parser.add_argument("--single-name-cap", type=float, default=DEFAULT_SINGLE_NAME_CAP)
+    parser.add_argument("--dynamic-universe-size", type=int, default=dynamic_universe_size_default)
+    parser.add_argument("--holdings-count", type=int, default=holdings_count_default)
+    parser.add_argument("--single-name-cap", type=float, default=single_name_cap_default)
+    parser.add_argument("--soft-defense-exposure", type=float, default=soft_defense_exposure_default)
+    parser.add_argument("--hard-defense-exposure", type=float, default=hard_defense_exposure_default)
+    parser.add_argument("--soft-breadth-threshold", type=float, default=soft_breadth_threshold_default)
+    parser.add_argument("--hard-breadth-threshold", type=float, default=hard_breadth_threshold_default)
     parser.add_argument("--portfolio-total-equity", type=float)
     parser.add_argument("--min-position-value-usd", type=float, default=DEFAULT_MIN_POSITION_VALUE_USD)
     parser.add_argument("--min-price-usd", type=float, default=10.0)
@@ -284,9 +299,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main(
+    argv: list[str] | None = None,
+    *,
+    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
+    dynamic_universe_size_default: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
+    single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,
+    soft_defense_exposure_default: float = DEFAULT_SOFT_DEFENSE_EXPOSURE,
+    hard_defense_exposure_default: float = DEFAULT_HARD_DEFENSE_EXPOSURE,
+    soft_breadth_threshold_default: float = DEFAULT_SOFT_BREADTH_THRESHOLD,
+    hard_breadth_threshold_default: float = DEFAULT_HARD_BREADTH_THRESHOLD,
+) -> int:
+    args = build_parser(
+        profile=profile,
+        dynamic_universe_size_default=dynamic_universe_size_default,
+        holdings_count_default=holdings_count_default,
+        single_name_cap_default=single_name_cap_default,
+        soft_defense_exposure_default=soft_defense_exposure_default,
+        hard_defense_exposure_default=hard_defense_exposure_default,
+        soft_breadth_threshold_default=soft_breadth_threshold_default,
+        hard_breadth_threshold_default=hard_breadth_threshold_default,
+    ).parse_args(argv)
     result = build_artifacts(
+        profile=profile,
         prices_path=args.prices,
         universe_path=args.universe,
         output_dir=args.output_dir,
@@ -302,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
         dynamic_universe_size=args.dynamic_universe_size,
         holdings_count=args.holdings_count,
         single_name_cap=args.single_name_cap,
+        soft_defense_exposure=args.soft_defense_exposure,
+        hard_defense_exposure=args.hard_defense_exposure,
+        soft_breadth_threshold=args.soft_breadth_threshold,
+        hard_breadth_threshold=args.hard_breadth_threshold,
         portfolio_total_equity=args.portfolio_total_equity,
         min_position_value_usd=args.min_position_value_usd,
         min_price_usd=args.min_price_usd,
