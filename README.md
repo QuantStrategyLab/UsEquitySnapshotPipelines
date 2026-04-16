@@ -455,7 +455,8 @@ yfinance is rate limited, pass `--prices` with a saved price-history CSV. If a
 legitimate proxy is available, set `YFINANCE_PROXY` or pass `--download-proxy`.
 The V2 pack includes research-only COVID exogenous / policy-rescue windows and
 tariff shock / softening windows so 2020 and 2018-2019 false positives can be
-audited before any context affects live routing.
+audited before any context affects live routing. It writes raw financial /
+credit context separately from stricter systemic financial-crisis context.
 
 Run the unified Crisis Response research when comparing fake-crisis TACO entries
 with true-crisis defense in one plugin:
