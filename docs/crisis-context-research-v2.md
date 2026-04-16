@@ -12,8 +12,9 @@ Turn historical crash explanations into auditable context features:
 - 2000-style valuation bubble: trailing price acceleration and QQQ/SPY relative
   strength, with optional valuation and earnings-quality columns supplied by an
   external context table.
-- 2008-style financial crisis: XLF/KRE drawdown and relative weakness, plus
-  HYG/IEF and LQD/IEF credit weakness where data exists.
+- 2008-style financial crisis: severe XLF/KRE drawdown or severe HYG/IEF and
+  LQD/IEF credit weakness. Lighter financial / credit context is still written
+  for audit but does not by itself route to `true_crisis`.
 - 2020-style exogenous shock: event context plus policy-rescue windows that
   default to `no_action` so short-lived liquidity stress is not misread as a
   slow true-crisis regime.
@@ -69,6 +70,11 @@ The output files are:
 - `input/crisis_context_price_history.csv`: downloaded prices when `--download`
   is used.
 
+The default severe financial thresholds are intentionally stricter than the raw
+context flags: XLF/KRE drawdown <= -35% or credit-relative return <= -12%.
+This keeps 2018-2019 trade-war financial noise out of `true_crisis` while
+still identifying a large part of the 2008 crisis window.
+
 ## External Context Schema
 
 Optional `--external-context` accepts a CSV with an `as_of` column. Columns are
@@ -100,7 +106,7 @@ The V2 context pack uses conservative research labels:
 3. Policy rescue without valuation-bubble evidence -> `no_action`.
 4. Valuation-bubble context -> `true_crisis`.
 5. Policy or tariff shock / softening -> `taco_fake_crisis`.
-6. Financial-system stress outside those windows -> `true_crisis`.
+6. Severe financial-system stress outside those windows -> `true_crisis`.
 7. Rate bear without financial-system stress -> `no_action`.
 8. No active context -> `no_action`.
 

@@ -65,6 +65,31 @@ def test_crisis_context_features_detect_financial_and_credit_stress() -> None:
     assert row["suggested_route"] == ROUTE_TRUE_CRISIS
 
 
+def test_moderate_financial_context_is_audit_only_until_systemic_threshold() -> None:
+    dates = pd.bdate_range("2018-09-03", periods=90)
+    xlf = [100.0] * 65 + [74.0] * 25
+    spy = [100.0] * len(dates)
+    close = pd.DataFrame({"QQQ": 100.0, "SPY": spy, "XLF": xlf}, index=dates)
+
+    features = build_crisis_context_features(
+        close,
+        events=(),
+        context_events=(),
+        start_date=str(dates[0].date()),
+        financial_symbols=("XLF",),
+        credit_pairs=(),
+        rate_symbols=(),
+        financial_drawdown_threshold=-0.20,
+        financial_relative_lookback_days=5,
+        financial_relative_return_threshold=-0.10,
+    )
+    row = features.loc[features["financial_system_context"]].iloc[0]
+
+    assert bool(row["financial_system_context"])
+    assert not bool(row["systemic_financial_crisis_context"])
+    assert row["suggested_route"] == ROUTE_NO_ACTION
+
+
 def test_crisis_context_features_keeps_rate_bear_as_no_action() -> None:
     dates = pd.bdate_range("2022-01-03", periods=160)
     ief = pd.Series(100.0, index=dates)

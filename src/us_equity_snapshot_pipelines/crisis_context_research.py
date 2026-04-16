@@ -36,6 +36,8 @@ DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS = 126
 DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD = -0.10
 DEFAULT_CREDIT_RELATIVE_LOOKBACK_DAYS = 63
 DEFAULT_CREDIT_RELATIVE_RETURN_THRESHOLD = -0.08
+DEFAULT_SYSTEMIC_FINANCIAL_DRAWDOWN_THRESHOLD = -0.35
+DEFAULT_SYSTEMIC_CREDIT_RELATIVE_RETURN_THRESHOLD = -0.12
 DEFAULT_RATE_LOOKBACK_DAYS = 126
 DEFAULT_RATE_RETURN_THRESHOLD = -0.08
 DEFAULT_POLICY_EVENT_WINDOW_DAYS = 10
@@ -56,6 +58,9 @@ CONTEXT_BOOL_COLUMNS = (
     "financial_context",
     "credit_context",
     "financial_system_context",
+    "systemic_financial_context",
+    "systemic_credit_context",
+    "systemic_financial_crisis_context",
     "rate_context",
     "policy_context",
     "policy_rescue_context",
@@ -338,11 +343,11 @@ def _suggest_label_and_route(row: pd.Series) -> tuple[str, str, str]:
             ROUTE_TACO,
             "policy or tariff shock context is active without systemic stress",
         )
-    if bool(row["financial_system_context"]):
+    if bool(row["systemic_financial_crisis_context"]):
         return (
             CONTEXT_LABEL_FINANCIAL_CRISIS,
             ROUTE_TRUE_CRISIS,
-            "financial-sector or credit-stress context is active",
+            "severe financial-sector or credit-stress context is active",
         )
     if bool(row["rate_context"]):
         return (
@@ -374,6 +379,8 @@ def build_crisis_context_features(
     financial_relative_return_threshold: float = DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD,
     credit_relative_lookback_days: int = DEFAULT_CREDIT_RELATIVE_LOOKBACK_DAYS,
     credit_relative_return_threshold: float = DEFAULT_CREDIT_RELATIVE_RETURN_THRESHOLD,
+    systemic_financial_drawdown_threshold: float = DEFAULT_SYSTEMIC_FINANCIAL_DRAWDOWN_THRESHOLD,
+    systemic_credit_relative_return_threshold: float = DEFAULT_SYSTEMIC_CREDIT_RELATIVE_RETURN_THRESHOLD,
     rate_lookback_days: int = DEFAULT_RATE_LOOKBACK_DAYS,
     rate_return_threshold: float = DEFAULT_RATE_RETURN_THRESHOLD,
     policy_event_window_days: int = DEFAULT_POLICY_EVENT_WINDOW_DAYS,
@@ -442,6 +449,9 @@ def build_crisis_context_features(
     )
     credit_context = credit_relative_return_min.le(float(credit_relative_return_threshold)).fillna(False)
     financial_system_context = financial_context | credit_context
+    systemic_financial_context = financial_drawdown_min.le(float(systemic_financial_drawdown_threshold)).fillna(False)
+    systemic_credit_context = credit_relative_return_min.le(float(systemic_credit_relative_return_threshold)).fillna(False)
+    systemic_financial_crisis_context = systemic_financial_context | systemic_credit_context
 
     rate_returns: dict[str, pd.Series] = {}
     for symbol in rate_symbols:
@@ -473,6 +483,9 @@ def build_crisis_context_features(
             "financial_context": financial_context,
             "credit_context": credit_context,
             "financial_system_context": financial_system_context,
+            "systemic_financial_context": systemic_financial_context,
+            "systemic_credit_context": systemic_credit_context,
+            "systemic_financial_crisis_context": systemic_financial_crisis_context,
             "rate_context": rate_context,
             "policy_context": event_flags["policy_context"],
             "exogenous_context": event_flags["exogenous_context"],
@@ -581,6 +594,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(f"{numerator}:{denominator}" for numerator, denominator in DEFAULT_CREDIT_PAIRS),
     )
     parser.add_argument("--rate-symbols", default=",".join(DEFAULT_RATE_SYMBOLS))
+    parser.add_argument(
+        "--systemic-financial-drawdown-threshold",
+        type=float,
+        default=DEFAULT_SYSTEMIC_FINANCIAL_DRAWDOWN_THRESHOLD,
+    )
+    parser.add_argument(
+        "--systemic-credit-relative-return-threshold",
+        type=float,
+        default=DEFAULT_SYSTEMIC_CREDIT_RELATIVE_RETURN_THRESHOLD,
+    )
     parser.add_argument("--policy-event-window-days", type=int, default=DEFAULT_POLICY_EVENT_WINDOW_DAYS)
     parser.add_argument("--exogenous-event-window-days", type=int, default=DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS)
     parser.add_argument(
@@ -637,6 +660,8 @@ def main(argv: list[str] | None = None) -> int:
         financial_symbols=financial_symbols,
         credit_pairs=credit_pairs,
         rate_symbols=rate_symbols,
+        systemic_financial_drawdown_threshold=float(args.systemic_financial_drawdown_threshold),
+        systemic_credit_relative_return_threshold=float(args.systemic_credit_relative_return_threshold),
         policy_event_window_days=int(args.policy_event_window_days),
         exogenous_event_window_days=int(args.exogenous_event_window_days),
         policy_rescue_event_window_days=int(args.policy_rescue_event_window_days),

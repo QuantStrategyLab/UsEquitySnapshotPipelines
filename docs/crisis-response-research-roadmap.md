@@ -41,6 +41,8 @@ Purpose: distinguish 2000-style bubble-burst risk from an ordinary correction.
 - XLF / SPY relative strength.
 - KRE / SPY relative strength.
 - HYG / IEF and LQD / IEF relative strength.
+- A stricter systemic threshold that distinguishes ordinary bank / credit
+  weakness from 2008-style crisis stress.
 - Credit spreads and funding stress if the data source is stable.
 - Bank-stock drawdowns and bank news summaries.
 
