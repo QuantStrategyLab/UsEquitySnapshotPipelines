@@ -105,3 +105,56 @@ A new AI feature cannot affect live routing unless it passes all checks:
 6. Only then test combined context. Avoid optimizing all thresholds together.
 7. Keep `response_decisions.csv` and `crisis_context_features.csv` as the main
    artifacts for every experiment.
+
+## Provisional Valuation Trial
+
+An initial PE-enabled trial used a temporary, non-committed Nasdaq-100 monthly
+trailing P/E sample from Trendonify as provisional research context. Trendonify
+publishes a 1990-2026 table and describes the metric as trailing P/E based on
+index level divided by aggregate EPS. The site also disclaims that its data is
+for reference only, not trading. Siblis Research publishes Nasdaq-100 P/E, EPS,
+forward P/E, and CAPE examples, but the complete historical database is a data
+subscription. Because of those source limitations, this trial is directional
+evidence only and should be repeated with an authorized point-in-time dataset.
+
+Shared setup:
+
+- Price input: same 1999-03-10 to 2026-04-16 synthetic TQQQ research sample
+  used by V2.
+- Valuation input: month-end `nasdaq_100_trailing_pe`, forward-filled only
+  after each month-end date.
+- Threshold: `nasdaq_100_trailing_pe >= 60`.
+- V2 remains price-gated: valuation context can only affect final defense after
+  the confirmed crisis-price scanner opens.
+
+Preliminary unified-response results:
+
+| Mode | Dotcom burst return | Dotcom burst max drawdown | Dotcom full-cycle return | Lost decade return | Full 2015-to-date |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V2 baseline, valuation off | -87.30% | -87.63% | -65.16% | -18.60% | unchanged |
+| `price_or_external` | -77.96% | -78.54% | -39.54% | +3.09% | unchanged |
+| `price_and_external` | -94.39% | -94.54% | -84.62% | -64.07% | unchanged |
+| `external_only` | -91.21% | -91.44% | -75.89% | -58.88% | unchanged |
+
+Final `true_crisis_signal` days:
+
+| Mode | Dotcom | GFC | COVID | 2022 | Post-2015 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V2 baseline, valuation off | 278 / 638 | 133 / 356 | 0 / 52 | 0 / 251 | 0 / 2838 |
+| `price_or_external` | 460 / 638 | 133 / 356 | 0 / 52 | 0 / 251 | 0 / 2838 |
+| `price_and_external` | 0 / 638 | 133 / 356 | 0 / 52 | 0 / 251 | 0 / 2838 |
+| `external_only` | 185 / 638 | 133 / 356 | 0 / 52 | 0 / 251 | 0 / 2838 |
+
+Interpretation:
+
+- `price_or_external` is the best candidate mode. It lets either the price
+  bubble proxy or extreme valuation context support the true-crisis route after
+  price confirmation, materially improving 2000 without hurting post-2015,
+  COVID, 2022, or trade-war windows in this trial.
+- `price_and_external` is too strict because valuation and price-bubble windows
+  do not overlap reliably on the confirmed drawdown dates.
+- `external_only` is too narrow and enters late relative to price-plus-context
+  evidence.
+- The result should not be treated as production evidence until the valuation
+  context is rebuilt from a source with clear licensing, methodology, and
+  point-in-time availability.

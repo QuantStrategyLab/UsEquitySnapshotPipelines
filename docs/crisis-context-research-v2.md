@@ -147,6 +147,13 @@ Default external valuation thresholds:
 - `nasdaq_100_cape_proxy >= 45`
 - `unprofitable_growth_proxy >= 0.35`
 
+A provisional trial with month-end Nasdaq-100 trailing P/E found
+`price_or_external` to be the only promising initial mode: it improved the 2000
+dot-com window while leaving post-2015, COVID, and 2022 final price-gated
+actions unchanged. That trial used a non-committed reference dataset and should
+be repeated with an authorized point-in-time valuation source before any live
+decision.
+
 Example PE-enabled context pack run:
 
 ```bash
