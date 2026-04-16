@@ -97,6 +97,26 @@ This writes the normal unified response outputs plus
 `crisis_context_features.csv`. `ai_opinions.csv` remains sparse and is written
 only for confirmed crisis-price trigger days.
 
+The unified response run also writes audit-effectiveness reports. These are
+research-only checks for stability of the context / AI-audit layer, not new
+trading rules:
+
+- `ai_audit_effectiveness.csv`: expected historical route versus actual audit
+  behavior, including false-positive true-crisis days in control windows and
+  false-negative true-crisis days after the price scanner has confirmed.
+- `ai_route_period_summary.csv`: period-level counts for suggested
+  `true_crisis`, `taco_fake_crisis`, and `no_action` routes.
+- `ai_route_confusion_matrix.csv`: expected route versus suggested route counts.
+- `ai_false_positive_true_crisis.csv`: dates where a no-action or TACO control
+  window still activated the true-crisis guard.
+- `ai_false_negative_true_crisis.csv`: dates where an expected true-crisis
+  window had a confirmed price-crisis signal but the audit route vetoed defense.
+- `ai_decision_pnl_attribution.csv`: base versus unified-response returns on
+  true-crisis, bubble-fragility, and normal / TACO decision buckets.
+
+The key stability check for 2022 is that `biden_2022_bear` can show rate-bear
+or no-action evidence without producing false-positive true-crisis days.
+
 The default severe financial thresholds are intentionally stricter than the raw
 context flags: XLF/KRE drawdown <= -35% or credit-relative return <= -12%.
 This keeps 2018-2019 trade-war financial noise out of `true_crisis` while

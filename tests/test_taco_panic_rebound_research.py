@@ -5,8 +5,10 @@ import pandas as pd
 from us_equity_snapshot_pipelines.crisis_response_research import (
     CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
     EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+    ROUTE_NO_ACTION,
     ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
+    build_ai_audit_effectiveness_reports,
     build_event_response_decisions,
     run_crisis_response_research,
 )
@@ -798,6 +800,85 @@ def test_unified_crisis_response_can_reduce_bubble_fragility_before_true_crisis(
     normal_risk = normal_weights.reindex(columns=["QQQ", "SYNTH_TQQQ"], fill_value=0.0).loc[signal_date].sum()
     fragility_risk = fragility_weights.reindex(columns=["QQQ", "SYNTH_TQQQ"], fill_value=0.0).loc[signal_date].sum()
     assert fragility_risk < normal_risk
+
+
+def test_ai_audit_effectiveness_keeps_2022_rate_bear_out_of_true_crisis() -> None:
+    dates = pd.bdate_range("2022-01-03", periods=6)
+    features = pd.DataFrame(
+        {
+            "as_of": [date.date().isoformat() for date in dates],
+            "suggested_route": [ROUTE_NO_ACTION] * len(dates),
+            "suggested_context_label": ["rate_bear"] * len(dates),
+            "suggested_reason": ["rate bear without financial-system stress"] * len(dates),
+        }
+    )
+    confirmed = pd.Series([True] * len(dates), index=dates)
+    true_crisis = pd.Series([False] * len(dates), index=dates)
+    base_returns = pd.Series([0.0, -0.02, 0.01, -0.01, 0.02, -0.01], index=dates)
+    strategy_returns = pd.Series([0.0, -0.02, 0.01, -0.01, 0.02, -0.01], index=dates)
+
+    reports = build_ai_audit_effectiveness_reports(
+        features,
+        confirmed_crisis_signal=confirmed,
+        true_crisis_signal=true_crisis,
+        returns_by_strategy={"base": base_returns, "unified_response_5pct": strategy_returns},
+        route_expectations=(
+            ("biden_2022_bear", "2022-01-03", "2022-01-10", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
+        ),
+    )
+    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
+
+    assert effectiveness["Status"] == "pass"
+    assert effectiveness["False Positive True Crisis Days"] == 0
+    assert effectiveness["Confirmed Price Crisis Days"] == len(dates)
+    assert reports["ai_false_positive_true_crisis"].empty
+
+
+def test_ai_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() -> None:
+    dates = pd.bdate_range("2000-03-24", periods=5)
+    features = pd.DataFrame(
+        {
+            "as_of": [date.date().isoformat() for date in dates],
+            "suggested_route": [
+                ROUTE_TRUE_CRISIS,
+                ROUTE_TRUE_CRISIS,
+                ROUTE_NO_ACTION,
+                ROUTE_TRUE_CRISIS,
+                ROUTE_TRUE_CRISIS,
+            ],
+            "suggested_context_label": [
+                "valuation_bubble",
+                "valuation_bubble",
+                "normal",
+                "valuation_bubble",
+                "valuation_bubble",
+            ],
+            "suggested_reason": [
+                "bubble",
+                "bubble",
+                "missing context",
+                "bubble",
+                "bubble",
+            ],
+        }
+    )
+    confirmed = pd.Series([True] * len(dates), index=dates)
+    true_crisis = pd.Series([True, True, False, True, True], index=dates)
+
+    reports = build_ai_audit_effectiveness_reports(
+        features,
+        confirmed_crisis_signal=confirmed,
+        true_crisis_signal=true_crisis,
+        route_expectations=(
+            ("dotcom_bubble_burst", "2000-03-24", "2000-03-30", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
+        ),
+    )
+    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
+    false_negatives = reports["ai_false_negative_true_crisis"]
+
+    assert effectiveness["False Negative True Crisis Days"] == 1
+    assert false_negatives["as_of"].tolist() == ["2000-03-28"]
+    assert false_negatives["Suggested Route"].tolist() == [ROUTE_NO_ACTION]
 
 
 def test_guard_transition_events_records_on_off_edges() -> None:
