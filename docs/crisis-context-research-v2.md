@@ -14,12 +14,14 @@ Turn historical crash explanations into auditable context features:
   external context table.
 - 2008-style financial crisis: XLF/KRE drawdown and relative weakness, plus
   HYG/IEF and LQD/IEF credit weakness where data exists.
-- 2020-style exogenous shock: event context that defaults to `no_action` unless
-  separate systemic stress appears.
+- 2020-style exogenous shock: event context plus policy-rescue windows that
+  default to `no_action` so short-lived liquidity stress is not misread as a
+  slow true-crisis regime.
 - 2022-style rate bear: duration/rate proxy stress that defaults to `no_action`
   unless financial-system stress appears.
-- 2018-2019 and 2025+ tariff/policy shocks: policy context that routes to the
-  small `taco_fake_crisis` sleeve unless true-crisis context is active.
+- 2018-2019 and 2025+ tariff/policy shocks or softenings: policy context that
+  routes to the small `taco_fake_crisis` sleeve unless valuation-bubble context
+  is active.
 
 ## Research Output
 
@@ -87,17 +89,24 @@ Suggested external columns:
 - `credit_spread_hy`
 - `policy_shock_score`
 - `exogenous_shock_score`
+- `policy_rescue_score`
 
 ## Route Priority
 
 The V2 context pack uses conservative research labels:
 
-1. Financial-system stress -> `true_crisis`.
-2. Valuation-bubble context -> `true_crisis`.
-3. Policy or tariff shock without systemic stress -> `taco_fake_crisis`.
-4. Exogenous shock without systemic stress -> `no_action`.
-5. Rate bear without financial-system stress -> `no_action`.
-6. No active context -> `no_action`.
+1. Exogenous shock plus policy rescue -> `no_action`.
+2. Exogenous shock without policy rescue -> `no_action`.
+3. Policy rescue without valuation-bubble evidence -> `no_action`.
+4. Valuation-bubble context -> `true_crisis`.
+5. Policy or tariff shock / softening -> `taco_fake_crisis`.
+6. Financial-system stress outside those windows -> `true_crisis`.
+7. Rate bear without financial-system stress -> `no_action`.
+8. No active context -> `no_action`.
+
+The policy and exogenous priorities are intentional false-positive controls:
+COVID-style sudden stops and tariff shock / softening windows should not become
+`true_crisis` solely because short-window credit or bank proxies weaken.
 
 These are suggested research routes only. V1 remains frozen, and no V2 context
 feature should affect live allocation until it passes the roadmap acceptance

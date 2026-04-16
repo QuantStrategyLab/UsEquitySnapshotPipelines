@@ -453,6 +453,9 @@ python scripts/build_crisis_context_pack.py \
 This writes `crisis_context_features.csv` and `context_diagnostics.csv`. If
 yfinance is rate limited, pass `--prices` with a saved price-history CSV. If a
 legitimate proxy is available, set `YFINANCE_PROXY` or pass `--download-proxy`.
+The V2 pack includes research-only COVID exogenous / policy-rescue windows and
+tariff shock / softening windows so 2020 and 2018-2019 false positives can be
+audited before any context affects live routing.
 
 Run the unified Crisis Response research when comparing fake-crisis TACO entries
 with true-crisis defense in one plugin:

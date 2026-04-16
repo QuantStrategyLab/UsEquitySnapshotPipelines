@@ -12,6 +12,7 @@ from .russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_research import (
     DEFAULT_EVENT_SET,
     EVENT_KIND_SHOCK,
+    EVENT_KIND_SOFTENING,
     TRADE_WAR_EVENT_SETS,
     TRADE_WAR_EVENTS_2018_TO_PRESENT,
     TradeWarEvent,
@@ -39,10 +40,13 @@ DEFAULT_RATE_LOOKBACK_DAYS = 126
 DEFAULT_RATE_RETURN_THRESHOLD = -0.08
 DEFAULT_POLICY_EVENT_WINDOW_DAYS = 10
 DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS = 21
+DEFAULT_POLICY_RESCUE_EVENT_WINDOW_DAYS = 63
 
 CONTEXT_LABEL_VALUATION_BUBBLE = "valuation_bubble"
 CONTEXT_LABEL_FINANCIAL_CRISIS = "financial_crisis"
 CONTEXT_LABEL_POLICY_SHOCK = "policy_shock"
+CONTEXT_LABEL_POLICY_RESCUE = "policy_rescue"
+CONTEXT_LABEL_EXOGENOUS_POLICY_RESCUE = "exogenous_policy_rescue"
 CONTEXT_LABEL_EXOGENOUS_SHOCK = "exogenous_shock"
 CONTEXT_LABEL_RATE_BEAR = "rate_bear"
 CONTEXT_LABEL_NORMAL = "normal"
@@ -54,6 +58,8 @@ CONTEXT_BOOL_COLUMNS = (
     "financial_system_context",
     "rate_context",
     "policy_context",
+    "policy_rescue_context",
+    "exogenous_policy_rescue_context",
     "exogenous_context",
 )
 
@@ -81,6 +87,52 @@ EXOGENOUS_EVENT_KEYWORDS = (
     "war",
     "earthquake",
     "terror",
+)
+
+EVENT_KIND_EXOGENOUS_SHOCK = "exogenous_shock"
+EVENT_KIND_POLICY_RESCUE = "policy_rescue"
+
+POLICY_RESCUE_EVENT_KEYWORDS = (
+    "policy rescue",
+    "rescue",
+    "federal reserve",
+    "fed",
+    "liquidity",
+    "credit facility",
+    "credit facilities",
+    "cares act",
+    "stimulus",
+    "emergency lending",
+)
+
+DEFAULT_CRISIS_CONTEXT_EVENTS: tuple[TradeWarEvent, ...] = (
+    TradeWarEvent(
+        event_id="2020-02-24-covid-pandemic-sudden-stop",
+        event_date="2020-02-24",
+        kind=EVENT_KIND_EXOGENOUS_SHOCK,
+        region="global",
+        title="COVID pandemic exogenous sudden-stop market shock",
+        source="research_context",
+        source_url="https://www.who.int/emergencies/diseases/novel-coronavirus-2019",
+    ),
+    TradeWarEvent(
+        event_id="2020-03-23-fed-credit-liquidity-rescue",
+        event_date="2020-03-23",
+        kind=EVENT_KIND_POLICY_RESCUE,
+        region="us",
+        title="Federal Reserve policy rescue with broad credit and liquidity facilities",
+        source="research_context",
+        source_url="https://www.federalreserve.gov/newsevents/pressreleases/monetary20200323b.htm",
+    ),
+    TradeWarEvent(
+        event_id="2020-03-27-cares-act-fiscal-rescue",
+        event_date="2020-03-27",
+        kind=EVENT_KIND_POLICY_RESCUE,
+        region="us",
+        title="CARES Act fiscal stimulus policy rescue",
+        source="research_context",
+        source_url="https://www.congress.gov/bill/116th-congress/house-bill/748",
+    ),
 )
 
 
@@ -159,12 +211,12 @@ def _min_frame(series_by_name: dict[str, pd.Series], index: pd.DatetimeIndex, *,
     return pd.concat(series_by_name, axis=1).min(axis=1, skipna=True).rename(name)
 
 
-def _next_index_date(index: pd.DatetimeIndex, raw_date: str) -> pd.Timestamp | None:
+def _event_active_dates(index: pd.DatetimeIndex, raw_date: str, window_days: int) -> pd.DatetimeIndex:
     event_date = pd.Timestamp(raw_date).normalize()
-    pos = index.searchsorted(event_date, side="left")
-    if pos >= len(index):
-        return None
-    return pd.Timestamp(index[pos]).normalize()
+    if len(index) == 0 or event_date > pd.Timestamp(index[-1]).normalize():
+        return pd.DatetimeIndex([])
+    event_end = event_date + pd.offsets.BDay(max(1, int(window_days)) - 1)
+    return index[(index >= event_date) & (index <= event_end)]
 
 
 def _event_text(event: TradeWarEvent) -> str:
@@ -190,43 +242,54 @@ def build_event_context_flags(
     *,
     policy_event_window_days: int = DEFAULT_POLICY_EVENT_WINDOW_DAYS,
     exogenous_event_window_days: int = DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS,
+    policy_rescue_event_window_days: int = DEFAULT_POLICY_RESCUE_EVENT_WINDOW_DAYS,
 ) -> pd.DataFrame:
     rows = pd.DataFrame(
         {
             "policy_context": False,
             "exogenous_context": False,
+            "policy_rescue_context": False,
             "policy_event_ids": "",
             "exogenous_event_ids": "",
+            "policy_rescue_event_ids": "",
         },
         index=index,
     )
     policy_ids: dict[pd.Timestamp, list[str]] = {pd.Timestamp(date): [] for date in index}
     exogenous_ids: dict[pd.Timestamp, list[str]] = {pd.Timestamp(date): [] for date in index}
+    policy_rescue_ids: dict[pd.Timestamp, list[str]] = {pd.Timestamp(date): [] for date in index}
 
     for event in events:
-        signal_date = _next_index_date(index, event.event_date)
-        if signal_date is None:
-            continue
         text = _event_text(event)
-        is_policy = event.kind == EVENT_KIND_SHOCK and _matches_any(text, POLICY_EVENT_KEYWORDS)
-        is_exogenous = event.kind == EVENT_KIND_SHOCK and _matches_any(text, EXOGENOUS_EVENT_KEYWORDS)
-        if not (is_policy or is_exogenous):
+        is_policy = event.kind in {EVENT_KIND_SHOCK, EVENT_KIND_SOFTENING} and _matches_any(
+            text,
+            POLICY_EVENT_KEYWORDS,
+        )
+        is_exogenous = event.kind in {EVENT_KIND_SHOCK, EVENT_KIND_EXOGENOUS_SHOCK} and _matches_any(
+            text,
+            EXOGENOUS_EVENT_KEYWORDS,
+        )
+        is_policy_rescue = event.kind == EVENT_KIND_POLICY_RESCUE or _matches_any(text, POLICY_RESCUE_EVENT_KEYWORDS)
+        if not (is_policy or is_exogenous or is_policy_rescue):
             continue
 
-        start_pos = index.get_loc(signal_date)
         if is_policy:
-            stop_pos = min(len(index), start_pos + max(1, int(policy_event_window_days)))
-            for date in index[start_pos:stop_pos]:
+            for date in _event_active_dates(index, event.event_date, policy_event_window_days):
                 rows.at[date, "policy_context"] = True
                 policy_ids[pd.Timestamp(date)].append(event.event_id)
         if is_exogenous:
-            stop_pos = min(len(index), start_pos + max(1, int(exogenous_event_window_days)))
-            for date in index[start_pos:stop_pos]:
+            for date in _event_active_dates(index, event.event_date, exogenous_event_window_days):
                 rows.at[date, "exogenous_context"] = True
                 exogenous_ids[pd.Timestamp(date)].append(event.event_id)
+        if is_policy_rescue:
+            for date in _event_active_dates(index, event.event_date, policy_rescue_event_window_days):
+                rows.at[date, "policy_rescue_context"] = True
+                policy_rescue_ids[pd.Timestamp(date)].append(event.event_id)
 
     rows["policy_event_ids"] = [";".join(policy_ids[pd.Timestamp(date)]) for date in index]
     rows["exogenous_event_ids"] = [";".join(exogenous_ids[pd.Timestamp(date)]) for date in index]
+    rows["policy_rescue_event_ids"] = [";".join(policy_rescue_ids[pd.Timestamp(date)]) for date in index]
+    rows["exogenous_policy_rescue_context"] = rows["exogenous_context"] & rows["policy_rescue_context"]
     return rows
 
 
@@ -245,11 +308,23 @@ def _prepare_external_context(context: pd.DataFrame | None, index: pd.DatetimeIn
 
 
 def _suggest_label_and_route(row: pd.Series) -> tuple[str, str, str]:
-    if bool(row["financial_system_context"]):
+    if bool(row["exogenous_policy_rescue_context"]):
         return (
-            CONTEXT_LABEL_FINANCIAL_CRISIS,
-            ROUTE_TRUE_CRISIS,
-            "financial-sector or credit-stress context is active",
+            CONTEXT_LABEL_EXOGENOUS_POLICY_RESCUE,
+            ROUTE_NO_ACTION,
+            "exogenous shock overlaps explicit policy-rescue context",
+        )
+    if bool(row["exogenous_context"]):
+        return (
+            CONTEXT_LABEL_EXOGENOUS_SHOCK,
+            ROUTE_NO_ACTION,
+            "exogenous-shock context is active and should not imply slow true-crisis defense by itself",
+        )
+    if bool(row["policy_rescue_context"]) and not bool(row["bubble_context"]):
+        return (
+            CONTEXT_LABEL_POLICY_RESCUE,
+            ROUTE_NO_ACTION,
+            "policy-rescue context is active without valuation-bubble evidence",
         )
     if bool(row["bubble_context"]):
         return (
@@ -263,11 +338,11 @@ def _suggest_label_and_route(row: pd.Series) -> tuple[str, str, str]:
             ROUTE_TACO,
             "policy or tariff shock context is active without systemic stress",
         )
-    if bool(row["exogenous_context"]):
+    if bool(row["financial_system_context"]):
         return (
-            CONTEXT_LABEL_EXOGENOUS_SHOCK,
-            ROUTE_NO_ACTION,
-            "exogenous-shock context is active and should not imply slow true-crisis defense by itself",
+            CONTEXT_LABEL_FINANCIAL_CRISIS,
+            ROUTE_TRUE_CRISIS,
+            "financial-sector or credit-stress context is active",
         )
     if bool(row["rate_context"]):
         return (
@@ -282,6 +357,7 @@ def build_crisis_context_features(
     price_history,
     *,
     events: Sequence[TradeWarEvent] = TRADE_WAR_EVENTS_2018_TO_PRESENT,
+    context_events: Sequence[TradeWarEvent] = DEFAULT_CRISIS_CONTEXT_EVENTS,
     external_context: pd.DataFrame | None = None,
     start_date: str | None = DEFAULT_START_DATE,
     end_date: str | None = None,
@@ -302,6 +378,7 @@ def build_crisis_context_features(
     rate_return_threshold: float = DEFAULT_RATE_RETURN_THRESHOLD,
     policy_event_window_days: int = DEFAULT_POLICY_EVENT_WINDOW_DAYS,
     exogenous_event_window_days: int = DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS,
+    policy_rescue_event_window_days: int = DEFAULT_POLICY_RESCUE_EVENT_WINDOW_DAYS,
 ) -> pd.DataFrame:
     close = _normalize_close(price_history)
     index = _window_index(close, start_date=start_date, end_date=end_date)
@@ -376,9 +453,10 @@ def build_crisis_context_features(
 
     event_flags = build_event_context_flags(
         index,
-        events,
+        (*events, *context_events),
         policy_event_window_days=policy_event_window_days,
         exogenous_event_window_days=exogenous_event_window_days,
+        policy_rescue_event_window_days=policy_rescue_event_window_days,
     )
 
     output = pd.DataFrame(
@@ -398,8 +476,11 @@ def build_crisis_context_features(
             "rate_context": rate_context,
             "policy_context": event_flags["policy_context"],
             "exogenous_context": event_flags["exogenous_context"],
+            "policy_rescue_context": event_flags["policy_rescue_context"],
+            "exogenous_policy_rescue_context": event_flags["exogenous_policy_rescue_context"],
             "policy_event_ids": event_flags["policy_event_ids"],
             "exogenous_event_ids": event_flags["exogenous_event_ids"],
+            "policy_rescue_event_ids": event_flags["policy_rescue_event_ids"],
         },
         index=index,
     )
@@ -502,6 +583,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-symbols", default=",".join(DEFAULT_RATE_SYMBOLS))
     parser.add_argument("--policy-event-window-days", type=int, default=DEFAULT_POLICY_EVENT_WINDOW_DAYS)
     parser.add_argument("--exogenous-event-window-days", type=int, default=DEFAULT_EXOGENOUS_EVENT_WINDOW_DAYS)
+    parser.add_argument(
+        "--policy-rescue-event-window-days",
+        type=int,
+        default=DEFAULT_POLICY_RESCUE_EVENT_WINDOW_DAYS,
+    )
     parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -553,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
         rate_symbols=rate_symbols,
         policy_event_window_days=int(args.policy_event_window_days),
         exogenous_event_window_days=int(args.exogenous_event_window_days),
+        policy_rescue_event_window_days=int(args.policy_rescue_event_window_days),
     )
     diagnostics = build_context_diagnostics(features)
 
@@ -566,12 +653,17 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "CONTEXT_BOOL_COLUMNS",
+    "CONTEXT_LABEL_EXOGENOUS_POLICY_RESCUE",
     "CONTEXT_LABEL_EXOGENOUS_SHOCK",
     "CONTEXT_LABEL_FINANCIAL_CRISIS",
     "CONTEXT_LABEL_NORMAL",
+    "CONTEXT_LABEL_POLICY_RESCUE",
     "CONTEXT_LABEL_POLICY_SHOCK",
     "CONTEXT_LABEL_RATE_BEAR",
     "CONTEXT_LABEL_VALUATION_BUBBLE",
+    "DEFAULT_CRISIS_CONTEXT_EVENTS",
+    "EVENT_KIND_EXOGENOUS_SHOCK",
+    "EVENT_KIND_POLICY_RESCUE",
     "build_context_diagnostics",
     "build_crisis_context_features",
     "build_event_context_flags",
