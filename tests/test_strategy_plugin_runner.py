@@ -78,6 +78,8 @@ def test_strategy_plugin_runner_executes_strategy_scoped_shadow_plugin(tmp_path)
     assert latest_signal.exists()
     assert latest_run.exists()
     payload = json.loads(latest_signal.read_text(encoding="utf-8"))
+    assert payload["strategy"] == STRATEGY_NAME
+    assert payload["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
     assert payload["mode"] == "shadow"
     assert payload["configured_mode"] == "shadow"
     assert payload["effective_mode"] == "shadow"
@@ -127,6 +129,8 @@ def test_strategy_plugin_runner_uses_default_mode_when_entry_mode_is_omitted(tmp
     assert result["effective_mode"] == PLUGIN_MODE_PAPER
     latest_signal = tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json"
     payload = json.loads(latest_signal.read_text(encoding="utf-8"))
+    assert payload["strategy"] == STRATEGY_NAME
+    assert payload["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
     assert payload["configured_mode"] == PLUGIN_MODE_PAPER
     assert payload["execution_controls"]["paper_ledger_required"] is True
 

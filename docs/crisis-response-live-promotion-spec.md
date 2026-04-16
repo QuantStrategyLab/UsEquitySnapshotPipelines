@@ -150,6 +150,8 @@ Required top-level fields:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `as_of` | string | Signal date in `YYYY-MM-DD` |
+| `strategy` | string | Strategy profile this plugin artifact is mounted to |
+| `plugin` | string | Plugin name, for example `crisis_response_shadow` |
 | `mode` | string | Runner mode such as `shadow`, `paper`, `advisory`, or `live` |
 | `configured_mode` | string | Requested runner mode such as `shadow`, `paper`, `advisory`, or `live` |
 | `effective_mode` | string | Mode that downstream platform adapters must implement |
@@ -187,6 +189,8 @@ Example JSON shape:
 ```json
 {
   "as_of": "2026-04-17",
+  "strategy": "tqqq_growth_income",
+  "plugin": "crisis_response_shadow",
   "mode": "shadow",
   "schema_version": "crisis_response_shadow.v1",
   "canonical_route": "no_action",
