@@ -402,7 +402,7 @@ python scripts/backtest_crisis_regime_guard.py \
   --synthetic-attack-from QQQ \
   --synthetic-attack-multiple 3 \
   --safe-symbol SHY \
-  --context-gates none,ai_rubric \
+  --context-gates none,rubric \
   --drawdown-thresholds=-0.20,-0.25,-0.30 \
   --risk-multipliers 0,0.25,0.5 \
   --confirm-days 5 \
@@ -411,8 +411,8 @@ python scripts/backtest_crisis_regime_guard.py \
 
 This matrix compares the base TQQQ profile with price-only crisis guard variants
 across dot-com, GFC, COVID, 2022, and post-2015 periods. `--context-gates none`
-keeps the pure price-only guard. `ai_rubric` is a legacy option name for the
-deterministic two-step crisis rubric. The confirmed price crisis signal opens
+keeps the pure price-only guard. `rubric` enables the deterministic two-step
+crisis rubric. The confirmed price crisis signal opens
 the context scanner, which classifies the triggered crisis candidate as
 bubble-burst risk, financial-crisis risk, or non-systemic bear / policy shock.
 The audit rubric can only approve or veto protection. The simulated rubric uses a
@@ -424,8 +424,8 @@ stand-in for a future live crisis module, not a model-driven backtest.
 
 The output writes `summary.csv`, `deltas_vs_base.csv`,
 `guard_diagnostics.csv`, `context_diagnostics.csv`, `guard_events.csv`,
-`ai_opinions.csv`, and per-strategy return / weight / signal / context series.
-`ai_opinions.csv` is a legacy output name and is intentionally sparse: it
+`context_opinions.csv`, and per-strategy return / weight / signal / context series.
+`context_opinions.csv` is intentionally sparse: it
 records only dates where the confirmed price crisis signal would have opened the
 context scanner. The matrix is
 for research only and defaults to disabled unless explicitly requested: it is
@@ -489,7 +489,7 @@ the main audit file for whether each candidate was routed to `taco_fake_crisis`,
 `true_crisis`, or `no_action`.
 
 To compare the frozen V1 deterministic rubric with the research-only V2 context pack, add
-the explicit mode flag. The default remains `v1_ai_rubric`.
+the explicit mode flag. The default remains `v1_rubric`.
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -511,7 +511,7 @@ python scripts/backtest_crisis_response.py \
 ```
 
 When this mode is used, the output also includes
-`crisis_context_features.csv`, and `ai_opinions.csv` records the V2 suggested
+`crisis_context_features.csv`, and `context_opinions.csv` records the V2 suggested
 route behind each confirmed crisis-price trigger.
 
 External valuation context stays audit-only unless explicitly enabled. To test

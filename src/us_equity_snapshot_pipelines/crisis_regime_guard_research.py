@@ -36,14 +36,14 @@ CONTEXT_GATE_NONE = "none"
 CONTEXT_GATE_BUBBLE = "bubble"
 CONTEXT_GATE_FINANCIAL = "financial"
 CONTEXT_GATE_BUBBLE_OR_FINANCIAL = "bubble_or_financial"
-CONTEXT_GATE_AI_RUBRIC = "ai_rubric"
+CONTEXT_GATE_RUBRIC = "rubric"
 CONTEXT_GATES = frozenset(
     {
         CONTEXT_GATE_NONE,
         CONTEXT_GATE_BUBBLE,
         CONTEXT_GATE_FINANCIAL,
         CONTEXT_GATE_BUBBLE_OR_FINANCIAL,
-        CONTEXT_GATE_AI_RUBRIC,
+        CONTEXT_GATE_RUBRIC,
     }
 )
 DEFAULT_CONTEXT_GATES = (CONTEXT_GATE_NONE,)
@@ -283,11 +283,11 @@ def build_financial_context_gate(
     return gate.rename("financial_context_active")
 
 
-def build_ai_crisis_opinions(
+def build_crisis_context_opinions(
     close: pd.DataFrame,
     price_signal: pd.Series,
     *,
-    strategy_name: str = "ai_crisis_guard",
+    strategy_name: str = "crisis_context_guard",
     start_date: str | None = DEFAULT_START_DATE,
     end_date: str | None = None,
     benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
@@ -711,7 +711,7 @@ def run_crisis_guard_research(
     weights_by_strategy: dict[str, pd.DataFrame] = {"base": base_weights_history}
     signals_by_strategy: dict[str, pd.Series] = {}
     trades_by_strategy: dict[str, pd.DataFrame] = {}
-    ai_opinions_by_strategy: dict[str, pd.DataFrame] = {}
+    context_opinions_by_strategy: dict[str, pd.DataFrame] = {}
 
     specs = build_crisis_guard_specs(
         drawdown_thresholds=drawdown_thresholds,
@@ -748,8 +748,8 @@ def run_crisis_guard_research(
             ma_slope_days=ma_slope_days,
         )
         confirmed_price_signal = _apply_confirm_days(raw_signal, spec.confirm_days)
-        if spec.context_gate == CONTEXT_GATE_AI_RUBRIC:
-            ai_opinions = build_ai_crisis_opinions(
+        if spec.context_gate == CONTEXT_GATE_RUBRIC:
+            context_opinions = build_crisis_context_opinions(
                 close,
                 confirmed_price_signal,
                 strategy_name=spec.name,
@@ -765,11 +765,11 @@ def run_crisis_guard_research(
                 financial_relative_lookback_days=financial_relative_lookback_days,
                 financial_relative_return_threshold=financial_relative_return_threshold,
             )
-            ai_opinions_by_strategy[spec.name] = ai_opinions
-            context_signal = pd.Series(False, index=confirmed_price_signal.index, name=f"{spec.name}_ai_context_allowed")
-            if not ai_opinions.empty:
-                opinion_dates = pd.to_datetime(ai_opinions["as_of"]).dt.normalize()
-                context_signal.loc[opinion_dates] = ai_opinions["final_context_allowed"].to_numpy(dtype=bool)
+            context_opinions_by_strategy[spec.name] = context_opinions
+            context_signal = pd.Series(False, index=confirmed_price_signal.index, name=f"{spec.name}_context_allowed")
+            if not context_opinions.empty:
+                opinion_dates = pd.to_datetime(context_opinions["as_of"]).dt.normalize()
+                context_signal.loc[opinion_dates] = context_opinions["final_context_allowed"].to_numpy(dtype=bool)
         else:
             context_signal = context_signals_by_gate[spec.context_gate]
         signal = apply_context_gate_to_signal(confirmed_price_signal, context_signal)
@@ -805,9 +805,9 @@ def run_crisis_guard_research(
         if trades_by_strategy
         else pd.DataFrame()
     )
-    ai_opinions = (
-        pd.concat(tuple(ai_opinions_by_strategy.values()), ignore_index=True)
-        if ai_opinions_by_strategy
+    context_opinions = (
+        pd.concat(tuple(context_opinions_by_strategy.values()), ignore_index=True)
+        if context_opinions_by_strategy
         else pd.DataFrame()
     )
     return {
@@ -816,7 +816,7 @@ def run_crisis_guard_research(
         "guard_diagnostics": diagnostics,
         "context_diagnostics": context_diagnostics,
         "guard_events": guard_events,
-        "ai_opinions": ai_opinions,
+        "context_opinions": context_opinions,
         "returns_by_strategy": returns_by_strategy,
         "weights_by_strategy": weights_by_strategy,
         "signals_by_strategy": signals_by_strategy,
@@ -942,7 +942,7 @@ def main(argv: list[str] | None = None) -> int:
     deltas = result["deltas_vs_base"]
     diagnostics = result["guard_diagnostics"]
     context_diagnostics = result["context_diagnostics"]
-    ai_opinions = result["ai_opinions"]
+    context_opinions = result["context_opinions"]
     print("\nSummary:")
     print(_format_percent_columns(summary).to_string(index=False))
     print("\nDeltas vs base:")
@@ -951,25 +951,25 @@ def main(argv: list[str] | None = None) -> int:
     print(_format_percent_columns(diagnostics).to_string(index=False))
     print("\nContext diagnostics:")
     print(_format_percent_columns(context_diagnostics).to_string(index=False))
-    if isinstance(ai_opinions, pd.DataFrame) and not ai_opinions.empty:
-        ai_diagnostics = (
-            ai_opinions.groupby(
+    if isinstance(context_opinions, pd.DataFrame) and not context_opinions.empty:
+        opinion_diagnostics = (
+            context_opinions.groupby(
                 ["strategy", "crisis_type", "proposer_verdict", "auditor_verdict", "final_context_allowed"],
                 dropna=False,
             )
             .size()
             .reset_index(name="days")
         )
-        print("\nAI opinion diagnostics:")
-        print(ai_diagnostics.to_string(index=False))
+        print("\ncontext opinion diagnostics:")
+        print(opinion_diagnostics.to_string(index=False))
 
     summary.to_csv(output_dir / "summary.csv", index=False)
     deltas.to_csv(output_dir / "deltas_vs_base.csv", index=False)
     diagnostics.to_csv(output_dir / "guard_diagnostics.csv", index=False)
     context_diagnostics.to_csv(output_dir / "context_diagnostics.csv", index=False)
     result["guard_events"].to_csv(output_dir / "guard_events.csv", index=False)
-    if isinstance(ai_opinions, pd.DataFrame) and not ai_opinions.empty:
-        ai_opinions.to_csv(output_dir / "ai_opinions.csv", index=False)
+    if isinstance(context_opinions, pd.DataFrame) and not context_opinions.empty:
+        context_opinions.to_csv(output_dir / "context_opinions.csv", index=False)
     returns_dir = output_dir / "returns"
     weights_dir = output_dir / "weights"
     signals_dir = output_dir / "signals"
@@ -992,7 +992,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "CRISIS_COMPARISON_PERIODS",
-    "CONTEXT_GATE_AI_RUBRIC",
+    "CONTEXT_GATE_RUBRIC",
     "CONTEXT_GATE_BUBBLE",
     "CONTEXT_GATE_BUBBLE_OR_FINANCIAL",
     "CONTEXT_GATE_FINANCIAL",
@@ -1004,7 +1004,7 @@ __all__ = [
     "DEFAULT_DRAWDOWN_THRESHOLDS",
     "DEFAULT_RISK_MULTIPLIERS",
     "apply_context_gate_to_signal",
-    "build_ai_crisis_opinions",
+    "build_crisis_context_opinions",
     "build_bubble_context_gate",
     "build_context_gate",
     "build_crisis_guard_specs",

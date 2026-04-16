@@ -16,7 +16,7 @@ from .crisis_regime_guard_research import (
     DEFAULT_FINANCIAL_SYMBOL,
     DEFAULT_MARKET_SYMBOL,
     apply_context_gate_to_signal,
-    build_ai_crisis_opinions,
+    build_crisis_context_opinions,
 )
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_backtest import DEFAULT_TURNOVER_COST_BPS
@@ -76,9 +76,9 @@ ROUTE_TACO = "taco_fake_crisis"
 ROUTE_TRUE_CRISIS = "true_crisis"
 ROUTE_NO_ACTION = "no_action"
 ROUTE_SYSTEMIC_STRESS_WATCH = "systemic_stress_watch"
-CRISIS_CONTEXT_MODE_V1_AI_RUBRIC = "v1_ai_rubric"
+CRISIS_CONTEXT_MODE_V1_RUBRIC = "v1_rubric"
 CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK = "v2_context_pack"
-CRISIS_CONTEXT_MODES = (CRISIS_CONTEXT_MODE_V1_AI_RUBRIC, CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK)
+CRISIS_CONTEXT_MODES = (CRISIS_CONTEXT_MODE_V1_RUBRIC, CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK)
 DEFAULT_CONTEXT_FINANCIAL_SYMBOLS = ("XLF", "KRE")
 DEFAULT_CONTEXT_CREDIT_PAIRS = (("HYG", "IEF"), ("LQD", "IEF"))
 DEFAULT_CONTEXT_RATE_SYMBOLS = ("IEF", "TLT")
@@ -119,7 +119,7 @@ FRAGILITY_CONTEXTS = (
     FRAGILITY_CONTEXT_EXTERNAL_BREADTH_OR_QUALITY,
 )
 DEFAULT_FRAGILITY_CONTEXT = FRAGILITY_CONTEXT_EXTERNAL_VALUATION
-DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS: tuple[tuple[str, str, str | None, str, str], ...] = (
+DEFAULT_ROUTE_EXPECTATIONS: tuple[tuple[str, str, str | None, str, str], ...] = (
     ("dotcom_bubble_burst", "2000-03-24", "2002-10-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
     ("gfc_peak_to_trough", "2007-10-09", "2009-03-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
     (
@@ -135,7 +135,7 @@ DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS: tuple[tuple[str, str, str | None, str, str]
     ("trump_2_to_date", "2025-01-21", None, ROUTE_TACO, f"{ROUTE_TACO},{ROUTE_NO_ACTION}"),
 )
 
-AI_AUDIT_EFFECTIVENESS_COLUMNS = (
+ROUTE_AUDIT_EFFECTIVENESS_COLUMNS = (
     "Period",
     "Start",
     "End",
@@ -153,7 +153,7 @@ AI_AUDIT_EFFECTIVENESS_COLUMNS = (
     "Status",
 )
 
-AI_ROUTE_PERIOD_SUMMARY_COLUMNS = (
+ROUTE_AUDIT_PERIOD_SUMMARY_COLUMNS = (
     "Period",
     "Start",
     "End",
@@ -166,7 +166,7 @@ AI_ROUTE_PERIOD_SUMMARY_COLUMNS = (
     "True Crisis Signal Ratio",
 )
 
-AI_ROUTE_CONFUSION_COLUMNS = (
+ROUTE_AUDIT_CONFUSION_COLUMNS = (
     "Period",
     "Expected Route",
     "Suggested Route",
@@ -175,7 +175,7 @@ AI_ROUTE_CONFUSION_COLUMNS = (
     "Active Ratio",
 )
 
-AI_AUDIT_EXCEPTION_COLUMNS = (
+ROUTE_AUDIT_EXCEPTION_COLUMNS = (
     "Period",
     "as_of",
     "Expected Route",
@@ -184,7 +184,7 @@ AI_AUDIT_EXCEPTION_COLUMNS = (
     "Reason",
 )
 
-AI_DECISION_PNL_ATTRIBUTION_COLUMNS = (
+ROUTE_DECISION_PNL_ATTRIBUTION_COLUMNS = (
     "Decision Bucket",
     "Trading Days",
     "Base Total Return",
@@ -208,27 +208,27 @@ def _apply_confirm_days(signal: pd.Series, confirm_days: int) -> pd.Series:
     return confirmed.fillna(False).rename(raw.name)
 
 
-def _series_from_ai_allowed(ai_opinions: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    output = pd.Series(False, index=index, name="ai_true_crisis_allowed")
-    if ai_opinions.empty:
+def _series_from_context_allowed(context_opinions: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
+    output = pd.Series(False, index=index, name="context_true_crisis_allowed")
+    if context_opinions.empty:
         return output
-    opinion_dates = pd.to_datetime(ai_opinions["as_of"]).dt.normalize()
-    output.loc[opinion_dates] = ai_opinions["final_context_allowed"].to_numpy(dtype=bool)
+    opinion_dates = pd.to_datetime(context_opinions["as_of"]).dt.normalize()
+    output.loc[opinion_dates] = context_opinions["final_context_allowed"].to_numpy(dtype=bool)
     return output
 
 
-def _series_from_ai_bool_column(
-    ai_opinions: pd.DataFrame,
+def _series_from_context_bool_column(
+    context_opinions: pd.DataFrame,
     index: pd.DatetimeIndex,
     column: str,
     *,
     require_final_allowed: bool = True,
 ) -> pd.Series:
     output = pd.Series(False, index=index, name=str(column))
-    if ai_opinions.empty or column not in ai_opinions.columns:
+    if context_opinions.empty or column not in context_opinions.columns:
         return output
 
-    frame = ai_opinions.copy()
+    frame = context_opinions.copy()
     frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
     frame = frame.dropna(subset=["as_of"])
     if frame.empty:
@@ -243,12 +243,12 @@ def _series_from_ai_bool_column(
     return output
 
 
-def _series_from_ai_valuation_bubble(ai_opinions: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
+def _series_from_context_valuation_bubble(context_opinions: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
     output = pd.Series(False, index=index, name="valuation_bubble_context")
-    if ai_opinions.empty:
+    if context_opinions.empty:
         return output
 
-    frame = ai_opinions.copy()
+    frame = context_opinions.copy()
     frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
     frame = frame.dropna(subset=["as_of"])
     if frame.empty:
@@ -399,14 +399,14 @@ def _parse_route_tuple(raw: str | Sequence[str]) -> tuple[str, ...]:
     return tuple(output)
 
 
-def _empty_ai_audit_reports() -> dict[str, pd.DataFrame]:
+def _empty_route_audit_reports() -> dict[str, pd.DataFrame]:
     return {
-        "ai_audit_effectiveness": pd.DataFrame(columns=list(AI_AUDIT_EFFECTIVENESS_COLUMNS)),
-        "ai_route_period_summary": pd.DataFrame(columns=list(AI_ROUTE_PERIOD_SUMMARY_COLUMNS)),
-        "ai_route_confusion_matrix": pd.DataFrame(columns=list(AI_ROUTE_CONFUSION_COLUMNS)),
-        "ai_false_positive_true_crisis": pd.DataFrame(columns=list(AI_AUDIT_EXCEPTION_COLUMNS)),
-        "ai_false_negative_true_crisis": pd.DataFrame(columns=list(AI_AUDIT_EXCEPTION_COLUMNS)),
-        "ai_decision_pnl_attribution": pd.DataFrame(columns=list(AI_DECISION_PNL_ATTRIBUTION_COLUMNS)),
+        "route_audit_effectiveness": pd.DataFrame(columns=list(ROUTE_AUDIT_EFFECTIVENESS_COLUMNS)),
+        "route_audit_period_summary": pd.DataFrame(columns=list(ROUTE_AUDIT_PERIOD_SUMMARY_COLUMNS)),
+        "route_audit_confusion_matrix": pd.DataFrame(columns=list(ROUTE_AUDIT_CONFUSION_COLUMNS)),
+        "route_audit_false_positive_true_crisis": pd.DataFrame(columns=list(ROUTE_AUDIT_EXCEPTION_COLUMNS)),
+        "route_audit_false_negative_true_crisis": pd.DataFrame(columns=list(ROUTE_AUDIT_EXCEPTION_COLUMNS)),
+        "route_decision_pnl_attribution": pd.DataFrame(columns=list(ROUTE_DECISION_PNL_ATTRIBUTION_COLUMNS)),
     }
 
 
@@ -471,7 +471,7 @@ def _audit_exception_rows(
     return rows
 
 
-def build_ai_audit_effectiveness_reports(
+def build_route_audit_effectiveness_reports(
     context_features: pd.DataFrame,
     *,
     confirmed_crisis_signal: pd.Series,
@@ -480,7 +480,7 @@ def build_ai_audit_effectiveness_reports(
     target_strategy: str = "unified_response_5pct",
     base_strategy: str = "base",
     bubble_fragility_signal: pd.Series | None = None,
-    route_expectations: Sequence[tuple[str, str, str | None, str, str | Sequence[str]]] = DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS,
+    route_expectations: Sequence[tuple[str, str, str | None, str, str | Sequence[str]]] = DEFAULT_ROUTE_EXPECTATIONS,
 ) -> dict[str, pd.DataFrame]:
     """Build research-only audit reports for context-route stability.
 
@@ -492,7 +492,7 @@ def build_ai_audit_effectiveness_reports(
     if context_features is None:
         context_features = pd.DataFrame()
     if context_features.empty and pd.Series(confirmed_crisis_signal).empty and pd.Series(true_crisis_signal).empty:
-        return _empty_ai_audit_reports()
+        return _empty_route_audit_reports()
 
     signal_indexes = []
     for signal in (confirmed_crisis_signal, true_crisis_signal, bubble_fragility_signal):
@@ -506,7 +506,7 @@ def build_ai_audit_effectiveness_reports(
         if not feature_dates.empty:
             signal_indexes.append(pd.DatetimeIndex(feature_dates.dt.normalize()))
     if not signal_indexes:
-        return _empty_ai_audit_reports()
+        return _empty_route_audit_reports()
 
     index = signal_indexes[0]
     for extra_index in signal_indexes[1:]:
@@ -661,21 +661,21 @@ def build_ai_audit_effectiveness_reports(
                 }
             )
 
-    reports = _empty_ai_audit_reports()
-    reports["ai_audit_effectiveness"] = pd.DataFrame(effectiveness_rows, columns=list(AI_AUDIT_EFFECTIVENESS_COLUMNS))
-    reports["ai_route_period_summary"] = pd.DataFrame(route_summary_rows, columns=list(AI_ROUTE_PERIOD_SUMMARY_COLUMNS))
-    reports["ai_route_confusion_matrix"] = pd.DataFrame(confusion_rows, columns=list(AI_ROUTE_CONFUSION_COLUMNS))
-    reports["ai_false_positive_true_crisis"] = pd.DataFrame(
+    reports = _empty_route_audit_reports()
+    reports["route_audit_effectiveness"] = pd.DataFrame(effectiveness_rows, columns=list(ROUTE_AUDIT_EFFECTIVENESS_COLUMNS))
+    reports["route_audit_period_summary"] = pd.DataFrame(route_summary_rows, columns=list(ROUTE_AUDIT_PERIOD_SUMMARY_COLUMNS))
+    reports["route_audit_confusion_matrix"] = pd.DataFrame(confusion_rows, columns=list(ROUTE_AUDIT_CONFUSION_COLUMNS))
+    reports["route_audit_false_positive_true_crisis"] = pd.DataFrame(
         false_positive_rows,
-        columns=list(AI_AUDIT_EXCEPTION_COLUMNS),
+        columns=list(ROUTE_AUDIT_EXCEPTION_COLUMNS),
     )
-    reports["ai_false_negative_true_crisis"] = pd.DataFrame(
+    reports["route_audit_false_negative_true_crisis"] = pd.DataFrame(
         false_negative_rows,
-        columns=list(AI_AUDIT_EXCEPTION_COLUMNS),
+        columns=list(ROUTE_AUDIT_EXCEPTION_COLUMNS),
     )
-    reports["ai_decision_pnl_attribution"] = pd.DataFrame(
+    reports["route_decision_pnl_attribution"] = pd.DataFrame(
         pnl_rows,
-        columns=list(AI_DECISION_PNL_ATTRIBUTION_COLUMNS),
+        columns=list(ROUTE_DECISION_PNL_ATTRIBUTION_COLUMNS),
     )
     return reports
 
@@ -854,7 +854,7 @@ def build_event_response_decisions(
     recognized_events: Sequence[TradeWarEvent],
     scan_days: pd.Series,
     crisis_signal: pd.Series,
-    ai_opinions: pd.DataFrame,
+    context_opinions: pd.DataFrame,
 ) -> pd.DataFrame:
     scan = pd.Series(scan_days).fillna(False).astype(bool).copy()
     scan.index = pd.to_datetime(scan.index).tz_localize(None).normalize()
@@ -885,12 +885,12 @@ def build_event_response_decisions(
             }
         )
 
-    if not ai_opinions.empty:
-        for row in ai_opinions.to_dict("records"):
+    if not context_opinions.empty:
+        for row in context_opinions.to_dict("records"):
             final_allowed = bool(row.get("final_context_allowed", False))
             rows.append(
                 {
-                    "source": "crisis_ai",
+                    "source": "crisis_context",
                     "as_of": row.get("as_of"),
                     "event_id": "",
                     "event_kind": row.get("crisis_type"),
@@ -1025,7 +1025,7 @@ def run_crisis_response_research(
     ma_slope_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
     financial_symbol: str = DEFAULT_FINANCIAL_SYMBOL,
     market_symbol: str = DEFAULT_MARKET_SYMBOL,
-    crisis_context_mode: str = CRISIS_CONTEXT_MODE_V1_AI_RUBRIC,
+    crisis_context_mode: str = CRISIS_CONTEXT_MODE_V1_RUBRIC,
     external_context: pd.DataFrame | None = None,
     context_financial_symbols: Sequence[str] = DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
     context_credit_pairs: Sequence[tuple[str, str]] = DEFAULT_CONTEXT_CREDIT_PAIRS,
@@ -1089,7 +1089,7 @@ def run_crisis_response_research(
     if crisis_context_mode not in CRISIS_CONTEXT_MODES:
         raise ValueError(f"Unsupported crisis_context_mode: {crisis_context_mode!r}")
     if crisis_context_mode == CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK:
-        ai_opinions, crisis_context_features = _build_v2_context_opinions(
+        context_opinions, crisis_context_features = _build_v2_context_opinions(
             close,
             confirmed_crisis_signal,
             events=events,
@@ -1115,10 +1115,10 @@ def run_crisis_response_research(
             external_margin_revision_3m_threshold=float(external_margin_revision_3m_threshold),
         )
     else:
-        ai_opinions = build_ai_crisis_opinions(
+        context_opinions = build_crisis_context_opinions(
             close,
             confirmed_crisis_signal,
-            strategy_name="unified_crisis_response_ai",
+            strategy_name="unified_crisis_response_rubric",
             start_date=start_date,
             end_date=end_date,
             benchmark_symbol=benchmark_symbol,
@@ -1127,8 +1127,8 @@ def run_crisis_response_research(
             trigger_only=True,
         )
         crisis_context_features = pd.DataFrame()
-    ai_context = _series_from_ai_allowed(ai_opinions, confirmed_crisis_signal.index)
-    true_crisis_signal = apply_context_gate_to_signal(confirmed_crisis_signal, ai_context)
+    context_signal = _series_from_context_allowed(context_opinions, confirmed_crisis_signal.index)
+    true_crisis_signal = apply_context_gate_to_signal(confirmed_crisis_signal, context_signal)
     severe_crisis_context = str(severe_crisis_context).strip().lower()
     if severe_crisis_context not in SEVERE_CRISIS_CONTEXTS:
         raise ValueError(f"Unsupported severe_crisis_context: {severe_crisis_context!r}")
@@ -1136,10 +1136,10 @@ def run_crisis_response_research(
         severe_crisis_signal = pd.Series(False, index=true_crisis_signal.index, name="severe_crisis")
     else:
         if severe_crisis_context == SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE:
-            severe_context = _series_from_ai_valuation_bubble(ai_opinions, confirmed_crisis_signal.index)
+            severe_context = _series_from_context_valuation_bubble(context_opinions, confirmed_crisis_signal.index)
         else:
-            severe_context = _series_from_ai_bool_column(
-                ai_opinions,
+            severe_context = _series_from_context_bool_column(
+                context_opinions,
                 confirmed_crisis_signal.index,
                 "external_valuation_context",
                 require_final_allowed=True,
@@ -1165,7 +1165,7 @@ def run_crisis_response_research(
         recognized_events,
         scan_days,
         true_crisis_signal,
-        ai_opinions,
+        context_opinions,
     )
     taco_events = _filter_taco_events_from_decisions(recognized_events, decisions)
 
@@ -1314,7 +1314,7 @@ def run_crisis_response_research(
     deltas = build_deltas_vs_base(summary)
     diagnostics = build_diagnostics(scan_days=scan_days, recognized_events=recognized_events, trades=taco_only_result["trades"])
     crisis_diagnostics = build_crisis_guard_diagnostics(true_crisis_signal)
-    audit_reports = build_ai_audit_effectiveness_reports(
+    audit_reports = build_route_audit_effectiveness_reports(
         crisis_context_features,
         confirmed_crisis_signal=confirmed_crisis_signal,
         true_crisis_signal=true_crisis_signal,
@@ -1327,7 +1327,7 @@ def run_crisis_response_research(
         "diagnostics": diagnostics,
         "crisis_guard_diagnostics": crisis_diagnostics,
         "response_decisions": decisions,
-        "ai_opinions": ai_opinions,
+        "context_opinions": context_opinions,
         "crisis_context_features": crisis_context_features,
         "scan_days": scan_days,
         "confirmed_crisis_signal": confirmed_crisis_signal,
@@ -1413,7 +1413,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crisis-context-mode",
         choices=CRISIS_CONTEXT_MODES,
-        default=CRISIS_CONTEXT_MODE_V1_AI_RUBRIC,
+        default=CRISIS_CONTEXT_MODE_V1_RUBRIC,
         help="Research context used after the confirmed crisis-price scanner opens",
     )
     parser.add_argument("--context-financial-symbols", default=",".join(DEFAULT_CONTEXT_FINANCIAL_SYMBOLS))
@@ -1562,23 +1562,23 @@ def main(argv: list[str] | None = None) -> int:
     decisions = result["response_decisions"]
     if isinstance(decisions, pd.DataFrame) and not decisions.empty:
         print(decisions.groupby(["source", "route", "action"]).size().reset_index(name="count").to_string(index=False))
-    audit_effectiveness = result["ai_audit_effectiveness"]
+    audit_effectiveness = result["route_audit_effectiveness"]
     if isinstance(audit_effectiveness, pd.DataFrame) and not audit_effectiveness.empty:
-        print("\nAI audit effectiveness:")
+        print("\nRoute audit effectiveness:")
         print(audit_effectiveness.to_string(index=False))
 
     result["summary"].to_csv(output_dir / "summary.csv", index=False)
     result["deltas_vs_base"].to_csv(output_dir / "deltas_vs_base.csv", index=False)
     result["diagnostics"].to_csv(output_dir / "diagnostics.csv", index=False)
     result["crisis_guard_diagnostics"].to_csv(output_dir / "crisis_guard_diagnostics.csv", index=False)
-    result["ai_audit_effectiveness"].to_csv(output_dir / "ai_audit_effectiveness.csv", index=False)
-    result["ai_route_period_summary"].to_csv(output_dir / "ai_route_period_summary.csv", index=False)
-    result["ai_route_confusion_matrix"].to_csv(output_dir / "ai_route_confusion_matrix.csv", index=False)
-    result["ai_false_positive_true_crisis"].to_csv(output_dir / "ai_false_positive_true_crisis.csv", index=False)
-    result["ai_false_negative_true_crisis"].to_csv(output_dir / "ai_false_negative_true_crisis.csv", index=False)
-    result["ai_decision_pnl_attribution"].to_csv(output_dir / "ai_decision_pnl_attribution.csv", index=False)
+    result["route_audit_effectiveness"].to_csv(output_dir / "route_audit_effectiveness.csv", index=False)
+    result["route_audit_period_summary"].to_csv(output_dir / "route_audit_period_summary.csv", index=False)
+    result["route_audit_confusion_matrix"].to_csv(output_dir / "route_audit_confusion_matrix.csv", index=False)
+    result["route_audit_false_positive_true_crisis"].to_csv(output_dir / "route_audit_false_positive_true_crisis.csv", index=False)
+    result["route_audit_false_negative_true_crisis"].to_csv(output_dir / "route_audit_false_negative_true_crisis.csv", index=False)
+    result["route_decision_pnl_attribution"].to_csv(output_dir / "route_decision_pnl_attribution.csv", index=False)
     result["response_decisions"].to_csv(output_dir / "response_decisions.csv", index=False)
-    result["ai_opinions"].to_csv(output_dir / "ai_opinions.csv", index=False)
+    result["context_opinions"].to_csv(output_dir / "context_opinions.csv", index=False)
     context_features = result["crisis_context_features"]
     if isinstance(context_features, pd.DataFrame) and not context_features.empty:
         context_features.to_csv(output_dir / "crisis_context_features.csv", index=False)
@@ -1602,10 +1602,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
-    "CRISIS_CONTEXT_MODE_V1_AI_RUBRIC",
+    "CRISIS_CONTEXT_MODE_V1_RUBRIC",
     "CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK",
     "CRISIS_CONTEXT_MODES",
-    "DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS",
+    "DEFAULT_ROUTE_EXPECTATIONS",
     "EXTERNAL_VALUATION_MODE_EXTERNAL_ONLY",
     "EXTERNAL_VALUATION_MODE_OFF",
     "EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL",
@@ -1622,7 +1622,7 @@ __all__ = [
     "SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION",
     "SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE",
     "SEVERE_CRISIS_CONTEXTS",
-    "build_ai_audit_effectiveness_reports",
+    "build_route_audit_effectiveness_reports",
     "build_event_response_decisions",
     "main",
     "run_crisis_response_research",
