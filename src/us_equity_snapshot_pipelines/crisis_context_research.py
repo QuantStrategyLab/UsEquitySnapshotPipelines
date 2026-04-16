@@ -91,6 +91,7 @@ CONTEXT_BOOL_COLUMNS = (
     "financial_context",
     "credit_context",
     "financial_system_context",
+    "combined_financial_credit_context",
     "systemic_financial_context",
     "systemic_credit_context",
     "systemic_financial_crisis_context",
@@ -497,7 +498,7 @@ def _suggest_label_and_route(row: pd.Series) -> tuple[str, str, str]:
         return (
             CONTEXT_LABEL_FINANCIAL_CRISIS,
             ROUTE_TRUE_CRISIS,
-            "severe financial-sector or credit-stress context is active",
+            "severe or jointly confirmed financial-sector / credit-stress context is active",
         )
     if bool(row["rate_context"]):
         return (
@@ -618,9 +619,12 @@ def build_crisis_context_features(
     )
     credit_context = credit_relative_return_min.le(float(credit_relative_return_threshold)).fillna(False)
     financial_system_context = financial_context | credit_context
+    combined_financial_credit_context = financial_context & credit_context
     systemic_financial_context = financial_drawdown_min.le(float(systemic_financial_drawdown_threshold)).fillna(False)
     systemic_credit_context = credit_relative_return_min.le(float(systemic_credit_relative_return_threshold)).fillna(False)
-    systemic_financial_crisis_context = systemic_financial_context | systemic_credit_context
+    systemic_financial_crisis_context = (
+        systemic_financial_context | systemic_credit_context | combined_financial_credit_context
+    )
 
     rate_returns: dict[str, pd.Series] = {}
     for symbol in rate_symbols:
@@ -652,6 +656,7 @@ def build_crisis_context_features(
             "financial_context": financial_context,
             "credit_context": credit_context,
             "financial_system_context": financial_system_context,
+            "combined_financial_credit_context": combined_financial_credit_context,
             "systemic_financial_context": systemic_financial_context,
             "systemic_credit_context": systemic_credit_context,
             "systemic_financial_crisis_context": systemic_financial_crisis_context,

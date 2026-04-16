@@ -114,6 +114,40 @@ def test_moderate_financial_context_is_audit_only_until_systemic_threshold() -> 
     assert row["suggested_route"] == ROUTE_NO_ACTION
 
 
+def test_combined_financial_and_credit_context_routes_to_true_crisis() -> None:
+    dates = pd.bdate_range("2008-01-02", periods=80)
+    xlf = [100.0] * 65 + [74.0 - idx * 0.1 for idx in range(15)]
+    hyg = [100.0] * 65 + [91.0 - idx * 0.1 for idx in range(15)]
+    close = pd.DataFrame({"QQQ": 100.0, "SPY": 100.0, "XLF": xlf, "HYG": hyg, "IEF": 100.0}, index=dates)
+
+    features = build_crisis_context_features(
+        close,
+        events=(),
+        context_events=(),
+        start_date=str(dates[0].date()),
+        financial_symbols=("XLF",),
+        credit_pairs=(("HYG", "IEF"),),
+        rate_symbols=(),
+        financial_drawdown_threshold=-0.20,
+        financial_relative_lookback_days=20,
+        financial_relative_return_threshold=-0.10,
+        credit_relative_lookback_days=20,
+        credit_relative_return_threshold=-0.08,
+        systemic_financial_drawdown_threshold=-0.35,
+        systemic_credit_relative_return_threshold=-0.12,
+    )
+    row = features.iloc[-1]
+
+    assert bool(row["financial_context"])
+    assert bool(row["credit_context"])
+    assert bool(row["combined_financial_credit_context"])
+    assert not bool(row["systemic_financial_context"])
+    assert not bool(row["systemic_credit_context"])
+    assert bool(row["systemic_financial_crisis_context"])
+    assert row["suggested_context_label"] == CONTEXT_LABEL_FINANCIAL_CRISIS
+    assert row["suggested_route"] == ROUTE_TRUE_CRISIS
+
+
 def test_crisis_context_features_keeps_rate_bear_as_no_action() -> None:
     dates = pd.bdate_range("2022-01-03", periods=160)
     ief = pd.Series(100.0, index=dates)
@@ -169,6 +203,7 @@ def test_crisis_context_features_routes_policy_shock_to_taco_context() -> None:
 def test_policy_context_keeps_tariff_window_from_becoming_true_crisis_on_financial_noise() -> None:
     dates = pd.bdate_range("2018-08-01", periods=100)
     xlf = [100.0] * 70 + [76.0 - idx * 0.2 for idx in range(30)]
+    hyg = [100.0] * 70 + [96.0 - idx * 0.2 for idx in range(30)]
     spy = [100.0] * len(dates)
     event = TradeWarEvent(
         event_id="tariff-window",
@@ -179,7 +214,7 @@ def test_policy_context_keeps_tariff_window_from_becoming_true_crisis_on_financi
         source="test",
         source_url="https://example.test/tariff",
     )
-    close = pd.DataFrame({"QQQ": 100.0, "SPY": spy, "XLF": xlf}, index=dates)
+    close = pd.DataFrame({"QQQ": 100.0, "SPY": spy, "XLF": xlf, "HYG": hyg, "IEF": 100.0}, index=dates)
 
     features = build_crisis_context_features(
         close,
@@ -187,14 +222,16 @@ def test_policy_context_keeps_tariff_window_from_becoming_true_crisis_on_financi
         context_events=(),
         start_date=str(dates[0].date()),
         financial_symbols=("XLF",),
-        credit_pairs=(),
+        credit_pairs=(("HYG", "IEF"),),
         rate_symbols=(),
         policy_event_window_days=20,
         financial_drawdown_threshold=-0.20,
         financial_relative_lookback_days=5,
         financial_relative_return_threshold=-0.01,
+        credit_relative_lookback_days=5,
+        credit_relative_return_threshold=-0.01,
     )
-    noisy_policy_rows = features.loc[features["policy_context"] & features["financial_system_context"]]
+    noisy_policy_rows = features.loc[features["policy_context"] & features["combined_financial_credit_context"]]
 
     assert not noisy_policy_rows.empty
     assert set(noisy_policy_rows["suggested_context_label"]) == {CONTEXT_LABEL_POLICY_SHOCK}

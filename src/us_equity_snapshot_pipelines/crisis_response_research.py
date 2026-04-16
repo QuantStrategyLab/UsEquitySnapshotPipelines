@@ -739,6 +739,7 @@ def _build_v2_context_opinions(
         "financial_context",
         "credit_context",
         "financial_system_context",
+        "combined_financial_credit_context",
         "systemic_financial_crisis_context",
         "rate_context",
         "policy_context",
@@ -813,6 +814,9 @@ def _build_v2_context_opinions(
                 "financial_context": bool(feature_row.get("financial_context", False)),
                 "credit_context": bool(feature_row.get("credit_context", False)),
                 "financial_system_context": bool(feature_row.get("financial_system_context", False)),
+                "combined_financial_credit_context": bool(
+                    feature_row.get("combined_financial_credit_context", False)
+                ),
                 "systemic_financial_crisis_context": bool(
                     feature_row.get("systemic_financial_crisis_context", False)
                 ),

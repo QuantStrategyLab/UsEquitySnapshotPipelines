@@ -13,9 +13,10 @@ Turn historical crash explanations into auditable context features:
   strength, with a 126-trading-day research memory so the context can still be
   present when the confirmed drawdown scanner opens. Optional valuation and
   earnings-quality columns can be supplied by an external context table.
-- 2008-style financial crisis: severe XLF/KRE drawdown or severe HYG/IEF and
-  LQD/IEF credit weakness. Lighter financial / credit context is still written
-  for audit but does not by itself route to `true_crisis`.
+- 2008-style financial crisis: severe XLF/KRE drawdown, severe HYG/IEF or
+  LQD/IEF credit weakness, or jointly confirmed financial-sector plus credit
+  stress. Lighter single-family financial / credit context is still written for
+  audit but does not by itself route to `true_crisis`.
 - 2020-style exogenous shock: event context plus policy-rescue windows that
   default to `no_action` so short-lived liquidity stress is not misread as a
   slow true-crisis regime.
@@ -119,8 +120,10 @@ or no-action evidence without producing false-positive true-crisis days.
 
 The default severe financial thresholds are intentionally stricter than the raw
 context flags: XLF/KRE drawdown <= -35% or credit-relative return <= -12%.
-This keeps 2018-2019 trade-war financial noise out of `true_crisis` while
-still identifying a large part of the 2008 crisis window.
+V2 also treats simultaneous financial-sector weakness and credit weakness as a
+jointly confirmed systemic-financial context. A single moderate bank or credit
+flag remains audit-only. This keeps ordinary single-family noise from becoming
+`true_crisis` while reducing early 2008 false negatives.
 
 The default valuation-bubble context uses 252-trading-day QQQ acceleration and
 QQQ/SPY relative strength, then persists an active bubble flag for 126 trading
@@ -347,7 +350,8 @@ The V2 context pack uses conservative research labels:
 3. Policy rescue without valuation-bubble evidence -> `no_action`.
 4. Valuation-bubble context -> `true_crisis`.
 5. Policy or tariff shock / softening -> `taco_fake_crisis`.
-6. Severe financial-system stress outside those windows -> `true_crisis`.
+6. Severe or jointly confirmed financial-system stress outside those windows
+   -> `true_crisis`.
 7. Rate bear without financial-system stress -> `no_action`.
 8. No active context -> `no_action`.
 
