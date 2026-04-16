@@ -769,7 +769,7 @@ def _format_diagnostics(frame: pd.DataFrame) -> pd.DataFrame:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build research-only historical crisis context features for AI review."
+        description="Build research-only historical crisis context features."
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--prices", help="Existing long price-history CSV with symbol/as_of/close columns")

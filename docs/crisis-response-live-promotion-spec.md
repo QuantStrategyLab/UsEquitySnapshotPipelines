@@ -1,9 +1,9 @@
 # Crisis Response Live Promotion Spec
 
-This document is the handoff contract for future AI / Codex work on the crisis
-response research. It defines how the research candidate can move toward live
-use without silently changing V1 semantics or letting AI control capital before
-there is enough production evidence.
+This document is the handoff contract for future Crisis Response work. It
+defines how the deterministic research candidate can move toward live use
+without silently changing V1 semantics or letting unreviewed logic control
+capital before there is enough production evidence.
 
 ## Current Position
 
@@ -14,8 +14,8 @@ trading system.
 - V2 context features remain research-only until promoted through this spec.
 - A future live plugin must start in shadow mode: write signals and audit logs,
   but do not place orders and do not change live allocations.
-- AI may audit, explain, and challenge a route. AI must not directly submit
-  trades or bypass risk gates.
+- The route must come from deterministic, testable rules. Model-based review is
+  not part of the trading path.
 - Every promotion step must preserve the 1999-to-date, post-2010, post-2015,
   2020, 2022, 2018-2019, and 2025+ acceptance checks.
 
@@ -40,12 +40,12 @@ explicitly asks for a new research experiment.
 
 ## Phase Ladder
 
-| Phase | Name | Allowed behavior | AI role | Capital impact |
+| Phase | Name | Allowed behavior | Review role | Capital impact |
 | --- | --- | --- | --- | --- |
-| 0 | Research | Backtests and audit reports only | Analyze historical logs | None |
-| 1 | Shadow plugin | Produce daily signal and evidence files | Replay and audit logs | None |
-| 2 | AI audit replay | Review recent shadow signals in batches | Explain route quality and flag errors | None |
-| 3 | Advisory | Produce a recommendation requiring human confirmation | Second-opinion auditor | Manual only |
+| 0 | Research | Backtests and audit reports only | Analyze deterministic reports | None |
+| 1 | Shadow plugin | Produce daily signal and evidence files | Inspect logs and data freshness | None |
+| 2 | Evidence review | Review recent shadow signals in batches | Check route quality and data issues | None |
+| 3 | Advisory | Produce a recommendation requiring human confirmation | Human reviewer | Manual only |
 | 4 | Limited live | Execute only inside small, explicit risk budget | Audit and kill-switch reviewer | Bounded |
 | 5 | Full automation | Not approved by this spec | Still audited and kill-switched | Future decision |
 
@@ -86,13 +86,12 @@ data/output/crisis_response_shadow/
   signals/YYYY-MM-DD.json
   signals/YYYY-MM-DD.csv
   audit/YYYY-MM-DD_evidence.csv
-  audit/YYYY-MM-DD_ai_replay_prompt.md
 ```
 
 ## Shadow Signal Schema
 
-The daily JSON must be easy for another AI agent to read without inspecting
-code. Use stable field names.
+The daily JSON must be easy for an operator or downstream process to read
+without inspecting code. Use stable field names.
 
 Required top-level fields:
 
@@ -169,10 +168,11 @@ Example JSON shape:
 }
 ```
 
-## AI Audit Replay
+## Evidence Review
 
-AI replay is a batch review of shadow logs. It should happen after logs exist;
-it should not be used to invent missing evidence.
+Evidence review is a batch review of deterministic shadow logs. It should
+happen after logs exist; it should not be used to invent missing evidence or
+override the deterministic route.
 
 Recommended cadence:
 
@@ -180,27 +180,19 @@ Recommended cadence:
 - Daily during a market drawdown or policy shock.
 - Ad hoc after any `would_trade_if_enabled=true` day.
 
-The AI replay prompt should include:
-
-- The latest shadow JSON.
-- The previous 5 to 20 shadow JSONs.
-- Current audit reports, especially false-positive and false-negative files.
-- The historical taxonomy from `docs/crisis-response-research-roadmap.md`.
-- The rule that AI cannot approve live trading by itself.
-
-AI replay must answer:
+Evidence review must answer:
 
 1. Is the route historically coherent?
 2. Is the evidence sufficient and point-in-time?
 3. Is there a likely false-positive true-crisis risk?
 4. Is there a likely false-negative true-crisis risk?
 5. Is this closer to 2000, 2008, 2020, 2022, 2011, policy/TACO, or normal?
-6. Should the system stay shadow, move to advisory for this case, or remain
-   blocked?
+6. Should the system stay shadow, be considered for human-confirmed advisory,
+   or remain blocked?
 
 ## Audit Windows
 
-The shadow and replay process must keep these windows visible:
+The shadow and evidence-review process must keep these windows visible:
 
 | Window | Expected behavior |
 | --- | --- |
@@ -222,29 +214,25 @@ Phase 1 shadow can start after:
 - Local and CI tests pass.
 - The plugin writes only logs and has tests proving no order path exists.
 - Missing/stale data activates a kill switch.
-- A daily output file can be replayed by AI without code inspection.
+- A daily output file can be inspected without code inspection.
 
-Phase 2 AI replay can start after:
+Phase 2 evidence review can start after:
 
 - At least 20 shadow trading days exist, or at least one high-volatility event
   has produced complete logs.
-- The replay prompt is stored with the evidence files.
-- AI replay outputs are stored separately from raw signals.
-- The AI replay runner remains blocked before the configured shadow-day gate,
-  and missing API keys must produce a non-trading audit status rather than a
-  partial review.
+- Evidence files are complete and data freshness is visible.
+- Review notes, if any, are stored separately from raw signals.
+- Review cannot override the deterministic route.
 
 Phase 3 advisory requires:
 
 - At least 30 to 60 trading days of shadow logs.
 - Zero unexplained false-positive `true_crisis` cases.
-- Any `would_trade_if_enabled=true` days reviewed by AI and a human.
+- Any `would_trade_if_enabled=true` days reviewed by a human.
 - Authorized point-in-time external valuation and credit context, or a kill
   switch that blocks decisions dependent on missing data.
 - Written user approval to move from shadow to advisory.
-- No automatic promotion from AI replay to advisory or live trading. The system
-  may write `advisory_review_eligible=true`, but `advisory_auto_enable_allowed`
-  must remain false.
+- No automatic promotion from shadow to advisory or live trading.
 
 Phase 4 limited live requires:
 
@@ -267,21 +255,20 @@ when any of these occur:
   licensed for production use.
 - Financial or credit data needed for a financial-crisis route is stale.
 - Event classification is missing during a policy shock.
-- AI replay contradicts the deterministic route without enough evidence.
 - The route depends on a newly added feature that has not passed historical
   audit-effectiveness checks.
 - The code is running outside approved shadow/advisory/live mode.
 
-## Rules For Future AI Agents
+## Rules For Future Agents
 
-Future AI agents must follow these constraints:
+Future agents must follow these constraints:
 
 - Do not change V1 parameters unless the user explicitly asks.
 - Do not promote V2 research into live allocation in the same change that adds a
   new feature.
 - Do not optimize thresholds against one crisis window without checking 2015+,
   2020, 2022, 2018-2019, and 2025+ controls.
-- Do not treat high backtest CAGR as proof that AI audit is effective.
+- Do not treat high backtest CAGR as proof that a live plugin is ready.
 - Do not add broker write calls to the shadow plugin.
 - Do not store proxy credentials or API keys in the repository.
 - Do not use provisional external data for production decisions.
@@ -291,10 +278,8 @@ Recommended next tasks:
 
 1. Run `crisis_response_shadow_plugin` daily with current prices and authorized
    external context.
-2. Start Phase 2 AI replay after at least 20 shadow trading days, or
+2. Run Phase 2 evidence review after at least 20 shadow trading days, or
    immediately after a high-volatility `would_trade_if_enabled=true` day with
    complete logs.
-3. Keep AI replay outputs separate from raw shadow signals.
+3. Keep review notes separate from raw shadow signals.
 4. Run shadow-only for 30 to 60 trading days before advisory mode.
-
-See `docs/crisis-response-ai-replay.md` for the gated AI replay runner.

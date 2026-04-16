@@ -2,8 +2,8 @@
 
 This note defines the next research layer after the frozen V1 crisis-response
 contract. V2 does not change live routing and does not change V1 parameters. It
-builds a point-in-time context pack that can be reviewed by AI only after a
-scanner opens.
+builds a point-in-time context pack that can be reviewed only after a scanner
+opens.
 
 Any shadow, advisory, or live-promotion work must follow
 `docs/crisis-response-live-promotion-spec.md`.
@@ -99,10 +99,11 @@ python scripts/backtest_crisis_response.py \
 
 This writes the normal unified response outputs plus
 `crisis_context_features.csv`. `ai_opinions.csv` remains sparse and is written
-only for confirmed crisis-price trigger days.
+only for confirmed crisis-price trigger days. The filename is retained for
+compatibility with earlier research outputs.
 
 The unified response run also writes audit-effectiveness reports. These are
-research-only checks for stability of the context / AI-audit layer, not new
+research-only checks for stability of the context / audit layer, not new
 trading rules:
 
 - `ai_audit_effectiveness.csv`: expected historical route versus actual audit

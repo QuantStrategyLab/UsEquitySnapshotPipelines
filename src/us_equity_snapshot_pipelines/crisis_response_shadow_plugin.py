@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -259,34 +258,6 @@ def _flatten_for_csv(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     visit("", payload)
     return rows
-
-
-def build_ai_replay_prompt(payload: Mapping[str, Any]) -> str:
-    latest = json.dumps(_json_scalar(payload), ensure_ascii=False, indent=2, sort_keys=True)
-    return "\n".join(
-        [
-            "# Crisis Response Shadow AI Replay",
-            "",
-            "Review this shadow signal as an audit artifact only. Do not approve live trading, do not place orders, "
-            "and do not change allocations.",
-            "",
-            "Answer:",
-            "",
-            "1. Is the route historically coherent?",
-            "2. Is the evidence point-in-time and sufficient?",
-            "3. Is there likely false-positive true-crisis risk?",
-            "4. Is there likely false-negative true-crisis risk?",
-            "5. Is this closer to 2000, 2008, 2020, 2022, 2011, policy/TACO, or normal?",
-            "6. Should the system stay shadow, move to human-reviewed advisory for this case, or remain blocked?",
-            "",
-            "Latest shadow JSON:",
-            "",
-            "```json",
-            latest,
-            "```",
-            "",
-        ]
-    )
 
 
 def build_crisis_response_shadow_signal(
@@ -574,7 +545,6 @@ def write_crisis_response_shadow_outputs(payload: Mapping[str, Any], output_dir:
     dated_json_path = signal_dir / f"{signal_date}.json"
     dated_csv_path = signal_dir / f"{signal_date}.csv"
     evidence_csv_path = audit_dir / f"{signal_date}_evidence.csv"
-    prompt_path = audit_dir / f"{signal_date}_ai_replay_prompt.md"
 
     write_json(latest_path, payload)
     write_json(dated_json_path, payload)
@@ -592,13 +562,11 @@ def write_crisis_response_shadow_outputs(payload: Mapping[str, Any], output_dir:
         **_flatten_for_csv(payload.get("audit_summary", {})),
     }
     pd.DataFrame([evidence_payload]).to_csv(evidence_csv_path, index=False)
-    prompt_path.write_text(build_ai_replay_prompt(payload), encoding="utf-8")
     return {
         "latest_signal": latest_path,
         "signal_json": dated_json_path,
         "signal_csv": dated_csv_path,
         "evidence_csv": evidence_csv_path,
-        "ai_replay_prompt": prompt_path,
     }
 
 
@@ -792,7 +760,6 @@ __all__ = [
     "SCHEMA_VERSION",
     "SHADOW_MODE",
     "SHADOW_PROFILE",
-    "build_ai_replay_prompt",
     "build_crisis_response_shadow_signal",
     "write_crisis_response_shadow_outputs",
 ]

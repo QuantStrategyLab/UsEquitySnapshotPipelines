@@ -9,9 +9,9 @@ Live promotion and shadow-plugin work must follow
 
 ## Research question
 
-Can AI classify historical market shocks into `true_crisis`,
-`taco_fake_crisis`, or `no_action` with enough evidence to improve protection
-without reducing post-2015 / post-2010 bull-market returns?
+Can deterministic context features classify historical market shocks into
+`true_crisis`, `taco_fake_crisis`, or `no_action` with enough evidence to
+improve protection without reducing post-2015 / post-2010 bull-market returns?
 
 ## Historical shock taxonomy
 
@@ -25,10 +25,10 @@ without reducing post-2015 / post-2010 bull-market returns?
 | 2018-2019 trade war / tariff shocks | policy/headline panic without systemic break | `taco_fake_crisis` | Good candidate for small TACO sleeve, not main-book defense. |
 | 2025+ tariff / policy shocks | policy/headline panic unless paired with systemic stress | `taco_fake_crisis` or `no_action` | Keep small sleeve and require audit logs. |
 
-## Candidate AI context features
+## Candidate Context Features
 
-These features should be supplied to AI as context, not used as direct trading
-rules until separately validated.
+These features should be added as deterministic context, not used as direct
+trading rules until separately validated.
 
 ### Valuation / bubble context
 
@@ -87,7 +87,7 @@ solely because credit proxies temporarily break during the shock.
 
 ## Anti-overfitting acceptance tests
 
-A new AI feature cannot affect live routing unless it passes all checks:
+A new context feature cannot affect live routing unless it passes all checks:
 
 1. Post-2015 and real-TQQQ post-2010 windows do not lose CAGR materially.
 2. 2022 is not incorrectly converted into a broad true-crisis defense unless
@@ -95,7 +95,7 @@ A new AI feature cannot affect live routing unless it passes all checks:
 3. 2018-2019 trade-war shocks remain TACO or no-action, not true crisis.
 4. 2000 and 2008 improve or stay close to current V1 true-crisis results.
 5. The feature works as a broad context input, not a single-date hindsight flag.
-6. AI output remains sparse: only after a scanner opens, not daily polling.
+6. Context output remains sparse: only after a scanner opens, not daily polling.
 
 ## Suggested next experiments
 
@@ -112,10 +112,10 @@ A new AI feature cannot affect live routing unless it passes all checks:
 7. Keep `response_decisions.csv` and `crisis_context_features.csv` as the main
    artifacts for every experiment.
 
-## AI audit effectiveness checks
+## Context Audit Effectiveness Checks
 
 The research backtest now writes explicit audit-stability reports so that a
-better equity curve is not mistaken for proof that the AI audit layer is
+better equity curve is not mistaken for proof that the context audit layer is
 reliable:
 
 - `ai_audit_effectiveness.csv` measures expected historical route versus actual

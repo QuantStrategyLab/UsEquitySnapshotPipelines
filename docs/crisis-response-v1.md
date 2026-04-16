@@ -10,13 +10,15 @@ baseline semantics.
 - Production default: disabled.
 - Initial rollout mode: paper / shadow logging.
 - Live impact, if enabled later: bounded by strategy configuration; do not let
-  AI directly place orders or bypass max-impact limits.
+  any external model or unreviewed logic place orders or bypass max-impact
+  limits.
 
 ## Inputs
 
 - Price stress scanner for TACO candidates.
 - Confirmed crisis-price scanner for true-crisis candidates.
-- Sparse AI opinions only after a scanner opens; no daily AI polling.
+- Sparse rubric/context opinions only after a scanner opens; no daily model
+  polling.
 - Trade-war / tariff / policy event calendar for TACO research.
 
 ## Routing
@@ -27,7 +29,8 @@ Priority is intentionally conservative:
    and suppress new TACO entries while active.
 2. `taco_fake_crisis`: policy / tariff / trade-war shock without active
    true-crisis guard. Allow small TACO sleeve.
-3. `no_action`: unclear, non-systemic bear market, rate bear, or AI conflict.
+3. `no_action`: unclear, non-systemic bear market, rate bear, or context
+   conflict.
 
 ## Frozen V1 parameters
 
@@ -87,8 +90,8 @@ python scripts/backtest_crisis_response.py \
 
 - `response_decisions.csv`: main route audit; each candidate must land in
   `true_crisis`, `taco_fake_crisis`, or `no_action`.
-- `ai_opinions.csv`: sparse AI/rubric opinions only on confirmed crisis-price
-  trigger days.
+- `ai_opinions.csv`: legacy filename for sparse rubric/context opinions only on
+  confirmed crisis-price trigger days.
 - `true_crisis_signal.csv`: final crisis-guard active series.
 - `taco_event_calendar.csv`: events allowed into the TACO sleeve.
 
