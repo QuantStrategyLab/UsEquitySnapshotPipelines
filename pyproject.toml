@@ -34,6 +34,7 @@ useq-backtest-crisis-regime-guard = "us_equity_snapshot_pipelines.crisis_regime_
 useq-backtest-crisis-response = "us_equity_snapshot_pipelines.crisis_response_research:main"
 useq-build-crisis-context-pack = "us_equity_snapshot_pipelines.crisis_context_research:main"
 useq-build-crisis-response-shadow-signal = "us_equity_snapshot_pipelines.crisis_response_shadow_plugin:main"
+useq-replay-crisis-response-shadow-ai = "us_equity_snapshot_pipelines.crisis_response_ai_replay:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 

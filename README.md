@@ -541,3 +541,20 @@ display it as an observation beside the TQQQ status, not as an executable trade
 instruction. Begin AI replay after 20 shadow trading days, or sooner after any
 high-volatility `would_trade_if_enabled=true` day with complete logs; advisory
 mode still requires 30 to 60 shadow trading days and written approval.
+
+Optionally schedule the gated AI replay runner now. It will not call an AI API
+until the configured shadow-day gate is met, and it will never auto-enable
+advisory/live mode:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/replay_crisis_response_shadow_ai.py \
+  --shadow-dir data/output/crisis_response_shadow \
+  --provider openai
+```
+
+Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` outside the repository. Before 20
+shadow signal days, the runner writes `waiting_for_min_shadow_days`. After the
+advisory review gate, it may write `advisory_review_eligible=true`, but
+`advisory_auto_enable_allowed` remains false. See
+`docs/crisis-response-ai-replay.md`.

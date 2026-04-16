@@ -230,6 +230,9 @@ Phase 2 AI replay can start after:
   has produced complete logs.
 - The replay prompt is stored with the evidence files.
 - AI replay outputs are stored separately from raw signals.
+- The AI replay runner remains blocked before the configured shadow-day gate,
+  and missing API keys must produce a non-trading audit status rather than a
+  partial review.
 
 Phase 3 advisory requires:
 
@@ -239,6 +242,9 @@ Phase 3 advisory requires:
 - Authorized point-in-time external valuation and credit context, or a kill
   switch that blocks decisions dependent on missing data.
 - Written user approval to move from shadow to advisory.
+- No automatic promotion from AI replay to advisory or live trading. The system
+  may write `advisory_review_eligible=true`, but `advisory_auto_enable_allowed`
+  must remain false.
 
 Phase 4 limited live requires:
 
@@ -290,3 +296,5 @@ Recommended next tasks:
    complete logs.
 3. Keep AI replay outputs separate from raw shadow signals.
 4. Run shadow-only for 30 to 60 trading days before advisory mode.
+
+See `docs/crisis-response-ai-replay.md` for the gated AI replay runner.
