@@ -513,3 +513,8 @@ python scripts/backtest_crisis_response.py \
 When this mode is used, the output also includes
 `crisis_context_features.csv`, and `ai_opinions.csv` records the V2 suggested
 route behind each confirmed crisis-price trigger.
+
+External valuation context stays audit-only unless explicitly enabled. To test
+historical PE/CAPE/earnings-quality context, pass an `as_of` CSV with columns
+such as `nasdaq_100_trailing_pe`, then add `--external-context` and
+`--external-valuation-mode price_or_external` or `price_and_external`.

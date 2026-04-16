@@ -12,6 +12,8 @@ from us_equity_snapshot_pipelines.crisis_context_research import (
     CONTEXT_LABEL_VALUATION_BUBBLE,
     EVENT_KIND_EXOGENOUS_SHOCK,
     EVENT_KIND_POLICY_RESCUE,
+    EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
+    EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
     build_context_diagnostics,
     build_crisis_context_features,
 )
@@ -284,6 +286,76 @@ def test_external_context_columns_are_point_in_time_forward_filled() -> None:
 
     assert pd.isna(features.loc[0, "external_nasdaq_100_trailing_pe"])
     assert features.loc[2, "external_nasdaq_100_trailing_pe"] == 82.0
+    assert not bool(features.loc[2, "bubble_context"])
+    assert bool(features.loc[2, "external_valuation_context"])
+
+
+def test_external_valuation_mode_can_route_extreme_pe_to_bubble_context() -> None:
+    dates = pd.bdate_range("2000-01-03", periods=5)
+    close = pd.DataFrame({"QQQ": 100.0, "SPY": 100.0}, index=dates)
+    external = pd.DataFrame(
+        {
+            "as_of": [dates[1]],
+            "nasdaq_100_trailing_pe": [82.0],
+            "unprofitable_growth_proxy": [0.42],
+        }
+    )
+
+    features = build_crisis_context_features(
+        close,
+        events=(),
+        external_context=external,
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        external_valuation_mode=EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+    )
+    routed = features.loc[pd.to_datetime(features["as_of"]).eq(dates[2])].iloc[0]
+
+    assert not bool(routed["price_bubble_context"])
+    assert bool(routed["external_trailing_pe_extreme_context"])
+    assert bool(routed["external_speculative_quality_context"])
+    assert bool(routed["bubble_context"])
+    assert routed["suggested_context_label"] == CONTEXT_LABEL_VALUATION_BUBBLE
+    assert routed["suggested_route"] == ROUTE_TRUE_CRISIS
+
+
+def test_external_valuation_mode_can_require_price_and_external_confirmation() -> None:
+    dates = pd.bdate_range("1999-01-04", periods=270)
+    qqq = pd.Series(100.0, index=dates)
+    qqq.iloc[252:] = 180.0
+    close = pd.DataFrame({"QQQ": qqq, "SPY": 100.0}, index=dates)
+
+    without_external = build_crisis_context_features(
+        close,
+        events=(),
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        external_valuation_mode=EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
+    )
+    assert without_external["price_bubble_context"].any()
+    assert not without_external["bubble_context"].any()
+
+    external = pd.DataFrame({"as_of": [dates[260]], "nasdaq_100_forward_pe": [50.0]})
+    with_external = build_crisis_context_features(
+        close,
+        events=(),
+        external_context=external,
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        external_valuation_mode=EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL,
+    )
+    row = with_external.loc[pd.to_datetime(with_external["as_of"]).eq(dates[261])].iloc[0]
+
+    assert bool(row["price_bubble_context"])
+    assert bool(row["external_forward_pe_extreme_context"])
+    assert bool(row["bubble_context"])
+    assert row["suggested_route"] == ROUTE_TRUE_CRISIS
 
 
 def test_context_diagnostics_counts_routes_and_context_days() -> None:
