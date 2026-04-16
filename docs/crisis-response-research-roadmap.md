@@ -58,11 +58,24 @@ financial-system stress.
 
 ### Policy / TACO context
 
-- Tariff / sanctions / trade-war / administration headline classification.
+- Tariff / sanctions / trade-war / administration headline classification,
+  including both escalation and softening windows.
 - Whether the shock is reversible by policy softening.
 - Whether credit / bank / liquidity stress is absent.
+- Whether a non-systemic shock overlaps an explicit policy-rescue window.
 
 Purpose: route reversible policy panic to `taco_fake_crisis` and keep it small.
+
+### Exogenous / rescue context
+
+- Pandemic, war, terrorist attack, natural-disaster, and other sudden-stop
+  labels.
+- Emergency central-bank liquidity support.
+- Fiscal rescue / stimulus windows.
+- Whether financial-stress proxies persist after the rescue window ends.
+
+Purpose: keep 2020-style fast crashes from becoming slow true-crisis defense
+solely because credit proxies temporarily break during the shock.
 
 ## Anti-overfitting acceptance tests
 
