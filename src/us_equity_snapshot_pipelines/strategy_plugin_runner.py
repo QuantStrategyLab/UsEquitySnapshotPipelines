@@ -261,6 +261,8 @@ def run_crisis_response_shadow_plugin(plugin_config: Mapping[str, Any], default_
         external_context=external_context,
         **_build_crisis_response_kwargs(plugin_config),
     )
+    payload["strategy"] = strategy
+    payload["plugin"] = plugin
     payload["mode"] = mode
     payload["configured_mode"] = mode
     payload["effective_mode"] = mode

@@ -556,7 +556,8 @@ python scripts/run_strategy_plugins.py --config /path/to/strategy_plugins.toml
 
 This is intentionally a sidecar. If the runner is disabled or fails, the
 underlying strategy artifact build remains independent; downstream systems read
-the plugin's `latest_signal.json` and implement the configured `mode` directly.
+the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
+and implement the configured `mode` directly.
 The same plugin can be mounted to another strategy by adding another
 `[[strategy_plugins]]` entry with different inputs and output scope.
 
