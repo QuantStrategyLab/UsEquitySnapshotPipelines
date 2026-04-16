@@ -15,6 +15,7 @@ on:
           - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
           - mega_cap_leader_rotation_dynamic_top20
+          - mega_cap_leader_rotation_aggressive
           - dynamic_mega_leveraged_pullback
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
@@ -73,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20","dynamic_mega_leveraged_pullback"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20","mega_cap_leader_rotation_aggressive","dynamic_mega_leveraged_pullback"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
     permissions:
       contents: read
       id-token: write
@@ -103,6 +104,9 @@ jobs:
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_dynamic_top20_staging' }}
+      SCHEDULED_MEGA_CAP_AGGRESSIVE_PRICES_PATH: ${{ vars.SCHEDULED_MEGA_CAP_AGGRESSIVE_PRICES_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
+      SCHEDULED_MEGA_CAP_AGGRESSIVE_UNIVERSE_PATH: ${{ vars.SCHEDULED_MEGA_CAP_AGGRESSIVE_UNIVERSE_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
+      SCHEDULED_MEGA_CAP_AGGRESSIVE_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_AGGRESSIVE_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_aggressive_staging' }}
       SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH || vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
       SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH: ${{ vars.SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH || '' }}
@@ -155,6 +159,12 @@ jobs:
                 universe_path="${UNIVERSE_PATH:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH}}"
                 config_path=""
                 gcs_prefix="${GCS_PREFIX:-${SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX}}"
+                ;;
+              mega_cap_leader_rotation_aggressive)
+                prices_path="${PRICES_PATH:-${SCHEDULED_MEGA_CAP_AGGRESSIVE_PRICES_PATH}}"
+                universe_path="${UNIVERSE_PATH:-${SCHEDULED_MEGA_CAP_AGGRESSIVE_UNIVERSE_PATH}}"
+                config_path=""
+                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_MEGA_CAP_AGGRESSIVE_GCS_PREFIX}}"
                 ;;
               dynamic_mega_leveraged_pullback)
                 prices_path="${PRICES_PATH:-${SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH}}"
@@ -283,7 +293,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${PROFILE}" in
-              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20|dynamic_mega_leveraged_pullback)
+              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20|mega_cap_leader_rotation_aggressive|dynamic_mega_leveraged_pullback)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"
@@ -355,6 +365,15 @@ jobs:
                 common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
               fi
               python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py "${common_args[@]}"
+              ;;
+            mega_cap_leader_rotation_aggressive)
+              if [ -n "${MIN_ADV20_USD:-}" ]; then
+                common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")
+              fi
+              if [ -n "${PORTFOLIO_TOTAL_EQUITY:-}" ]; then
+                common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
+              fi
+              python scripts/build_mega_cap_leader_rotation_aggressive_snapshot.py "${common_args[@]}"
               ;;
             dynamic_mega_leveraged_pullback)
               common_args+=(--product-map "${PRODUCT_MAP_PATH}")

@@ -109,6 +109,23 @@ more than 20 names. The monthly scheduled path uses
 `market_value` fields, to avoid accidentally publishing a broad Russell 1000
 snapshot under the concentrated mega-cap profile.
 
+Build the aggressive mega-cap profile from a larger ranked universe or curated
+expanded universe file:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_mega_cap_leader_rotation_aggressive_snapshot.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_latest_holdings_snapshot.csv \
+  --as-of 2026-04-01 \
+  --dynamic-universe-size 50 \
+  --output-dir data/output/mega_cap_leader_rotation_aggressive
+```
+
+This profile uses the same feature schema as dynamic top20, but writes a
+separate `mega_cap_leader_rotation_aggressive` contract and defaults to a
+higher-risk top-3/no-defense runtime profile.
+
 Backtest Russell 1000 from the same input files:
 
 ```bash
@@ -219,7 +236,7 @@ python scripts/backtest_mag7_leveraged_pullback.py \
   --frequency weekly \
   --top-n 3 \
   --leverage-multiple 2.0 \
-  --max-product-exposure 0.7 \
+  --max-product-exposure 0.8 \
   --soft-product-exposure 0.5 \
   --hard-product-exposure 0.15 \
   --leveraged-expense-rate 0.01 \

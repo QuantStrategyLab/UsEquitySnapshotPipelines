@@ -9,6 +9,7 @@ import pandas as pd
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
 MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE = "mega_cap_leader_rotation_dynamic_top20"
+MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE = "mega_cap_leader_rotation_aggressive"
 DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE = "dynamic_mega_leveraged_pullback"
 
 
@@ -140,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     elif profile == RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE:
         prices = _russell_prices()
         universe = _russell_universe()
-    elif profile in {MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE, DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE}:
+    elif profile in {
+        MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
+        MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+        DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE,
+    }:
         prices = _mega_prices()
         universe = _mega_universe()
     else:

@@ -7,6 +7,9 @@ import pandas as pd
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_top20 import build_artifacts
 
 
+AGGRESSIVE_PROFILE = "mega_cap_leader_rotation_aggressive"
+
+
 def _sample_prices() -> pd.DataFrame:
     dates = pd.bdate_range("2024-01-02", periods=320)
     symbols = {
@@ -78,6 +81,36 @@ def test_builds_mega_cap_dynamic_top20_artifact_contract(tmp_path) -> None:
     assert manifest["strategy_profile"] == "mega_cap_leader_rotation_dynamic_top20"
     assert manifest["contract_version"] == "mega_cap_leader_rotation_dynamic_top20.feature_snapshot.v1"
     assert manifest["row_count"] == len(snapshot)
+    assert summary["release_status"] == "ready"
+
+
+def test_builds_mega_cap_aggressive_artifact_contract(tmp_path) -> None:
+    prices_path = tmp_path / "prices.csv"
+    universe_path = tmp_path / "universe.csv"
+    output_dir = tmp_path / "output"
+    _sample_prices().to_csv(prices_path, index=False)
+    _sample_ranked_universe().to_csv(universe_path, index=False)
+
+    result = build_artifacts(
+        profile=AGGRESSIVE_PROFILE,
+        prices_path=prices_path,
+        universe_path=universe_path,
+        output_dir=output_dir,
+        as_of_date="2025-03-24",
+        min_adv20_usd=1_000_000.0,
+        dynamic_universe_size=50,
+        holdings_count=4,
+        soft_defense_exposure=1.0,
+        hard_defense_exposure=1.0,
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    summary = json.loads(result.release_summary_path.read_text(encoding="utf-8"))
+
+    assert result.snapshot_path.name == "mega_cap_leader_rotation_aggressive_feature_snapshot_latest.csv"
+    assert manifest["strategy_profile"] == AGGRESSIVE_PROFILE
+    assert manifest["contract_version"] == "mega_cap_leader_rotation_aggressive.feature_snapshot.v1"
+    assert summary["strategy_profile"] == AGGRESSIVE_PROFILE
     assert summary["release_status"] == "ready"
 
 
