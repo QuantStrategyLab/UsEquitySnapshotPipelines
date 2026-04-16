@@ -1,0 +1,20 @@
+output_dir = "data/output/strategy_plugins"
+default_mode = "shadow"
+
+[[strategy_plugins]]
+strategy = "tqqq_growth_income"
+plugin = "crisis_response_shadow"
+enabled = true
+# mode is optional when it matches default_mode.
+# Set mode = "paper", "advisory", or "live" here to override this plugin only.
+
+[strategy_plugins.inputs]
+prices = "data/output/crisis_response_shadow/input/price_history.csv"
+external_context = "data/output/crisis_response_shadow/input/external_context.csv"
+event_set = "full"
+financial_symbols = ["XLF", "KRE"]
+credit_pairs = ["HYG:IEF", "LQD:IEF"]
+rate_symbols = ["IEF", "TLT"]
+
+[strategy_plugins.outputs]
+output_dir = "data/output/tqqq_growth_income/plugins/crisis_response_shadow"

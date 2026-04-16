@@ -77,6 +77,8 @@ Runtime integration:
   TQQQ status message, but the notification must label it as `shadow_only`.
 - This repository must not add Telegram, broker, or order-routing writes for
   the shadow plugin. It only writes artifacts for downstream readers.
+- Prefer the platform-level plugin runner for deployment. The strategy should
+  not hard-code whether Crisis Response, or any future plugin, is active.
 
 Suggested output directory shape:
 
@@ -88,6 +90,56 @@ data/output/crisis_response_shadow/
   audit/YYYY-MM-DD_evidence.csv
 ```
 
+Suggested runner configuration schema:
+
+- Use `docs/examples/strategy_plugins.example.toml` as the checked-in example.
+- Keep real runtime TOML with deployment or platform configuration.
+- Use top-level `default_mode` as the fallback and set per-plugin `mode` only
+  when a plugin should override the default.
+- Keep input paths under `[strategy_plugins.inputs]`, output paths under
+  `[strategy_plugins.outputs]`, and strategy/plugin/mode/enabled at the plugin
+  mount level.
+
+Run it as a separate sidecar job:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/run_strategy_plugins.py --config /path/to/strategy_plugins.toml
+```
+
+The runner is a whitelist. A plugin can only run if the code explicitly
+registers it. A plugin is mounted to a strategy through each
+`[[strategy_plugins]]` entry; the strategy core must remain independent of the
+runner and must not import plugin code.
+
+The runner accepts `mode = "shadow"`, `paper`, `advisory`, or `live` and writes
+that mode into each plugin artifact. `mode` is the single plugin behavior
+contract. Downstream platform adapters must implement the selected mode
+directly instead of running a second mode-selection layer. Platform risk checks,
+kill switches, and data-freshness guards may block unsafe execution, but they
+must not silently reinterpret `live` as `advisory`, `paper` as `shadow`, or any
+other mode substitution.
+
+This repository remains artifact-only in all modes: it does not place orders,
+call broker write APIs, or mutate live allocations. The payload therefore keeps
+two concepts separate:
+
+- Platform behavior fields, derived from `mode`, such as
+  `broker_order_allowed`, `live_allocation_mutation_allowed`,
+  `paper_ledger_required`, and `human_confirmation_required`.
+- Repository capability fields, always false here, such as
+  `repository_broker_write_allowed` and
+  `repository_allocation_mutation_allowed`.
+
+Mode meanings:
+
+| Mode | Meaning | Capital impact |
+| --- | --- | --- |
+| `shadow` | Write signal, evidence, freshness, and optional notification context only | None |
+| `paper` | Maintain a simulated ledger of what would have happened if enabled | None |
+| `advisory` | Produce a recommendation that requires human confirmation | Manual only |
+| `live` | Allow a platform adapter to affect execution under explicit risk limits | Bounded by config |
+
 ## Shadow Signal Schema
 
 The daily JSON must be easy for an operator or downstream process to read
@@ -98,12 +150,14 @@ Required top-level fields:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `as_of` | string | Signal date in `YYYY-MM-DD` |
-| `mode` | string | Must be `shadow` for Phase 1 |
+| `mode` | string | Runner mode such as `shadow`, `paper`, `advisory`, or `live` |
+| `configured_mode` | string | Requested runner mode such as `shadow`, `paper`, `advisory`, or `live` |
+| `effective_mode` | string | Mode that downstream platform adapters must implement |
 | `schema_version` | string | Start with `crisis_response_shadow.v1` |
 | `canonical_route` | string | One of `true_crisis`, `taco_fake_crisis`, `no_action` |
 | `watch_label` | string | Optional context label such as `systemic_stress_watch` or `rate_bear` |
 | `suggested_action` | string | One of `defend`, `small_taco`, `watch_only`, `no_action`, `blocked` |
-| `risk_multiplier_suggestion` | number or null | Recommendation only; not executed in shadow mode |
+| `risk_multiplier_suggestion` | number or null | Recommendation only inside this repository |
 | `would_trade_if_enabled` | boolean | Whether advisory/live mode would ask for action |
 | `price_scanner_active` | boolean | Confirmed price-crisis scanner state |
 | `bubble_fragility_active` | boolean | Early valuation/fragility scanner state |
@@ -112,6 +166,7 @@ Required top-level fields:
 | `data_freshness` | object | Freshness by input family |
 | `evidence` | object | Context evidence |
 | `audit_summary` | object | Proposer/auditor/final route summary |
+| `execution_controls` | object | Mode-derived platform behavior flags plus repository capability flags |
 
 Required `evidence` fields:
 
@@ -257,7 +312,8 @@ when any of these occur:
 - Event classification is missing during a policy shock.
 - The route depends on a newly added feature that has not passed historical
   audit-effectiveness checks.
-- The code is running outside approved shadow/advisory/live mode.
+- The code is running outside approved `shadow`, `paper`, `advisory`, or `live`
+  mode.
 
 ## Rules For Future Agents
 
