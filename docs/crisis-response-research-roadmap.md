@@ -78,10 +78,15 @@ A new AI feature cannot affect live routing unless it passes all checks:
 
 ## Suggested next experiments
 
-1. Add a historical valuation context file with monthly Nasdaq-100 trailing P/E,
+1. Build the V2 historical context pack in
+   `docs/crisis-context-research-v2.md` and keep it research-only.
+2. Add a historical valuation context file with monthly Nasdaq-100 trailing P/E,
    forward P/E, and CAPE where available.
-2. Add a financial-stress context file with XLF/SPY, KRE/SPY, HYG/IEF, LQD/IEF,
+3. Add a financial-stress context file with XLF/SPY, KRE/SPY, HYG/IEF, LQD/IEF,
    and credit spread proxies.
-3. Run the unified response backtest with each context family independently.
-4. Only then test combined context. Avoid optimizing all thresholds together.
-5. Keep `response_decisions.csv` as the main artifact for every experiment.
+4. Add rate / inflation context data for CPI, Fed funds, 10Y yield, and real
+   yield so 2022-style bear markets can be separated from true crises.
+5. Run the unified response backtest with each context family independently.
+6. Only then test combined context. Avoid optimizing all thresholds together.
+7. Keep `response_decisions.csv` and `crisis_context_features.csv` as the main
+   artifacts for every experiment.

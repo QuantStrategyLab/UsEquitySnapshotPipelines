@@ -433,7 +433,26 @@ intended to show the cost of false positives as well as the benefit in
 2000/2008-style crises before any AI crisis module is allowed to affect live
 allocations.
 
-See `docs/crisis-response-v1.md` for the frozen V1 contract and `docs/crisis-response-research-roadmap.md` for post-V1 historical-crash research.
+See `docs/crisis-response-v1.md` for the frozen V1 contract,
+`docs/crisis-response-research-roadmap.md` for post-V1 historical-crash
+research, and `docs/crisis-context-research-v2.md` for the research-only AI
+context pack.
+
+Build the V2 crisis context pack before changing any routing logic:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_crisis_context_pack.py \
+  --download \
+  --event-set full \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --output-dir data/output/crisis_context_v2
+```
+
+This writes `crisis_context_features.csv` and `context_diagnostics.csv`. If
+yfinance is rate limited, pass `--prices` with a saved price-history CSV. If a
+legitimate proxy is available, set `YFINANCE_PROXY` or pass `--download-proxy`.
 
 Run the unified Crisis Response research when comparing fake-crisis TACO entries
 with true-crisis defense in one plugin:

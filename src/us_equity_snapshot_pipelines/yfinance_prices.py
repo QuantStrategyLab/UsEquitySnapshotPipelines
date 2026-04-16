@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable, Mapping, Sequence
 
@@ -87,6 +88,23 @@ def _build_download_candidates(
     return candidates
 
 
+def _resolve_yfinance_proxy(proxy: str | None = None) -> str | None:
+    for value in (
+        proxy,
+        os.environ.get("YFINANCE_PROXY"),
+        os.environ.get("HTTPS_PROXY"),
+        os.environ.get("https_proxy"),
+        os.environ.get("HTTP_PROXY"),
+        os.environ.get("http_proxy"),
+        os.environ.get("ALL_PROXY"),
+        os.environ.get("all_proxy"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
 def normalize_yfinance_download(data, symbols) -> pd.DataFrame:
     symbol_pairs = _normalize_input_symbols(symbols)
     if data is None or len(symbol_pairs) == 0:
@@ -137,12 +155,16 @@ def download_price_history(
     chunk_size: int = 100,
     download_fn: Callable | None = None,
     symbol_aliases: Mapping[str, Sequence[str] | str] | None = None,
+    proxy: str | None = None,
 ) -> pd.DataFrame:
     if not symbols:
         raise ValueError("symbols must not be empty")
     if download_fn is None:
         import yfinance as yf
 
+        resolved_proxy = _resolve_yfinance_proxy(proxy)
+        if resolved_proxy and hasattr(yf, "set_config"):
+            yf.set_config(proxy=resolved_proxy)
         download_fn = yf.download
 
     symbol_pairs = _normalize_input_symbols(symbols, symbol_aliases=symbol_aliases)

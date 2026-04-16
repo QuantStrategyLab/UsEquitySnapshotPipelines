@@ -450,6 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--event-set", choices=tuple(sorted(TRADE_WAR_EVENT_SETS)), default=DEFAULT_EVENT_SET)
     parser.add_argument("--price-start", default=DEFAULT_PRICE_START_DATE)
     parser.add_argument("--price-end", default=None)
+    parser.add_argument("--download-proxy", default=None, help="Optional yfinance proxy URL; YFINANCE_PROXY also works")
     parser.add_argument("--start", dest="start_date", default=DEFAULT_START_DATE)
     parser.add_argument("--end", dest="end_date", default=None)
     parser.add_argument("--overlay-sleeve-ratios", default=",".join(str(value) for value in DEFAULT_OVERLAY_SLEEVE_RATIOS))
@@ -481,7 +482,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             symbols.append(args.attack_symbol)
         symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
-        price_history = download_price_history(symbols, start=args.price_start, end=args.price_end)
+        price_history = download_price_history(
+            symbols,
+            start=args.price_start,
+            end=args.price_end,
+            proxy=args.download_proxy,
+        )
         input_dir = output_dir / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
         prices_path = input_dir / "crisis_response_price_history.csv"
