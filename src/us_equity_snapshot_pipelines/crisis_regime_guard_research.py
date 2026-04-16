@@ -851,6 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
     input_group.add_argument("--download", action="store_true", help="Download adjusted price history through yfinance")
     parser.add_argument("--price-start", default=DEFAULT_PRICE_START_DATE)
     parser.add_argument("--price-end", default=None)
+    parser.add_argument("--download-proxy", default=None, help="Optional yfinance proxy URL; YFINANCE_PROXY also works")
     parser.add_argument("--start", dest="start_date", default=DEFAULT_START_DATE)
     parser.add_argument("--end", dest="end_date", default=None)
     parser.add_argument("--benchmark-symbol", default=DEFAULT_BENCHMARK_SYMBOL)
@@ -896,7 +897,12 @@ def main(argv: list[str] | None = None) -> int:
         if any(gate in {CONTEXT_GATE_FINANCIAL, CONTEXT_GATE_BUBBLE_OR_FINANCIAL} for gate in context_gates):
             symbols.extend([args.financial_symbol, args.market_symbol])
         symbols = list(dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()))
-        price_history = download_price_history(symbols, start=args.price_start, end=args.price_end)
+        price_history = download_price_history(
+            symbols,
+            start=args.price_start,
+            end=args.price_end,
+            proxy=args.download_proxy,
+        )
         input_dir = output_dir / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
         prices_path = input_dir / "crisis_regime_guard_price_history.csv"
