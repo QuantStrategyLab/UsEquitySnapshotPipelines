@@ -229,6 +229,60 @@ the GFC financial-system route and post-2015 windows remain unchanged in this
 sample. A full exit at 0.00 is worse because the signal arrives late enough that
 missing intermediate rebounds matters.
 
+Optional bubble-fragility pre-crisis overlay:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --prices data/output/crisis_response_1999_synthetic_v2_context/input/crisis_response_price_history.csv \
+  --external-context data/input/research/nasdaq_100_valuation_context.csv \
+  --event-set full \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --severe-crisis-risk-multiplier 0.10 \
+  --severe-crisis-context valuation_bubble \
+  --bubble-fragility-risk-multiplier 0.10 \
+  --bubble-fragility-context external_valuation \
+  --bubble-fragility-drawdown=-0.08 \
+  --bubble-fragility-ma-days 100 \
+  --bubble-fragility-ma-slope-days 20 \
+  --bubble-fragility-confirm-days 5 \
+  --crisis-confirm-days 5 \
+  --crisis-context-mode v2_context_pack \
+  --external-valuation-mode price_or_external \
+  --output-dir data/output/crisis_response_1999_synthetic_v2_fragility
+```
+
+The fragility gate is intentionally separate from the true-crisis gate. It
+requires external valuation context plus early price deterioration, then reduces
+growth exposure before the slower price-crisis scanner confirms. In the same
+provisional P/E sample, the external-valuation fragility signal first appears on
+2000-04-18, versus 2000-10-23 for the final `true_crisis_signal`.
+
+Provisional combined severe plus fragility trials:
+
+| Variant | Dot-com burst MDD | Dot-com full-cycle return | Lost decade return | GFC MDD | 2015-to-date return |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Valuation-bubble severe 0.10, no fragility | -73.09% | -23.98% | +21.16% | -41.52% | +2241.24% |
+| External-valuation fragility 0.50 | -58.76% | +16.48% | +85.64% | -41.52% | +2241.24% |
+| External-valuation fragility 0.25 | -50.79% | +41.31% | +125.22% | -41.52% | +2241.24% |
+| External-valuation fragility 0.10 | -50.79% | +57.69% | +151.32% | -41.52% | +2241.24% |
+| External-valuation fragility 0.00 | -53.26% | +32.02% | +110.42% | -41.52% | +2241.24% |
+| Valuation-bubble fragility 0.25 | -54.60% | +28.25% | +102.86% | -41.52% | +2241.24% |
+
+External-valuation fragility 0.10 is the strongest provisional row in this
+matrix. The zero-risk variant is worse, and the broader `valuation_bubble`
+fragility context leaks into the 2010 live-proxy window, so it is less clean than
+the external-valuation version. These results still depend on a provisional
+P/E sample and must be repeated with an authorized point-in-time valuation
+dataset before promotion.
+
 ## Route Priority
 
 The V2 context pack uses conservative research labels:
