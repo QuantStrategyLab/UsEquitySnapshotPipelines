@@ -288,3 +288,179 @@ python scripts/backtest_dynamic_mega_leveraged_pullback_matrix.py \
   --return-mode leveraged_product \
   --output-dir data/output/dynamic_mega_leveraged_pullback_matrix
 ```
+
+Run the research-only 2018-to-present Trump/Biden trade-war / TACO-like panic
+rebound event study:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_taco_panic_rebound.py \
+  --download \
+  --event-set full \
+  --price-start 2018-01-01 \
+  --ranking-horizon 42 \
+  --output-dir data/output/taco_panic_rebound_2018_present_research
+```
+
+This is an event-window research tool, not a live strategy. It uses a fixed
+trade-war event calendar, finds the post-shock trough within the configured
+window, then reports 5 / 10 / 21 / 42 / 63 trading-day rebounds by symbol. Use
+`--event-set first-term`, `--event-set biden`, or `--event-set second-term` for
+single-period diagnostics. The command writes `event_calendar.csv`,
+`event_windows.csv`, `shock_symbol_summary.csv`, and
+`softening_symbol_summary.csv`.
+
+Run a research-only TACO panic rebound portfolio sleeve backtest using the full
+2018-to-present event calendar and presidential-period summaries:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_taco_panic_rebound_portfolio.py \
+  --download \
+  --preset steady \
+  --event-set full \
+  --price-start 2018-01-01 \
+  --start 2018-01-01 \
+  --account-sleeve-ratio 0.10 \
+  --output-dir data/output/taco_panic_rebound_2018_present_portfolio
+```
+
+The portfolio backtest models a separate event-rebound sleeve, not a full-account
+allocation. `steady` uses a lower-volatility basket (`QLD`, `TQQQ`, `ROM`,
+`USD`, `NVDA`, `AMD`); `aggressive` uses `TQQQ`, `TECL`, `SOXL`, `NVDA`, and
+`AMD`. The output includes both the standalone sleeve return and a cash-backed
+account overlay row for the configured sleeve ratio, plus `period_summary.csv`
+for Trump 1, Biden, and Trump 2-to-date.
+
+Run the V1 price-stress AI TACO overlay comparison against the current
+`tqqq_growth_income` fixed dual-drive research baseline:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_taco_panic_rebound_overlay_compare.py \
+  --download \
+  --event-set full \
+  --price-start 2014-01-01 \
+  --start 2015-01-01 \
+  --overlay-sleeve-ratios 0.05,0.10 \
+  --audit-modes crisis_veto \
+  --output-dir data/output/tqqq_taco_price_stress_overlay_2015
+```
+
+This is the first-version definition for the TQQQ/TACO overlay research:
+`QQQ` / `TQQQ` price pressure opens the AI-news scanner, AI only classifies
+trade-war / tariff shock or softening events, and the overlay can use a small
+slice of the baseline `BOXX` / cash sleeve to buy `TQQQ`. VIX and macro data are
+not used as hard vetoes or position-size reducers in V1.
+
+The optional dual-AI review backtest is a deterministic audit proxy, not a
+historical replay of live OpenAI responses. The event calendar simulates the
+proposer AI, and the auditor can only veto candidates that fall inside
+predeclared systemic-crisis windows or event ids supplied with
+`--audit-veto-event-ids`. This makes the conflict policy backtestable without
+pretending that today's model actually ran in 2018/2019. The output writes
+`summary.csv`, `deltas_vs_base.csv`, `diagnostics.csv`,
+`audit_diagnostics.csv`, `recognized_event_calendar.csv`,
+`audit_decisions.csv`, `taco_trades_by_scenario.csv`, and per-strategy return /
+weight series.
+
+For a longer black-swan stress sample, use a synthetic daily-reset `TQQQ` proxy
+from `QQQ` because real `TQQQ` did not exist during the internet bubble or the
+2008 financial crisis. The optional price-only crisis guard is also a
+deterministic proxy, not an AI replay:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_taco_panic_rebound_overlay_compare.py \
+  --download \
+  --event-set full \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --include-price-crisis-guard \
+  --overlay-sleeve-ratios 0.05 \
+  --output-dir data/output/tqqq_taco_price_stress_overlay_1999_synthetic
+```
+
+Use this long sample to inspect `dotcom_bubble_burst`,
+`gfc_peak_to_trough`, and `lost_decade_2000_2009` rows. Treat the synthetic
+`TQQQ` and crisis-guard rows as stress-test evidence, not as a perfect
+reconstruction of tradable historical products.
+
+Run the standalone Crisis Guard research matrix separately from TACO:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_regime_guard.py \
+  --download \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --context-gates none,ai_rubric \
+  --drawdown-thresholds=-0.20,-0.25,-0.30 \
+  --risk-multipliers 0,0.25,0.5 \
+  --confirm-days 5 \
+  --output-dir data/output/crisis_regime_guard_1999_synthetic
+```
+
+This matrix compares the base TQQQ profile with price-only crisis guard variants
+across dot-com, GFC, COVID, 2022, and post-2015 periods. `--context-gates none`
+keeps the pure price-only guard. `ai_rubric` simulates the intended two-AI
+contract in a backtestable way. The confirmed price crisis signal opens the AI
+scanner, proposer AI classifies the triggered crisis candidate as
+bubble-burst risk, financial-crisis risk, or non-systemic bear / policy shock,
+and auditor AI can only approve or veto protection. The simulated AI uses a
+bubble proxy (`QQQ` trailing 252-day return above 75%, remembered for 126
+trading days by default) plus a financial-stress proxy (`XLF` drawdown and
+relative weakness vs `SPY`) when entering protection, then keeps the guard
+active until the price crisis signal turns off. This is a deterministic
+stand-in for a future live AI crisis module, not a claim that today's model was
+available historically.
+
+The output writes `summary.csv`, `deltas_vs_base.csv`,
+`guard_diagnostics.csv`, `context_diagnostics.csv`, `guard_events.csv`,
+`ai_opinions.csv`, and per-strategy return / weight / signal / context series.
+`ai_opinions.csv` is intentionally sparse: it records only dates where the
+confirmed price crisis signal would have opened the AI scanner. The matrix is
+for research only and defaults to disabled unless explicitly requested: it is
+intended to show the cost of false positives as well as the benefit in
+2000/2008-style crises before any AI crisis module is allowed to affect live
+allocations.
+
+See `docs/crisis-response-v1.md` for the frozen V1 contract and `docs/crisis-response-research-roadmap.md` for post-V1 historical-crash research.
+
+Run the unified Crisis Response research when comparing fake-crisis TACO entries
+with true-crisis defense in one plugin:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --download \
+  --event-set full \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --crisis-confirm-days 5 \
+  --output-dir data/output/crisis_response_1999_synthetic
+```
+
+This unified research treats both modules as one event-response plugin. The
+price-stress scanner opens the TACO AI path for trade-war / tariff fake-crisis
+events. The confirmed crisis-price signal opens the Crisis AI path for
+bubble-burst or financial-crisis candidates. If the true-crisis guard is active,
+TACO entries are suppressed; otherwise approved policy / tariff shocks can use
+the small TACO sleeve. The output includes `response_decisions.csv`, which is
+the main audit file for whether each candidate was routed to `taco_fake_crisis`,
+`true_crisis`, or `no_action`.
