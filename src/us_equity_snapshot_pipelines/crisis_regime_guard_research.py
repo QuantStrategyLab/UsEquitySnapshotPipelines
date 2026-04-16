@@ -301,12 +301,13 @@ def build_ai_crisis_opinions(
     financial_relative_return_threshold: float = DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD,
     trigger_only: bool = True,
 ) -> pd.DataFrame:
-    """Build a deterministic two-AI crisis-opinion proxy.
+    """Build a deterministic two-step crisis-opinion proxy.
 
-    This is not a replay of historical ChatGPT calls. It is a backtestable
+    This is not a replay of historical model calls. It is a backtestable
     rubric that mimics the intended production contract: the confirmed price
-    crisis signal opens the AI scanner, proposer AI identifies the crisis type,
-    auditor AI can only approve or veto protection, and the final decision is
+    crisis signal opens the context scanner, the proposer rubric identifies the
+    crisis type, the auditor rubric can only approve or veto protection, and the
+    final decision is
     point-in-time and structured for later audit.
     """
     frame = _normalize_close(close)

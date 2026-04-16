@@ -80,7 +80,7 @@ def test_shadow_signal_routes_financial_credit_crisis_without_live_execution() -
     assert payload["execution_controls"]["live_allocation_mutation_allowed"] is False
 
 
-def test_shadow_signal_writes_daily_json_csv_and_ai_replay_prompt(tmp_path) -> None:
+def test_shadow_signal_writes_daily_json_csv_and_evidence(tmp_path) -> None:
     prices = _financial_crisis_prices()
     as_of = str(pd.to_datetime(prices["as_of"]).max().date())
     payload = build_crisis_response_shadow_signal(
@@ -99,11 +99,9 @@ def test_shadow_signal_writes_daily_json_csv_and_ai_replay_prompt(tmp_path) -> N
     assert paths["signal_json"].exists()
     assert paths["signal_csv"].exists()
     assert paths["evidence_csv"].exists()
-    assert paths["ai_replay_prompt"].exists()
     latest = json.loads(paths["latest_signal"].read_text(encoding="utf-8"))
     assert latest["as_of"] == as_of
     assert latest["canonical_route"] == ROUTE_TRUE_CRISIS
-    assert "Latest shadow JSON" in paths["ai_replay_prompt"].read_text(encoding="utf-8")
 
 
 def test_shadow_signal_blocks_stale_price_data() -> None:

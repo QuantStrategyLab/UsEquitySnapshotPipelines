@@ -170,7 +170,7 @@ def build_price_stress_scan(
     ma200_near_pct: float = DEFAULT_TRIGGER_MA200_NEAR_PCT,
     scan_hold_days: int = DEFAULT_TRIGGER_SCAN_HOLD_DAYS,
 ) -> pd.Series:
-    """Return days when the V1 overlay would pay for AI news classification.
+    """Return days when the V1 overlay would pay for policy-event classification.
 
     This intentionally uses only price pressure. VIX and macro data do not veto,
     reduce, or trigger positions in the V1 definition.
@@ -224,7 +224,7 @@ def filter_events_by_price_stress(
     softening_lookahead_days: int = DEFAULT_SOFTENING_LOOKAHEAD_DAYS,
     active_event_days: int = DEFAULT_ACTIVE_EVENT_DAYS,
 ) -> tuple[TradeWarEvent, ...]:
-    """Simulate V1 AI availability: only recognize events when price stress opens the scanner."""
+    """Simulate V1 event availability: only recognize events when price stress opens the scanner."""
     scan = pd.Series(scan_days).copy().fillna(False)
     scan.index = pd.to_datetime(scan.index).tz_localize(None).normalize()
     index = pd.DatetimeIndex(scan.index).sort_values()
@@ -287,12 +287,13 @@ def build_dual_ai_audit_decisions(
     systemic_windows: Sequence[tuple[str, str, str]] = DEFAULT_AUDIT_SYSTEMIC_WINDOWS,
     veto_event_ids: Sequence[str] = (),
 ) -> tuple[tuple[TradeWarEvent, ...], pd.DataFrame]:
-    """Backtest a deterministic dual-AI review proxy over recognized events.
+    """Backtest a deterministic dual-review proxy over recognized events.
 
-    Historical OpenAI calls are not replayable without archived news inputs and
+    Historical model calls are not replayable without archived news inputs and
     fixed model snapshots. This function therefore simulates the *decision
-    contract* of the second AI: the proposer has already recognized a price-gated
-    trade-war event, and the auditor can only veto events that overlap a
+    contract* of the second review step: the proposer rubric has already
+    recognized a price-gated trade-war event, and the auditor can only veto
+    events that overlap a
     predeclared systemic-crisis window or an explicit sensitivity-test event id.
     """
     mode = str(audit_mode or AUDIT_MODE_OFF).strip().lower()
@@ -448,9 +449,9 @@ def build_price_crisis_guard_signal(
 ) -> pd.Series:
     """Return an as-of price-only crisis-regime proxy.
 
-    This is intentionally not an AI backtest. It is a deterministic proxy that
+    This is intentionally not a model backtest. It is a deterministic proxy that
     uses only data visible on each date, so 2000/2008 crisis stress can be
-    compared without pretending today's AI model was available historically.
+    compared without pretending a live model was available historically.
     """
     frame = _normalize_close(close)
     benchmark_symbol = str(benchmark_symbol).strip().upper()
@@ -1136,7 +1137,7 @@ def _format_percent_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Compare TQQQ growth-income with the V1 price-stress AI TACO overlay.")
+    parser = argparse.ArgumentParser(description="Compare TQQQ growth-income with the V1 price-stress TACO overlay.")
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--prices", help="Existing long price-history CSV with symbol/as_of/close columns")
     input_group.add_argument("--download", action="store_true", help="Download adjusted price history through yfinance")
@@ -1184,7 +1185,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--audit-modes",
         default=",".join(DEFAULT_AUDIT_MODES),
-        help=f"Comma-separated dual-AI audit proxy modes. Supported: {','.join(sorted(AUDIT_MODES))}.",
+        help=f"Comma-separated dual-review audit proxy modes. Supported: {','.join(sorted(AUDIT_MODES))}.",
     )
     parser.add_argument(
         "--audit-crisis-windows",
@@ -1258,7 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\nDiagnostics:")
     print(_format_percent_columns(diagnostics).to_string(index=False))
     if not audit_diagnostics.empty:
-        print("\nDual-AI audit diagnostics:")
+        print("\nDual-review audit diagnostics:")
         print(_format_percent_columns(audit_diagnostics).to_string(index=False))
     if not crisis_guard_diagnostics.empty:
         print("\nPrice crisis-guard diagnostics:")

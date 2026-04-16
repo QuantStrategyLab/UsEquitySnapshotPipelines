@@ -332,7 +332,7 @@ allocation. `steady` uses a lower-volatility basket (`QLD`, `TQQQ`, `ROM`,
 account overlay row for the configured sleeve ratio, plus `period_summary.csv`
 for Trump 1, Biden, and Trump 2-to-date.
 
-Run the V1 price-stress AI TACO overlay comparison against the current
+Run the V1 price-stress TACO overlay comparison against the current
 `tqqq_growth_income` fixed dual-drive research baseline:
 
 ```bash
@@ -348,17 +348,17 @@ python scripts/backtest_taco_panic_rebound_overlay_compare.py \
 ```
 
 This is the first-version definition for the TQQQ/TACO overlay research:
-`QQQ` / `TQQQ` price pressure opens the AI-news scanner, AI only classifies
+`QQQ` / `TQQQ` price pressure opens the policy-event scanner, which classifies
 trade-war / tariff shock or softening events, and the overlay can use a small
 slice of the baseline `BOXX` / cash sleeve to buy `TQQQ`. VIX and macro data are
 not used as hard vetoes or position-size reducers in V1.
 
-The optional dual-AI review backtest is a deterministic audit proxy, not a
-historical replay of live OpenAI responses. The event calendar simulates the
-proposer AI, and the auditor can only veto candidates that fall inside
+The optional dual-review backtest is a deterministic audit proxy, not a
+historical replay of live model responses. The event calendar simulates the
+proposer rubric, and the auditor can only veto candidates that fall inside
 predeclared systemic-crisis windows or event ids supplied with
 `--audit-veto-event-ids`. This makes the conflict policy backtestable without
-pretending that today's model actually ran in 2018/2019. The output writes
+pretending that a model actually ran in 2018/2019. The output writes
 `summary.csv`, `deltas_vs_base.csv`, `diagnostics.csv`,
 `audit_diagnostics.csv`, `recognized_event_calendar.csv`,
 `audit_decisions.csv`, `taco_trades_by_scenario.csv`, and per-strategy return /
@@ -367,7 +367,7 @@ weight series.
 For a longer black-swan stress sample, use a synthetic daily-reset `TQQQ` proxy
 from `QQQ` because real `TQQQ` did not exist during the internet bubble or the
 2008 financial crisis. The optional price-only crisis guard is also a
-deterministic proxy, not an AI replay:
+deterministic proxy, not a model replay:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -411,31 +411,31 @@ python scripts/backtest_crisis_regime_guard.py \
 
 This matrix compares the base TQQQ profile with price-only crisis guard variants
 across dot-com, GFC, COVID, 2022, and post-2015 periods. `--context-gates none`
-keeps the pure price-only guard. `ai_rubric` simulates the intended two-AI
-contract in a backtestable way. The confirmed price crisis signal opens the AI
-scanner, proposer AI classifies the triggered crisis candidate as
-bubble-burst risk, financial-crisis risk, or non-systemic bear / policy shock,
-and auditor AI can only approve or veto protection. The simulated AI uses a
+keeps the pure price-only guard. `ai_rubric` is a legacy option name for the
+deterministic two-step crisis rubric. The confirmed price crisis signal opens
+the context scanner, which classifies the triggered crisis candidate as
+bubble-burst risk, financial-crisis risk, or non-systemic bear / policy shock.
+The audit rubric can only approve or veto protection. The simulated rubric uses a
 bubble proxy (`QQQ` trailing 252-day return above 75%, remembered for 126
 trading days by default) plus a financial-stress proxy (`XLF` drawdown and
 relative weakness vs `SPY`) when entering protection, then keeps the guard
 active until the price crisis signal turns off. This is a deterministic
-stand-in for a future live AI crisis module, not a claim that today's model was
-available historically.
+stand-in for a future live crisis module, not a model-driven backtest.
 
 The output writes `summary.csv`, `deltas_vs_base.csv`,
 `guard_diagnostics.csv`, `context_diagnostics.csv`, `guard_events.csv`,
 `ai_opinions.csv`, and per-strategy return / weight / signal / context series.
-`ai_opinions.csv` is intentionally sparse: it records only dates where the
-confirmed price crisis signal would have opened the AI scanner. The matrix is
+`ai_opinions.csv` is a legacy output name and is intentionally sparse: it
+records only dates where the confirmed price crisis signal would have opened the
+context scanner. The matrix is
 for research only and defaults to disabled unless explicitly requested: it is
 intended to show the cost of false positives as well as the benefit in
-2000/2008-style crises before any AI crisis module is allowed to affect live
+2000/2008-style crises before any crisis module is allowed to affect live
 allocations.
 
 See `docs/crisis-response-v1.md` for the frozen V1 contract,
 `docs/crisis-response-research-roadmap.md` for post-V1 historical-crash
-research, and `docs/crisis-context-research-v2.md` for the research-only AI
+research, and `docs/crisis-context-research-v2.md` for the research-only
 context pack.
 
 Build the V2 crisis context pack before changing any routing logic:
@@ -480,15 +480,15 @@ python scripts/backtest_crisis_response.py \
 ```
 
 This unified research treats both modules as one event-response plugin. The
-price-stress scanner opens the TACO AI path for trade-war / tariff fake-crisis
-events. The confirmed crisis-price signal opens the Crisis AI path for
+price-stress scanner opens the TACO path for trade-war / tariff fake-crisis
+events. The confirmed crisis-price signal opens the crisis-context path for
 bubble-burst or financial-crisis candidates. If the true-crisis guard is active,
 TACO entries are suppressed; otherwise approved policy / tariff shocks can use
 the small TACO sleeve. The output includes `response_decisions.csv`, which is
 the main audit file for whether each candidate was routed to `taco_fake_crisis`,
 `true_crisis`, or `no_action`.
 
-To compare the frozen V1 AI rubric with the research-only V2 context pack, add
+To compare the frozen V1 deterministic rubric with the research-only V2 context pack, add
 the explicit mode flag. The default remains `v1_ai_rubric`.
 
 ```bash
@@ -532,29 +532,11 @@ python scripts/build_crisis_response_shadow_signal.py \
   --output-dir data/output/crisis_response_shadow
 ```
 
-This writes `latest_signal.json`, dated JSON/CSV signal files, an evidence CSV,
-and an AI replay prompt under `data/output/crisis_response_shadow/`. The shadow
-builder is designed to run on the same daily cadence as the TQQQ artifact
+This writes `latest_signal.json`, dated JSON/CSV signal files, and an evidence
+CSV under `data/output/crisis_response_shadow/`. The shadow builder is designed
+to run on the same daily cadence as the TQQQ artifact
 pipeline, but it is `shadow_only`: no broker writes, no order placement, and no
 live allocation mutation. Downstream notifications may read the latest JSON and
 display it as an observation beside the TQQQ status, not as an executable trade
-instruction. Begin AI replay after 20 shadow trading days, or sooner after any
-high-volatility `would_trade_if_enabled=true` day with complete logs; advisory
-mode still requires 30 to 60 shadow trading days and written approval.
-
-Optionally schedule the gated AI replay runner now. It will not call an AI API
-until the configured shadow-day gate is met, and it will never auto-enable
-advisory/live mode:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/replay_crisis_response_shadow_ai.py \
-  --shadow-dir data/output/crisis_response_shadow \
-  --provider openai
-```
-
-Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` outside the repository. Before 20
-shadow signal days, the runner writes `waiting_for_min_shadow_days`. After the
-advisory review gate, it may write `advisory_review_eligible=true`, but
-`advisory_auto_enable_allowed` remains false. See
-`docs/crisis-response-ai-replay.md`.
+instruction. Advisory or live promotion remains a separate manual decision
+after enough deterministic shadow logs have accumulated.
