@@ -580,3 +580,14 @@ Mode meanings:
 | `paper` | Paper ledger of hypothetical plugin actions; no real allocation change |
 | `advisory` | Human-confirmed recommendation; no automatic execution |
 | `live` | Platform adapter may affect execution under explicit risk limits |
+
+The `Publish Strategy Plugins` GitHub workflow runs the
+`tqqq_growth_income` / `crisis_response_shadow` plugin in `shadow` mode on a
+weekday post-close schedule. Its default GCS prefix is:
+
+```text
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow
+```
+
+Downstream platforms should mount only the resulting `latest_signal.json` and
+must not duplicate `mode` in platform config.
