@@ -713,6 +713,69 @@ def test_unified_crisis_response_can_tighten_severe_external_valuation_crisis() 
     assert severe_risk < normal_risk
 
 
+def test_unified_crisis_response_can_reduce_bubble_fragility_before_true_crisis() -> None:
+    dates = pd.bdate_range("2000-01-03", periods=330)
+    qqq = []
+    for idx, _date in enumerate(dates):
+        if idx < 260:
+            qqq.append(100.0 + idx * 0.7)
+        elif idx < 290:
+            qqq.append(100.0 + 259 * 0.7 - (idx - 259) * 3.0)
+        else:
+            qqq.append(191.0)
+    rows = []
+    for as_of, qqq_close in zip(dates, qqq, strict=True):
+        rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
+        rows.append({"symbol": "SHY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "XLF", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "SPY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+    external = pd.DataFrame(
+        {
+            "as_of": [dates[245]],
+            "nasdaq_100_trailing_pe": [82.0],
+            "unprofitable_growth_proxy": [0.45],
+        }
+    )
+    common_kwargs = {
+        "events": (),
+        "external_context": external,
+        "start_date": str(dates[0].date()),
+        "benchmark_symbol": "QQQ",
+        "attack_symbol": "SYNTH_TQQQ",
+        "safe_symbol": "SHY",
+        "overlay_sleeve_ratios": (0.05,),
+        "crisis_context_mode": CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
+        "external_valuation_mode": EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+        "crisis_drawdown": -0.20,
+        "crisis_risk_multiplier": 0.25,
+        "crisis_confirm_days": 3,
+        "ma_days": 20,
+        "ma_slope_days": 3,
+        "turnover_cost_bps": 0.0,
+    }
+
+    normal = run_crisis_response_research(pd.DataFrame(rows), **common_kwargs)
+    fragility = run_crisis_response_research(
+        pd.DataFrame(rows),
+        bubble_fragility_risk_multiplier=0.50,
+        bubble_fragility_drawdown=-0.05,
+        bubble_fragility_ma_days=100,
+        bubble_fragility_ma_slope_days=5,
+        bubble_fragility_confirm_days=3,
+        **common_kwargs,
+    )
+
+    fragility_signal = fragility["bubble_fragility_signal"].astype(bool)
+    early_fragility = fragility_signal & ~fragility["true_crisis_signal"].astype(bool)
+    assert early_fragility.any()
+    signal_date = next(date for date in early_fragility.index[early_fragility] if date in normal["weights_by_strategy"]["unified_response_5pct"].index)
+    normal_weights = normal["weights_by_strategy"]["unified_response_5pct"]
+    fragility_weights = fragility["weights_by_strategy"]["unified_response_5pct"]
+    normal_risk = normal_weights.reindex(columns=["QQQ", "SYNTH_TQQQ"], fill_value=0.0).loc[signal_date].sum()
+    fragility_risk = fragility_weights.reindex(columns=["QQQ", "SYNTH_TQQQ"], fill_value=0.0).loc[signal_date].sum()
+    assert fragility_risk < normal_risk
+
+
 def test_guard_transition_events_records_on_off_edges() -> None:
     dates = pd.bdate_range("2020-01-02", periods=5)
     signal = pd.Series([False, True, True, False, True], index=dates)

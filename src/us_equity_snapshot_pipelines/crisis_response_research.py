@@ -66,6 +66,10 @@ DEFAULT_START_DATE = "1999-03-10"
 DEFAULT_PRICE_START_DATE = "1999-03-10"
 DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER = 0.25
 DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS = 5
+DEFAULT_BUBBLE_FRAGILITY_DRAWDOWN = -0.08
+DEFAULT_BUBBLE_FRAGILITY_MA_DAYS = 100
+DEFAULT_BUBBLE_FRAGILITY_MA_SLOPE_DAYS = 20
+DEFAULT_BUBBLE_FRAGILITY_CONFIRM_DAYS = 5
 DEFAULT_SYNTHETIC_ATTACK_MULTIPLE = 3.0
 DEFAULT_RESPONSE_SAFE_SYMBOL = "SHY"
 ROUTE_TACO = "taco_fake_crisis"
@@ -98,6 +102,13 @@ SEVERE_CRISIS_CONTEXTS = (
     SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE,
 )
 DEFAULT_SEVERE_CRISIS_CONTEXT = SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION
+FRAGILITY_CONTEXT_EXTERNAL_VALUATION = "external_valuation"
+FRAGILITY_CONTEXT_VALUATION_BUBBLE = "valuation_bubble"
+FRAGILITY_CONTEXTS = (
+    FRAGILITY_CONTEXT_EXTERNAL_VALUATION,
+    FRAGILITY_CONTEXT_VALUATION_BUBBLE,
+)
+DEFAULT_FRAGILITY_CONTEXT = FRAGILITY_CONTEXT_EXTERNAL_VALUATION
 
 
 def _normalize_close(close: pd.DataFrame) -> pd.DataFrame:
@@ -174,6 +185,96 @@ def _series_from_ai_valuation_bubble(ai_opinions: pd.DataFrame, index: pd.Dateti
     aligned = daily_values.reindex(output.index).fillna(False).astype(bool)
     output.loc[aligned.index] = aligned.to_numpy(dtype=bool)
     return output
+
+
+def _series_from_context_features_bool_column(
+    context_features: pd.DataFrame,
+    index: pd.DatetimeIndex,
+    column: str,
+) -> pd.Series:
+    output = pd.Series(False, index=index, name=str(column))
+    if context_features.empty or column not in context_features.columns:
+        return output
+
+    frame = context_features.copy()
+    frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    frame = frame.dropna(subset=["as_of"])
+    if frame.empty:
+        return output
+
+    daily_values = pd.Series(
+        frame[column].fillna(False).astype(bool).to_numpy(dtype=bool),
+        index=frame["as_of"],
+    ).groupby(level=0).max()
+    aligned = daily_values.reindex(output.index).ffill().fillna(False).astype(bool)
+    output.loc[aligned.index] = aligned.to_numpy(dtype=bool)
+    return output
+
+
+def _series_from_context_features_valuation_bubble(
+    context_features: pd.DataFrame,
+    index: pd.DatetimeIndex,
+) -> pd.Series:
+    output = pd.Series(False, index=index, name="valuation_bubble_context")
+    if context_features.empty:
+        return output
+
+    frame = context_features.copy()
+    frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    frame = frame.dropna(subset=["as_of"])
+    if frame.empty:
+        return output
+
+    if "suggested_context_label" in frame.columns:
+        values = frame["suggested_context_label"].fillna("").astype(str).str.lower().eq("valuation_bubble")
+    elif "bubble_context" in frame.columns:
+        values = frame["bubble_context"].fillna(False).astype(bool)
+    else:
+        return output
+    daily_values = pd.Series(values.to_numpy(dtype=bool), index=frame["as_of"]).groupby(level=0).max()
+    aligned = daily_values.reindex(output.index).ffill().fillna(False).astype(bool)
+    output.loc[aligned.index] = aligned.to_numpy(dtype=bool)
+    return output
+
+
+def _build_bubble_fragility_signal(
+    close: pd.DataFrame,
+    context_features: pd.DataFrame,
+    *,
+    index: pd.DatetimeIndex,
+    benchmark_symbol: str,
+    fragility_context: str,
+    drawdown_threshold: float,
+    ma_days: int,
+    ma_slope_days: int,
+    confirm_days: int,
+) -> pd.Series:
+    output = pd.Series(False, index=index, name="bubble_fragility")
+    if context_features.empty:
+        return output
+
+    context_name = str(fragility_context).strip().lower()
+    if context_name not in FRAGILITY_CONTEXTS:
+        raise ValueError(f"Unsupported fragility_context: {fragility_context!r}")
+    if context_name == FRAGILITY_CONTEXT_VALUATION_BUBBLE:
+        valuation_context = _series_from_context_features_valuation_bubble(context_features, index)
+    else:
+        valuation_context = _series_from_context_features_bool_column(
+            context_features,
+            index,
+            "external_valuation_context",
+        )
+
+    benchmark = pd.to_numeric(close[str(benchmark_symbol).strip().upper()], errors="coerce").reindex(index).ffill()
+    high_252 = benchmark.rolling(252, min_periods=63).max()
+    drawdown = benchmark / high_252 - 1.0
+    ma_window = max(2, int(ma_days))
+    slope_window = max(1, int(ma_slope_days))
+    ma = benchmark.rolling(ma_window, min_periods=min(63, ma_window)).mean()
+    ma_slope = ma.diff(slope_window)
+    deteriorating_price = drawdown.le(float(drawdown_threshold)) & (benchmark.lt(ma) | ma_slope.lt(0.0))
+    raw = (valuation_context & deteriorating_price.fillna(False)).rename("bubble_fragility")
+    return _apply_confirm_days(raw, int(confirm_days)).fillna(False).rename("bubble_fragility")
 
 
 def _parse_credit_pairs(raw: str | Sequence[str | Sequence[str]]) -> tuple[tuple[str, str], ...]:
@@ -415,6 +516,8 @@ def _add_unified_response_returns(
     base_weights: pd.DataFrame,
     crisis_weights: pd.DataFrame,
     crisis_signal: pd.Series,
+    fragility_weights: pd.DataFrame | None = None,
+    fragility_signal: pd.Series | None = None,
     returns_by_strategy: dict[str, pd.Series],
     weights_by_strategy: dict[str, pd.DataFrame],
     trades_by_strategy: dict[str, pd.DataFrame],
@@ -439,12 +542,23 @@ def _add_unified_response_returns(
     crisis.index = pd.to_datetime(crisis.index).tz_localize(None).normalize()
     crisis = crisis.reindex(index[:-1]).ffill().fillna(False)
 
+    if fragility_signal is None or fragility_weights is None:
+        fragility = pd.Series(False, index=index[:-1], name="bubble_fragility")
+        fragility_weights = base_weights
+    else:
+        fragility = pd.Series(fragility_signal).fillna(False).astype(bool).copy()
+        fragility.index = pd.to_datetime(fragility.index).tz_localize(None).normalize()
+        fragility = fragility.reindex(index[:-1]).ffill().fillna(False)
+        fragility_weights = fragility_weights.reindex(index[:-1]).ffill().fillna(0.0)
+
     for sleeve_ratio in overlay_sleeve_ratios:
         strategy_name = f"{scenario_prefix}_{int(float(sleeve_ratio) * 100)}pct"
         rows: list[dict[str, object]] = []
         for date in index[:-1]:
             if bool(crisis.loc[date]):
                 weights = crisis_weights.loc[date].to_dict()
+            elif bool(fragility.loc[date]):
+                weights = fragility_weights.loc[date].to_dict()
             else:
                 weights = _integrate_overlay_weights(
                     base_weights.loc[date].to_dict(),
@@ -489,6 +603,12 @@ def run_crisis_response_research(
     crisis_risk_multiplier: float = DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER,
     severe_crisis_risk_multiplier: float | None = None,
     severe_crisis_context: str = DEFAULT_SEVERE_CRISIS_CONTEXT,
+    bubble_fragility_risk_multiplier: float | None = None,
+    bubble_fragility_context: str = DEFAULT_FRAGILITY_CONTEXT,
+    bubble_fragility_drawdown: float = DEFAULT_BUBBLE_FRAGILITY_DRAWDOWN,
+    bubble_fragility_ma_days: int = DEFAULT_BUBBLE_FRAGILITY_MA_DAYS,
+    bubble_fragility_ma_slope_days: int = DEFAULT_BUBBLE_FRAGILITY_MA_SLOPE_DAYS,
+    bubble_fragility_confirm_days: int = DEFAULT_BUBBLE_FRAGILITY_CONFIRM_DAYS,
     crisis_confirm_days: int = DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS,
     ma_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_DAYS,
     ma_slope_days: int = DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
@@ -601,6 +721,21 @@ def run_crisis_response_research(
             )
         severe_crisis_signal = apply_context_gate_to_signal(true_crisis_signal, severe_context).rename("severe_crisis")
 
+    if bubble_fragility_risk_multiplier is None:
+        bubble_fragility_signal = pd.Series(False, index=true_crisis_signal.index, name="bubble_fragility")
+    else:
+        bubble_fragility_signal = _build_bubble_fragility_signal(
+            close,
+            crisis_context_features,
+            index=true_crisis_signal.index,
+            benchmark_symbol=benchmark_symbol,
+            fragility_context=bubble_fragility_context,
+            drawdown_threshold=float(bubble_fragility_drawdown),
+            ma_days=int(bubble_fragility_ma_days),
+            ma_slope_days=int(bubble_fragility_ma_slope_days),
+            confirm_days=int(bubble_fragility_confirm_days),
+        )
+
     decisions = build_event_response_decisions(
         recognized_events,
         scan_days,
@@ -675,6 +810,17 @@ def run_crisis_response_research(
         ).reindex(index[:-1]).ffill().fillna(0.0)
         severe_mask = severe_crisis_signal.reindex(index[:-1]).ffill().fillna(False).astype(bool)
         crisis_weights.loc[severe_mask] = severe_weights.loc[severe_mask]
+    fragility_weights = None
+    if bubble_fragility_risk_multiplier is not None and bool(bubble_fragility_signal.any()):
+        fragility_weights = apply_price_crisis_guard_to_weights(
+            base_weights,
+            bubble_fragility_signal,
+            benchmark_symbol=benchmark_symbol,
+            attack_symbol=attack_symbol,
+            safe_symbol=safe_symbol,
+            cash_symbol=cash_symbol,
+            risk_multiplier=float(bubble_fragility_risk_multiplier),
+        ).reindex(index[:-1]).ffill().fillna(0.0)
     crisis_returns, crisis_weights_history = _weights_to_returns(
         returns,
         crisis_weights,
@@ -692,6 +838,17 @@ def run_crisis_response_research(
         "base": base_weights_history,
         "true_crisis_guard_base": crisis_weights_history,
     }
+    if fragility_weights is not None:
+        fragility_returns, fragility_weights_history = _weights_to_returns(
+            returns,
+            fragility_weights,
+            strategy_name="bubble_fragility_guard_base",
+            safe_symbol=safe_symbol,
+            cash_symbol=cash_symbol,
+            turnover_cost_bps=turnover_cost_bps,
+        )
+        returns_by_strategy["bubble_fragility_guard_base"] = fragility_returns
+        weights_by_strategy["bubble_fragility_guard_base"] = fragility_weights_history
     trades_by_strategy: dict[str, pd.DataFrame] = {}
     _add_overlay_strategy_returns(
         scenario_prefix="taco_only",
@@ -715,6 +872,8 @@ def run_crisis_response_research(
         base_weights=base_weights,
         crisis_weights=crisis_weights,
         crisis_signal=true_crisis_signal,
+        fragility_weights=fragility_weights,
+        fragility_signal=bubble_fragility_signal,
         returns_by_strategy=returns_by_strategy,
         weights_by_strategy=weights_by_strategy,
         trades_by_strategy=trades_by_strategy,
@@ -742,6 +901,7 @@ def run_crisis_response_research(
         "confirmed_crisis_signal": confirmed_crisis_signal,
         "true_crisis_signal": true_crisis_signal,
         "severe_crisis_signal": severe_crisis_signal,
+        "bubble_fragility_signal": bubble_fragility_signal,
         "recognized_events": events_to_frame(recognized_events),
         "taco_events": events_to_frame(taco_events),
         "returns_by_strategy": returns_by_strategy,
@@ -789,6 +949,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SEVERE_CRISIS_CONTEXT,
         help="Context subset eligible for --severe-crisis-risk-multiplier",
     )
+    parser.add_argument(
+        "--bubble-fragility-risk-multiplier",
+        type=float,
+        default=None,
+        help="Optional research-only pre-crisis risk multiplier for valuation-bubble fragility days",
+    )
+    parser.add_argument(
+        "--bubble-fragility-context",
+        choices=FRAGILITY_CONTEXTS,
+        default=DEFAULT_FRAGILITY_CONTEXT,
+        help="Valuation context subset eligible for the bubble fragility pre-crisis guard",
+    )
+    parser.add_argument(
+        "--bubble-fragility-drawdown",
+        type=float,
+        default=DEFAULT_BUBBLE_FRAGILITY_DRAWDOWN,
+        help="252-day drawdown threshold for the bubble fragility price deterioration gate",
+    )
+    parser.add_argument("--bubble-fragility-ma-days", type=int, default=DEFAULT_BUBBLE_FRAGILITY_MA_DAYS)
+    parser.add_argument(
+        "--bubble-fragility-ma-slope-days",
+        type=int,
+        default=DEFAULT_BUBBLE_FRAGILITY_MA_SLOPE_DAYS,
+    )
+    parser.add_argument("--bubble-fragility-confirm-days", type=int, default=DEFAULT_BUBBLE_FRAGILITY_CONFIRM_DAYS)
     parser.add_argument("--crisis-confirm-days", type=int, default=DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS)
     parser.add_argument("--financial-symbol", default=DEFAULT_FINANCIAL_SYMBOL)
     parser.add_argument("--market-symbol", default=DEFAULT_MARKET_SYMBOL)
@@ -873,6 +1058,12 @@ def main(argv: list[str] | None = None) -> int:
         crisis_risk_multiplier=float(args.crisis_risk_multiplier),
         severe_crisis_risk_multiplier=args.severe_crisis_risk_multiplier,
         severe_crisis_context=args.severe_crisis_context,
+        bubble_fragility_risk_multiplier=args.bubble_fragility_risk_multiplier,
+        bubble_fragility_context=args.bubble_fragility_context,
+        bubble_fragility_drawdown=float(args.bubble_fragility_drawdown),
+        bubble_fragility_ma_days=int(args.bubble_fragility_ma_days),
+        bubble_fragility_ma_slope_days=int(args.bubble_fragility_ma_slope_days),
+        bubble_fragility_confirm_days=int(args.bubble_fragility_confirm_days),
         crisis_confirm_days=int(args.crisis_confirm_days),
         financial_symbol=args.financial_symbol,
         market_symbol=args.market_symbol,
@@ -912,6 +1103,7 @@ def main(argv: list[str] | None = None) -> int:
     result["confirmed_crisis_signal"].rename("confirmed_crisis").to_csv(output_dir / "confirmed_crisis_signal.csv")
     result["true_crisis_signal"].rename("true_crisis").to_csv(output_dir / "true_crisis_signal.csv")
     result["severe_crisis_signal"].rename("severe_crisis").to_csv(output_dir / "severe_crisis_signal.csv")
+    result["bubble_fragility_signal"].rename("bubble_fragility").to_csv(output_dir / "bubble_fragility_signal.csv")
     returns_dir = output_dir / "returns"
     weights_dir = output_dir / "weights"
     returns_dir.mkdir(exist_ok=True)
@@ -933,6 +1125,9 @@ __all__ = [
     "EXTERNAL_VALUATION_MODE_PRICE_AND_EXTERNAL",
     "EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL",
     "EXTERNAL_VALUATION_MODES",
+    "FRAGILITY_CONTEXT_EXTERNAL_VALUATION",
+    "FRAGILITY_CONTEXT_VALUATION_BUBBLE",
+    "FRAGILITY_CONTEXTS",
     "ROUTE_NO_ACTION",
     "ROUTE_TACO",
     "ROUTE_TRUE_CRISIS",
