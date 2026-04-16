@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from us_equity_snapshot_pipelines.crisis_response_research import (
+    CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
     ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
     build_event_response_decisions,
@@ -537,6 +538,64 @@ def test_unified_crisis_response_combines_taco_and_true_crisis_routes() -> None:
     assert "unified_response_5pct" in set(result["summary"]["Strategy"])
     assert {ROUTE_TACO, ROUTE_TRUE_CRISIS}.issubset(set(result["response_decisions"]["route"]))
     assert not result["ai_opinions"].empty
+
+
+def test_unified_crisis_response_can_use_v2_context_pack() -> None:
+    dates = pd.bdate_range("1999-01-04", periods=460)
+    qqq = []
+    for idx, _date in enumerate(dates):
+        if idx < 252:
+            qqq.append(100.0)
+        elif idx < 270:
+            qqq.append(180.0)
+        elif idx < 330:
+            qqq.append(180.0 - (idx - 269) * 1.2)
+        elif idx == 420:
+            qqq.append(100.0)
+        elif idx == 421:
+            qqq.append(96.0)
+        else:
+            qqq.append(100.0)
+    rows = []
+    for as_of, qqq_close in zip(dates, qqq, strict=True):
+        rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
+        rows.append({"symbol": "SHY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "XLF", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+        rows.append({"symbol": "SPY", "as_of": as_of, "close": 100.0, "volume": 1_000_000})
+    events = (
+        TradeWarEvent(
+            event_id="tariff-shock",
+            event_date=str(dates[421].date()),
+            kind=EVENT_KIND_SHOCK,
+            region="us",
+            title="Tariff policy shock",
+            source="test",
+            source_url="https://example.test/tariff",
+        ),
+    )
+
+    result = run_crisis_response_research(
+        pd.DataFrame(rows),
+        events=events,
+        start_date=str(dates[0].date()),
+        benchmark_symbol="QQQ",
+        attack_symbol="SYNTH_TQQQ",
+        safe_symbol="SHY",
+        overlay_sleeve_ratios=(0.05,),
+        crisis_context_mode=CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
+        crisis_drawdown=-0.20,
+        crisis_risk_multiplier=0.25,
+        crisis_confirm_days=3,
+        ma_days=20,
+        ma_slope_days=3,
+        turnover_cost_bps=0.0,
+    )
+
+    assert "unified_response_5pct" in set(result["summary"]["Strategy"])
+    assert not result["crisis_context_features"].empty
+    assert "suggested_route" in result["ai_opinions"].columns
+    assert result["ai_opinions"]["final_context_allowed"].any()
+    assert {ROUTE_TACO, ROUTE_TRUE_CRISIS}.issubset(set(result["response_decisions"]["route"]))
 
 
 def test_guard_transition_events_records_on_off_edges() -> None:

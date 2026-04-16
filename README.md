@@ -487,3 +487,29 @@ TACO entries are suppressed; otherwise approved policy / tariff shocks can use
 the small TACO sleeve. The output includes `response_decisions.csv`, which is
 the main audit file for whether each candidate was routed to `taco_fake_crisis`,
 `true_crisis`, or `no_action`.
+
+To compare the frozen V1 AI rubric with the research-only V2 context pack, add
+the explicit mode flag. The default remains `v1_ai_rubric`.
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --download \
+  --event-set full \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --crisis-confirm-days 5 \
+  --crisis-context-mode v2_context_pack \
+  --output-dir data/output/crisis_response_1999_synthetic_v2_context
+```
+
+When this mode is used, the output also includes
+`crisis_context_features.csv`, and `ai_opinions.csv` records the V2 suggested
+route behind each confirmed crisis-price trigger.

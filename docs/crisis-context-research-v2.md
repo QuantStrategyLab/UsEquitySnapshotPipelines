@@ -10,8 +10,9 @@ scanner opens.
 Turn historical crash explanations into auditable context features:
 
 - 2000-style valuation bubble: trailing price acceleration and QQQ/SPY relative
-  strength, with optional valuation and earnings-quality columns supplied by an
-  external context table.
+  strength, with a 126-trading-day research memory so the context can still be
+  present when the confirmed drawdown scanner opens. Optional valuation and
+  earnings-quality columns can be supplied by an external context table.
 - 2008-style financial crisis: severe XLF/KRE drawdown or severe HYG/IEF and
   LQD/IEF credit weakness. Lighter financial / credit context is still written
   for audit but does not by itself route to `true_crisis`.
@@ -70,10 +71,42 @@ The output files are:
 - `input/crisis_context_price_history.csv`: downloaded prices when `--download`
   is used.
 
+The same context pack can be evaluated inside the unified crisis-response
+research without changing the frozen V1 default:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_crisis_response.py \
+  --download \
+  --event-set full \
+  --price-start 1999-03-10 \
+  --start 1999-03-10 \
+  --attack-symbol SYNTH_TQQQ \
+  --synthetic-attack-from QQQ \
+  --synthetic-attack-multiple 3 \
+  --safe-symbol SHY \
+  --overlay-sleeve-ratios 0.05 \
+  --crisis-drawdown=-0.20 \
+  --crisis-risk-multiplier 0.25 \
+  --crisis-confirm-days 5 \
+  --crisis-context-mode v2_context_pack \
+  --output-dir data/output/crisis_response_1999_synthetic_v2_context
+```
+
+This writes the normal unified response outputs plus
+`crisis_context_features.csv`. `ai_opinions.csv` remains sparse and is written
+only for confirmed crisis-price trigger days.
+
 The default severe financial thresholds are intentionally stricter than the raw
 context flags: XLF/KRE drawdown <= -35% or credit-relative return <= -12%.
 This keeps 2018-2019 trade-war financial noise out of `true_crisis` while
 still identifying a large part of the 2008 crisis window.
+
+The default valuation-bubble context uses 252-trading-day QQQ acceleration and
+QQQ/SPY relative strength, then persists an active bubble flag for 126 trading
+days. That mirrors the research need to detect 2000-style bubble-burst risk
+after the price scanner confirms a drawdown, not only on the exact day the
+trailing return peak is still present.
 
 ## External Context Schema
 
