@@ -321,6 +321,37 @@ def test_external_valuation_mode_can_route_extreme_pe_to_bubble_context() -> Non
     assert routed["suggested_route"] == ROUTE_TRUE_CRISIS
 
 
+def test_external_breadth_and_earnings_quality_can_confirm_fragility() -> None:
+    dates = pd.bdate_range("2000-01-03", periods=5)
+    close = pd.DataFrame({"QQQ": 100.0, "SPY": 100.0}, index=dates)
+    external = pd.DataFrame(
+        {
+            "as_of": [dates[1]],
+            "nasdaq_100_trailing_pe": [82.0],
+            "nasdaq_100_pct_above_200d": [0.30],
+            "nasdaq_100_negative_earnings_share": [0.32],
+        }
+    )
+
+    features = build_crisis_context_features(
+        close,
+        events=(),
+        external_context=external,
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        external_valuation_mode=EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
+    )
+    routed = features.loc[pd.to_datetime(features["as_of"]).eq(dates[2])].iloc[0]
+
+    assert bool(routed["external_valuation_context"])
+    assert bool(routed["external_breadth_weak_context"])
+    assert bool(routed["external_earnings_quality_weak_context"])
+    assert bool(routed["external_breadth_or_quality_context"])
+    assert bool(routed["external_confirmed_bubble_fragility_context"])
+
+
 def test_external_valuation_mode_can_require_price_and_external_confirmation() -> None:
     dates = pd.bdate_range("1999-01-04", periods=270)
     qqq = pd.Series(100.0, index=dates)

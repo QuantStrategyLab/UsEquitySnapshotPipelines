@@ -736,6 +736,7 @@ def test_unified_crisis_response_can_reduce_bubble_fragility_before_true_crisis(
             "unprofitable_growth_proxy": [0.45],
         }
     )
+    external_pe_only = pd.DataFrame({"as_of": [dates[245]], "nasdaq_100_trailing_pe": [82.0]})
     common_kwargs = {
         "events": (),
         "external_context": external,
@@ -764,10 +765,33 @@ def test_unified_crisis_response_can_reduce_bubble_fragility_before_true_crisis(
         bubble_fragility_confirm_days=3,
         **common_kwargs,
     )
+    confirmed_without_quality = run_crisis_response_research(
+        pd.DataFrame(rows),
+        external_context=external_pe_only,
+        bubble_fragility_risk_multiplier=0.50,
+        bubble_fragility_context="external_breadth_or_quality",
+        bubble_fragility_drawdown=-0.05,
+        bubble_fragility_ma_days=100,
+        bubble_fragility_ma_slope_days=5,
+        bubble_fragility_confirm_days=3,
+        **{key: value for key, value in common_kwargs.items() if key != "external_context"},
+    )
+    confirmed_with_quality = run_crisis_response_research(
+        pd.DataFrame(rows),
+        bubble_fragility_risk_multiplier=0.50,
+        bubble_fragility_context="external_breadth_or_quality",
+        bubble_fragility_drawdown=-0.05,
+        bubble_fragility_ma_days=100,
+        bubble_fragility_ma_slope_days=5,
+        bubble_fragility_confirm_days=3,
+        **common_kwargs,
+    )
 
     fragility_signal = fragility["bubble_fragility_signal"].astype(bool)
     early_fragility = fragility_signal & ~fragility["true_crisis_signal"].astype(bool)
     assert early_fragility.any()
+    assert not confirmed_without_quality["bubble_fragility_signal"].astype(bool).any()
+    assert confirmed_with_quality["bubble_fragility_signal"].astype(bool).any()
     signal_date = next(date for date in early_fragility.index[early_fragility] if date in normal["weights_by_strategy"]["unified_response_5pct"].index)
     normal_weights = normal["weights_by_strategy"]["unified_response_5pct"]
     fragility_weights = fragility["weights_by_strategy"]["unified_response_5pct"]

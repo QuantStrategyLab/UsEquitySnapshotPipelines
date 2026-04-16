@@ -130,6 +130,13 @@ Suggested external columns:
 - `nasdaq_100_forward_pe`
 - `nasdaq_100_cape_proxy`
 - `unprofitable_growth_proxy`
+- `nasdaq_100_pct_above_200d`
+- `nasdaq_100_pct_above_50d`
+- `nasdaq_100_new_high_new_low_spread`
+- `nasdaq_100_advance_decline_line_drawdown`
+- `nasdaq_100_negative_earnings_share`
+- `nasdaq_100_earnings_revision_3m`
+- `nasdaq_100_margin_revision_3m`
 - `cpi_yoy`
 - `fed_funds_rate`
 - `ten_year_yield`
@@ -146,6 +153,16 @@ Default external valuation thresholds:
 - `nasdaq_100_forward_pe >= 45`
 - `nasdaq_100_cape_proxy >= 45`
 - `unprofitable_growth_proxy >= 0.35`
+
+Default external breadth / earnings-quality fragility thresholds:
+
+- `nasdaq_100_pct_above_200d <= 0.45`
+- `nasdaq_100_pct_above_50d <= 0.35`
+- `nasdaq_100_new_high_new_low_spread <= -0.10`
+- `nasdaq_100_advance_decline_line_drawdown <= -0.10`
+- `nasdaq_100_negative_earnings_share >= 0.25`
+- `nasdaq_100_earnings_revision_3m <= -0.05`
+- `nasdaq_100_margin_revision_3m <= -0.02`
 
 A provisional trial with month-end Nasdaq-100 trailing P/E found
 `price_or_external` to be the only promising initial mode: it improved the 2000
@@ -282,6 +299,24 @@ fragility context leaks into the 2010 live-proxy window, so it is less clean tha
 the external-valuation version. These results still depend on a provisional
 P/E sample and must be repeated with an authorized point-in-time valuation
 dataset before promotion.
+
+Stricter breadth / quality confirmation is available through:
+
+```bash
+  --bubble-fragility-context external_breadth_or_quality
+```
+
+That context requires external valuation plus a weak breadth or earnings-quality
+flag before the price-deterioration gate can reduce exposure. A mechanism check
+using the same provisional P/E sample found that PE-only data correctly produces
+no fragility signal, while adding a synthetic breadth / earnings-quality window
+restores the expected early warning. The synthetic window is only a code-path
+check, not historical evidence.
+
+| Variant | First fragility day | Dot-com burst MDD | Dot-com full-cycle return | Lost decade return | 2015-to-date return |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `external_breadth_or_quality`, PE-only | none | -73.09% | -23.98% | +21.16% | +2241.24% |
+| `external_breadth_or_quality`, synthetic breadth / quality | 2000-05-05 | -50.79% | +54.21% | +145.79% | +2241.24% |
 
 ## Route Priority
 
