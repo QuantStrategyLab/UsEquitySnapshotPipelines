@@ -6,6 +6,7 @@ from us_equity_snapshot_pipelines.crisis_response_research import (
     CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
     EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
     ROUTE_NO_ACTION,
+    ROUTE_SYSTEMIC_STRESS_WATCH,
     ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
     build_ai_audit_effectiveness_reports,
@@ -879,6 +880,60 @@ def test_ai_audit_effectiveness_flags_true_crisis_vetoes_as_false_negatives() ->
     assert effectiveness["False Negative True Crisis Days"] == 1
     assert false_negatives["as_of"].tolist() == ["2000-03-28"]
     assert false_negatives["Suggested Route"].tolist() == [ROUTE_NO_ACTION]
+
+
+def test_ai_audit_effectiveness_treats_2011_as_stress_watch_until_price_confirms() -> None:
+    dates = pd.bdate_range("2011-07-22", periods=5)
+    features = pd.DataFrame(
+        {
+            "as_of": [date.date().isoformat() for date in dates],
+            "suggested_route": [
+                ROUTE_NO_ACTION,
+                ROUTE_TRUE_CRISIS,
+                ROUTE_TRUE_CRISIS,
+                ROUTE_NO_ACTION,
+                ROUTE_TRUE_CRISIS,
+            ],
+            "suggested_context_label": [
+                "normal",
+                "financial_crisis",
+                "financial_crisis",
+                "normal",
+                "financial_crisis",
+            ],
+            "suggested_reason": [
+                "no active historical-crisis context",
+                "joint financial and credit stress",
+                "joint financial and credit stress",
+                "no active historical-crisis context",
+                "joint financial and credit stress",
+            ],
+        }
+    )
+    confirmed = pd.Series([False] * len(dates), index=dates)
+    true_crisis = pd.Series([False] * len(dates), index=dates)
+
+    reports = build_ai_audit_effectiveness_reports(
+        features,
+        confirmed_crisis_signal=confirmed,
+        true_crisis_signal=true_crisis,
+        route_expectations=(
+            (
+                "2011_debt_euro_stress",
+                "2011-07-22",
+                "2011-07-28",
+                ROUTE_SYSTEMIC_STRESS_WATCH,
+                f"{ROUTE_TRUE_CRISIS},{ROUTE_NO_ACTION}",
+            ),
+        ),
+    )
+    effectiveness = reports["ai_audit_effectiveness"].iloc[0]
+
+    assert effectiveness["Status"] == "pass"
+    assert effectiveness["Expected Route"] == ROUTE_SYSTEMIC_STRESS_WATCH
+    assert effectiveness["Suggested Acceptable Days"] == len(dates)
+    assert effectiveness["False Positive True Crisis Days"] == 0
+    assert reports["ai_false_positive_true_crisis"].empty
 
 
 def test_guard_transition_events_records_on_off_edges() -> None:

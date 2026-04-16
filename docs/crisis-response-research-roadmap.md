@@ -19,6 +19,7 @@ without reducing post-2015 / post-2010 bull-market returns?
 | --- | --- | --- | --- |
 | 2000-2002 dot-com bust | valuation bubble + earnings disappointment + capital tightening | `true_crisis` | Valuation and speculative-quality context matter more than a plain moving average. |
 | 2007-2009 GFC | housing credit, mortgage losses, banking / shadow-banking stress | `true_crisis` | Financial-sector relative weakness and credit stress matter more than tech valuation. |
+| 2011 debt-ceiling / euro stress | sovereign-credit stress and bank / credit weakness, but no confirmed 2008-style price route | `systemic_stress_watch` | Watch-only unless the price scanner also confirms. |
 | 2020 COVID crash | exogenous sudden stop + massive policy response | usually `no_action` in V1 | Too fast for slow crisis guard; avoid fighting policy-rescue rebounds unless liquidity stress persists. |
 | 2022 rate bear | inflation + Fed tightening + duration/valuation compression | usually `no_action` | Protecting here easily harms long-run compounding; classify separately from financial crisis. |
 | 2018-2019 trade war / tariff shocks | policy/headline panic without systemic break | `taco_fake_crisis` | Good candidate for small TACO sleeve, not main-book defense. |
@@ -120,6 +121,9 @@ reliable:
 - `ai_audit_effectiveness.csv` measures expected historical route versus actual
   audit behavior. No-action controls such as 2020 and 2022 should have zero
   false-positive true-crisis days.
+- `2011_debt_euro_stress` is treated as `systemic_stress_watch`: financial /
+  credit stress is allowed in context, but the final true-crisis guard should
+  stay inactive unless the price scanner confirms.
 - `ai_route_period_summary.csv` and `ai_route_confusion_matrix.csv` show whether
   each historical period is being classified for the right reason.
 - `ai_false_positive_true_crisis.csv` and

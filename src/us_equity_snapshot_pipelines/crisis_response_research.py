@@ -75,6 +75,7 @@ DEFAULT_RESPONSE_SAFE_SYMBOL = "SHY"
 ROUTE_TACO = "taco_fake_crisis"
 ROUTE_TRUE_CRISIS = "true_crisis"
 ROUTE_NO_ACTION = "no_action"
+ROUTE_SYSTEMIC_STRESS_WATCH = "systemic_stress_watch"
 CRISIS_CONTEXT_MODE_V1_AI_RUBRIC = "v1_ai_rubric"
 CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK = "v2_context_pack"
 CRISIS_CONTEXT_MODES = (CRISIS_CONTEXT_MODE_V1_AI_RUBRIC, CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK)
@@ -121,6 +122,13 @@ DEFAULT_FRAGILITY_CONTEXT = FRAGILITY_CONTEXT_EXTERNAL_VALUATION
 DEFAULT_AI_AUDIT_ROUTE_EXPECTATIONS: tuple[tuple[str, str, str | None, str, str], ...] = (
     ("dotcom_bubble_burst", "2000-03-24", "2002-10-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
     ("gfc_peak_to_trough", "2007-10-09", "2009-03-09", ROUTE_TRUE_CRISIS, ROUTE_TRUE_CRISIS),
+    (
+        "2011_debt_euro_stress",
+        "2011-07-22",
+        "2011-10-04",
+        ROUTE_SYSTEMIC_STRESS_WATCH,
+        f"{ROUTE_TRUE_CRISIS},{ROUTE_NO_ACTION}",
+    ),
     ("covid_crash_2020", "2020-02-18", "2020-04-30", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
     ("biden_2022_bear", "2022-01-03", "2022-12-30", ROUTE_NO_ACTION, ROUTE_NO_ACTION),
     ("trade_war_2018_2019", "2018-01-02", "2019-12-31", ROUTE_TACO, f"{ROUTE_TACO},{ROUTE_NO_ACTION}"),
@@ -540,7 +548,9 @@ def build_ai_audit_effectiveness_reports(
         confirmed_days = int(confirmed_window.sum())
         false_positive_dates = pd.DatetimeIndex([])
         false_negative_dates = pd.DatetimeIndex([])
-        if expected_route != ROUTE_TRUE_CRISIS:
+        if expected_route == ROUTE_SYSTEMIC_STRESS_WATCH:
+            false_positive_dates = pd.DatetimeIndex(true_window.index[true_window & ~confirmed_window])
+        elif expected_route != ROUTE_TRUE_CRISIS:
             false_positive_dates = pd.DatetimeIndex(true_window.index[true_window])
         else:
             false_negative_dates = pd.DatetimeIndex(confirmed_window.index[confirmed_window & ~true_window])
@@ -548,6 +558,8 @@ def build_ai_audit_effectiveness_reports(
         false_negative_days = int(len(false_negative_dates))
         if expected_route == ROUTE_TRUE_CRISIS:
             status = "pass" if true_crisis_days > 0 and false_negative_days == 0 else "review"
+        elif expected_route == ROUTE_SYSTEMIC_STRESS_WATCH:
+            status = "pass" if false_positive_days == 0 else "review"
         else:
             status = "pass" if false_positive_days == 0 else "review"
 
@@ -1604,6 +1616,7 @@ __all__ = [
     "FRAGILITY_CONTEXT_VALUATION_BUBBLE",
     "FRAGILITY_CONTEXTS",
     "ROUTE_NO_ACTION",
+    "ROUTE_SYSTEMIC_STRESS_WATCH",
     "ROUTE_TACO",
     "ROUTE_TRUE_CRISIS",
     "SEVERE_CRISIS_CONTEXT_EXTERNAL_VALUATION",
