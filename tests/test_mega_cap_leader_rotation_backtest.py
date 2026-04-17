@@ -89,6 +89,71 @@ def test_build_target_weights_lowers_top_n_for_small_accounts() -> None:
     assert len(metadata["selected_symbols"]) == 2
 
 
+def test_build_target_weights_can_limit_selected_names_per_sector() -> None:
+    base = {
+        "eligible": True,
+        "close": 100.0,
+        "adv20_usd": 100_000_000.0,
+        "mom_12_1": 0.20,
+        "high_252_gap": 0.0,
+        "sma200_gap": 0.20,
+        "vol_63": 0.30,
+        "maxdd_126": -0.10,
+    }
+    snapshot = pd.DataFrame(
+        [
+            {
+                **base,
+                "symbol": "NVDA",
+                "sector": "Information Technology",
+                "mom_3m": 0.30,
+                "mom_6m": 0.50,
+                "rel_mom_6m_vs_benchmark": 0.20,
+                "rel_mom_6m_vs_broad_benchmark": 0.25,
+            },
+            {
+                **base,
+                "symbol": "MSFT",
+                "sector": "Information Technology",
+                "mom_3m": 0.25,
+                "mom_6m": 0.45,
+                "rel_mom_6m_vs_benchmark": 0.15,
+                "rel_mom_6m_vs_broad_benchmark": 0.20,
+            },
+            {
+                **base,
+                "symbol": "LLY",
+                "sector": "Health Care",
+                "mom_3m": 0.18,
+                "mom_6m": 0.35,
+                "rel_mom_6m_vs_benchmark": 0.10,
+                "rel_mom_6m_vs_broad_benchmark": 0.15,
+            },
+            {
+                **base,
+                "symbol": "QQQ",
+                "sector": "benchmark",
+                "eligible": False,
+                "mom_3m": 0.10,
+                "mom_6m": 0.30,
+                "rel_mom_6m_vs_benchmark": 0.0,
+                "rel_mom_6m_vs_broad_benchmark": 0.0,
+            },
+        ]
+    )
+
+    weights, _ranked, metadata = build_target_weights(
+        snapshot,
+        top_n=2,
+        single_name_cap=0.50,
+        max_names_per_sector=1,
+    )
+
+    assert metadata["selected_symbols"] == ("NVDA", "LLY")
+    assert weights["NVDA"] == 0.50
+    assert weights["LLY"] == 0.50
+
+
 def test_build_dynamic_mega_universe_history_ranks_each_snapshot() -> None:
     snapshots = [
         (

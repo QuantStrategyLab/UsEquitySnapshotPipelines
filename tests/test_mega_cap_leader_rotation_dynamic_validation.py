@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_validation import (
+    RiskMode,
     ValidationConfig,
     lag_universe_history,
     main,
@@ -109,15 +110,25 @@ def test_run_dynamic_universe_validation_builds_lag_and_yearly_tables() -> None:
             ValidationConfig(name="top2_cap50", top_n=2, single_name_cap=0.50),
             ValidationConfig(name="top3_cap35", top_n=3, single_name_cap=0.35),
         ),
+        risk_modes=(
+            RiskMode(
+                name="no_defense",
+                risk_on_exposure=1.0,
+                soft_defense_exposure=1.0,
+                hard_defense_exposure=1.0,
+            ),
+        ),
+        max_names_per_sector_values=(0, 1),
         min_adv20_usd=1_000_000.0,
         turnover_cost_bps=0.0,
     )
 
     summary = result["validation_summary"]
     yearly = result["yearly_validation_summary"]
-    assert len(summary) == 4
+    assert len(summary) == 8
     assert set(summary["Universe Lag Trading Days"]) == {0, 1}
     assert set(summary["Config"]) == {"top2_cap50", "top3_cap35"}
+    assert set(summary["Max Names Per Sector"]) == {0, 1}
     assert {"Strategy Return", "QQQ Return", "SPY Return"}.issubset(yearly.columns)
     assert not yearly.empty
 
@@ -145,6 +156,10 @@ def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
             "0,1",
             "--strategy-configs",
             "top2_cap50:2:0.50",
+            "--risk-modes",
+            "no_defense:1:1:1,cash_defense:1:0:0",
+            "--max-names-per-sector-values",
+            "0,1",
             "--min-adv20-usd",
             "1000000",
             "--turnover-cost-bps",
@@ -156,4 +171,5 @@ def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
     assert (output_dir / "validation_summary.csv").exists()
     assert (output_dir / "yearly_validation_summary.csv").exists()
     summary = pd.read_csv(output_dir / "validation_summary.csv")
-    assert len(summary) == 2
+    assert len(summary) == 8
+    assert set(summary["Risk Mode"]) == {"no_defense", "cash_defense"}

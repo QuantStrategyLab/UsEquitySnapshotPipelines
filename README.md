@@ -250,6 +250,24 @@ The validation command writes `validation_summary.csv` and
 `docs/mega-cap-leader-rotation-dynamic-validation.md` for the current
 research-only conclusion.
 
+The same validation CLI can run a broader lagged stability grid across Top2 /
+Top3 / Top4, QQQ-defense settings, and sector concentration caps:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2018-01-31 \
+  --end 2026-04-10 \
+  --universe-lag-days 1,21 \
+  --strategy-configs top2_cap40:2:0.40,top2_cap50:2:0.50,top3_cap30:3:0.30,top3_cap35:3:0.35,top4_cap25:4:0.25 \
+  --risk-modes no_defense:1:1:1,partial_defense:1:0.5:0.2,cash_defense:1:0:0 \
+  --max-names-per-sector-values 0,1,2 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_stability_grid
+```
+
 Run the research-only MAG7 leveraged pullback / high-trim backtest from an
 existing MAG7 price-history file:
 

@@ -720,6 +720,13 @@ def _resolve_effective_top_n(
     return max(1, min(requested_top_n, count_by_value))
 
 
+def _resolve_max_names_per_sector(max_names_per_sector: int | None) -> int | None:
+    if max_names_per_sector is None:
+        return None
+    value = int(max_names_per_sector)
+    return value if value > 0 else None
+
+
 def build_target_weights(
     snapshot: pd.DataFrame,
     current_holdings: Iterable[str] | None = None,
@@ -730,6 +737,7 @@ def build_target_weights(
     top_n: int = 3,
     hold_buffer: int = 2,
     single_name_cap: float = 0.35,
+    max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
@@ -776,6 +784,7 @@ def build_target_weights(
         "effective_top_n": int(effective_top_n),
         "portfolio_total_equity": portfolio_total_equity,
         "min_position_value_usd": float(min_position_value_usd),
+        "max_names_per_sector": _resolve_max_names_per_sector(max_names_per_sector),
         "selected_symbols": (),
     }
     if ranked.empty or stock_exposure <= 0 or effective_top_n <= 0:
@@ -784,17 +793,34 @@ def build_target_weights(
     current_holdings_set = set(split_symbols(current_holdings))
     ranked_symbols = ranked["symbol"].astype(str).tolist()
     rank_map = dict(zip(ranked["symbol"].astype(str), ranked["rank"].astype(int)))
+    sector_by_symbol = (
+        dict(zip(ranked["symbol"].astype(str), ranked["sector"].fillna("unknown").astype(str)))
+        if "sector" in ranked.columns
+        else {}
+    )
+    max_sector_count = _resolve_max_names_per_sector(max_names_per_sector)
+    sector_counts: dict[str, int] = {}
+
+    def add_symbol(symbol: str, selected_symbols: list[str]) -> None:
+        if symbol in selected_symbols:
+            return
+        sector = sector_by_symbol.get(symbol, "unknown")
+        if max_sector_count is not None and sector_counts.get(sector, 0) >= max_sector_count:
+            return
+        selected_symbols.append(symbol)
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
     max_hold_rank = int(effective_top_n) + max(int(hold_buffer), 0)
-    selected = [
-        symbol
-        for symbol in ranked_symbols
-        if symbol in current_holdings_set and rank_map[symbol] <= max_hold_rank
-    ]
+    selected: list[str] = []
     for symbol in ranked_symbols:
         if len(selected) >= int(effective_top_n):
             break
-        if symbol not in selected:
-            selected.append(symbol)
+        if symbol in current_holdings_set and rank_map[symbol] <= max_hold_rank:
+            add_symbol(symbol, selected)
+    for symbol in ranked_symbols:
+        if len(selected) >= int(effective_top_n):
+            break
+        add_symbol(symbol, selected)
 
     if not selected:
         return {safe_haven: 1.0}, ranked, metadata
@@ -918,6 +944,7 @@ def run_backtest(
     top_n: int = 3,
     hold_buffer: int = 2,
     single_name_cap: float = 0.35,
+    max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
@@ -991,6 +1018,7 @@ def run_backtest(
                 top_n=int(top_n),
                 hold_buffer=int(hold_buffer),
                 single_name_cap=float(single_name_cap),
+                max_names_per_sector=max_names_per_sector,
                 hold_bonus=float(hold_bonus),
                 risk_on_exposure=float(risk_on_exposure),
                 soft_defense_exposure=float(soft_defense_exposure),
@@ -1034,6 +1062,7 @@ def run_backtest(
                     "effective_top_n": metadata.get("effective_top_n"),
                     "portfolio_total_equity": metadata.get("portfolio_total_equity"),
                     "min_position_value_usd": metadata.get("min_position_value_usd"),
+                    "max_names_per_sector": metadata.get("max_names_per_sector"),
                     "selected_symbols": ",".join(metadata.get("selected_symbols", ())),
                     "turnover": turnover,
                 }
@@ -1135,6 +1164,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-n", type=int, default=3)
     parser.add_argument("--hold-buffer", type=int, default=2)
     parser.add_argument("--single-name-cap", type=float, default=0.35)
+    parser.add_argument(
+        "--max-names-per-sector",
+        type=int,
+        help="Optional per-sector selected-name cap; disabled when omitted or <= 0",
+    )
     parser.add_argument("--hold-bonus", type=float, default=0.10)
     parser.add_argument("--risk-on-exposure", type=float, default=1.0)
     parser.add_argument("--soft-defense-exposure", type=float, default=0.50)
@@ -1224,6 +1258,7 @@ def main(argv: list[str] | None = None) -> int:
         top_n=args.top_n,
         hold_buffer=args.hold_buffer,
         single_name_cap=args.single_name_cap,
+        max_names_per_sector=args.max_names_per_sector,
         hold_bonus=args.hold_bonus,
         risk_on_exposure=args.risk_on_exposure,
         soft_defense_exposure=args.soft_defense_exposure,

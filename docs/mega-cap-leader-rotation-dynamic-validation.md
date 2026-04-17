@@ -15,9 +15,13 @@ one-trading-day universe lag reduced the Top2 CAGR from `48.69%` to `37.89%`
 and worsened max drawdown from `-34.22%` to `-38.79%`. The edge remains, but
 the timing sensitivity is material.
 
-Dynamic Top50 Top3 is more stable. It gives up headline CAGR, but its max
-drawdown stayed near `-29%` across the lag tests. Treat Top3 as the cleaner
-candidate if this research continues.
+Dynamic Top50 is more promising than leveraged MAGS because it produced similar
+or better returns without requiring 2x products. The cleaner candidate after
+the expanded grid is `top4_cap25_no_defense` using a lagged universe baseline:
+`31.06%` CAGR, `-27.28%` max drawdown, and `1.14` Calmar under a 21-trading-day
+universe lag. `top3_cap35_no_defense_sector2` is the higher-return candidate at
+`31.33%` CAGR and `-29.29%` max drawdown. Top2 remains an aggressive variant,
+not the default.
 
 ## Validation Setup
 
@@ -37,6 +41,8 @@ candidate if this research continues.
 - Tested configurations:
   - `top2_cap50`: top 2, 50% single-name cap
   - `top3_cap35`: top 3, 35% single-name cap
+  - expanded grid: Top2/Top3/Top4, no-defense / partial-defense /
+    cash-defense, and per-sector caps of none / 1 / 2
 
 The refreshed price download covered 91 of 94 dynamic Top50 symbols. Missing
 symbols were `CELG`, `DWDP`, and `UTX`; they were old delisted or merger-era
@@ -97,6 +103,60 @@ Top2's strongest years survive the lag test, but 2025 is very sensitive. Top3
 also weakens in 2025, but it has less drawdown stress and less concentration
 risk.
 
+## Expanded Stability Grid
+
+The second validation grid focused on lagged baselines rather than the no-lag
+headline result:
+
+- Universe lags: `1` and `21` trading days.
+- Risk modes:
+  - `no_defense`: `risk_on=1.0`, `soft_defense=1.0`, `hard_defense=1.0`
+  - `partial_defense`: `risk_on=1.0`, `soft_defense=0.5`,
+    `hard_defense=0.2`
+  - `cash_defense`: `risk_on=1.0`, `soft_defense=0.0`,
+    `hard_defense=0.0`
+- Sector caps: disabled, max 1 name per sector, max 2 names per sector.
+
+Best 21-trading-day lag candidates:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Avg Stock |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| top2_cap50_no_defense_sectorall_lag21 | 37.44% | -38.79% | 1.04 | 0.97 | 100.0% |
+| top3_cap35_no_defense_sector2_lag21 | 31.33% | -29.29% | 1.04 | 1.07 | 100.0% |
+| top4_cap25_no_defense_sectorall_lag21 | 31.06% | -27.28% | 1.06 | 1.14 | 100.0% |
+| top3_cap30_no_defense_sector2_lag21 | 28.60% | -26.48% | 1.04 | 1.08 | 90.0% |
+| top4_cap25_partial_defense_sector2_lag21 | 24.46% | -22.86% | 0.99 | 1.07 | 88.3% |
+
+Interpretation:
+
+- Top2 has the best return, but its max drawdown is too close to `-40%` and it
+  relies on two 50% positions. Keep it as aggressive research only.
+- Top4 without QQQ defense is the best current robust baseline. It avoids
+  leverage, keeps CAGR around `31%`, and holds max drawdown below `-28%` in the
+  21-day lag test.
+- Top3 with max 2 names per sector is the higher-return robust candidate, but
+  it accepts roughly two extra drawdown points versus Top4.
+- QQQ defense helps drawdown, but it gives up too much return for the default.
+  The best conservative defense candidate was
+  `top4_cap25_partial_defense_sector2_lag21`: `24.46%` CAGR and `-22.86%`
+  max drawdown.
+- A strict one-name-per-sector cap hurt results. A max-2 sector cap is
+  acceptable for Top3, but Top4 did not need it in this sample.
+
+Selected 21-day lag yearly returns:
+
+| Year | Top2 cap50 | Top3 cap35 sector2 | Top4 cap25 | QQQ |
+| --- | ---: | ---: | ---: | ---: |
+| 2018 | -6.74% | 6.59% | -0.46% | -7.79% |
+| 2019 | 2.51% | 6.37% | 13.57% | 38.96% |
+| 2020 | 106.72% | 90.51% | 73.39% | 48.41% |
+| 2021 | 18.17% | 13.87% | 11.73% | 27.42% |
+| 2022 | 22.61% | 10.23% | 9.79% | -32.58% |
+| 2023 | 82.75% | 47.20% | 52.73% | 54.86% |
+| 2024 | 55.29% | 52.68% | 41.49% | 25.58% |
+| 2025 | 21.41% | 20.63% | 28.94% | 20.77% |
+| 2026 | 37.05% | 26.78% | 36.76% | -0.40% |
+
 ## Commands
 
 Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
@@ -138,6 +198,23 @@ python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_validation
 ```
 
+Run the expanded stability grid:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2018-01-31 \
+  --end 2026-04-10 \
+  --universe-lag-days 1,21 \
+  --strategy-configs top2_cap40:2:0.40,top2_cap50:2:0.50,top3_cap30:3:0.30,top3_cap35:3:0.35,top4_cap25:4:0.25 \
+  --risk-modes no_defense:1:1:1,partial_defense:1:0.5:0.2,cash_defense:1:0:0 \
+  --max-names-per-sector-values 0,1,2 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_stability_grid
+```
+
 The validation command writes:
 
 - `validation_summary.csv`
@@ -150,8 +227,9 @@ Before considering any live strategy based on this research:
 1. Replace stale ticker gaps (`CELG`, `DWDP`, `UTX`) with a point-in-time symbol
    mapping or a vendor source that keeps delisted history.
 2. Prefer a lagged result, not the no-lag result, as the baseline.
-3. Run a broader grid around Top3 before considering Top2; Top2 should be
-   treated as an aggressive variant.
+3. Prefer `top4_cap25_no_defense` as the robust research baseline. Treat
+   `top3_cap35_no_defense_sector2` as the higher-return candidate and Top2 as
+   an aggressive variant.
 4. Keep this separate from MAGS and dynamic leveraged pullback. This is a
    Russell Top50 leader-rotation idea, not a MAGS plugin.
 5. Do not combine it with TACO or Crisis Response until the base strategy is
