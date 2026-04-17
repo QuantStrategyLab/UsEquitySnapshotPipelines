@@ -31,6 +31,8 @@ RECOMMENDED_DYNAMIC_SINGLE_NAME_CAP = 0.25
 RECOMMENDED_DYNAMIC_SOFT_PRODUCT_EXPOSURE = 0.0
 RECOMMENDED_DYNAMIC_HARD_PRODUCT_EXPOSURE = 0.0
 RECOMMENDED_DYNAMIC_MARKET_TREND_SYMBOL = "QQQ"
+DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS = 10
+DEFAULT_REBOUND_BUDGET_CAP = 0.10
 DEFAULT_ATR_PERIOD = 14
 DEFAULT_ATR_ENTRY_SCALE = 2.5
 DEFAULT_ENTRY_LINE_FLOOR = 1.04
@@ -42,6 +44,7 @@ RETURN_MODE_LEVERAGED_PRODUCT = "leveraged_product"
 RETURN_MODE_MARGIN_STOCK = "margin_stock"
 RETURN_MODES = (RETURN_MODE_LEVERAGED_PRODUCT, RETURN_MODE_MARGIN_STOCK)
 DEFAULT_MARGIN_BORROW_RATE = 0.055
+REBOUND_BUDGET_STRATEGY_SUFFIX = "_rebound_budget"
 MAGS_HOLDING_NAME_MAP = {
     "ALPHABET": "GOOGL",
     "AMAZON": "AMZN",
@@ -575,6 +578,95 @@ def _risk_sleeve_daily_returns(
     return leveraged.clip(lower=-1.0)
 
 
+def _normalize_rebound_budget_signals(
+    rebound_budget_signals,
+    *,
+    column: str,
+) -> pd.DataFrame:
+    if rebound_budget_signals is None:
+        return pd.DataFrame(columns=["as_of", "active_until", "budget"])
+    if isinstance(rebound_budget_signals, (str, Path)):
+        rebound_budget_signals = read_table(rebound_budget_signals)
+    frame = pd.DataFrame(rebound_budget_signals).copy()
+    if frame.empty:
+        return pd.DataFrame(columns=["as_of", "active_until", "budget"])
+
+    normalized_columns = {str(raw).strip().lower(): raw for raw in frame.columns}
+    date_column = next(
+        (normalized_columns[name] for name in ("as_of", "signal_date", "date") if name in normalized_columns),
+        None,
+    )
+    if date_column is None:
+        raise ValueError("rebound budget signals require an as_of, signal_date, or date column")
+
+    requested_column = str(column or "").strip()
+    budget_column = requested_column if requested_column in frame.columns else None
+    if budget_column is None:
+        budget_column = next(
+            (
+                normalized_columns[name]
+                for name in ("sleeve_suggestion", "rebound_budget", "product_exposure_boost")
+                if name in normalized_columns
+            ),
+            None,
+        )
+    if budget_column is None:
+        raise ValueError(
+            "rebound budget signals require a sleeve_suggestion, rebound_budget, or product_exposure_boost column"
+        )
+
+    active_until_column = next(
+        (
+            normalized_columns[name]
+            for name in ("active_until", "valid_until", "expires_at", "expiry_date")
+            if name in normalized_columns
+        ),
+        None,
+    )
+    output = pd.DataFrame(
+        {
+            "as_of": pd.to_datetime(frame[date_column], errors="coerce").dt.tz_localize(None).dt.normalize(),
+            "budget": pd.to_numeric(frame[budget_column], errors="coerce").fillna(0.0),
+        }
+    )
+    if active_until_column is not None:
+        output["active_until"] = pd.to_datetime(frame[active_until_column], errors="coerce").dt.tz_localize(
+            None
+        ).dt.normalize()
+    else:
+        output["active_until"] = pd.NaT
+    output = output.dropna(subset=["as_of"]).sort_values("as_of")
+    return output.reset_index(drop=True)
+
+
+def build_rebound_budget_series(
+    rebound_budget_signals,
+    index: pd.DatetimeIndex,
+    *,
+    column: str = "sleeve_suggestion",
+    active_days: int = DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
+    cap: float = DEFAULT_REBOUND_BUDGET_CAP,
+) -> pd.Series:
+    budget = pd.Series(0.0, index=index, name="rebound_budget_suggestion")
+    signals = _normalize_rebound_budget_signals(rebound_budget_signals, column=column)
+    if signals.empty or budget.empty:
+        return budget
+
+    active_days = max(0, int(active_days))
+    cap = max(0.0, float(cap))
+    for row in signals.itertuples(index=False):
+        signal_date = pd.Timestamp(row.as_of).normalize()
+        active_until = (
+            pd.Timestamp(row.active_until).normalize()
+            if pd.notna(row.active_until)
+            else signal_date + pd.Timedelta(days=active_days)
+        )
+        value = max(0.0, min(cap, float(row.budget)))
+        mask = (budget.index >= signal_date) & (budget.index <= active_until)
+        budget.loc[mask] = value
+    return budget
+
+
 def _resolve_strategy_name(dynamic_universe: pd.DataFrame | None) -> str:
     if dynamic_universe is None or dynamic_universe.empty:
         return PROFILE
@@ -614,6 +706,11 @@ def run_backtest(
     atr_exit_scale: float = DEFAULT_ATR_EXIT_SCALE,
     exit_line_floor: float = DEFAULT_EXIT_LINE_FLOOR,
     exit_line_cap: float = DEFAULT_EXIT_LINE_CAP,
+    rebound_budget_signals=None,
+    rebound_budget_column: str = "sleeve_suggestion",
+    rebound_budget_signal_active_days: int = DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
+    rebound_budget_cap: float = DEFAULT_REBOUND_BUDGET_CAP,
+    allow_rebound_budget_in_hard_defense: bool = False,
 ):
     prices = _normalize_price_history(price_history)
     if end_date is not None:
@@ -647,6 +744,17 @@ def run_backtest(
         index = index[index >= pd.Timestamp(start_date).normalize()]
     if len(index) < 2:
         raise RuntimeError("Not enough price history remains inside the selected date range")
+    rebound_budget = build_rebound_budget_series(
+        rebound_budget_signals,
+        index,
+        column=rebound_budget_column,
+        active_days=int(rebound_budget_signal_active_days),
+        cap=float(rebound_budget_cap),
+    )
+    has_rebound_budget_signals = rebound_budget_signals is not None and not _normalize_rebound_budget_signals(
+        rebound_budget_signals,
+        column=rebound_budget_column,
+    ).empty
 
     rebalance_dates = _last_trading_day_by_period(index, frequency)
     weight_columns = sorted(set(symbols_tuple) | {safe_haven})
@@ -659,6 +767,7 @@ def run_backtest(
 
     current_weights: dict[str, float] = {safe_haven: 1.0}
     current_holdings: set[str] = set()
+    current_base_risk_active = False
     risk_sleeve_returns = {
         symbol: _risk_sleeve_daily_returns(
             returns_matrix[symbol].reindex(index),
@@ -691,7 +800,7 @@ def run_backtest(
                 close_matrix,
                 date,
                 benchmark_symbol=market_trend_symbol,
-                current_risk_active=bool(current_holdings),
+                current_risk_active=current_base_risk_active,
                 max_product_exposure=float(max_product_exposure),
                 soft_product_exposure=float(soft_product_exposure),
                 hard_product_exposure=float(hard_product_exposure),
@@ -710,10 +819,18 @@ def run_backtest(
                 active_symbols_for(date),
                 benchmark_symbol=benchmark_symbol,
             )
+            rebound_budget_suggestion = float(rebound_budget.get(date, 0.0))
+            rebound_budget_applied = rebound_budget_suggestion
+            if regime == "hard_defense" and not bool(allow_rebound_budget_in_hard_defense):
+                rebound_budget_applied = 0.0
+            target_product_exposure = min(
+                float(max_product_exposure),
+                max(0.0, float(regime_gross)) + max(0.0, rebound_budget_applied),
+            )
             target_weights, ranked, metadata = build_target_weights(
                 feature_frame,
                 current_holdings,
-                target_product_exposure=regime_gross,
+                target_product_exposure=target_product_exposure,
                 top_n=int(top_n),
                 hold_buffer=int(hold_buffer),
                 single_name_cap=float(single_name_cap),
@@ -745,6 +862,9 @@ def run_backtest(
                 ranked["selected"] = ranked["symbol"].isin(metadata.get("selected_symbols", ()))
                 score_frames.append(ranked)
             current_weights = target_weights
+            current_base_risk_active = (
+                float(regime_gross) > 1e-12 and float(metadata.get("product_exposure", 0.0)) > 1e-12
+            )
             current_holdings = {
                 symbol for symbol, weight in current_weights.items() if weight > 0.0 and symbol != safe_haven
             }
@@ -753,7 +873,10 @@ def run_backtest(
                     "signal_date": date,
                     "effective_date": next_date,
                     "regime": regime,
-                    "target_product_exposure": regime_gross,
+                    "base_target_product_exposure": regime_gross,
+                    "rebound_budget_suggestion": rebound_budget_suggestion,
+                    "rebound_budget_applied": rebound_budget_applied,
+                    "target_product_exposure": target_product_exposure,
                     "product_exposure": float(metadata.get("product_exposure", 0.0)),
                     "underlying_exposure": float(metadata.get("underlying_exposure", 0.0)),
                     "leverage_multiple": float(leverage_multiple),
@@ -831,7 +954,11 @@ def run_backtest(
     summary_rows = [
         summarize_returns(
             portfolio_returns,
-            strategy_name=strategy_name,
+            strategy_name=(
+                f"{strategy_name}{REBOUND_BUDGET_STRATEGY_SUFFIX}"
+                if has_rebound_budget_signals
+                else strategy_name
+            ),
             return_mode=return_mode,
             leverage_multiple=float(leverage_multiple),
             weights_history=used_weights,
@@ -937,6 +1064,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--atr-exit-scale", type=float, default=DEFAULT_ATR_EXIT_SCALE)
     parser.add_argument("--exit-line-floor", type=float, default=DEFAULT_EXIT_LINE_FLOOR)
     parser.add_argument("--exit-line-cap", type=float, default=DEFAULT_EXIT_LINE_CAP)
+    parser.add_argument(
+        "--rebound-budget-signals",
+        help=(
+            "Optional TACO rebound budget signal CSV/JSON. Expected columns: "
+            "as_of and sleeve_suggestion; active_until is optional."
+        ),
+    )
+    parser.add_argument("--rebound-budget-column", default="sleeve_suggestion")
+    parser.add_argument(
+        "--rebound-budget-signal-active-days",
+        type=int,
+        default=DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
+    )
+    parser.add_argument("--rebound-budget-cap", type=float, default=DEFAULT_REBOUND_BUDGET_CAP)
+    parser.add_argument(
+        "--allow-rebound-budget-in-hard-defense",
+        action="store_true",
+        help="Research-only override. Default keeps hard-defense regimes fully defensive.",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -973,6 +1119,11 @@ def main(argv: list[str] | None = None) -> int:
         atr_exit_scale=args.atr_exit_scale,
         exit_line_floor=args.exit_line_floor,
         exit_line_cap=args.exit_line_cap,
+        rebound_budget_signals=read_table(args.rebound_budget_signals) if args.rebound_budget_signals else None,
+        rebound_budget_column=args.rebound_budget_column,
+        rebound_budget_signal_active_days=args.rebound_budget_signal_active_days,
+        rebound_budget_cap=args.rebound_budget_cap,
+        allow_rebound_budget_in_hard_defense=args.allow_rebound_budget_in_hard_defense,
     )
 
     summary = result["summary"]
