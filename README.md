@@ -275,10 +275,12 @@ Use `--return-mode margin_stock --margin-borrow-rate 0.055` to test the same
 selection and risk gate as 2x margin-financed underlying stock exposure. The
 default mode remains daily-reset 2x long products with `--leveraged-expense-rate`.
 
-To test the separated TACO rebound plugin as a small left-side budget boost,
-pass a deterministic signal file with `as_of` and `sleeve_suggestion` columns.
-The budget is additive to the strategy's normal product exposure, capped by
-`--rebound-budget-cap`, and blocked by default during `hard_defense`:
+To keep the MAGS-style pullback path auditable, TACO rebound inputs remain
+research-only for now. You can still pass a deterministic signal file with
+`as_of` and `sleeve_suggestion` columns to test whether a small left-side budget
+would help, but this is not a promoted plugin mount. The budget is additive to
+the strategy's normal product exposure, capped by `--rebound-budget-cap`, and
+blocked by default during `hard_defense`:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -290,7 +292,7 @@ python scripts/backtest_dynamic_mega_leveraged_pullback.py \
   --top-n 3 \
   --leverage-multiple 2.0 \
   --return-mode leveraged_product \
-  --rebound-budget-signals data/output/dynamic_mega_leveraged_pullback/plugins/taco_rebound_shadow/signals.csv \
+  --rebound-budget-signals data/output/taco_rebound_research/dynamic_mega_leveraged_pullback/signals.csv \
   --rebound-budget-cap 0.10 \
   --output-dir data/output/dynamic_mega_leveraged_pullback_taco_rebound_budget_backtest
 ```
@@ -301,6 +303,8 @@ candidate ranking still decide what can be bought. For high-confidence
 event-reversal research, a signal row can set `allow_hard_defense=true` to let
 that row's small rebound budget pass through `hard_defense`; leave it absent or
 false for ordinary tariff softening so the bear-market defense still blocks it.
+Do not wire this MAGS research path into the strategy plugin runner until a
+separate validation pass promotes it.
 
 To research bear-market dip buying inside the MAGS-style pullback strategy,
 enable the research-only bear candidate switch. The default is `off`.
@@ -609,10 +613,13 @@ The crisis shadow plugin is intentionally defense-only. It does not emit
 rebounds. Its executable route is only a true-crisis `defend` signal, with the
 defensive destination documented as cash or a money-market / Treasury-bill
 parking sleeve. Policy, tariff, or geopolitical panic can still appear as
-watch-only context, but TACO routing lives in a separate plugin.
+watch-only context, but TACO routing lives outside this crisis plugin and needs
+its own research/promotion path.
 
-Build the independent TACO rebound shadow signal for a left-side rebound
-strategy such as `dynamic_mega_leveraged_pullback`:
+Build the independent TACO rebound research signal when you need a deterministic
+event-rebound audit file. MAGS usage is intentionally research-only for now;
+the preferred promoted direction is a separate TQQQ TACO overlay candidate after
+its own validation:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -623,20 +630,21 @@ python scripts/build_taco_rebound_shadow_signal.py \
   --geopolitical-deescalation-sleeve 0.10 \
   --tariff-softening-sleeve 0.05 \
   --max-sleeve 0.10 \
-  --output-dir data/output/dynamic_mega_leveraged_pullback/plugins/taco_rebound_shadow
+  --output-dir data/output/taco_rebound_research/dynamic_mega_leveraged_pullback
 ```
 
-This TACO plugin does not select stocks and does not mutate a strategy artifact.
-It only writes a small rebound-budget suggestion that a left-side strategy can
-consume after its own candidate selection and risk gates. Conflict escalation
-events default to a zero sleeve; de-escalation / ceasefire / talks events can
-raise a bounded rebound budget when the price-stress scanner is open.
+This TACO research artifact does not select stocks and does not mutate a
+strategy artifact. It only writes a small rebound-budget suggestion for
+backtests. Conflict escalation events default to a zero sleeve; de-escalation /
+ceasefire / talks events can raise a bounded rebound budget when the
+price-stress scanner is open.
 
 For platform-style deployment, use the sidecar plugin runner instead of wiring
 plugins into a strategy function. The runner reads strategy-scoped plugin
 mounts from TOML and executes only explicitly configured plugins. Current
-Crisis Response and TACO rebound plugins write artifacts here; any platform
-execution is downstream.
+Crisis Response writes artifacts here; any platform execution is downstream.
+`taco_rebound_shadow` is deliberately blocked in the runner while MAGS remains
+research-only and the TQQQ overlay path has not been promoted.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
 runtime TOML should live with the deployment or platform configuration, not as a
 committed live config in this repository.
@@ -650,11 +658,10 @@ This is intentionally a sidecar. If the runner is disabled or fails, the
 underlying strategy artifact build remains independent; downstream systems read
 the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
 and implement the configured `mode` directly.
-The same plugin can be mounted to another strategy by adding another
-`[[strategy_plugins]]` entry with different inputs and output scope. Keep the
-crisis plugin scoped to defensive TQQQ-style risk-off behavior, and mount
-`taco_rebound_shadow` separately to left-side pullback profiles when researching
-event-rebound budget changes.
+Plugin mounts are strategy-limited by code and tests. Keep the crisis plugin
+scoped to defensive TQQQ-style risk-off behavior. Keep MAGS/TACO experiments in
+research commands until a future PR adds a validated TQQQ TACO overlay plugin or
+explicitly promotes another strategy mount.
 
 Supported modes are `shadow`, `paper`, `advisory`, and `live`. `mode` is the
 single plugin behavior contract: if it is `shadow`, the downstream platform

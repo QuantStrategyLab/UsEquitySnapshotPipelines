@@ -10,8 +10,9 @@ The production-facing plugin contract is now split:
 - `crisis_response_shadow` is defense-only for TQQQ-style black-swan risk. It
   may emit `true_crisis` / `defend` or `no_action` / `watch_only`; it must not
   emit TACO routes or sleeves.
-- `taco_rebound_shadow` is the separate event-rebound budget signal for
-  left-side rebound strategies such as `dynamic_mega_leveraged_pullback`.
+- TACO rebound work is separate from crisis defense and remains research-only
+  for MAGS-style pullback strategies. A TQQQ overlay candidate should be
+  promoted through a separate validation path before any runner mount.
 
 ## Default state
 
@@ -25,8 +26,8 @@ The production-facing plugin contract is now split:
 
 ## Inputs
 
-- Price stress scanner for historical TACO research and the separate
-  `taco_rebound_shadow` plugin.
+- Price stress scanner for historical TACO research and separate research
+  artifacts.
 - Confirmed crisis-price scanner for true-crisis candidates.
 - Sparse rubric/context opinions only after a scanner opens; no daily model
   polling.
@@ -52,9 +53,9 @@ The production-facing crisis shadow plugin narrows this to:
 
 ## Frozen V1 parameters
 
-- TACO sleeve: start with `0.05` account sleeve in historical research or the
-  separate `taco_rebound_shadow` paper/shadow plugin. It is not part of
-  `crisis_response_shadow`.
+- TACO sleeve: start with `0.05` account sleeve in historical research. It is
+  not part of `crisis_response_shadow`, and the MAGS path is not a promoted
+  runner plugin.
 - Crisis drawdown: `QQQ` drawdown from trailing high <= `-0.20`.
 - Crisis confirmation: `5` trading days.
 - Crisis risk multiplier: `0.25`; do not full-clear risk exposure in V1.
@@ -116,7 +117,7 @@ python scripts/backtest_crisis_response.py \
   confirmed crisis-price trigger days.
 - `true_crisis_signal.csv`: final crisis-guard active series.
 - `taco_event_calendar.csv`: historical TACO research events. Production-facing
-  TACO logging belongs to `taco_rebound_shadow`.
+  TACO logging requires a separately promoted overlay plugin.
 
 ## Research guardrails
 

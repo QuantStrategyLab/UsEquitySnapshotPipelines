@@ -9,15 +9,16 @@ Live promotion and shadow-plugin work must follow
 
 Implementation split: the crisis plugin is defense-only. It should classify
 TQQQ black-swan risk into `true_crisis` or `no_action` / watch-only. TACO
-rebound work belongs in the separate `taco_rebound_shadow` plugin and should be
-mounted to left-side rebound strategies, not mixed back into crisis defense.
+rebound work stays outside crisis defense. MAGS-style TACO usage remains
+research-only; the current preferred promotion candidate is a separate TQQQ
+TACO overlay after its own validation.
 
 ## Research question
 
 Can deterministic context features classify historical market shocks into
 `true_crisis` or `no_action` with enough evidence to improve TQQQ black-swan
 protection without reducing post-2015 / post-2010 bull-market returns? Can
-separate TACO rebound evidence improve left-side rebound budgets without
+separate TACO rebound evidence improve a bounded TQQQ event overlay without
 contaminating crisis defense?
 
 ## Historical shock taxonomy
@@ -29,8 +30,8 @@ contaminating crisis defense?
 | 2011 debt-ceiling / euro stress | sovereign-credit stress and bank / credit weakness, but no confirmed 2008-style price route | `systemic_stress_watch` | Watch-only unless the price scanner also confirms. |
 | 2020 COVID crash | exogenous sudden stop + massive policy response | usually `no_action` in V1 | Too fast for slow crisis guard; avoid fighting policy-rescue rebounds unless liquidity stress persists. |
 | 2022 rate bear | inflation + Fed tightening + duration/valuation compression | usually `no_action` | Protecting here easily harms long-run compounding; classify separately from financial crisis. |
-| 2018-2019 trade war / tariff shocks | policy/headline panic without systemic break | Crisis: `no_action`; TACO plugin: rebound candidate | Good candidate for small separate TACO budget, not main-book defense. |
-| 2025+ tariff / policy shocks | policy/headline panic unless paired with systemic stress | Crisis: `no_action`; TACO plugin: rebound candidate or no action | Keep small sleeve and require audit logs outside the crisis plugin. |
+| 2018-2019 trade war / tariff shocks | policy/headline panic without systemic break | Crisis: `no_action`; TQQQ TACO overlay research: rebound candidate | Good candidate for small separate TACO budget, not main-book defense. |
+| 2025+ tariff / policy shocks | policy/headline panic unless paired with systemic stress | Crisis: `no_action`; TQQQ TACO overlay research: rebound candidate or no action | Keep small sleeve and require audit logs outside the crisis plugin. |
 | 2026 U.S.-Iran de-escalation / ceasefire research | geopolitical panic followed by de-escalation or talks | Separate TACO research bucket only | Use `geopolitical-deescalation`; do not add to default live event set without paper logs. |
 
 ## Candidate Context Features
@@ -84,9 +85,9 @@ financial-system stress.
   `event_rebound_break_bear` budget while broad-market hard defense remains
   active. Ordinary tariff softening should not get this override by default.
 
-Purpose: keep reversible policy panic out of crisis defense while giving the
-separate TACO rebound plugin enough deterministic evidence to suggest a small
-left-side rebound budget.
+Purpose: keep reversible policy panic out of crisis defense while giving a
+separate TQQQ TACO overlay enough deterministic evidence to suggest a small
+event-rebound budget.
 
 ### Exogenous / rescue context
 
@@ -107,7 +108,7 @@ A new context feature cannot affect live routing unless it passes all checks:
 2. 2022 is not incorrectly converted into a broad true-crisis defense unless
    financial-stress evidence also appears.
 3. 2018-2019 trade-war shocks remain crisis no-action / watch-only, not true
-   crisis; any TACO budget is handled by the separate rebound plugin.
+   crisis; any TACO budget is handled by a separate TQQQ overlay research path.
 4. Geopolitical de-escalation events remain an explicit research bucket, not part
    of the default `full` calendar.
 5. 2000 and 2008 improve or stay close to current V1 true-crisis results.

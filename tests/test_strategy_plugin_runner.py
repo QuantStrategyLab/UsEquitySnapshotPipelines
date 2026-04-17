@@ -171,7 +171,7 @@ def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:
     ).exists()
 
 
-def test_strategy_plugin_runner_mounts_taco_rebound_to_left_side_strategy(tmp_path) -> None:
+def test_strategy_plugin_runner_rejects_taco_rebound_runtime_mount_while_research_only(tmp_path) -> None:
     prices_path = tmp_path / "taco_prices.csv"
     output_dir = tmp_path / LEFT_SIDE_STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
     _taco_rebound_prices().to_csv(prices_path, index=False)
@@ -194,17 +194,34 @@ def test_strategy_plugin_runner_mounts_taco_rebound_to_left_side_strategy(tmp_pa
         ],
     }
 
+    with pytest.raises(ValueError, match="research-only"):
+        run_configured_plugins(config)
+
+    assert not (output_dir / "latest_signal.json").exists()
+
+
+def test_strategy_plugin_runner_can_skip_disabled_research_only_taco_mount(tmp_path) -> None:
+    output_dir = tmp_path / LEFT_SIDE_STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": LEFT_SIDE_STRATEGY_NAME,
+                "plugin": PLUGIN_TACO_REBOUND_SHADOW,
+                "enabled": False,
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
     summary = run_configured_plugins(config)
 
     result = summary["strategy_plugins"][0]
     assert result["strategy"] == LEFT_SIDE_STRATEGY_NAME
     assert result["plugin"] == PLUGIN_TACO_REBOUND_SHADOW
-    assert result["status"] == "ok"
-    payload = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
-    assert payload["strategy"] == LEFT_SIDE_STRATEGY_NAME
-    assert payload["plugin"] == PLUGIN_TACO_REBOUND_SHADOW
-    assert payload["canonical_route"] == "taco_rebound"
-    assert payload["sleeve_suggestion"] == 0.10
+    assert result["status"] == "skipped"
+    assert not (output_dir / "latest_signal.json").exists()
 
 
 def test_strategy_plugin_runner_rejects_incompatible_plugin_strategy_mount(tmp_path) -> None:
