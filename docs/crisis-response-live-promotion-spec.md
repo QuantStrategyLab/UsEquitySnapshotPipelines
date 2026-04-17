@@ -32,7 +32,7 @@ The current research candidate is:
 | 2020 COVID | Exogenous / policy-rescue context defaults to `no_action` |
 | 2022 rate bear | Rate-bear context defaults to `no_action` unless financial-system stress appears |
 | Policy shocks | `no_action` / watch-only inside the crisis plugin |
-| TACO sleeve | Separate `taco_rebound_shadow` plugin only |
+| TACO sleeve | Separate research only; no MAGS runtime mount |
 | Live behavior | Not enabled |
 
 Do not change this candidate while building the shadow plugin unless the user
@@ -42,14 +42,15 @@ The live/promotion contract is intentionally split. `crisis_response_shadow`
 is a TQQQ black-swan defense plugin; it can recommend moving the main book to
 cash or a money-market / Treasury-bill parking sleeve only after a promoted
 true-crisis route. It must not recommend buying event rebounds. Reversible
-policy, tariff, or geopolitical rebound research belongs to
-`taco_rebound_shadow`, mounted separately to a left-side strategy such as
-`dynamic_mega_leveraged_pullback`.
+policy, tariff, or geopolitical rebound research belongs outside
+`crisis_response_shadow`. MAGS-style TACO usage is research-only for now. The
+preferred promoted direction is a separate TQQQ TACO overlay candidate after it
+passes its own validation and receives an explicit runner mount.
 
-The TACO plugin may emit an `allow_hard_defense` / `event_rebound_break_bear`
-research flag for high-confidence geopolitical de-escalation events. That flag
-does not authorize this repository to trade; it only lets a research backtest or
-downstream platform test a bounded rebound budget while the base strategy's
+The TACO research artifact may emit an `allow_hard_defense` /
+`event_rebound_break_bear` flag for high-confidence geopolitical de-escalation
+events. That flag does not authorize this repository to trade; it only lets a
+research backtest test a bounded rebound budget while the base strategy's
 hard-defense regime remains visible in logs.
 
 ## Phase Ladder
@@ -128,9 +129,9 @@ registers it. A plugin is mounted to a strategy through each
 runner and must not import plugin code. Plugins are strategy-limited in the
 runner: a mount is rejected unless the plugin is explicitly declared compatible
 with that strategy. This keeps `crisis_response_shadow` scoped to the TQQQ
-black-swan strategy and keeps `taco_rebound_shadow` scoped to left-side MAGS /
-dynamic mega pullback research unless a future PR updates the compatibility
-table and tests.
+black-swan strategy and blocks `taco_rebound_shadow` from runtime mounts while
+MAGS remains research-only. A future TQQQ TACO overlay plugin must update the
+compatibility table and tests in its own PR.
 
 The runner accepts `mode = "shadow"`, `paper`, `advisory`, or `live` and writes
 that mode into each plugin artifact. `mode` is the single plugin behavior
@@ -344,8 +345,9 @@ when any of these occur:
 Future agents must follow these constraints:
 
 - Do not change V1 parameters unless the user explicitly asks.
-- Do not add a TACO sleeve back into `crisis_response_shadow`; mount
-  `taco_rebound_shadow` separately for left-side rebound research.
+- Do not add a TACO sleeve back into `crisis_response_shadow`.
+- Do not mount `taco_rebound_shadow` to MAGS runtime configs; keep that path
+  research-only unless a future validation explicitly promotes it.
 - Do not promote V2 research into live allocation in the same change that adds a
   new feature.
 - Do not optimize thresholds against one crisis window without checking 2015+,
