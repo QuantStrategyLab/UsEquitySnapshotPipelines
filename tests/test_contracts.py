@@ -16,4 +16,5 @@ def test_lists_snapshot_profile_contracts() -> None:
     assert "russell_1000_multi_factor_defensive" in profiles
     assert "mega_cap_leader_rotation_dynamic_top20" in profiles
     assert "mega_cap_leader_rotation_aggressive" in profiles
+    assert "mega_cap_leader_rotation_top50_balanced" in profiles
     assert "dynamic_mega_leveraged_pullback" in profiles

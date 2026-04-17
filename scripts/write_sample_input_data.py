@@ -10,6 +10,7 @@ TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
 MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE = "mega_cap_leader_rotation_dynamic_top20"
 MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE = "mega_cap_leader_rotation_aggressive"
+MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE = "mega_cap_leader_rotation_top50_balanced"
 DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE = "dynamic_mega_leveraged_pullback"
 
 
@@ -144,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     elif profile in {
         MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
         MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+        MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
         DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE,
     }:
         prices = _mega_prices()
