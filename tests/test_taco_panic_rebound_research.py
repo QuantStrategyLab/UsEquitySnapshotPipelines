@@ -108,6 +108,7 @@ from us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare import (
     build_dual_audit_decisions,
     build_price_crisis_guard_signal,
     build_price_stress_scan,
+    build_tqqq_growth_income_base_weights,
     filter_events_by_price_stress,
     run_overlay_comparison,
 )
@@ -187,6 +188,75 @@ def test_overlay_comparison_keeps_base_and_adds_price_stress_scenario() -> None:
     assert recognized_events["event_id"].tolist() == ["stress-shock"]
     assert diagnostics["Recognized Events"].sum() >= 1
     assert not result["audit_decisions"].empty
+
+
+def test_tqqq_base_weights_use_volatility_scaled_pullback_gate() -> None:
+    dates = pd.bdate_range("2020-01-01", periods=242)
+
+    def make_close(recent: list[float]) -> pd.DataFrame:
+        qqq = [120.0] * 220 + recent + [recent[-1] + 1.0]
+        frame = pd.DataFrame(
+            {
+                "QQQ": qqq,
+                "TQQQ": [value * 3.0 for value in qqq],
+            },
+            index=dates,
+        )
+        frame.index.name = "as_of"
+        return frame
+
+    weak_recent = [
+        100,
+        110,
+        99,
+        108,
+        98,
+        106,
+        97,
+        105,
+        96,
+        104,
+        95,
+        97,
+        96,
+        98,
+        97,
+        99,
+        98,
+        100,
+        99,
+        101,
+        102.0,
+    ]
+    weak_weights = build_tqqq_growth_income_base_weights(
+        make_close(weak_recent),
+        start_date=str(dates[-3].date()),
+        safe_symbol="BOXX",
+    )
+
+    assert weak_weights.iloc[-1].get("TQQQ", 0.0) == 0.0
+    assert weak_weights.iloc[-1].get("QQQ", 0.0) == 0.0
+    assert weak_weights.iloc[-1]["BOXX"] == 0.98
+
+    legacy_no_gate_weights = build_tqqq_growth_income_base_weights(
+        make_close(weak_recent),
+        start_date=str(dates[-3].date()),
+        safe_symbol="BOXX",
+        pullback_rebound_threshold_mode="fixed",
+        pullback_rebound_threshold=0.0,
+    )
+
+    assert legacy_no_gate_weights.iloc[-1]["TQQQ"] == 0.45
+    assert legacy_no_gate_weights.iloc[-1]["QQQ"] == 0.45
+
+    strong_weights = build_tqqq_growth_income_base_weights(
+        make_close([100.0 + index * 0.45 for index in range(21)]),
+        start_date=str(dates[-3].date()),
+        safe_symbol="BOXX",
+    )
+
+    assert strong_weights.iloc[-1]["TQQQ"] == 0.45
+    assert strong_weights.iloc[-1]["QQQ"] == 0.45
 
 
 def test_dual_audit_proxy_can_veto_recognized_taco_event() -> None:

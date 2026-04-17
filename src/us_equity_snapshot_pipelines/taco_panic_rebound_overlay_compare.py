@@ -42,6 +42,18 @@ DEFAULT_DUAL_DRIVE_SAFE_WEIGHT = 0.08
 DEFAULT_DUAL_DRIVE_CASH_WEIGHT = 0.02
 DEFAULT_IDLE_SAFE_WEIGHT = 0.98
 DEFAULT_IDLE_CASH_WEIGHT = 0.02
+PULLBACK_REBOUND_THRESHOLD_MODE_FIXED = "fixed"
+PULLBACK_REBOUND_THRESHOLD_MODE_VOLATILITY_SCALED = "volatility_scaled"
+PULLBACK_REBOUND_THRESHOLD_MODES = frozenset(
+    {
+        PULLBACK_REBOUND_THRESHOLD_MODE_FIXED,
+        PULLBACK_REBOUND_THRESHOLD_MODE_VOLATILITY_SCALED,
+    }
+)
+DEFAULT_PULLBACK_REBOUND_WINDOW = 20
+DEFAULT_PULLBACK_REBOUND_THRESHOLD_MODE = PULLBACK_REBOUND_THRESHOLD_MODE_VOLATILITY_SCALED
+DEFAULT_PULLBACK_REBOUND_THRESHOLD = 0.0
+DEFAULT_PULLBACK_REBOUND_VOLATILITY_MULTIPLIER = 2.0
 DEFAULT_SYNTHETIC_ATTACK_MULTIPLE = 0.0
 DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE = 0.01
 DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN = -0.20
@@ -376,6 +388,10 @@ def build_tqqq_growth_income_base_weights(
     cash_weight: float = DEFAULT_DUAL_DRIVE_CASH_WEIGHT,
     idle_safe_weight: float = DEFAULT_IDLE_SAFE_WEIGHT,
     idle_cash_weight: float = DEFAULT_IDLE_CASH_WEIGHT,
+    pullback_rebound_window: int = DEFAULT_PULLBACK_REBOUND_WINDOW,
+    pullback_rebound_threshold_mode: str = DEFAULT_PULLBACK_REBOUND_THRESHOLD_MODE,
+    pullback_rebound_threshold: float = DEFAULT_PULLBACK_REBOUND_THRESHOLD,
+    pullback_rebound_volatility_multiplier: float = DEFAULT_PULLBACK_REBOUND_VOLATILITY_MULTIPLIER,
 ) -> pd.DataFrame:
     """Approximate the current fixed dual-drive live profile for research comparison."""
     frame = _normalize_close(close)
@@ -388,18 +404,33 @@ def build_tqqq_growth_income_base_weights(
     if attack_symbol not in frame.columns:
         raise ValueError(f"attack symbol {attack_symbol!r} missing from price history")
 
-    index = frame.index
+    output_index = frame.index
     if start_date is not None:
-        index = index[index >= pd.Timestamp(start_date).normalize()]
+        output_index = output_index[output_index >= pd.Timestamp(start_date).normalize()]
     if end_date is not None:
-        index = index[index <= pd.Timestamp(end_date).normalize()]
-    if len(index) < 2:
+        output_index = output_index[output_index <= pd.Timestamp(end_date).normalize()]
+    if len(output_index) < 2:
         raise RuntimeError("Not enough trading days for baseline comparison")
 
     benchmark = pd.to_numeric(frame[benchmark_symbol], errors="coerce")
     ma200 = benchmark.rolling(200, min_periods=200).mean()
     ma20 = benchmark.rolling(20, min_periods=20).mean()
     ma20_slope = ma20.diff()
+    pullback_rebound_window = max(1, int(pullback_rebound_window or DEFAULT_PULLBACK_REBOUND_WINDOW))
+    pullback_rebound = benchmark / benchmark.rolling(pullback_rebound_window, min_periods=pullback_rebound_window).min() - 1.0
+    threshold_mode = str(pullback_rebound_threshold_mode or PULLBACK_REBOUND_THRESHOLD_MODE_FIXED).strip().lower()
+    if threshold_mode not in PULLBACK_REBOUND_THRESHOLD_MODES:
+        modes = ", ".join(sorted(PULLBACK_REBOUND_THRESHOLD_MODES))
+        raise ValueError(f"Unsupported pullback rebound threshold mode: {threshold_mode!r}; expected one of {modes}")
+    fixed_threshold = max(0.0, float(pullback_rebound_threshold or 0.0))
+    if threshold_mode == PULLBACK_REBOUND_THRESHOLD_MODE_VOLATILITY_SCALED:
+        returns = benchmark.pct_change(fill_method=None)
+        pullback_rebound_thresholds = (
+            returns.rolling(pullback_rebound_window, min_periods=pullback_rebound_window).std()
+            * max(0.0, float(pullback_rebound_volatility_multiplier or 0.0))
+        ).fillna(fixed_threshold)
+    else:
+        pullback_rebound_thresholds = pd.Series(fixed_threshold, index=benchmark.index)
 
     active_weights = {
         benchmark_symbol: float(qqq_weight),
@@ -415,13 +446,18 @@ def build_tqqq_growth_income_base_weights(
     }
     risk_active = False
     rows: list[dict[str, object]] = []
-    for date in index[:-1]:
+    state_index = frame.index[frame.index <= output_index[-1]]
+    output_dates = set(output_index[:-1])
+    for date in state_index[:-1]:
         close_value = float(benchmark.loc[date])
         ma200_value = ma200.loc[date]
         ma20_value = ma20.loc[date]
         slope = ma20_slope.loc[date]
+        rebound = pullback_rebound.loc[date]
+        rebound_threshold = pullback_rebound_thresholds.loc[date]
         above_ma200 = pd.notna(ma200_value) and close_value > float(ma200_value)
         positive_slope = pd.notna(slope) and float(slope) > 0.0
+        pullback_rebound_ok = pd.notna(rebound) and pd.notna(rebound_threshold) and float(rebound) > float(rebound_threshold)
         if risk_active and not above_ma200:
             risk_active = False
         elif (not risk_active) and above_ma200 and positive_slope:
@@ -431,9 +467,11 @@ def build_tqqq_growth_income_base_weights(
             and pd.notna(ma20_value)
             and close_value > float(ma20_value)
             and positive_slope
+            and pullback_rebound_ok
         )
-        weights = active_weights if risk_active or pullback_risk_on else idle_weights
-        rows.append({"as_of": date, **_normalize_weights(weights)})
+        if date in output_dates:
+            weights = active_weights if risk_active or pullback_risk_on else idle_weights
+            rows.append({"as_of": date, **_normalize_weights(weights)})
     return pd.DataFrame(rows).set_index("as_of").sort_index()
 
 
