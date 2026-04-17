@@ -5,6 +5,7 @@ import pandas as pd
 from us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest import (
     DYNAMIC_PROFILE,
     PROFILE,
+    REBOUND_BUDGET_STRATEGY_SUFFIX,
     RETURN_MODE_MARGIN_STOCK,
     _normalize_universe_history,
     build_target_weights,
@@ -263,6 +264,61 @@ def test_run_backtest_supports_margin_stock_return_mode() -> None:
     assert strategy_row["Return Mode"] == RETURN_MODE_MARGIN_STOCK
     assert result["exposure_history"]["return_mode"].eq(RETURN_MODE_MARGIN_STOCK).all()
     assert result["exposure_history"]["margin_borrow_rate"].eq(0.05).all()
+
+
+def test_run_backtest_applies_external_rebound_budget_to_left_side_strategy() -> None:
+    signals = pd.DataFrame(
+        [
+            {
+                "as_of": "2022-06-01",
+                "active_until": "2023-11-30",
+                "sleeve_suggestion": 0.10,
+            }
+        ]
+    )
+
+    result = run_backtest(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-06-01",
+        end_date="2023-11-30",
+        candidate_universe_size=2,
+        turnover_cost_bps=0.0,
+        leveraged_expense_rate=0.0,
+        entry_line_floor=1.50,
+        entry_line_cap=1.50,
+        rebound_budget_signals=signals,
+    )
+
+    strategy_name = f"{DYNAMIC_PROFILE}{REBOUND_BUDGET_STRATEGY_SUFFIX}"
+    exposure = result["exposure_history"]
+    assert result["summary"]["Strategy"].iloc[0] == strategy_name
+    assert exposure["rebound_budget_suggestion"].max() == 0.10
+    assert exposure["rebound_budget_applied"].max() == 0.10
+    assert exposure["target_product_exposure"].max() == 0.10
+
+
+def test_run_backtest_blocks_rebound_budget_in_hard_defense_by_default() -> None:
+    signals = pd.DataFrame([{"as_of": "2022-06-01", "active_until": "2022-08-31", "sleeve_suggestion": 0.10}])
+
+    result = run_backtest(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-06-01",
+        end_date="2022-08-31",
+        candidate_universe_size=2,
+        turnover_cost_bps=0.0,
+        leveraged_expense_rate=0.0,
+        exit_line_floor=1.50,
+        exit_line_cap=1.50,
+        rebound_budget_signals=signals,
+    )
+
+    exposure = result["exposure_history"]
+    assert exposure["regime"].eq("hard_defense").any()
+    assert exposure["rebound_budget_suggestion"].max() == 0.10
+    assert exposure["rebound_budget_applied"].max() == 0.0
+    assert exposure["target_product_exposure"].max() == 0.0
 
 
 def test_cli_writes_backtest_artifacts(tmp_path) -> None:

@@ -275,6 +275,30 @@ Use `--return-mode margin_stock --margin-borrow-rate 0.055` to test the same
 selection and risk gate as 2x margin-financed underlying stock exposure. The
 default mode remains daily-reset 2x long products with `--leveraged-expense-rate`.
 
+To test the separated TACO rebound plugin as a small left-side budget boost,
+pass a deterministic signal file with `as_of` and `sleeve_suggestion` columns.
+The budget is additive to the strategy's normal product exposure, capped by
+`--rebound-budget-cap`, and blocked by default during `hard_defense`:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_dynamic_mega_leveraged_pullback.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --start 2023-12-01 \
+  --candidate-universe-size 10 \
+  --top-n 3 \
+  --leverage-multiple 2.0 \
+  --return-mode leveraged_product \
+  --rebound-budget-signals data/output/dynamic_mega_leveraged_pullback/plugins/taco_rebound_shadow/signals.csv \
+  --rebound-budget-cap 0.10 \
+  --output-dir data/output/dynamic_mega_leveraged_pullback_taco_rebound_budget_backtest
+```
+
+This does not let TACO select stocks and does not turn a small TACO budget into
+a full right-side risk-on allocation. The base strategy's risk gate and
+candidate ranking still decide what can be bought.
+
 Run a small parameter matrix:
 
 ```bash
