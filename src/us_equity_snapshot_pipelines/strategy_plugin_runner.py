@@ -16,9 +16,15 @@ from .crisis_response_shadow_plugin import (
 )
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_research import DEFAULT_EVENT_SET, resolve_trade_war_event_set
+from .taco_rebound_shadow_plugin import (
+    TACO_REBOUND_PROFILE,
+    build_taco_rebound_shadow_signal,
+    write_taco_rebound_shadow_outputs,
+)
 
 DEFAULT_RUNNER_OUTPUT_DIR = "data/output/strategy_plugins"
 PLUGIN_CRISIS_RESPONSE_SHADOW = "crisis_response_shadow"
+PLUGIN_TACO_REBOUND_SHADOW = TACO_REBOUND_PROFILE
 PLUGIN_MODE_PAPER = "paper"
 PLUGIN_MODE_ADVISORY = "advisory"
 PLUGIN_MODE_LIVE = "live"
@@ -185,6 +191,44 @@ def _build_crisis_response_kwargs(plugin_config: Mapping[str, Any]) -> dict[str,
     return kwargs
 
 
+def _build_taco_rebound_kwargs(plugin_config: Mapping[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    string_keys = {
+        "as_of",
+        "start_date",
+        "end_date",
+        "benchmark_symbol",
+        "attack_symbol",
+    }
+    numeric_keys = {
+        "tariff_softening_sleeve",
+        "geopolitical_deescalation_sleeve",
+        "shock_sleeve",
+        "max_sleeve",
+        "crisis_guard_drawdown",
+    }
+    integer_keys = {
+        "active_signal_days",
+        "crisis_guard_ma_days",
+        "crisis_guard_ma_slope_days",
+        "max_price_age_days",
+    }
+    bool_keys = {"suppress_when_price_crisis_guard_active"}
+    for key in string_keys:
+        if key in plugin_config and plugin_config[key] is not None:
+            kwargs[key] = str(plugin_config[key]).strip()
+    for key in numeric_keys:
+        if key in plugin_config and plugin_config[key] is not None:
+            kwargs[key] = float(plugin_config[key])
+    for key in integer_keys:
+        if key in plugin_config and plugin_config[key] is not None:
+            kwargs[key] = int(plugin_config[key])
+    for key in bool_keys:
+        if key in plugin_config and plugin_config[key] is not None:
+            kwargs[key] = _as_bool(plugin_config[key])
+    return kwargs
+
+
 def _mode_execution_controls(mode: str) -> dict[str, Any]:
     if mode == SHADOW_MODE:
         return {
@@ -289,8 +333,67 @@ def run_crisis_response_shadow_plugin(plugin_config: Mapping[str, Any], default_
     )
 
 
+def run_taco_rebound_shadow_plugin(plugin_config: Mapping[str, Any], default_mode: str) -> PluginRunResult:
+    strategy = _safe_scope_name(plugin_config.get("strategy"), field="strategy")
+    plugin = _safe_scope_name(plugin_config.get("plugin", PLUGIN_TACO_REBOUND_SHADOW), field="plugin")
+    mode = _plugin_mode(plugin_config, default_mode)
+    output_dir = str(plugin_config.get("output_dir") or _default_plugin_output_dir(strategy, plugin)).strip()
+    enabled = _as_bool(plugin_config.get("enabled"), default=True)
+    if not enabled:
+        return PluginRunResult(
+            strategy=strategy,
+            plugin=plugin,
+            enabled=False,
+            mode=mode,
+            effective_mode=None,
+            status="skipped",
+            output_dir=output_dir,
+            message="plugin disabled",
+        )
+    _validate_plugin_mode(plugin, mode)
+
+    prices_path = str(plugin_config.get("prices", "")).strip()
+    if not prices_path:
+        raise ValueError(f"{plugin} for strategy={strategy} requires a prices path")
+    price_history = read_table(prices_path)
+    event_set = str(plugin_config.get("event_set", DEFAULT_EVENT_SET)).strip() or DEFAULT_EVENT_SET
+
+    payload = build_taco_rebound_shadow_signal(
+        price_history,
+        events=resolve_trade_war_event_set(event_set),
+        **_build_taco_rebound_kwargs(plugin_config),
+    )
+    payload["strategy"] = strategy
+    payload["plugin"] = plugin
+    payload["mode"] = mode
+    payload["configured_mode"] = mode
+    payload["effective_mode"] = mode
+    payload.setdefault("execution_controls", {})
+    payload["execution_controls"].update(_mode_execution_controls(mode))
+    payload["execution_controls"]["configured_mode"] = mode
+    payload["execution_controls"]["effective_mode"] = mode
+    payload["execution_controls"]["repository_broker_write_allowed"] = False
+    payload["execution_controls"]["repository_allocation_mutation_allowed"] = False
+    payload["execution_controls"]["mode_note"] = (
+        "Mode is the platform behavior contract; this repository writes artifacts and does not call brokers"
+    )
+    paths = write_taco_rebound_shadow_outputs(payload, output_dir)
+    return PluginRunResult(
+        strategy=strategy,
+        plugin=plugin,
+        enabled=True,
+        mode=mode,
+        effective_mode=mode,
+        status="ok",
+        output_dir=output_dir,
+        latest_signal_path=str(paths["latest_signal"]),
+        message=f"route={payload['canonical_route']} action={payload['suggested_action']}",
+    )
+
+
 PLUGIN_RUNNERS: dict[str, PluginRunner] = {
     PLUGIN_CRISIS_RESPONSE_SHADOW: run_crisis_response_shadow_plugin,
+    PLUGIN_TACO_REBOUND_SHADOW: run_taco_rebound_shadow_plugin,
 }
 
 
@@ -379,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "PLUGIN_CRISIS_RESPONSE_SHADOW",
+    "PLUGIN_TACO_REBOUND_SHADOW",
     "PLUGIN_MODE_ADVISORY",
     "PLUGIN_MODE_LIVE",
     "PLUGIN_MODE_PAPER",
@@ -387,4 +491,5 @@ __all__ = [
     "main",
     "run_configured_plugins",
     "run_crisis_response_shadow_plugin",
+    "run_taco_rebound_shadow_plugin",
 ]

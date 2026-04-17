@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TACO, ROUTE_TRUE_CRISIS
+from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TRUE_CRISIS
 from us_equity_snapshot_pipelines.crisis_response_shadow_plugin import (
     SCHEMA_VERSION,
     build_crisis_response_shadow_signal,
@@ -70,6 +70,7 @@ def test_shadow_signal_routes_financial_credit_crisis_without_live_execution() -
     assert payload["canonical_route"] == ROUTE_TRUE_CRISIS
     assert payload["suggested_action"] == "defend"
     assert payload["would_trade_if_enabled"] is True
+    assert payload["risk_multiplier_suggestion"] == 0.0
     assert payload["price_scanner_active"] is True
     assert payload["kill_switch_active"] is False
     assert payload["evidence"]["financial_context"] is True
@@ -153,11 +154,54 @@ def test_policy_context_without_price_stress_stays_watch_only() -> None:
         rate_symbols=(),
     )
 
-    assert payload["audit_summary"]["proposer_route"] == ROUTE_TACO
+    assert payload["audit_summary"]["proposer_route"] == ROUTE_NO_ACTION
+    assert payload["audit_summary"]["proposer_context_label"] == "policy_shock"
     assert payload["canonical_route"] == ROUTE_NO_ACTION
     assert payload["suggested_action"] == "watch_only"
+    assert payload["evidence"]["policy_context"] is True
     assert payload["would_trade_if_enabled"] is False
-    assert payload["price_stress_scan_active"] is False
+    assert "price_stress_scan_active" not in payload
+    assert "taco_sleeve_suggestion" not in payload
+
+
+def test_shadow_signal_maps_policy_context_to_watch_only_after_split() -> None:
+    dates = pd.bdate_range("2026-03-20", periods=12)
+    qqq_path = [100.0, 98.0, 96.0, 94.0, 95.0, 99.0, 101.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+    tqqq_path = [100.0, 94.0, 88.0, 82.0, 85.0, 96.0, 102.0, 108.0, 111.0, 114.0, 117.0, 120.0]
+    rows = []
+    for idx, as_of in enumerate(dates):
+        rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_path[idx], "volume": 1_000_000})
+        rows.append({"symbol": "TQQQ", "as_of": as_of, "close": tqqq_path[idx], "volume": 1_000_000})
+        rows.append({"symbol": "SPY", "as_of": as_of, "close": qqq_path[idx], "volume": 1_000_000})
+    event = TradeWarEvent(
+        event_id="war-deescalation",
+        event_date=str(dates[4].date()),
+        kind=EVENT_KIND_SHOCK,
+        region="iran_middle_east",
+        title="War deescalation watch",
+        source="test",
+        source_url="https://example.test/deescalation",
+    )
+
+    payload = build_crisis_response_shadow_signal(
+        pd.DataFrame(rows),
+        events=(event,),
+        as_of=str(dates[-1].date()),
+        start_date=str(dates[0].date()),
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+    )
+
+    assert payload["audit_summary"]["proposer_route"] == ROUTE_NO_ACTION
+    assert payload["audit_summary"]["proposer_context_label"] == "exogenous_shock"
+    assert payload["canonical_route"] == ROUTE_NO_ACTION
+    assert payload["suggested_action"] == "watch_only"
+    assert payload["evidence"]["exogenous_context"] is True
+    assert "taco_sleeve_suggestion" not in payload
+    assert "taco_routing_allowed" not in payload["execution_controls"]
+    assert payload["execution_controls"]["defensive_destination"] == "cash_or_money_market"
+    assert payload["execution_controls"]["intended_strategy_role"] == "black_swan_defense"
 
 
 def test_shadow_cli_writes_artifacts(tmp_path) -> None:

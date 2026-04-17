@@ -8,6 +8,7 @@ import pytest
 
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     PLUGIN_CRISIS_RESPONSE_SHADOW,
+    PLUGIN_TACO_REBOUND_SHADOW,
     PLUGIN_MODE_ADVISORY,
     PLUGIN_MODE_LIVE,
     PLUGIN_MODE_PAPER,
@@ -17,6 +18,7 @@ from us_equity_snapshot_pipelines.strategy_plugin_runner import (
 )
 
 STRATEGY_NAME = "tqqq_growth_income"
+LEFT_SIDE_STRATEGY_NAME = "dynamic_mega_leveraged_pullback"
 
 
 def _quiet_prices() -> pd.DataFrame:
@@ -61,6 +63,19 @@ def _shadow_plugin_config(tmp_path, *, include_output_dir: bool = True) -> dict[
     }
 
 
+def _taco_rebound_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2026-03-20", periods=16)
+    qqq_path = [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 92.0, 96.0, 99.0]
+    tqqq_path = [100.0, 97.0, 94.0, 91.0, 88.0, 85.0, 82.0, 76.0, 88.0, 96.0]
+    rows: list[dict[str, object]] = []
+    for idx, as_of in enumerate(dates):
+        qqq_close = qqq_path[idx] if idx < len(qqq_path) else 104.0 + idx
+        tqqq_close = tqqq_path[idx] if idx < len(tqqq_path) else 110.0 + idx * 2.0
+        rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
+        rows.append({"symbol": "TQQQ", "as_of": as_of, "close": tqqq_close, "volume": 1_000_000})
+    return pd.DataFrame(rows)
+
+
 def test_strategy_plugin_runner_executes_strategy_scoped_shadow_plugin(tmp_path) -> None:
     config = _shadow_plugin_config(tmp_path)
     summary = run_configured_plugins(config)
@@ -101,7 +116,9 @@ def test_strategy_plugin_runner_defaults_output_under_strategy_plugin_scope(tmp_
     summary = run_configured_plugins(config)
 
     expected = tmp_path / "data" / "output" / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW
-    assert summary["strategy_plugins"][0]["output_dir"] == str(Path("data/output") / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW)
+    assert summary["strategy_plugins"][0]["output_dir"] == str(
+        Path("data/output") / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW
+    )
     assert (expected / "latest_signal.json").exists()
 
 
@@ -149,7 +166,45 @@ def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:
 
     assert [result["strategy"] for result in summary["strategy_plugins"]] == [STRATEGY_NAME]
     assert (tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json").exists()
-    assert not (tmp_path / "soxl_growth_income" / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json").exists()
+    assert not (
+        tmp_path / "soxl_growth_income" / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json"
+    ).exists()
+
+
+def test_strategy_plugin_runner_mounts_taco_rebound_to_left_side_strategy(tmp_path) -> None:
+    prices_path = tmp_path / "taco_prices.csv"
+    output_dir = tmp_path / LEFT_SIDE_STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
+    _taco_rebound_prices().to_csv(prices_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": LEFT_SIDE_STRATEGY_NAME,
+                "plugin": PLUGIN_TACO_REBOUND_SHADOW,
+                "enabled": True,
+                "inputs": {
+                    "prices": str(prices_path),
+                    "event_set": "geopolitical-deescalation",
+                    "as_of": "2026-04-02",
+                    "start_date": "2026-03-20",
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    result = summary["strategy_plugins"][0]
+    assert result["strategy"] == LEFT_SIDE_STRATEGY_NAME
+    assert result["plugin"] == PLUGIN_TACO_REBOUND_SHADOW
+    assert result["status"] == "ok"
+    payload = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert payload["strategy"] == LEFT_SIDE_STRATEGY_NAME
+    assert payload["plugin"] == PLUGIN_TACO_REBOUND_SHADOW
+    assert payload["canonical_route"] == "taco_rebound"
+    assert payload["sleeve_suggestion"] == 0.10
 
 
 @pytest.mark.parametrize(

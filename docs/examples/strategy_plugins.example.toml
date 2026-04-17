@@ -18,3 +18,23 @@ rate_symbols = ["IEF", "TLT"]
 
 [strategy_plugins.outputs]
 output_dir = "data/output/tqqq_growth_income/plugins/crisis_response_shadow"
+
+[[strategy_plugins]]
+strategy = "dynamic_mega_leveraged_pullback"
+plugin = "taco_rebound_shadow"
+enabled = true
+# TACO is a separate left-side rebound budget signal. It is not part of the
+# crisis_response_shadow plugin.
+
+[strategy_plugins.inputs]
+prices = "data/output/taco_rebound_shadow/input/price_history.csv"
+event_set = "geopolitical-deescalation"
+benchmark_symbol = "QQQ"
+attack_symbol = "TQQQ"
+active_signal_days = 10
+geopolitical_deescalation_sleeve = 0.10
+tariff_softening_sleeve = 0.05
+max_sleeve = 0.10
+
+[strategy_plugins.outputs]
+output_dir = "data/output/dynamic_mega_leveraged_pullback/plugins/taco_rebound_shadow"

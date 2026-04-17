@@ -31,12 +31,20 @@ The current research candidate is:
 | 2008 GFC defense | Financial / credit systemic context, including joint financial plus credit confirmation |
 | 2020 COVID | Exogenous / policy-rescue context defaults to `no_action` |
 | 2022 rate bear | Rate-bear context defaults to `no_action` unless financial-system stress appears |
-| Policy shocks | TACO or `no_action`, small sleeve only |
-| TACO sleeve | 5% research overlay |
+| Policy shocks | `no_action` / watch-only inside the crisis plugin |
+| TACO sleeve | Separate `taco_rebound_shadow` plugin only |
 | Live behavior | Not enabled |
 
 Do not change this candidate while building the shadow plugin unless the user
 explicitly asks for a new research experiment.
+
+The live/promotion contract is intentionally split. `crisis_response_shadow`
+is a TQQQ black-swan defense plugin; it can recommend moving the main book to
+cash or a money-market / Treasury-bill parking sleeve only after a promoted
+true-crisis route. It must not recommend buying event rebounds. Reversible
+policy, tariff, or geopolitical rebound research belongs to
+`taco_rebound_shadow`, mounted separately to a left-side strategy such as
+`dynamic_mega_leveraged_pullback`.
 
 ## Phase Ladder
 
@@ -72,7 +80,8 @@ Runtime integration:
 - Schedule the shadow builder on the same daily cadence as the TQQQ strategy
   artifact pipeline after prices and external context are refreshed.
 - Keep the log namespace separate as `crisis_response_shadow`; it is an
-  observation stream, not a trading signal stream.
+  observation stream for defense-only crisis evidence, not a TACO trading
+  stream.
 - Downstream notification systems may include the latest shadow route in the
   TQQQ status message, but the notification must label it as `shadow_only`.
 - This repository must not add Telegram, broker, or order-routing writes for
@@ -156,9 +165,9 @@ Required top-level fields:
 | `configured_mode` | string | Requested runner mode such as `shadow`, `paper`, `advisory`, or `live` |
 | `effective_mode` | string | Mode that downstream platform adapters must implement |
 | `schema_version` | string | Start with `crisis_response_shadow.v1` |
-| `canonical_route` | string | One of `true_crisis`, `taco_fake_crisis`, `no_action` |
+| `canonical_route` | string | One of `true_crisis`, `no_action` |
 | `watch_label` | string | Optional context label such as `systemic_stress_watch` or `rate_bear` |
-| `suggested_action` | string | One of `defend`, `small_taco`, `watch_only`, `no_action`, `blocked` |
+| `suggested_action` | string | One of `defend`, `watch_only`, `no_action`, `blocked` |
 | `risk_multiplier_suggestion` | number or null | Recommendation only inside this repository |
 | `would_trade_if_enabled` | boolean | Whether advisory/live mode would ask for action |
 | `price_scanner_active` | boolean | Confirmed price-crisis scanner state |
@@ -245,7 +254,7 @@ Evidence review must answer:
 2. Is the evidence sufficient and point-in-time?
 3. Is there a likely false-positive true-crisis risk?
 4. Is there a likely false-negative true-crisis risk?
-5. Is this closer to 2000, 2008, 2020, 2022, 2011, policy/TACO, or normal?
+5. Is this closer to 2000, 2008, 2020, 2022, 2011, policy/no-action, or normal?
 6. Should the system stay shadow, be considered for human-confirmed advisory,
    or remain blocked?
 
@@ -260,8 +269,8 @@ The shadow and evidence-review process must keep these windows visible:
 | 2011 debt / euro stress | `systemic_stress_watch`; no action unless price scanner confirms |
 | 2020 COVID | Usually `no_action` because exogenous shock and policy rescue dominate |
 | 2022 rate bear | `rate_bear` / `no_action`; do not treat as true crisis without financial stress |
-| 2018-2019 trade war | TACO or `no_action`, not main-book defense |
-| 2025+ policy shocks | TACO or `no_action`, with small-sleeve discipline |
+| 2018-2019 trade war | Crisis plugin stays `no_action` / watch-only; separate TACO plugin may research rebound budget |
+| 2025+ policy shocks | Crisis plugin stays `no_action` / watch-only unless systemic stress appears |
 
 `2011_debt_euro_stress` is included in the audit reports as a
 `systemic_stress_watch` control.
@@ -313,7 +322,7 @@ when any of these occur:
 - External valuation data needed for a valuation route is missing, stale, or not
   licensed for production use.
 - Financial or credit data needed for a financial-crisis route is stale.
-- Event classification is missing during a policy shock.
+- Event classification required by a separate TACO rebound artifact is missing.
 - The route depends on a newly added feature that has not passed historical
   audit-effectiveness checks.
 - The code is running outside approved `shadow`, `paper`, `advisory`, or `live`
@@ -324,6 +333,8 @@ when any of these occur:
 Future agents must follow these constraints:
 
 - Do not change V1 parameters unless the user explicitly asks.
+- Do not add a TACO sleeve back into `crisis_response_shadow`; mount
+  `taco_rebound_shadow` separately for left-side rebound research.
 - Do not promote V2 research into live allocation in the same change that adds a
   new feature.
 - Do not optimize thresholds against one crisis window without checking 2015+,

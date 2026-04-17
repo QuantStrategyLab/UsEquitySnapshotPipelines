@@ -470,7 +470,7 @@ audited before any context affects live routing. It writes raw financial /
 credit context separately from stricter systemic financial-crisis context.
 
 Run the unified Crisis Response research when comparing fake-crisis TACO entries
-with true-crisis defense in one plugin:
+with true-crisis defense in one historical research report:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -490,7 +490,8 @@ python scripts/backtest_crisis_response.py \
   --output-dir data/output/crisis_response_1999_synthetic
 ```
 
-This unified research treats both modules as one event-response plugin. The
+This unified research treats both modules as one event-response research
+surface for audit continuity. It is not the production-facing plugin split. The
 price-stress scanner opens the TACO path for trade-war / tariff fake-crisis
 events. The confirmed crisis-price signal opens the crisis-context path for
 bubble-burst or financial-crisis candidates. If the true-crisis guard is active,
@@ -552,10 +553,39 @@ display it as an observation beside the TQQQ status, not as an executable trade
 instruction. Advisory or live promotion remains a separate manual decision
 after enough deterministic shadow logs have accumulated.
 
+The crisis shadow plugin is intentionally defense-only. It does not emit
+`taco_fake_crisis`, does not suggest a TACO sleeve, and does not buy event
+rebounds. Its executable route is only a true-crisis `defend` signal, with the
+defensive destination documented as cash or a money-market / Treasury-bill
+parking sleeve. Policy, tariff, or geopolitical panic can still appear as
+watch-only context, but TACO routing lives in a separate plugin.
+
+Build the independent TACO rebound shadow signal for a left-side rebound
+strategy such as `dynamic_mega_leveraged_pullback`:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_taco_rebound_shadow_signal.py \
+  --prices data/output/taco_rebound_shadow/input/price_history.csv \
+  --event-set geopolitical-deescalation \
+  --start 2026-01-01 \
+  --geopolitical-deescalation-sleeve 0.10 \
+  --tariff-softening-sleeve 0.05 \
+  --max-sleeve 0.10 \
+  --output-dir data/output/dynamic_mega_leveraged_pullback/plugins/taco_rebound_shadow
+```
+
+This TACO plugin does not select stocks and does not mutate a strategy artifact.
+It only writes a small rebound-budget suggestion that a left-side strategy can
+consume after its own candidate selection and risk gates. Conflict escalation
+events default to a zero sleeve; de-escalation / ceasefire / talks events can
+raise a bounded rebound budget when the price-stress scanner is open.
+
 For platform-style deployment, use the sidecar plugin runner instead of wiring
 plugins into a strategy function. The runner reads strategy-scoped plugin
 mounts from TOML and executes only explicitly configured plugins. Current
-Crisis Response writes artifacts here; any platform execution is downstream.
+Crisis Response and TACO rebound plugins write artifacts here; any platform
+execution is downstream.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
 runtime TOML should live with the deployment or platform configuration, not as a
 committed live config in this repository.
@@ -570,7 +600,10 @@ underlying strategy artifact build remains independent; downstream systems read
 the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
 and implement the configured `mode` directly.
 The same plugin can be mounted to another strategy by adding another
-`[[strategy_plugins]]` entry with different inputs and output scope.
+`[[strategy_plugins]]` entry with different inputs and output scope. Keep the
+crisis plugin scoped to defensive TQQQ-style risk-off behavior, and mount
+`taco_rebound_shadow` separately to left-side pullback profiles when researching
+event-rebound budget changes.
 
 Supported modes are `shadow`, `paper`, `advisory`, and `live`. `mode` is the
 single plugin behavior contract: if it is `shadow`, the downstream platform

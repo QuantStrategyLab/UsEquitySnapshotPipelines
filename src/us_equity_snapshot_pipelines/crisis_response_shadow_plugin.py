@@ -43,12 +43,10 @@ from .crisis_response_research import (
     DEFAULT_PRICE_CRISIS_GUARD_MA_DAYS,
     DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
     DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS,
-    DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER,
     DEFAULT_START_DATE,
     DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     DEFAULT_SYNTHETIC_ATTACK_MULTIPLE,
     ROUTE_NO_ACTION,
-    ROUTE_TACO,
     ROUTE_TRUE_CRISIS,
     SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE,
     _apply_confirm_days,
@@ -56,20 +54,16 @@ from .crisis_response_research import (
     _parse_credit_pairs,
     _parse_upper_str_tuple,
 )
+from .plugin_signal_utils import bool_at, flatten_for_csv, json_scalar, normalize_close, resolve_signal_date
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_overlay_compare import (
-    DEFAULT_ATTACK_SYMBOL,
-    DEFAULT_BENCHMARK_SYMBOL,
-    DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE as DEFAULT_TACO_SYNTHETIC_ATTACK_EXPENSE_RATE,
     add_synthetic_attack_close,
     build_price_crisis_guard_signal,
-    build_price_stress_scan,
 )
 from .taco_panic_rebound_research import (
     DEFAULT_EVENT_SET,
     TRADE_WAR_EVENT_SETS,
     TradeWarEvent,
-    price_history_to_close_matrix,
     resolve_trade_war_event_set,
 )
 from .yfinance_prices import download_price_history
@@ -77,63 +71,19 @@ from .yfinance_prices import download_price_history
 SCHEMA_VERSION = "crisis_response_shadow.v1"
 SHADOW_MODE = "shadow"
 SHADOW_PROFILE = "crisis_response_shadow"
+DEFAULT_BENCHMARK_SYMBOL = "QQQ"
+DEFAULT_ATTACK_SYMBOL = "TQQQ"
 DEFAULT_OUTPUT_DIR = "data/output/crisis_response_shadow"
 DEFAULT_MAX_PRICE_AGE_DAYS = 4
 DEFAULT_MAX_EXTERNAL_CONTEXT_AGE_DAYS = 45
-DEFAULT_SHADOW_TACO_SLEEVE = 0.05
-DEFAULT_SHADOW_SEVERE_CRISIS_RISK_MULTIPLIER = 0.10
-DEFAULT_SHADOW_BUBBLE_FRAGILITY_RISK_MULTIPLIER = 0.10
+DEFAULT_SHADOW_CRISIS_RISK_MULTIPLIER = 0.0
+DEFAULT_SHADOW_SEVERE_CRISIS_RISK_MULTIPLIER = 0.0
+DEFAULT_SHADOW_BUBBLE_FRAGILITY_RISK_MULTIPLIER = 0.0
 
 ACTION_BLOCKED = "blocked"
 ACTION_DEFEND = "defend"
 ACTION_NO_ACTION = "no_action"
-ACTION_SMALL_TACO = "small_taco"
 ACTION_WATCH_ONLY = "watch_only"
-
-
-def _normalize_close(price_history) -> pd.DataFrame:
-    if isinstance(price_history, (str, Path)):
-        price_history = read_table(price_history)
-    if {"symbol", "as_of", "close"}.issubset(set(pd.DataFrame(price_history).columns)):
-        close = price_history_to_close_matrix(price_history)
-    else:
-        close = pd.DataFrame(price_history).copy()
-        if close.empty:
-            raise RuntimeError("No usable price history rows")
-        close.index = pd.to_datetime(close.index, errors="coerce").tz_localize(None).normalize()
-        close = close.loc[close.index.notna()]
-        close.columns = close.columns.astype(str).str.upper().str.strip()
-    close = close.sort_index()
-    close.index = pd.to_datetime(close.index, errors="coerce").tz_localize(None).normalize()
-    close = close.loc[close.index.notna()]
-    close.columns = close.columns.astype(str).str.upper().str.strip()
-    if close.empty:
-        raise RuntimeError("No usable price history rows")
-    return close
-
-
-def _resolve_signal_date(close: pd.DataFrame, as_of: str | None) -> tuple[pd.Timestamp, pd.Timestamp]:
-    requested = (
-        pd.Timestamp(as_of).tz_localize(None).normalize()
-        if as_of
-        else pd.Timestamp(close.index.max()).normalize()
-    )
-    candidates = close.index[close.index <= requested]
-    if candidates.empty:
-        raise RuntimeError(f"No price history on or before requested as_of={requested.date().isoformat()}")
-    return requested, pd.Timestamp(candidates[-1]).normalize()
-
-
-def _bool_at(signal: pd.Series, date: pd.Timestamp) -> bool:
-    if signal.empty:
-        return False
-    series = pd.Series(signal).fillna(False).astype(bool).copy()
-    series.index = pd.to_datetime(series.index, errors="coerce").tz_localize(None).normalize()
-    series = series.loc[series.index.notna()].sort_index()
-    if series.empty:
-        return False
-    aligned = series.reindex(series.index.union(pd.DatetimeIndex([date]))).sort_index().ffill().fillna(False)
-    return bool(aligned.loc[date])
 
 
 def _feature_row_at(context_features: pd.DataFrame, date: pd.Timestamp) -> pd.Series:
@@ -148,23 +98,6 @@ def _feature_row_at(context_features: pd.DataFrame, date: pd.Timestamp) -> pd.Se
     if date not in aligned.index:
         return pd.Series(dtype=object)
     return aligned.loc[date]
-
-
-def _json_scalar(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _json_scalar(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_scalar(item) for item in value]
-    if isinstance(value, pd.Timestamp):
-        return value.date().isoformat()
-    if pd.isna(value):
-        return None
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            return value
-    return value
 
 
 def _field_bool(row: pd.Series, field: str) -> bool:
@@ -243,23 +176,6 @@ def _build_evidence(feature_row: pd.Series) -> dict[str, Any]:
     }
 
 
-def _flatten_for_csv(payload: Mapping[str, Any]) -> dict[str, Any]:
-    rows: dict[str, Any] = {}
-
-    def visit(prefix: str, value: Any) -> None:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                visit(f"{prefix}.{key}" if prefix else str(key), item)
-            return
-        if isinstance(value, (list, tuple)):
-            rows[prefix] = ";".join(str(item) for item in value)
-            return
-        rows[prefix] = value
-
-    visit("", payload)
-    return rows
-
-
 def build_crisis_response_shadow_signal(
     price_history,
     *,
@@ -279,7 +195,7 @@ def build_crisis_response_shadow_signal(
     synthetic_attack_expense_rate: float = DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     crisis_drawdown: float = DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN,
     crisis_confirm_days: int = DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS,
-    crisis_risk_multiplier: float = DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER,
+    crisis_risk_multiplier: float = DEFAULT_SHADOW_CRISIS_RISK_MULTIPLIER,
     severe_crisis_context: str = SEVERE_CRISIS_CONTEXT_VALUATION_BUBBLE,
     severe_crisis_risk_multiplier: float = DEFAULT_SHADOW_SEVERE_CRISIS_RISK_MULTIPLIER,
     bubble_fragility_context: str = DEFAULT_FRAGILITY_CONTEXT,
@@ -305,7 +221,7 @@ def build_crisis_response_shadow_signal(
     max_price_age_days: int = DEFAULT_MAX_PRICE_AGE_DAYS,
     max_external_context_age_days: int = DEFAULT_MAX_EXTERNAL_CONTEXT_AGE_DAYS,
 ) -> dict[str, Any]:
-    close = _normalize_close(price_history)
+    close = normalize_close(price_history)
     benchmark_symbol = str(benchmark_symbol).strip().upper()
     attack_symbol = str(attack_symbol).strip().upper()
     market_symbol = str(market_symbol).strip().upper()
@@ -323,7 +239,7 @@ def build_crisis_response_shadow_signal(
         )
     if end_date is not None:
         close = close.loc[close.index <= pd.Timestamp(end_date).tz_localize(None).normalize()].copy()
-    requested_date, signal_date = _resolve_signal_date(close, as_of)
+    requested_date, signal_date = resolve_signal_date(close, as_of)
     signal_iso = signal_date.date().isoformat()
     latest_price_date = pd.Timestamp(close.index.max()).normalize()
     price_age_days = int((requested_date - signal_date).days)
@@ -331,14 +247,11 @@ def build_crisis_response_shadow_signal(
     kill_reasons: list[str] = []
     if benchmark_symbol not in close.columns:
         kill_reasons.append(f"missing benchmark price data: {benchmark_symbol}")
-    if attack_symbol not in close.columns:
-        kill_reasons.append(f"missing attack price data: {attack_symbol}")
     if price_age_days > int(max_price_age_days):
         kill_reasons.append(
             f"price data stale: signal_as_of={signal_iso}, requested_as_of={requested_date.date().isoformat()}"
         )
 
-    price_stress_scan_active = False
     price_scanner_active = False
     bubble_fragility_active = False
     context_features = pd.DataFrame()
@@ -354,16 +267,7 @@ def build_crisis_response_shadow_signal(
             ma_slope_days=int(ma_slope_days),
         )
         confirmed_crisis = _apply_confirm_days(raw_crisis, int(crisis_confirm_days))
-        price_scanner_active = _bool_at(confirmed_crisis, signal_date)
-    if benchmark_symbol in close.columns and attack_symbol in close.columns:
-        price_stress_scan = build_price_stress_scan(
-            close,
-            start_date=start_date,
-            end_date=signal_iso,
-            benchmark_symbol=benchmark_symbol,
-            attack_symbol=attack_symbol,
-        )
-        price_stress_scan_active = _bool_at(price_stress_scan, signal_date)
+        price_scanner_active = bool_at(confirmed_crisis, signal_date)
     if benchmark_symbol in close.columns:
         context_features = build_crisis_context_features(
             close,
@@ -401,16 +305,18 @@ def build_crisis_response_shadow_signal(
             ma_slope_days=int(bubble_fragility_ma_slope_days),
             confirm_days=int(bubble_fragility_confirm_days),
         )
-        bubble_fragility_active = _bool_at(bubble_fragility_signal, signal_date)
+        bubble_fragility_active = bool_at(bubble_fragility_signal, signal_date)
 
-    proposer_route = str(
+    raw_proposer_route = str(
         feature_row.get("suggested_route", ROUTE_NO_ACTION) if not feature_row.empty else ROUTE_NO_ACTION
     )
+    proposer_route = ROUTE_TRUE_CRISIS if raw_proposer_route == ROUTE_TRUE_CRISIS else ROUTE_NO_ACTION
     proposer_label = str(
         feature_row.get("suggested_context_label", CONTEXT_LABEL_NORMAL)
         if not feature_row.empty
         else CONTEXT_LABEL_NORMAL
     )
+    non_crisis_context_active = raw_proposer_route != ROUTE_NO_ACTION or proposer_label != CONTEXT_LABEL_NORMAL
     proposer_reason = str(
         feature_row.get("suggested_reason", "no context features available") if not feature_row.empty else ""
     )
@@ -457,12 +363,7 @@ def build_crisis_response_shadow_signal(
             float(severe_crisis_risk_multiplier) if severe_context_active else float(crisis_risk_multiplier)
         )
         would_trade_if_enabled = True
-    elif proposer_route == ROUTE_TACO and price_stress_scan_active:
-        canonical_route = ROUTE_TACO
-        suggested_action = ACTION_SMALL_TACO
-        risk_multiplier_suggestion = None
-        would_trade_if_enabled = True
-    elif proposer_route != ROUTE_NO_ACTION or price_scanner_active or price_stress_scan_active:
+    elif non_crisis_context_active or price_scanner_active:
         canonical_route = ROUTE_NO_ACTION
         suggested_action = ACTION_WATCH_ONLY
         risk_multiplier_suggestion = None
@@ -494,7 +395,7 @@ def build_crisis_response_shadow_signal(
     elif not kill_switch_active and suggested_action == ACTION_NO_ACTION:
         auditor_verdict = "approve_no_action"
 
-    return _json_scalar(
+    return json_scalar(
         {
             "as_of": signal_iso,
             "mode": SHADOW_MODE,
@@ -508,10 +409,8 @@ def build_crisis_response_shadow_signal(
             ),
             "suggested_action": suggested_action,
             "risk_multiplier_suggestion": risk_multiplier_suggestion,
-            "taco_sleeve_suggestion": DEFAULT_SHADOW_TACO_SLEEVE if canonical_route == ROUTE_TACO else None,
             "would_trade_if_enabled": would_trade_if_enabled,
             "price_scanner_active": price_scanner_active,
-            "price_stress_scan_active": price_stress_scan_active,
             "bubble_fragility_active": bubble_fragility_active,
             "kill_switch_active": kill_switch_active,
             "kill_switch_reason": "; ".join(kill_reasons),
@@ -530,6 +429,8 @@ def build_crisis_response_shadow_signal(
                 "live_allocation_mutation_allowed": False,
                 "log_namespace": SHADOW_PROFILE,
                 "notification_profile": "shadow_only",
+                "intended_strategy_role": "black_swan_defense",
+                "defensive_destination": "cash_or_money_market",
             },
             "generated_at": generated_at,
         }
@@ -550,16 +451,16 @@ def write_crisis_response_shadow_outputs(payload: Mapping[str, Any], output_dir:
     write_json(dated_json_path, payload)
     signal_dir.mkdir(parents=True, exist_ok=True)
     audit_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([_flatten_for_csv(payload)]).to_csv(dated_csv_path, index=False)
+    pd.DataFrame([flatten_for_csv(payload)]).to_csv(dated_csv_path, index=False)
 
     evidence_payload = {
         "as_of": payload.get("as_of"),
         "canonical_route": payload.get("canonical_route"),
         "suggested_action": payload.get("suggested_action"),
         "watch_label": payload.get("watch_label"),
-        **_flatten_for_csv(payload.get("data_freshness", {})),
-        **_flatten_for_csv(payload.get("evidence", {})),
-        **_flatten_for_csv(payload.get("audit_summary", {})),
+        **flatten_for_csv(payload.get("data_freshness", {})),
+        **flatten_for_csv(payload.get("evidence", {})),
+        **flatten_for_csv(payload.get("audit_summary", {})),
     }
     pd.DataFrame([evidence_payload]).to_csv(evidence_csv_path, index=False)
     return {
@@ -602,11 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--synthetic-attack-expense-rate",
         type=float,
-        default=DEFAULT_TACO_SYNTHETIC_ATTACK_EXPENSE_RATE,
+        default=DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     )
     parser.add_argument("--crisis-drawdown", type=float, default=DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN)
     parser.add_argument("--crisis-confirm-days", type=int, default=DEFAULT_RESPONSE_CRISIS_CONFIRM_DAYS)
-    parser.add_argument("--crisis-risk-multiplier", type=float, default=DEFAULT_RESPONSE_CRISIS_RISK_MULTIPLIER)
+    parser.add_argument("--crisis-risk-multiplier", type=float, default=DEFAULT_SHADOW_CRISIS_RISK_MULTIPLIER)
     parser.add_argument(
         "--severe-crisis-risk-multiplier",
         type=float,
