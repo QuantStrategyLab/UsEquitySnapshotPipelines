@@ -123,8 +123,9 @@ Optional inputs:
 
 Scheduled monthly publish includes `tech_communication_pullback_enhancement`,
 `russell_1000_multi_factor_defensive`, and
-`mega_cap_leader_rotation_dynamic_top20`, and
-`dynamic_mega_leveraged_pullback`. The two mega-cap scheduled paths consume
+`mega_cap_leader_rotation_dynamic_top20`,
+`mega_cap_leader_rotation_top50_balanced`, and
+`dynamic_mega_leveraged_pullback`. The mega-cap scheduled paths consume
 `r1000_price_history.csv` plus `r1000_latest_holdings_snapshot.csv` from the
 source-input refresh workflow. `dynamic_mega_leveraged_pullback` also requires
 `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH`.
@@ -159,7 +160,7 @@ Scheduled publish builds all scheduled snapshot profiles from the refreshed
 source inputs:
 
 ```text
-profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_dynamic_top20,dynamic_mega_leveraged_pullback
+profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_dynamic_top20,mega_cap_leader_rotation_top50_balanced,dynamic_mega_leveraged_pullback
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 tech_and_russell_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
 mega_dynamic_top20_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
@@ -181,6 +182,7 @@ Default scheduled output prefixes:
 | `tech_communication_pullback_enhancement` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging` |
 | `russell_1000_multi_factor_defensive` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging` |
 | `mega_cap_leader_rotation_dynamic_top20` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_dynamic_top20_staging` |
+| `mega_cap_leader_rotation_top50_balanced` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging` |
 | `dynamic_mega_leveraged_pullback` | `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/dynamic_mega_leveraged_pullback_staging` |
 
 These defaults can be overridden with repository variables:
@@ -194,6 +196,9 @@ These defaults can be overridden with repository variables:
 - `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH`
 - `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_UNIVERSE_PATH`
 - `SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_GCS_PREFIX`
+- `SCHEDULED_MEGA_CAP_TOP50_BALANCED_PRICES_PATH`
+- `SCHEDULED_MEGA_CAP_TOP50_BALANCED_UNIVERSE_PATH`
+- `SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX`
 - `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRICES_PATH`
 - `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_UNIVERSE_PATH`
 - `SCHEDULED_DYNAMIC_MEGA_LEVERAGED_PULLBACK_PRODUCT_MAP_PATH`

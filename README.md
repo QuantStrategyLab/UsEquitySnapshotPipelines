@@ -30,6 +30,7 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 | `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
 | `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
 | `mega_cap_leader_rotation_dynamic_top20` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow live here; scheduled publish uses the latest weighted Russell 1000 holdings snapshot to derive top20 |
+| `mega_cap_leader_rotation_top50_balanced` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow for the balanced Top50 live profile |
 
 This table describes artifact publishing cadence only. Strategy-level cadence remains documented in `UsEquityStrategies`; broker execution schedules should follow that strategy-layer source.
 
@@ -125,6 +126,21 @@ python scripts/build_mega_cap_leader_rotation_aggressive_snapshot.py \
 This profile uses the same feature schema as dynamic top20, but writes a
 separate `mega_cap_leader_rotation_aggressive` contract and defaults to a
 higher-risk top-3/no-defense runtime profile.
+
+Build the balanced Top50 profile:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_mega_cap_leader_rotation_top50_balanced_snapshot.py \
+  --prices /path/to/r1000_price_history.csv \
+  --universe /path/to/r1000_latest_holdings_snapshot.csv \
+  --as-of 2026-04-01 \
+  --dynamic-universe-size 50 \
+  --output-dir data/output/mega_cap_leader_rotation_top50_balanced
+```
+
+This writes a separate `mega_cap_leader_rotation_top50_balanced` contract. The
+runtime profile applies the fixed 50% Top2 cap50 + 50% Top4 cap25 sleeve blend.
 
 Backtest Russell 1000 from the same input files:
 
