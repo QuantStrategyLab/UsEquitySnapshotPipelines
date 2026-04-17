@@ -29,6 +29,17 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> Path:
     return resolved
 
 
+def default_config_sha256(*, contract: SnapshotProfileContract, config_name: str | None = None) -> str:
+    payload = {
+        "config_source": "strategy_manifest_default",
+        "config_name": config_name or contract.profile,
+        "strategy_profile": contract.profile,
+        "contract_version": contract.contract_version,
+    }
+    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(content).hexdigest()
+
+
 def resolve_snapshot_as_of(snapshot: pd.DataFrame) -> str | None:
     for column in ("as_of", "snapshot_date"):
         if column in snapshot.columns:
@@ -49,13 +60,18 @@ def write_snapshot_manifest(
 ) -> Path:
     resolved_snapshot = Path(snapshot_path)
     resolved_config = Path(config_path) if config_path else None
+    config_exists = resolved_config is not None and resolved_config.exists()
     payload = {
         "manifest_type": "feature_snapshot",
         "contract_version": contract.contract_version,
         "strategy_profile": contract.profile,
         "config_name": config_name or contract.profile,
-        "config_path": str(resolved_config) if resolved_config is not None else None,
-        "config_sha256": sha256_file(resolved_config) if resolved_config is not None and resolved_config.exists() else None,
+        "config_path": str(resolved_config) if config_exists else "strategy_manifest_default",
+        "config_sha256": (
+            sha256_file(resolved_config)
+            if config_exists
+            else default_config_sha256(contract=contract, config_name=config_name)
+        ),
         "snapshot_path": str(resolved_snapshot),
         "snapshot_sha256": sha256_file(resolved_snapshot),
         "snapshot_as_of": resolve_snapshot_as_of(snapshot),

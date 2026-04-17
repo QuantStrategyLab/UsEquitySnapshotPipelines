@@ -81,6 +81,8 @@ def test_builds_mega_cap_dynamic_top20_artifact_contract(tmp_path) -> None:
     assert "SPY" not in set(ranking["symbol"])
     assert manifest["strategy_profile"] == "mega_cap_leader_rotation_dynamic_top20"
     assert manifest["contract_version"] == "mega_cap_leader_rotation_dynamic_top20.feature_snapshot.v1"
+    assert manifest["config_path"] == "strategy_manifest_default"
+    assert manifest["config_sha256"]
     assert manifest["row_count"] == len(snapshot)
     assert summary["release_status"] == "ready"
 
@@ -142,6 +144,8 @@ def test_builds_mega_cap_top50_balanced_artifact_contract(tmp_path) -> None:
     assert result.snapshot_path.name == "mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv"
     assert manifest["strategy_profile"] == BALANCED_PROFILE
     assert manifest["contract_version"] == "mega_cap_leader_rotation_top50_balanced.feature_snapshot.v1"
+    assert manifest["config_path"] == "strategy_manifest_default"
+    assert manifest["config_sha256"]
     assert summary["strategy_profile"] == BALANCED_PROFILE
     assert summary["release_status"] == "ready"
 
