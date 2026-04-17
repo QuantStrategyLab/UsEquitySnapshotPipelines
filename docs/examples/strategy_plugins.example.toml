@@ -5,6 +5,8 @@ default_mode = "shadow"
 strategy = "tqqq_growth_income"
 plugin = "crisis_response_shadow"
 enabled = true
+# The runner enforces plugin/strategy compatibility. This plugin is scoped to
+# the TQQQ black-swan defense strategy.
 # mode is optional when it matches default_mode.
 # Set mode = "paper", "advisory", or "live" here to override this plugin only.
 
@@ -25,6 +27,7 @@ plugin = "taco_rebound_shadow"
 enabled = true
 # TACO is a separate left-side rebound budget signal. It is not part of the
 # crisis_response_shadow plugin.
+# It is scoped to dynamic/MAGS-style left-side pullback strategies.
 
 [strategy_plugins.inputs]
 prices = "data/output/taco_rebound_shadow/input/price_history.csv"

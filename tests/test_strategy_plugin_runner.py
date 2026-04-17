@@ -207,6 +207,14 @@ def test_strategy_plugin_runner_mounts_taco_rebound_to_left_side_strategy(tmp_pa
     assert payload["sleeve_suggestion"] == 0.10
 
 
+def test_strategy_plugin_runner_rejects_incompatible_plugin_strategy_mount(tmp_path) -> None:
+    config = _shadow_plugin_config(tmp_path)
+    config["strategy_plugins"][0]["strategy"] = LEFT_SIDE_STRATEGY_NAME
+
+    with pytest.raises(ValueError, match="strategy-limited"):
+        run_configured_plugins(config)
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_controls"),
     [

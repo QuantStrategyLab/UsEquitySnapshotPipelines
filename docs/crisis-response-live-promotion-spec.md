@@ -125,7 +125,12 @@ python scripts/run_strategy_plugins.py --config /path/to/strategy_plugins.toml
 The runner is a whitelist. A plugin can only run if the code explicitly
 registers it. A plugin is mounted to a strategy through each
 `[[strategy_plugins]]` entry; the strategy core must remain independent of the
-runner and must not import plugin code.
+runner and must not import plugin code. Plugins are strategy-limited in the
+runner: a mount is rejected unless the plugin is explicitly declared compatible
+with that strategy. This keeps `crisis_response_shadow` scoped to the TQQQ
+black-swan strategy and keeps `taco_rebound_shadow` scoped to left-side MAGS /
+dynamic mega pullback research unless a future PR updates the compatibility
+table and tests.
 
 The runner accepts `mode = "shadow"`, `paper`, `advisory`, or `live` and writes
 that mode into each plugin artifact. `mode` is the single plugin behavior
