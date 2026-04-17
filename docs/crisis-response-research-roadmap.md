@@ -24,6 +24,7 @@ improve protection without reducing post-2015 / post-2010 bull-market returns?
 | 2022 rate bear | inflation + Fed tightening + duration/valuation compression | usually `no_action` | Protecting here easily harms long-run compounding; classify separately from financial crisis. |
 | 2018-2019 trade war / tariff shocks | policy/headline panic without systemic break | `taco_fake_crisis` | Good candidate for small TACO sleeve, not main-book defense. |
 | 2025+ tariff / policy shocks | policy/headline panic unless paired with systemic stress | `taco_fake_crisis` or `no_action` | Keep small sleeve and require audit logs. |
+| 2026 U.S.-Iran de-escalation / ceasefire research | geopolitical panic followed by de-escalation or talks | `taco_fake_crisis` research bucket only | Use `geopolitical-deescalation`; do not add to default live event set without paper logs. |
 
 ## Candidate Context Features
 
@@ -93,9 +94,11 @@ A new context feature cannot affect live routing unless it passes all checks:
 2. 2022 is not incorrectly converted into a broad true-crisis defense unless
    financial-stress evidence also appears.
 3. 2018-2019 trade-war shocks remain TACO or no-action, not true crisis.
-4. 2000 and 2008 improve or stay close to current V1 true-crisis results.
-5. The feature works as a broad context input, not a single-date hindsight flag.
-6. Context output remains sparse: only after a scanner opens, not daily polling.
+4. Geopolitical de-escalation events remain an explicit research bucket, not part
+   of the default `full` calendar.
+5. 2000 and 2008 improve or stay close to current V1 true-crisis results.
+6. The feature works as a broad context input, not a single-date hindsight flag.
+7. Context output remains sparse: only after a scanner opens, not daily polling.
 
 ## Suggested next experiments
 

@@ -321,10 +321,88 @@ SECOND_TERM_TRADE_WAR_EVENTS: tuple[TradeWarEvent, ...] = (
     ),
 )
 
+GEOPOLITICAL_CONFLICT_EVENTS_2026: tuple[TradeWarEvent, ...] = (
+    TradeWarEvent(
+        event_id="2026-02-28-us-israel-strikes-iran-war-start",
+        event_date="2026-02-28",
+        kind=EVENT_KIND_SHOCK,
+        region="iran_middle_east",
+        title="U.S. and Israel strike Iran, starting the 2026 Iran war escalation",
+        source="AP",
+        source_url="https://apnews.com/article/e85410b6f404ddd45a9da0a09f1c285f",
+    ),
+    TradeWarEvent(
+        event_id="2026-03-26-iran-war-ceasefire-doubts-hormuz-deadline",
+        event_date="2026-03-26",
+        kind=EVENT_KIND_SHOCK,
+        region="iran_middle_east",
+        title="Stocks fall on Iran ceasefire doubts and Strait of Hormuz deadline risk",
+        source="Spokesman/Bloomberg",
+        source_url=(
+            "https://www.spokesman.com/stories/2026/mar/26/"
+            "wall-street-slides-as-mideast-de-escalation-uncert/"
+        ),
+    ),
+)
+
+GEOPOLITICAL_DEESCALATION_EVENTS_2026: tuple[TradeWarEvent, ...] = (
+    TradeWarEvent(
+        event_id="2026-03-31-iran-war-peace-hopes-rally",
+        event_date="2026-03-31",
+        kind=EVENT_KIND_SOFTENING,
+        region="iran_middle_east",
+        title="U.S. stocks surge as hope returns for a possible end to the Iran war",
+        source="AP",
+        source_url="https://apnews.com/article/wall-street-stocks-dow-nasdaq-57d35b474bf9d44af81724b3b0ee8936",
+    ),
+    TradeWarEvent(
+        event_id="2026-04-08-us-iran-two-week-ceasefire",
+        event_date="2026-04-08",
+        kind=EVENT_KIND_SOFTENING,
+        region="iran_middle_east",
+        title="U.S. and Iran agree to a two-week ceasefire and Strait of Hormuz reopening",
+        source="AP",
+        source_url="https://apnews.com/article/financial-markets-iran-oil-bcd3342cd0b4e60ebedc1e81db08f465",
+    ),
+    TradeWarEvent(
+        event_id="2026-04-10-planned-us-iran-talks",
+        event_date="2026-04-10",
+        kind=EVENT_KIND_SOFTENING,
+        region="iran_middle_east",
+        title="Planned U.S.-Iran talks follow the shaky ceasefire agreement",
+        source="AP",
+        source_url="https://apnews.com/article/stock-markets-trump-iran-ceasefire-oil-7ef6ebab1aaa731d2da6406b3cbde6dd",
+    ),
+    TradeWarEvent(
+        event_id="2026-04-15-in-principle-ceasefire-extension",
+        event_date="2026-04-15",
+        kind=EVENT_KIND_SOFTENING,
+        region="iran_middle_east",
+        title="Officials cite an in-principle agreement to extend the ceasefire for diplomacy",
+        source="AP",
+        source_url="https://apnews.com/article/stock-markets-trump-oil-iran-war-7659569791b1f5e108489360d18e50f1",
+    ),
+)
+
+GEOPOLITICAL_CONFLICT_AND_DEESCALATION_EVENTS_2026: tuple[TradeWarEvent, ...] = (
+    *GEOPOLITICAL_CONFLICT_EVENTS_2026,
+    *GEOPOLITICAL_DEESCALATION_EVENTS_2026,
+)
+
 TRADE_WAR_EVENTS_2018_TO_PRESENT: tuple[TradeWarEvent, ...] = (
     *FIRST_TERM_TRADE_WAR_EVENTS,
     *BIDEN_TERM_TRADE_WAR_EVENTS,
     *SECOND_TERM_TRADE_WAR_EVENTS,
+)
+
+TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION: tuple[TradeWarEvent, ...] = (
+    *TRADE_WAR_EVENTS_2018_TO_PRESENT,
+    *GEOPOLITICAL_DEESCALATION_EVENTS_2026,
+)
+
+TACO_EVENTS_WITH_GEOPOLITICAL_CONFLICT_AND_DEESCALATION: tuple[TradeWarEvent, ...] = (
+    *TRADE_WAR_EVENTS_2018_TO_PRESENT,
+    *GEOPOLITICAL_CONFLICT_AND_DEESCALATION_EVENTS_2026,
 )
 
 DEFAULT_EVENT_SET = "full"
@@ -332,6 +410,11 @@ TRADE_WAR_EVENT_SETS: dict[str, tuple[TradeWarEvent, ...]] = {
     "first-term": FIRST_TERM_TRADE_WAR_EVENTS,
     "biden": BIDEN_TERM_TRADE_WAR_EVENTS,
     "second-term": SECOND_TERM_TRADE_WAR_EVENTS,
+    "geopolitical-conflict": GEOPOLITICAL_CONFLICT_EVENTS_2026,
+    "geopolitical-deescalation": GEOPOLITICAL_DEESCALATION_EVENTS_2026,
+    "geopolitical-conflict-and-deescalation": GEOPOLITICAL_CONFLICT_AND_DEESCALATION_EVENTS_2026,
+    "full-plus-geopolitical-deescalation": TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION,
+    "full-plus-geopolitical-conflict-and-deescalation": TACO_EVENTS_WITH_GEOPOLITICAL_CONFLICT_AND_DEESCALATION,
     "full": TRADE_WAR_EVENTS_2018_TO_PRESENT,
 }
 
@@ -669,7 +752,12 @@ __all__ = [
     "FIRST_TERM_TRADE_WAR_EVENTS",
     "BIDEN_TERM_TRADE_WAR_EVENTS",
     "SECOND_TERM_TRADE_WAR_EVENTS",
+    "GEOPOLITICAL_CONFLICT_EVENTS_2026",
+    "GEOPOLITICAL_DEESCALATION_EVENTS_2026",
+    "GEOPOLITICAL_CONFLICT_AND_DEESCALATION_EVENTS_2026",
     "TRADE_WAR_EVENTS_2018_TO_PRESENT",
+    "TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION",
+    "TACO_EVENTS_WITH_GEOPOLITICAL_CONFLICT_AND_DEESCALATION",
     "TRADE_WAR_EVENT_SETS",
     "TradeWarEvent",
     "analyze_event_windows",
