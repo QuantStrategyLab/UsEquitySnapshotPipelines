@@ -306,7 +306,11 @@ This is an event-window research tool, not a live strategy. It uses a fixed
 trade-war event calendar, finds the post-shock trough within the configured
 window, then reports 5 / 10 / 21 / 42 / 63 trading-day rebounds by symbol. Use
 `--event-set first-term`, `--event-set biden`, or `--event-set second-term` for
-single-period diagnostics. The command writes `event_calendar.csv`,
+single-period diagnostics. Use `--event-set geopolitical-deescalation` for the
+research-only 2026 U.S.-Iran de-escalation / ceasefire bucket, or
+`--event-set full-plus-geopolitical-deescalation` to append that bucket to the
+default trade-war calendar. The default `full` event set intentionally does not
+include the geopolitical bucket. The command writes `event_calendar.csv`,
 `event_windows.csv`, `shock_symbol_summary.csv`, and
 `softening_symbol_summary.csv`.
 
@@ -352,6 +356,13 @@ This is the first-version definition for the TQQQ/TACO overlay research:
 trade-war / tariff shock or softening events, and the overlay can use a small
 slice of the baseline `BOXX` / cash sleeve to buy `TQQQ`. VIX and macro data are
 not used as hard vetoes or position-size reducers in V1.
+
+The explicit geopolitical research buckets are separate from the default live
+calendar. `geopolitical-deescalation` only includes de-escalation / ceasefire /
+talks events, while `geopolitical-conflict-and-deescalation` also includes the
+war-escalation stress events for sensitivity testing. Prefer the
+de-escalation-only bucket when studying a potential small TACO sleeve because it
+does not try to buy the war headline itself.
 
 The optional dual-review backtest is a deterministic audit proxy, not a
 historical replay of live model responses. The event calendar simulates the

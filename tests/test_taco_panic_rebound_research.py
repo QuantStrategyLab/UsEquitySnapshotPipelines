@@ -27,7 +27,10 @@ from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
 )
 from us_equity_snapshot_pipelines.taco_panic_rebound_research import (
     EVENT_KIND_SHOCK,
+    EVENT_KIND_SOFTENING,
+    GEOPOLITICAL_DEESCALATION_EVENTS_2026,
     TRADE_WAR_EVENTS_2018_TO_PRESENT,
+    TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION,
     TradeWarEvent,
     analyze_event_windows,
     price_history_to_close_matrix,
@@ -121,6 +124,19 @@ def test_full_event_set_includes_presidential_period_events() -> None:
     assert any(event.event_date.startswith("2018-") for event in full)
     assert any(event.event_date.startswith("2024-") for event in full)
     assert any(event.event_date.startswith("2025-") for event in full)
+    assert not any(event.event_date.startswith("2026-") for event in full)
+
+
+def test_geopolitical_deescalation_event_set_is_explicit_research_bucket() -> None:
+    deescalation = resolve_trade_war_event_set("geopolitical-deescalation")
+    combined = resolve_trade_war_event_set("full-plus-geopolitical-deescalation")
+
+    assert deescalation == GEOPOLITICAL_DEESCALATION_EVENTS_2026
+    assert combined == TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION
+    assert all(event.event_date.startswith("2026-") for event in deescalation)
+    assert {event.kind for event in deescalation} == {EVENT_KIND_SOFTENING}
+    assert any(event.region == "iran_middle_east" for event in deescalation)
+    assert TRADE_WAR_EVENTS_2018_TO_PRESENT == combined[: len(TRADE_WAR_EVENTS_2018_TO_PRESENT)]
 
 
 def test_price_stress_scan_filters_event_calendar() -> None:
