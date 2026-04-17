@@ -58,7 +58,7 @@ The command writes:
 - `tech_communication_pullback_enhancement_ranking_latest.csv`
 - `release_status_summary.json`
 
-See `docs/operator_runbook.md` for the manual GitHub Actions publish flow.
+See `docs/operator_runbook.md` and `docs/operator_runbook.zh-CN.md` for the manual GitHub Actions publish flow.
 The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, including the latest weighted holdings snapshot used by mega-cap dynamic top20, then they build and publish the scheduled snapshot profiles from those refreshed inputs.
 
 Prepare / refresh shared Russell 1000 source inputs:
