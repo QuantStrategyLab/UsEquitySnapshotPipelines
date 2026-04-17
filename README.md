@@ -267,6 +267,31 @@ when `--rolling-window-years` is provided. See
 `docs/mega-cap-leader-rotation-dynamic-validation.md` for the current
 research-only conclusion.
 
+For pre-2017 history where official IWB/Russell 1000 holdings are unavailable,
+build an explicitly labeled proxy universe from point-in-time long-history
+prices. Prefer inputs with `market_value` or `shares_outstanding`; if those are
+absent the command falls back to an ADV20 dollar-volume proxy and marks the
+output as lower-confidence research:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_russell_1000_proxy_long_history.py \
+  --prices /path/to/long_history_us_equity_prices.csv \
+  --start 2000-01-31 \
+  --universe-size 1000 \
+  --strategy-configs top2_cap50:2:0.50,top3_cap35:3:0.35 \
+  --risk-modes no_defense:1:1:1 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/russell_1000_proxy_long_history
+```
+
+The proxy command writes `russell_1000_proxy_universe_history.csv`,
+`russell_1000_proxy_metadata.csv`, and, unless `--skip-validation` is set, the
+same validation summary files as the dynamic Top50 validator. Treat these
+outputs as a survivorship-bias and data-quality audit surface, not official
+Russell 1000 history.
+
 Run the longest currently available point-in-time Top50 validation with 3-year
 and 5-year rolling windows:
 
