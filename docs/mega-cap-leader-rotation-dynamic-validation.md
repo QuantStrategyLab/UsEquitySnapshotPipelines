@@ -9,8 +9,9 @@ promote a live strategy by itself.
 Static MAGS / static MAG7 style pools remain rejected for live promotion because
 they are structurally hindsight-biased.
 
-Dynamic Top50 Top2 is not rejected, but it is too sensitive to universe
-availability timing to promote now. With refreshed Top50 prices, adding a
+Dynamic Top50 Top2 is not rejected. It remains the aggressive candidate if an
+approximately `-40%` max drawdown is acceptable, but it is still sensitive to
+universe availability timing. With refreshed Top50 prices, adding a
 one-trading-day universe lag reduced the Top2 CAGR from `48.69%` to `37.89%`
 and worsened max drawdown from `-34.22%` to `-38.79%`. The edge remains, but
 the timing sensitivity is material.
@@ -22,6 +23,12 @@ the expanded grid is `top4_cap25_no_defense` using a lagged universe baseline:
 universe lag. `top3_cap35_no_defense_sector2` is the higher-return candidate at
 `31.33%` CAGR and `-29.29%` max drawdown. Top2 remains an aggressive variant,
 not the default.
+
+The longest honest validation available in this repo starts from the first
+point-in-time Top50 universe snapshot (`2017-09-29`). On the `2017-10-02` to
+`2026-04-16` sample, the lagged Top2 variant improved QQQ materially, but one
+3-year window still trailed QQQ slightly. This keeps the idea in research:
+promising, but not yet a live profile.
 
 ## Validation Setup
 
@@ -43,6 +50,8 @@ not the default.
   - `top3_cap35`: top 3, 35% single-name cap
   - expanded grid: Top2/Top3/Top4, no-defense / partial-defense /
     cash-defense, and per-sector caps of none / 1 / 2
+- Long-cycle validation window: `2017-10-02` to `2026-04-16`
+- Long-cycle rolling windows: complete calendar years only, `2018` to `2025`
 
 The refreshed price download covered 91 of 94 dynamic Top50 symbols. Missing
 symbols were `CELG`, `DWDP`, and `UTX`; they were old delisted or merger-era
@@ -157,6 +166,83 @@ Selected 21-day lag yearly returns:
 | 2025 | 21.41% | 20.63% | 28.94% | 20.77% |
 | 2026 | 37.05% | 26.78% | 36.76% | -0.40% |
 
+## Long-Cycle Validation
+
+This run uses the longest point-in-time Top50 history currently available in
+the repo. It does not claim a 2000-2016 validation because that would require a
+historical point-in-time Russell Top50 constituent source.
+
+Command output:
+`data/output/mega_cap_leader_rotation_dynamic_top50_long_cycle_validation`
+
+Setup:
+
+- Backtest window: `2017-10-02` to `2026-04-16`
+- Universe lag: `21` trading days
+- Risk mode: `no_defense`
+- Sector caps tested: disabled and max 2 names per sector
+- Turnover cost: `5` bps
+- Rolling windows: `3` and `5` complete calendar years
+
+Full-period result:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Total Return | Turnover/Year |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Top2 cap50 | 39.83% | -38.79% | 1.10 | 1.03 | 1649.57% | 3.51 |
+| Top3 cap35 sector2 | 33.36% | -29.29% | 1.09 | 1.14 | 1067.56% | 3.71 |
+| Top4 cap25 | 32.27% | -27.28% | 1.10 | 1.18 | 988.51% | 3.57 |
+| QQQ | n/a | n/a | n/a | n/a | 365.54% | n/a |
+| SPY | n/a | n/a | n/a | n/a | 218.94% | n/a |
+
+Yearly returns:
+
+| Year | Top2 cap50 | Top3 cap35 sector2 | Top4 cap25 | QQQ | SPY |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2017 | 11.02% | 8.00% | 5.35% | 7.31% | 6.76% |
+| 2018 | 4.72% | 21.51% | 11.43% | -0.13% | -4.57% |
+| 2019 | 2.51% | 6.37% | 13.57% | 38.96% | 31.22% |
+| 2020 | 106.72% | 90.51% | 73.39% | 48.41% | 18.33% |
+| 2021 | 18.17% | 13.87% | 11.73% | 27.42% | 28.73% |
+| 2022 | 22.61% | 10.23% | 9.79% | -32.58% | -18.18% |
+| 2023 | 82.75% | 47.20% | 52.73% | 54.86% | 26.18% |
+| 2024 | 55.29% | 52.68% | 41.49% | 25.58% | 24.89% |
+| 2025 | 21.41% | 20.63% | 28.94% | 20.77% | 17.72% |
+| 2026 | 42.26% | 29.02% | 37.76% | 4.39% | 3.18% |
+
+3-year rolling CAGR:
+
+| Window | Top2 cap50 | Top3 cap35 sector2 | Top4 cap25 | QQQ |
+| --- | ---: | ---: | ---: | ---: |
+| 2018-2020 | 30.49% | 35.10% | 30.00% | 27.28% |
+| 2019-2021 | 35.86% | 32.20% | 30.12% | 38.07% |
+| 2020-2022 | 44.28% | 33.82% | 28.68% | 8.46% |
+| 2021-2023 | 38.62% | 22.86% | 23.44% | 10.05% |
+| 2022-2024 | 51.69% | 35.41% | 33.47% | 9.48% |
+| 2023-2025 | 51.20% | 39.55% | 40.84% | 33.02% |
+
+5-year rolling CAGR:
+
+| Window | Top2 cap50 | Top3 cap35 sector2 | Top4 cap25 | QQQ |
+| --- | ---: | ---: | ---: | ---: |
+| 2018-2022 | 26.36% | 25.37% | 21.94% | 12.11% |
+| 2019-2023 | 41.31% | 30.30% | 29.91% | 22.42% |
+| 2020-2024 | 53.47% | 40.01% | 35.70% | 19.93% |
+| 2021-2025 | 38.03% | 27.82% | 27.94% | 15.11% |
+
+Rolling-window interpretation:
+
+- Top2 had the best full-period return and every 5-year rolling window beat
+  QQQ. The weak point is the `2019-2021` 3-year window, where it trailed QQQ by
+  about `2.20` percentage points annualized.
+- Top4 is the cleaner risk baseline: lower CAGR than Top2, but the best Calmar
+  and a much smaller max drawdown. It can still lag QQQ in strong broad-tech
+  bull windows, so it should not be described as a guaranteed benchmark
+  replacement.
+- Top3 sector2 sits between them. Its return is higher than Top4, but it gives
+  up roughly two drawdown points.
+- None of these variants currently uses TACO or Crisis Response. They are
+  standalone leader-rotation strategy tests.
+
 ## Commands
 
 Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
@@ -215,10 +301,29 @@ python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_stability_grid
 ```
 
+Run the longest available point-in-time Top50 validation with rolling windows:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --strategy-configs top2_cap50:2:0.50,top3_cap35:3:0.35,top4_cap25:4:0.25 \
+  --risk-modes no_defense:1:1:1 \
+  --max-names-per-sector-values 0,2 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_long_cycle_validation
+```
+
 The validation command writes:
 
 - `validation_summary.csv`
 - `yearly_validation_summary.csv`
+- `rolling_window_summary.csv` when `--rolling-window-years` is provided
 
 ## Promotion Guardrails
 

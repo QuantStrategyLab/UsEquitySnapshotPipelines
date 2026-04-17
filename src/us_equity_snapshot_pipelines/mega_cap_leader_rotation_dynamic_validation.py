@@ -19,6 +19,7 @@ from .russell_1000_multi_factor_defensive_snapshot import read_table
 DEFAULT_LAG_TRADING_DAYS = (0, 1, 5, 21)
 DEFAULT_VALIDATION_CONFIGS = "top2_cap50:2:0.50,top3_cap35:3:0.35"
 DEFAULT_MAX_NAMES_PER_SECTOR_VALUES = (0,)
+DEFAULT_ROLLING_WINDOW_YEARS: tuple[int, ...] = ()
 VALIDATION_SUMMARY_COLUMNS = (
     "Run",
     "Config",
@@ -61,6 +62,25 @@ YEARLY_SUMMARY_COLUMNS = (
     "QQQ Return",
     "QQQ Max Drawdown",
     "SPY Return",
+    "SPY Max Drawdown",
+)
+ROLLING_WINDOW_SUMMARY_COLUMNS = (
+    "Run",
+    "Config",
+    "Risk Mode",
+    "Universe Lag Trading Days",
+    "Max Names Per Sector",
+    "Window Years",
+    "Window Start Year",
+    "Window End Year",
+    "Strategy Return",
+    "Strategy CAGR",
+    "Strategy Max Drawdown",
+    "QQQ Return",
+    "QQQ CAGR",
+    "QQQ Max Drawdown",
+    "SPY Return",
+    "SPY CAGR",
     "SPY Max Drawdown",
 )
 
@@ -232,6 +252,15 @@ def _period_max_drawdown(returns: pd.Series) -> float:
     return float((equity / equity.cummax() - 1.0).min())
 
 
+def _period_cagr(returns: pd.Series) -> float:
+    values = pd.to_numeric(returns, errors="coerce").dropna()
+    if values.empty:
+        return float("nan")
+    total_return = float((1.0 + values).prod())
+    years = max((values.index[-1] - values.index[0]).days / 365.25, 1 / 365.25)
+    return float(total_return ** (1.0 / years) - 1.0)
+
+
 def _build_yearly_summary(
     *,
     run_name: str,
@@ -279,6 +308,87 @@ def _build_yearly_summary(
     return rows
 
 
+def _complete_calendar_years(index: pd.DatetimeIndex) -> list[int]:
+    years: list[int] = []
+    normalized = pd.DatetimeIndex(index).tz_localize(None).normalize()
+    for year, values in pd.Series(normalized, index=normalized).groupby(normalized.year):
+        first = pd.Timestamp(values.min()).normalize()
+        last = pd.Timestamp(values.max()).normalize()
+        if first <= pd.Timestamp(year=int(year), month=1, day=7) and last >= pd.Timestamp(
+            year=int(year),
+            month=12,
+            day=24,
+        ):
+            years.append(int(year))
+    return years
+
+
+def _build_rolling_window_summary(
+    *,
+    run_name: str,
+    config: ValidationConfig,
+    risk_mode: RiskMode,
+    lag_trading_days: int,
+    max_names_per_sector: int,
+    portfolio_returns: pd.Series,
+    reference_returns: pd.DataFrame,
+    benchmark_symbol: str,
+    broad_benchmark_symbol: str,
+    rolling_window_years: Iterable[int],
+) -> list[dict[str, object]]:
+    years = _complete_calendar_years(pd.DatetimeIndex(portfolio_returns.index))
+    rows: list[dict[str, object]] = []
+    if not years:
+        return rows
+
+    reference = reference_returns.reindex(portfolio_returns.index)
+    for window_years in rolling_window_years:
+        window = int(window_years)
+        if window <= 0:
+            continue
+        for start_year in years:
+            end_year = start_year + window - 1
+            if end_year not in years:
+                continue
+            mask = (pd.DatetimeIndex(portfolio_returns.index).year >= start_year) & (
+                pd.DatetimeIndex(portfolio_returns.index).year <= end_year
+            )
+            strategy_returns = portfolio_returns.loc[mask]
+            reference_slice = reference.loc[strategy_returns.index]
+            benchmark_returns = (
+                reference_slice[benchmark_symbol]
+                if benchmark_symbol in reference_slice.columns
+                else pd.Series(index=strategy_returns.index, dtype=float)
+            )
+            broad_returns = (
+                reference_slice[broad_benchmark_symbol]
+                if broad_benchmark_symbol in reference_slice.columns
+                else pd.Series(index=strategy_returns.index, dtype=float)
+            )
+            rows.append(
+                {
+                    "Run": run_name,
+                    "Config": config.name,
+                    "Risk Mode": risk_mode.name,
+                    "Universe Lag Trading Days": int(lag_trading_days),
+                    "Max Names Per Sector": int(max_names_per_sector),
+                    "Window Years": int(window),
+                    "Window Start Year": int(start_year),
+                    "Window End Year": int(end_year),
+                    "Strategy Return": _period_return(strategy_returns),
+                    "Strategy CAGR": _period_cagr(strategy_returns),
+                    "Strategy Max Drawdown": _period_max_drawdown(strategy_returns),
+                    "QQQ Return": _period_return(benchmark_returns),
+                    "QQQ CAGR": _period_cagr(benchmark_returns),
+                    "QQQ Max Drawdown": _period_max_drawdown(benchmark_returns),
+                    "SPY Return": _period_return(broad_returns),
+                    "SPY CAGR": _period_cagr(broad_returns),
+                    "SPY Max Drawdown": _period_max_drawdown(broad_returns),
+                }
+            )
+    return rows
+
+
 def run_dynamic_universe_validation(
     price_history,
     universe_history,
@@ -289,6 +399,7 @@ def run_dynamic_universe_validation(
     validation_configs: Iterable[ValidationConfig] | str | None = None,
     risk_modes: Iterable[RiskMode] | str | None = None,
     max_names_per_sector_values: Iterable[int] = DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
+    rolling_window_years: Iterable[int] = DEFAULT_ROLLING_WINDOW_YEARS,
     benchmark_symbol: str = BENCHMARK_SYMBOL,
     broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
     safe_haven: str = SAFE_HAVEN,
@@ -328,9 +439,11 @@ def run_dynamic_universe_validation(
         tuple(max_names_per_sector_values),
         default=DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
     )
+    rolling_values = parse_csv_ints(tuple(rolling_window_years), default=DEFAULT_ROLLING_WINDOW_YEARS)
     trading_index = _normalize_trading_index(pd.DataFrame(price_history))
     summary_rows: list[dict[str, object]] = []
     yearly_rows: list[dict[str, object]] = []
+    rolling_rows: list[dict[str, object]] = []
 
     for lag_days in lag_values:
         lagged_universe = lag_universe_history(
@@ -396,14 +509,31 @@ def run_dynamic_universe_validation(
                             broad_benchmark_symbol=broad_benchmark_symbol,
                         )
                     )
+                    rolling_rows.extend(
+                        _build_rolling_window_summary(
+                            run_name=run_name,
+                            config=config,
+                            risk_mode=risk_mode,
+                            lag_trading_days=int(lag_days),
+                            max_names_per_sector=int(sector_cap),
+                            portfolio_returns=result["portfolio_returns"],
+                            reference_returns=result["reference_returns"],
+                            benchmark_symbol=benchmark_symbol,
+                            broad_benchmark_symbol=broad_benchmark_symbol,
+                            rolling_window_years=rolling_values,
+                        )
+                    )
 
     summary_frame = pd.DataFrame(summary_rows)
     yearly_frame = pd.DataFrame(yearly_rows)
+    rolling_frame = pd.DataFrame(rolling_rows, columns=ROLLING_WINDOW_SUMMARY_COLUMNS)
     summary_columns = [column for column in VALIDATION_SUMMARY_COLUMNS if column in summary_frame.columns]
     yearly_columns = [column for column in YEARLY_SUMMARY_COLUMNS if column in yearly_frame.columns]
+    rolling_columns = [column for column in ROLLING_WINDOW_SUMMARY_COLUMNS if column in rolling_frame.columns]
     return {
         "validation_summary": summary_frame.loc[:, summary_columns],
         "yearly_validation_summary": yearly_frame.loc[:, yearly_columns],
+        "rolling_window_summary": rolling_frame.loc[:, rolling_columns],
     }
 
 
@@ -426,6 +556,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-names-per-sector-values",
         default=",".join(str(value) for value in DEFAULT_MAX_NAMES_PER_SECTOR_VALUES),
         help="Comma-separated per-sector selected-name caps; 0 disables the cap",
+    )
+    parser.add_argument(
+        "--rolling-window-years",
+        default="",
+        help="Comma-separated calendar-year rolling windows to summarize, for example 3,5",
     )
     parser.add_argument("--benchmark-symbol", default=BENCHMARK_SYMBOL)
     parser.add_argument("--broad-benchmark-symbol", default=BROAD_BENCHMARK_SYMBOL)
@@ -461,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
             args.max_names_per_sector_values,
             default=DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
         ),
+        rolling_window_years=parse_csv_ints(args.rolling_window_years, default=DEFAULT_ROLLING_WINDOW_YEARS),
         benchmark_symbol=args.benchmark_symbol,
         broad_benchmark_symbol=args.broad_benchmark_symbol,
         safe_haven=args.safe_haven,
@@ -478,11 +614,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     summary_path = output_dir / "validation_summary.csv"
     yearly_path = output_dir / "yearly_validation_summary.csv"
+    rolling_path = output_dir / "rolling_window_summary.csv"
     result["validation_summary"].to_csv(summary_path, index=False)
     result["yearly_validation_summary"].to_csv(yearly_path, index=False)
+    result["rolling_window_summary"].to_csv(rolling_path, index=False)
     print(result["validation_summary"].head(max(int(args.print_top), 0)).to_string(index=False))
     print(f"wrote validation summary -> {summary_path}")
     print(f"wrote yearly validation summary -> {yearly_path}")
+    print(f"wrote rolling window summary -> {rolling_path}")
     return 0
 
 
