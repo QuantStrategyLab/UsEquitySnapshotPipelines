@@ -246,9 +246,29 @@ python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
 ```
 
 The validation command writes `validation_summary.csv` and
-`yearly_validation_summary.csv`. See
+`yearly_validation_summary.csv`; it also writes `rolling_window_summary.csv`
+when `--rolling-window-years` is provided. See
 `docs/mega-cap-leader-rotation-dynamic-validation.md` for the current
 research-only conclusion.
+
+Run the longest currently available point-in-time Top50 validation with 3-year
+and 5-year rolling windows:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --strategy-configs top2_cap50:2:0.50,top3_cap35:3:0.35,top4_cap25:4:0.25 \
+  --risk-modes no_defense:1:1:1 \
+  --max-names-per-sector-values 0,2 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_long_cycle_validation
+```
 
 The same validation CLI can run a broader lagged stability grid across Top2 /
 Top3 / Top4, QQQ-defense settings, and sector concentration caps:

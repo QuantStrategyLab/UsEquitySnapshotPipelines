@@ -103,7 +103,7 @@ def test_run_dynamic_universe_validation_builds_lag_and_yearly_tables() -> None:
     result = run_dynamic_universe_validation(
         _sample_prices(),
         _sample_dynamic_universe(),
-        start_date="2022-06-01",
+        start_date="2022-01-03",
         end_date="2023-11-30",
         universe_lag_trading_days=(0, 1),
         validation_configs=(
@@ -119,18 +119,22 @@ def test_run_dynamic_universe_validation_builds_lag_and_yearly_tables() -> None:
             ),
         ),
         max_names_per_sector_values=(0, 1),
+        rolling_window_years=(1,),
         min_adv20_usd=1_000_000.0,
         turnover_cost_bps=0.0,
     )
 
     summary = result["validation_summary"]
     yearly = result["yearly_validation_summary"]
+    rolling = result["rolling_window_summary"]
     assert len(summary) == 8
     assert set(summary["Universe Lag Trading Days"]) == {0, 1}
     assert set(summary["Config"]) == {"top2_cap50", "top3_cap35"}
     assert set(summary["Max Names Per Sector"]) == {0, 1}
     assert {"Strategy Return", "QQQ Return", "SPY Return"}.issubset(yearly.columns)
+    assert {"Window Years", "Strategy CAGR", "QQQ CAGR"}.issubset(rolling.columns)
     assert not yearly.empty
+    assert not rolling.empty
 
 
 def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
@@ -149,7 +153,7 @@ def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
             "--output-dir",
             str(output_dir),
             "--start",
-            "2022-06-01",
+            "2022-01-03",
             "--end",
             "2023-11-30",
             "--universe-lag-days",
@@ -160,6 +164,8 @@ def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
             "no_defense:1:1:1,cash_defense:1:0:0",
             "--max-names-per-sector-values",
             "0,1",
+            "--rolling-window-years",
+            "1",
             "--min-adv20-usd",
             "1000000",
             "--turnover-cost-bps",
@@ -170,6 +176,9 @@ def test_dynamic_universe_validation_cli_writes_outputs(tmp_path) -> None:
     assert exit_code == 0
     assert (output_dir / "validation_summary.csv").exists()
     assert (output_dir / "yearly_validation_summary.csv").exists()
+    assert (output_dir / "rolling_window_summary.csv").exists()
     summary = pd.read_csv(output_dir / "validation_summary.csv")
+    rolling = pd.read_csv(output_dir / "rolling_window_summary.csv")
     assert len(summary) == 8
     assert set(summary["Risk Mode"]) == {"no_defense", "cash_defense"}
+    assert not rolling.empty
