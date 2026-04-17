@@ -26,6 +26,7 @@ useq-build-dynamic-mega-leveraged-pullback-snapshot = "us_equity_snapshot_pipeli
 useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
 useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
 useq-validate-mega-cap-leader-rotation-dynamic-universe = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_validation:main"
+useq-research-mega-cap-leader-rotation-concentration-variants = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-dynamic-mega-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
