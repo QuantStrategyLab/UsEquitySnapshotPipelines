@@ -656,12 +656,12 @@ def _normalize_rebound_budget_signals(
     column: str,
 ) -> pd.DataFrame:
     if rebound_budget_signals is None:
-        return pd.DataFrame(columns=["as_of", "active_until", "budget"])
+        return pd.DataFrame(columns=["as_of", "active_until", "budget", "allow_hard_defense"])
     if isinstance(rebound_budget_signals, (str, Path)):
         rebound_budget_signals = read_table(rebound_budget_signals)
     frame = pd.DataFrame(rebound_budget_signals).copy()
     if frame.empty:
-        return pd.DataFrame(columns=["as_of", "active_until", "budget"])
+        return pd.DataFrame(columns=["as_of", "active_until", "budget", "allow_hard_defense"])
 
     normalized_columns = {str(raw).strip().lower(): raw for raw in frame.columns}
     date_column = next(
@@ -695,6 +695,20 @@ def _normalize_rebound_budget_signals(
         ),
         None,
     )
+    allow_hard_defense_column = next(
+        (
+            normalized_columns[name]
+            for name in (
+                "allow_hard_defense",
+                "allow_rebound_budget_in_hard_defense",
+                "hard_defense_allowed",
+                "break_bear_allowed",
+                "event_rebound_break_bear",
+            )
+            if name in normalized_columns
+        ),
+        None,
+    )
     output = pd.DataFrame(
         {
             "as_of": pd.to_datetime(frame[date_column], errors="coerce").dt.tz_localize(None).dt.normalize(),
@@ -707,22 +721,42 @@ def _normalize_rebound_budget_signals(
         ).dt.normalize()
     else:
         output["active_until"] = pd.NaT
+    if allow_hard_defense_column is not None:
+        output["allow_hard_defense"] = frame[allow_hard_defense_column].map(_coerce_bool)
+    else:
+        output["allow_hard_defense"] = False
     output = output.dropna(subset=["as_of"]).sort_values("as_of")
     return output.reset_index(drop=True)
 
 
-def build_rebound_budget_series(
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if pd.isna(value):
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "allow", "allowed"}
+
+
+def build_rebound_budget_schedule(
     rebound_budget_signals,
     index: pd.DatetimeIndex,
     *,
     column: str = "sleeve_suggestion",
     active_days: int = DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
     cap: float = DEFAULT_REBOUND_BUDGET_CAP,
-) -> pd.Series:
-    budget = pd.Series(0.0, index=index, name="rebound_budget_suggestion")
+) -> pd.DataFrame:
+    schedule = pd.DataFrame(
+        {
+            "rebound_budget_suggestion": 0.0,
+            "rebound_budget_hard_defense_allowed": False,
+        },
+        index=index,
+    )
     signals = _normalize_rebound_budget_signals(rebound_budget_signals, column=column)
-    if signals.empty or budget.empty:
-        return budget
+    if signals.empty or schedule.empty:
+        return schedule
 
     active_days = max(0, int(active_days))
     cap = max(0.0, float(cap))
@@ -734,9 +768,27 @@ def build_rebound_budget_series(
             else signal_date + pd.Timedelta(days=active_days)
         )
         value = max(0.0, min(cap, float(row.budget)))
-        mask = (budget.index >= signal_date) & (budget.index <= active_until)
-        budget.loc[mask] = value
-    return budget
+        mask = (schedule.index >= signal_date) & (schedule.index <= active_until)
+        schedule.loc[mask, "rebound_budget_suggestion"] = value
+        schedule.loc[mask, "rebound_budget_hard_defense_allowed"] = bool(row.allow_hard_defense)
+    return schedule
+
+
+def build_rebound_budget_series(
+    rebound_budget_signals,
+    index: pd.DatetimeIndex,
+    *,
+    column: str = "sleeve_suggestion",
+    active_days: int = DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
+    cap: float = DEFAULT_REBOUND_BUDGET_CAP,
+) -> pd.Series:
+    return build_rebound_budget_schedule(
+        rebound_budget_signals,
+        index,
+        column=column,
+        active_days=active_days,
+        cap=cap,
+    )["rebound_budget_suggestion"].rename("rebound_budget_suggestion")
 
 
 def _resolve_strategy_name(dynamic_universe: pd.DataFrame | None) -> str:
@@ -821,7 +873,7 @@ def run_backtest(
         index = index[index >= pd.Timestamp(start_date).normalize()]
     if len(index) < 2:
         raise RuntimeError("Not enough price history remains inside the selected date range")
-    rebound_budget = build_rebound_budget_series(
+    rebound_budget_schedule = build_rebound_budget_schedule(
         rebound_budget_signals,
         index,
         column=rebound_budget_column,
@@ -896,9 +948,20 @@ def run_backtest(
                 active_symbols_for(date),
                 benchmark_symbol=benchmark_symbol,
             )
-            rebound_budget_suggestion = float(rebound_budget.get(date, 0.0))
+            rebound_budget_suggestion = float(
+                rebound_budget_schedule.at[date, "rebound_budget_suggestion"]
+                if date in rebound_budget_schedule.index
+                else 0.0
+            )
+            rebound_budget_hard_defense_allowed = bool(
+                rebound_budget_schedule.at[date, "rebound_budget_hard_defense_allowed"]
+                if date in rebound_budget_schedule.index
+                else False
+            )
             rebound_budget_applied = rebound_budget_suggestion
-            if regime == "hard_defense" and not bool(allow_rebound_budget_in_hard_defense):
+            if regime == "hard_defense" and not (
+                bool(allow_rebound_budget_in_hard_defense) or rebound_budget_hard_defense_allowed
+            ):
                 rebound_budget_applied = 0.0
             market_bear_regime = str(regime) in MARKET_BEAR_REGIMES
             bear_candidates_allowed = (
@@ -960,6 +1023,7 @@ def run_backtest(
                     "regime": regime,
                     "base_target_product_exposure": regime_gross,
                     "rebound_budget_suggestion": rebound_budget_suggestion,
+                    "rebound_budget_hard_defense_allowed": rebound_budget_hard_defense_allowed,
                     "rebound_budget_applied": rebound_budget_applied,
                     "target_product_exposure": target_product_exposure,
                     "product_exposure": float(metadata.get("product_exposure", 0.0)),
@@ -1158,7 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rebound-budget-signals",
         help=(
             "Optional TACO rebound budget signal CSV/JSON. Expected columns: "
-            "as_of and sleeve_suggestion; active_until is optional."
+            "as_of and sleeve_suggestion; active_until and allow_hard_defense are optional."
         ),
     )
     parser.add_argument("--rebound-budget-column", default="sleeve_suggestion")

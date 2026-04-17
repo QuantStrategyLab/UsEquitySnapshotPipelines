@@ -46,6 +46,7 @@ DEFAULT_TARIFF_SOFTENING_SLEEVE = 0.05
 DEFAULT_GEOPOLITICAL_DEESCALATION_SLEEVE = 0.10
 DEFAULT_SHOCK_SLEEVE = 0.0
 DEFAULT_MAX_SLEEVE = 0.10
+HARD_DEFENSE_BREAK_BEAR_REGIONS = frozenset({"iran_middle_east"})
 
 
 def _next_index_date(index: pd.DatetimeIndex, raw_date: str | pd.Timestamp) -> pd.Timestamp | None:
@@ -71,6 +72,12 @@ def _event_sleeve(
     else:
         sleeve = float(tariff_softening_sleeve)
     return max(0.0, min(float(max_sleeve), sleeve))
+
+
+def _event_allows_hard_defense(event: TradeWarEvent | None) -> bool:
+    if event is None or event.kind != EVENT_KIND_SOFTENING:
+        return False
+    return str(event.region).strip().lower() in HARD_DEFENSE_BREAK_BEAR_REGIONS
 
 
 def _active_recognized_events(
@@ -181,21 +188,25 @@ def build_taco_rebound_shadow_signal(
     canonical_route = ROUTE_TACO_REBOUND if sleeve > 0.0 else "no_action"
     suggested_action = ACTION_INCREASE_REBOUND_BUDGET if sleeve > 0.0 else ACTION_NO_ACTION
     would_trade_if_enabled = sleeve > 0.0
+    allow_hard_defense = bool(would_trade_if_enabled and _event_allows_hard_defense(selected_event))
     suppression_reason = ""
     if active_events and sleeve <= 0.0:
         suggested_action = ACTION_WATCH_ONLY
         suppression_reason = "active event has zero configured sleeve"
+        allow_hard_defense = False
     if crisis_guard_active:
         canonical_route = "no_action"
         suggested_action = ACTION_BLOCKED
         would_trade_if_enabled = False
         sleeve = 0.0
+        allow_hard_defense = False
         suppression_reason = "price crisis guard active"
     if kill_reasons:
         canonical_route = "no_action"
         suggested_action = ACTION_BLOCKED
         would_trade_if_enabled = False
         sleeve = 0.0
+        allow_hard_defense = False
         suppression_reason = "; ".join(kill_reasons)
 
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -207,6 +218,8 @@ def build_taco_rebound_shadow_signal(
         "canonical_route": canonical_route,
         "suggested_action": suggested_action,
         "sleeve_suggestion": sleeve if sleeve > 0.0 else None,
+        "allow_hard_defense": allow_hard_defense,
+        "event_rebound_break_bear": allow_hard_defense,
         "would_trade_if_enabled": would_trade_if_enabled,
         "price_stress_scan_active": scan_active,
         "price_crisis_guard_active": crisis_guard_active,
@@ -245,6 +258,7 @@ def build_taco_rebound_shadow_signal(
             "notification_profile": "shadow_only",
             "intended_strategy_role": "left_side_rebound_budget_modifier",
             "selection_allowed": False,
+            "hard_defense_override_signal_allowed": allow_hard_defense,
         },
         "generated_at": generated_at,
     }
@@ -272,6 +286,8 @@ def write_taco_rebound_shadow_outputs(payload: Mapping[str, Any], output_dir: st
         "canonical_route": payload.get("canonical_route"),
         "suggested_action": payload.get("suggested_action"),
         "sleeve_suggestion": payload.get("sleeve_suggestion"),
+        "allow_hard_defense": payload.get("allow_hard_defense"),
+        "event_rebound_break_bear": payload.get("event_rebound_break_bear"),
         **flatten_for_csv(payload.get("data_freshness", {})),
         **flatten_for_csv(payload.get("selected_event") or {}),
     }

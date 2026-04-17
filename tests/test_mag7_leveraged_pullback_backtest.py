@@ -371,6 +371,40 @@ def test_run_backtest_blocks_rebound_budget_in_hard_defense_by_default() -> None
     assert exposure["target_product_exposure"].max() == 0.0
 
 
+def test_run_backtest_allows_signal_marked_hard_defense_rebound_budget() -> None:
+    signals = pd.DataFrame(
+        [
+            {
+                "as_of": "2022-06-01",
+                "active_until": "2022-08-31",
+                "sleeve_suggestion": 0.10,
+                "allow_hard_defense": True,
+            }
+        ]
+    )
+
+    result = run_backtest(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-06-01",
+        end_date="2022-08-31",
+        candidate_universe_size=2,
+        turnover_cost_bps=0.0,
+        leveraged_expense_rate=0.0,
+        exit_line_floor=1.50,
+        exit_line_cap=1.50,
+        rebound_budget_signals=signals,
+    )
+
+    exposure = result["exposure_history"]
+    hard_defense = exposure.loc[exposure["regime"].eq("hard_defense")]
+    assert not hard_defense.empty
+    assert hard_defense["rebound_budget_hard_defense_allowed"].all()
+    assert hard_defense["rebound_budget_suggestion"].max() == 0.10
+    assert hard_defense["rebound_budget_applied"].max() == 0.10
+    assert hard_defense["target_product_exposure"].max() == 0.10
+
+
 def test_cli_writes_backtest_artifacts(tmp_path) -> None:
     prices_path = tmp_path / "prices.csv"
     output_dir = tmp_path / "output"

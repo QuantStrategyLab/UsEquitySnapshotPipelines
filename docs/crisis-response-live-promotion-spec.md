@@ -46,6 +46,12 @@ policy, tariff, or geopolitical rebound research belongs to
 `taco_rebound_shadow`, mounted separately to a left-side strategy such as
 `dynamic_mega_leveraged_pullback`.
 
+The TACO plugin may emit an `allow_hard_defense` / `event_rebound_break_bear`
+research flag for high-confidence geopolitical de-escalation events. That flag
+does not authorize this repository to trade; it only lets a research backtest or
+downstream platform test a bounded rebound budget while the base strategy's
+hard-defense regime remains visible in logs.
+
 ## Phase Ladder
 
 | Phase | Name | Allowed behavior | Review role | Capital impact |

@@ -47,9 +47,12 @@ def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_left_side_budge
     assert payload["canonical_route"] == ROUTE_TACO_REBOUND
     assert payload["suggested_action"] == ACTION_INCREASE_REBOUND_BUDGET
     assert payload["sleeve_suggestion"] == 0.10
+    assert payload["allow_hard_defense"] is True
+    assert payload["event_rebound_break_bear"] is True
     assert payload["selected_event"]["event_id"] == "iran-ceasefire"
     assert payload["execution_controls"]["intended_strategy_role"] == "left_side_rebound_budget_modifier"
     assert payload["execution_controls"]["selection_allowed"] is False
+    assert payload["execution_controls"]["hard_defense_override_signal_allowed"] is True
 
 
 def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
@@ -79,3 +82,5 @@ def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
     assert paths["evidence_csv"].exists()
     latest = json.loads(paths["latest_signal"].read_text(encoding="utf-8"))
     assert latest["sleeve_suggestion"] == 0.05
+    assert latest["allow_hard_defense"] is False
+    assert latest["event_rebound_break_bear"] is False
