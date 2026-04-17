@@ -79,6 +79,10 @@ financial-system stress.
 - Whether the shock is reversible by policy softening.
 - Whether credit / bank / liquidity stress is absent.
 - Whether a non-systemic shock overlaps an explicit policy-rescue window.
+- Whether a high-confidence event reversal, such as a geopolitical ceasefire or
+  de-escalation after price stress, is allowed to use a small
+  `event_rebound_break_bear` budget while broad-market hard defense remains
+  active. Ordinary tariff softening should not get this override by default.
 
 Purpose: keep reversible policy panic out of crisis defense while giving the
 separate TACO rebound plugin enough deterministic evidence to suggest a small

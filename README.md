@@ -297,7 +297,10 @@ python scripts/backtest_dynamic_mega_leveraged_pullback.py \
 
 This does not let TACO select stocks and does not turn a small TACO budget into
 a full right-side risk-on allocation. The base strategy's risk gate and
-candidate ranking still decide what can be bought.
+candidate ranking still decide what can be bought. For high-confidence
+event-reversal research, a signal row can set `allow_hard_defense=true` to let
+that row's small rebound budget pass through `hard_defense`; leave it absent or
+false for ordinary tariff softening so the bear-market defense still blocks it.
 
 To research bear-market dip buying inside the MAGS-style pullback strategy,
 enable the research-only bear candidate switch. The default is `off`.
