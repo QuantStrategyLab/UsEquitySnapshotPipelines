@@ -225,6 +225,31 @@ python scripts/backtest_mega_cap_leader_rotation_robustness.py \
 The robustness command writes `robustness_summary.csv` sorted by Sharpe, CAGR,
 drawdown, and turnover, plus `robustness_summary_by_run.csv` in raw run order.
 
+Validate a dynamic Russell Top50 universe candidate against point-in-time
+availability lags and yearly stability before treating high Top2 results as
+real:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2018-01-31 \
+  --end 2026-04-10 \
+  --universe-lag-days 0,1,5,21 \
+  --strategy-configs top2_cap50:2:0.50,top3_cap35:3:0.35 \
+  --risk-on-exposure 1.0 \
+  --soft-defense-exposure 1.0 \
+  --hard-defense-exposure 1.0 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_validation
+```
+
+The validation command writes `validation_summary.csv` and
+`yearly_validation_summary.csv`. See
+`docs/mega-cap-leader-rotation-dynamic-validation.md` for the current
+research-only conclusion.
+
 Run the research-only MAG7 leveraged pullback / high-trim backtest from an
 existing MAG7 price-history file:
 

@@ -1,0 +1,158 @@
+# Mega-Cap Leader Rotation Dynamic Universe Validation
+
+This note records the point-in-time validation added for the dynamic Russell
+Top50 leader-rotation research. It is research-only and must not be used to
+promote a live strategy by itself.
+
+## Current Conclusion
+
+Static MAGS / static MAG7 style pools remain rejected for live promotion because
+they are structurally hindsight-biased.
+
+Dynamic Top50 Top2 is not rejected, but it is too sensitive to universe
+availability timing to promote now. With refreshed Top50 prices, adding a
+one-trading-day universe lag reduced the Top2 CAGR from `48.69%` to `37.89%`
+and worsened max drawdown from `-34.22%` to `-38.79%`. The edge remains, but
+the timing sensitivity is material.
+
+Dynamic Top50 Top3 is more stable. It gives up headline CAGR, but its max
+drawdown stayed near `-29%` across the lag tests. Treat Top3 as the cleaner
+candidate if this research continues.
+
+## Validation Setup
+
+- Validation date: `2026-04-17`
+- Universe input:
+  `data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv`
+- Refreshed price input:
+  `data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv`
+- Backtest window: `2018-01-31` to `2026-04-10`
+- Benchmark: `QQQ`
+- Broad benchmark: `SPY`
+- Safe asset: `BOXX`
+- Turnover cost: `5` bps
+- Defense exposure override: `risk_on=1.0`, `soft_defense=1.0`,
+  `hard_defense=1.0`
+- Universe availability lags: `0`, `1`, `5`, and `21` trading days
+- Tested configurations:
+  - `top2_cap50`: top 2, 50% single-name cap
+  - `top3_cap35`: top 3, 35% single-name cap
+
+The refreshed price download covered 91 of 94 dynamic Top50 symbols. Missing
+symbols were `CELG`, `DWDP`, and `UTX`; they were old delisted or merger-era
+symbols in low-to-mid Top50 ranks and should remain a documented data-quality
+gap.
+
+## Lag Validation Result
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Total Return |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| top2_cap50_lag0 | 48.69% | -34.22% | 1.24 | 1.42 | 2475.12% |
+| top2_cap50_lag1 | 37.89% | -38.79% | 1.05 | 0.98 | 1288.53% |
+| top2_cap50_lag5 | 37.89% | -38.79% | 1.05 | 0.98 | 1288.53% |
+| top2_cap50_lag21 | 37.44% | -38.79% | 1.04 | 0.97 | 1252.12% |
+| top3_cap35_lag0 | 36.82% | -29.17% | 1.13 | 1.26 | 1202.80% |
+| top3_cap35_lag1 | 32.02% | -28.76% | 1.04 | 1.11 | 872.48% |
+| top3_cap35_lag5 | 32.02% | -28.76% | 1.04 | 1.11 | 872.48% |
+| top3_cap35_lag21 | 30.37% | -28.64% | 1.00 | 1.06 | 777.55% |
+
+Interpretation:
+
+- Top2 is still strong after lagging, but the one-day lag cuts a large part of
+  the apparent edge. That is a warning sign for data availability assumptions.
+- Top3 is less spectacular, but the drawdown and lag sensitivity are cleaner.
+- A live candidate should prefer robustness over the highest no-lag result.
+
+## Yearly Stability
+
+Top2 yearly strategy return:
+
+| Year | Lag0 | Lag1 | Lag5 | Lag21 | QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2018 | 7.94% | -6.74% | -6.74% | -6.74% | -7.79% |
+| 2019 | -2.31% | 2.51% | 2.51% | 2.51% | 38.96% |
+| 2020 | 137.96% | 106.72% | 106.72% | 106.72% | 48.41% |
+| 2021 | 25.88% | 18.17% | 18.17% | 18.17% | 27.42% |
+| 2022 | 22.61% | 22.61% | 22.61% | 22.61% | -32.58% |
+| 2023 | 104.42% | 82.75% | 82.75% | 82.75% | 54.86% |
+| 2024 | 55.29% | 55.29% | 55.29% | 55.29% | 25.58% |
+| 2025 | 52.84% | 24.68% | 24.68% | 21.41% | 20.77% |
+| 2026 | 37.05% | 37.05% | 37.05% | 37.05% | -0.40% |
+
+Top3 yearly strategy return:
+
+| Year | Lag0 | Lag1 | Lag5 | Lag21 | QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2018 | 4.82% | 6.59% | 6.59% | 6.59% | -7.79% |
+| 2019 | 8.73% | 7.81% | 7.81% | 7.81% | 38.96% |
+| 2020 | 96.09% | 90.51% | 90.51% | 90.51% | 48.41% |
+| 2021 | 15.96% | 12.11% | 12.11% | 13.87% | 27.42% |
+| 2022 | 1.49% | 10.23% | 10.23% | 10.23% | -32.58% |
+| 2023 | 58.60% | 58.12% | 58.12% | 47.20% | 54.86% |
+| 2024 | 53.47% | 50.60% | 50.60% | 50.60% | 25.58% |
+| 2025 | 55.03% | 18.95% | 18.95% | 13.52% | 20.77% |
+| 2026 | 31.28% | 26.92% | 26.92% | 26.92% | -0.40% |
+
+Top2's strongest years survive the lag test, but 2025 is very sensitive. Top3
+also weakens in 2025, but it has less drawdown stress and less concentration
+risk.
+
+## Commands
+
+Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
+rate-limits the VPS IP:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_mega_cap_leader_rotation.py \
+  --download \
+  --symbols AAPL,ABBV,ABT,ACN,ADBE,AMAT,AMD,AMGN,AMT,AMZN,AVGO,AXP,BA,BAC,BKNG,BMY,BRKB,C,CAT,CELG,CMCSA,COP,COST,CRM,CSCO,CVS,CVX,DHR,DIS,DWDP,ELV,FB,GE,GEV,GILD,GOOG,GOOGL,GS,HD,HON,IBM,INTC,INTU,ISRG,JNJ,JPM,KLAC,KO,LIN,LLY,LOW,LRCX,MA,MCD,MDT,META,MMM,MO,MRK,MS,MSFT,MU,NEE,NFLX,NKE,NOW,NVDA,ORCL,PCLN,PEP,PFE,PG,PGR,PLTR,PM,PYPL,QCOM,RTX,SBUX,SLB,T,TMO,TSLA,TXN,UBER,UNH,UNP,UPS,UTX,V,VZ,WFC,WMT,XOM \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --price-start 2015-01-01 \
+  --start 2018-01-31 \
+  --end 2026-04-10 \
+  --top-n 2 \
+  --single-name-cap 0.50 \
+  --risk-on-exposure 1.0 \
+  --soft-defense-exposure 1.0 \
+  --hard-defense-exposure 1.0 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh
+```
+
+Run lag and yearly validation:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2018-01-31 \
+  --end 2026-04-10 \
+  --universe-lag-days 0,1,5,21 \
+  --strategy-configs top2_cap50:2:0.50,top3_cap35:3:0.35 \
+  --risk-on-exposure 1.0 \
+  --soft-defense-exposure 1.0 \
+  --hard-defense-exposure 1.0 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_validation
+```
+
+The validation command writes:
+
+- `validation_summary.csv`
+- `yearly_validation_summary.csv`
+
+## Promotion Guardrails
+
+Before considering any live strategy based on this research:
+
+1. Replace stale ticker gaps (`CELG`, `DWDP`, `UTX`) with a point-in-time symbol
+   mapping or a vendor source that keeps delisted history.
+2. Prefer a lagged result, not the no-lag result, as the baseline.
+3. Run a broader grid around Top3 before considering Top2; Top2 should be
+   treated as an aggressive variant.
+4. Keep this separate from MAGS and dynamic leveraged pullback. This is a
+   Russell Top50 leader-rotation idea, not a MAGS plugin.
+5. Do not combine it with TACO or Crisis Response until the base strategy is
+   independently validated.
