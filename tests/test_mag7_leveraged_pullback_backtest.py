@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest import (
+    BEAR_CANDIDATE_MODE_MARKET_SAFE,
     DYNAMIC_PROFILE,
     PROFILE,
     REBOUND_BUDGET_STRATEGY_SUFFIX,
@@ -168,6 +169,35 @@ def test_rank_candidates_prefers_eligible_pullbacks() -> None:
     assert ranked["size_multiplier"].iloc[0] > 1.0
 
 
+def test_rank_candidates_can_include_controlled_bear_pullbacks() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "symbol": "NVDA",
+                "mom_20": 0.03,
+                "mom_63": -0.04,
+                "mom_126": -0.08,
+                "mom_252": 0.12,
+                "rel_mom_126_vs_benchmark": 0.04,
+                "sma_50_gap": -0.06,
+                "sma_200_gap": -0.15,
+                "high_63_gap": -0.18,
+                "high_252_gap": -0.35,
+                "low_20_gap": 0.04,
+                "vol_63": 0.42,
+            }
+        ]
+    )
+
+    assert rank_candidates(frame).empty
+
+    ranked = rank_candidates(frame, allow_bear_candidate_pullbacks=True)
+
+    assert ranked["symbol"].tolist() == ["NVDA"]
+    assert bool(ranked["bear_candidate"].iloc[0]) is True
+    assert 0.0 < ranked["size_multiplier"].iloc[0] <= 0.35
+
+
 def test_build_target_weights_uses_two_times_product_without_borrowing() -> None:
     frame = pd.DataFrame(
         [
@@ -296,6 +326,26 @@ def test_run_backtest_applies_external_rebound_budget_to_left_side_strategy() ->
     assert exposure["rebound_budget_suggestion"].max() == 0.10
     assert exposure["rebound_budget_applied"].max() == 0.10
     assert exposure["target_product_exposure"].max() == 0.10
+
+
+def test_run_backtest_tracks_bear_candidate_research_mode() -> None:
+    result = run_backtest(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-06-01",
+        end_date="2023-11-30",
+        candidate_universe_size=2,
+        turnover_cost_bps=0.0,
+        leveraged_expense_rate=0.0,
+        bear_candidate_mode=BEAR_CANDIDATE_MODE_MARKET_SAFE,
+    )
+
+    strategy_name = f"{DYNAMIC_PROFILE}_bear_{BEAR_CANDIDATE_MODE_MARKET_SAFE}"
+    exposure = result["exposure_history"]
+    assert result["summary"]["Strategy"].iloc[0] == strategy_name
+    assert exposure["bear_candidate_mode"].eq(BEAR_CANDIDATE_MODE_MARKET_SAFE).all()
+    assert "bear_candidates_allowed" in exposure.columns
+    assert "bear_selected_count" in exposure.columns
 
 
 def test_run_backtest_blocks_rebound_budget_in_hard_defense_by_default() -> None:

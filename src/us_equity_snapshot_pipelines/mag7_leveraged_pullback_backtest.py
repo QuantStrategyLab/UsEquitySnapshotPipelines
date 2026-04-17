@@ -33,6 +33,7 @@ RECOMMENDED_DYNAMIC_HARD_PRODUCT_EXPOSURE = 0.0
 RECOMMENDED_DYNAMIC_MARKET_TREND_SYMBOL = "QQQ"
 DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS = 10
 DEFAULT_REBOUND_BUDGET_CAP = 0.10
+DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER = 0.35
 DEFAULT_ATR_PERIOD = 14
 DEFAULT_ATR_ENTRY_SCALE = 2.5
 DEFAULT_ENTRY_LINE_FLOOR = 1.04
@@ -45,6 +46,17 @@ RETURN_MODE_MARGIN_STOCK = "margin_stock"
 RETURN_MODES = (RETURN_MODE_LEVERAGED_PRODUCT, RETURN_MODE_MARGIN_STOCK)
 DEFAULT_MARGIN_BORROW_RATE = 0.055
 REBOUND_BUDGET_STRATEGY_SUFFIX = "_rebound_budget"
+BEAR_CANDIDATE_MODE_OFF = "off"
+BEAR_CANDIDATE_MODE_MARKET_SAFE = "market_safe"
+BEAR_CANDIDATE_MODE_MARKET_BEAR = "market_bear"
+BEAR_CANDIDATE_MODE_ALWAYS = "always"
+BEAR_CANDIDATE_MODES = (
+    BEAR_CANDIDATE_MODE_OFF,
+    BEAR_CANDIDATE_MODE_MARKET_SAFE,
+    BEAR_CANDIDATE_MODE_MARKET_BEAR,
+    BEAR_CANDIDATE_MODE_ALWAYS,
+)
+MARKET_BEAR_REGIMES = {"hard_defense", "soft_defense"}
 MAGS_HOLDING_NAME_MAP = {
     "ALPHABET": "GOOGL",
     "AMAZON": "AMZN",
@@ -359,11 +371,48 @@ def _benchmark_regime(
     return float(soft_product_exposure), "entry_wait", diagnostics
 
 
-def _pullback_multiplier(row: Mapping[str, object]) -> float:
+def _bear_pullback_multiplier(row: Mapping[str, object], *, max_size_multiplier: float) -> float:
+    sma_200_gap = float(row.get("sma_200_gap", float("nan")))
+    high_252_gap = float(row.get("high_252_gap", float("nan")))
+    low_20_gap = float(row.get("low_20_gap", float("nan")))
+    mom_20 = float(row.get("mom_20", float("nan")))
+    rel_mom_126 = float(row.get("rel_mom_126_vs_benchmark", float("nan")))
+    if any(pd.isna(value) for value in (sma_200_gap, high_252_gap, low_20_gap, mom_20, rel_mom_126)):
+        return 0.0
+    if sma_200_gap >= 0.0 or sma_200_gap < -0.35:
+        return 0.0
+    if high_252_gap > -0.20 or low_20_gap < 0.02 or mom_20 < -0.12:
+        return 0.0
+
+    drawdown = abs(min(high_252_gap, 0.0))
+    if drawdown < 0.25:
+        multiplier = 0.20
+    elif drawdown < 0.45:
+        multiplier = 0.35
+    elif drawdown < 0.60:
+        multiplier = 0.25
+    else:
+        return 0.0
+    if rel_mom_126 < -0.25:
+        multiplier *= 0.50
+    return float(max(0.0, min(float(max_size_multiplier), multiplier)))
+
+
+def _pullback_multiplier(
+    row: Mapping[str, object],
+    *,
+    allow_bear_candidate_pullbacks: bool = False,
+    bear_candidate_max_size_multiplier: float = DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER,
+) -> float:
     sma_200_gap = float(row.get("sma_200_gap", float("nan")))
     mom_126 = float(row.get("mom_126", float("nan")))
     pullback = abs(min(float(row.get("high_63_gap", 0.0)), 0.0))
     if pd.isna(sma_200_gap) or pd.isna(mom_126) or sma_200_gap <= 0.0 or mom_126 <= 0.0:
+        if allow_bear_candidate_pullbacks:
+            return _bear_pullback_multiplier(
+                row,
+                max_size_multiplier=float(bear_candidate_max_size_multiplier),
+            )
         return 0.0
     if pullback < 0.02:
         multiplier = 0.45
@@ -385,7 +434,13 @@ def _pullback_multiplier(row: Mapping[str, object]) -> float:
     return float(max(0.0, min(multiplier, 1.30)))
 
 
-def rank_candidates(feature_frame: pd.DataFrame, current_holdings: Iterable[str] | None = None) -> pd.DataFrame:
+def rank_candidates(
+    feature_frame: pd.DataFrame,
+    current_holdings: Iterable[str] | None = None,
+    *,
+    allow_bear_candidate_pullbacks: bool = False,
+    bear_candidate_max_size_multiplier: float = DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER,
+) -> pd.DataFrame:
     if feature_frame.empty:
         return pd.DataFrame()
     frame = feature_frame.copy()
@@ -396,8 +451,16 @@ def rank_candidates(feature_frame: pd.DataFrame, current_holdings: Iterable[str]
 
     frame["pullback_depth"] = frame["high_63_gap"].clip(upper=0.0).abs()
     frame["pullback_quality"] = (1.0 - (frame["pullback_depth"] - 0.10).abs() / 0.10).clip(lower=-1.0, upper=1.0)
-    frame["size_multiplier"] = frame.apply(_pullback_multiplier, axis=1)
+    frame["size_multiplier"] = frame.apply(
+        lambda row: _pullback_multiplier(
+            row,
+            allow_bear_candidate_pullbacks=bool(allow_bear_candidate_pullbacks),
+            bear_candidate_max_size_multiplier=float(bear_candidate_max_size_multiplier),
+        ),
+        axis=1,
+    )
     frame["eligible"] = frame["size_multiplier"] > 0.0
+    frame["bear_candidate"] = pd.to_numeric(frame["sma_200_gap"], errors="coerce") < 0.0
     frame = frame.loc[frame["eligible"]].copy()
     if frame.empty:
         return pd.DataFrame()
@@ -430,15 +493,23 @@ def build_target_weights(
     single_name_cap: float,
     safe_haven: str,
     leverage_multiple: float,
+    allow_bear_candidate_pullbacks: bool = False,
+    bear_candidate_max_size_multiplier: float = DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER,
 ) -> tuple[dict[str, float], pd.DataFrame, dict[str, object]]:
     safe_haven = _normalize_symbol(safe_haven)
-    ranked = rank_candidates(feature_frame, current_holdings)
+    ranked = rank_candidates(
+        feature_frame,
+        current_holdings,
+        allow_bear_candidate_pullbacks=allow_bear_candidate_pullbacks,
+        bear_candidate_max_size_multiplier=float(bear_candidate_max_size_multiplier),
+    )
     metadata: dict[str, object] = {
         "target_product_exposure": float(target_product_exposure),
         "selected_symbols": (),
         "product_exposure": 0.0,
         "underlying_exposure": 0.0,
         "avg_pullback_depth": float("nan"),
+        "bear_selected_count": 0,
     }
     if ranked.empty or target_product_exposure <= 0.0:
         return {safe_haven: 1.0}, ranked, metadata
@@ -482,6 +553,7 @@ def build_target_weights(
     metadata["product_exposure"] = float(product_exposure)
     metadata["underlying_exposure"] = float(product_exposure * float(leverage_multiple))
     metadata["avg_pullback_depth"] = float(selected_frame["pullback_depth"].mean()) if not selected_frame.empty else float("nan")
+    metadata["bear_selected_count"] = int(selected_frame["bear_candidate"].fillna(False).sum())
     return weights, ranked, metadata
 
 
@@ -711,6 +783,8 @@ def run_backtest(
     rebound_budget_signal_active_days: int = DEFAULT_REBOUND_BUDGET_SIGNAL_ACTIVE_DAYS,
     rebound_budget_cap: float = DEFAULT_REBOUND_BUDGET_CAP,
     allow_rebound_budget_in_hard_defense: bool = False,
+    bear_candidate_mode: str = BEAR_CANDIDATE_MODE_OFF,
+    bear_candidate_max_size_multiplier: float = DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER,
 ):
     prices = _normalize_price_history(price_history)
     if end_date is not None:
@@ -728,6 +802,9 @@ def run_backtest(
     return_mode = str(return_mode or RETURN_MODE_LEVERAGED_PRODUCT).strip().lower()
     if return_mode not in RETURN_MODES:
         raise ValueError(f"return_mode must be one of: {', '.join(RETURN_MODES)}")
+    bear_candidate_mode = str(bear_candidate_mode or BEAR_CANDIDATE_MODE_OFF).strip().lower()
+    if bear_candidate_mode not in BEAR_CANDIDATE_MODES:
+        raise ValueError(f"bear_candidate_mode must be one of: {', '.join(BEAR_CANDIDATE_MODES)}")
     benchmark_symbol = _normalize_symbol(benchmark_symbol)
     broad_benchmark_symbol = _normalize_symbol(broad_benchmark_symbol)
     market_trend_symbol = _normalize_symbol(market_trend_symbol or benchmark_symbol)
@@ -823,6 +900,12 @@ def run_backtest(
             rebound_budget_applied = rebound_budget_suggestion
             if regime == "hard_defense" and not bool(allow_rebound_budget_in_hard_defense):
                 rebound_budget_applied = 0.0
+            market_bear_regime = str(regime) in MARKET_BEAR_REGIMES
+            bear_candidates_allowed = (
+                bear_candidate_mode == BEAR_CANDIDATE_MODE_ALWAYS
+                or (bear_candidate_mode == BEAR_CANDIDATE_MODE_MARKET_SAFE and not market_bear_regime)
+                or (bear_candidate_mode == BEAR_CANDIDATE_MODE_MARKET_BEAR and market_bear_regime)
+            )
             target_product_exposure = min(
                 float(max_product_exposure),
                 max(0.0, float(regime_gross)) + max(0.0, rebound_budget_applied),
@@ -836,6 +919,8 @@ def run_backtest(
                 single_name_cap=float(single_name_cap),
                 safe_haven=safe_haven,
                 leverage_multiple=float(leverage_multiple),
+                allow_bear_candidate_pullbacks=bear_candidates_allowed,
+                bear_candidate_max_size_multiplier=float(bear_candidate_max_size_multiplier),
             )
             turnover = _compute_turnover(current_weights, target_weights)
             turnover_history.at[next_date] = turnover
@@ -880,6 +965,9 @@ def run_backtest(
                     "product_exposure": float(metadata.get("product_exposure", 0.0)),
                     "underlying_exposure": float(metadata.get("underlying_exposure", 0.0)),
                     "leverage_multiple": float(leverage_multiple),
+                    "bear_candidate_mode": bear_candidate_mode,
+                    "bear_candidates_allowed": bool(bear_candidates_allowed),
+                    "bear_selected_count": int(metadata.get("bear_selected_count", 0)),
                     "safe_haven_weight": float(target_weights.get(safe_haven, 0.0)),
                     "avg_pullback_depth": metadata.get("avg_pullback_depth"),
                     "candidate_symbols": ",".join(active_symbols_for(date)),
@@ -951,14 +1039,16 @@ def run_backtest(
                             ).mean()
                         )
 
+    strategy_summary_name = strategy_name
+    if has_rebound_budget_signals:
+        strategy_summary_name = f"{strategy_summary_name}{REBOUND_BUDGET_STRATEGY_SUFFIX}"
+    if bear_candidate_mode != BEAR_CANDIDATE_MODE_OFF:
+        strategy_summary_name = f"{strategy_summary_name}_bear_{bear_candidate_mode}"
+
     summary_rows = [
         summarize_returns(
             portfolio_returns,
-            strategy_name=(
-                f"{strategy_name}{REBOUND_BUDGET_STRATEGY_SUFFIX}"
-                if has_rebound_budget_signals
-                else strategy_name
-            ),
+            strategy_name=strategy_summary_name,
             return_mode=return_mode,
             leverage_multiple=float(leverage_multiple),
             weights_history=used_weights,
@@ -1083,6 +1173,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Research-only override. Default keeps hard-defense regimes fully defensive.",
     )
+    parser.add_argument(
+        "--bear-candidate-mode",
+        choices=BEAR_CANDIDATE_MODES,
+        default=BEAR_CANDIDATE_MODE_OFF,
+        help=(
+            "Research-only switch for below-200SMA single-name rebound candidates. "
+            "market_safe allows them only when the broad market is not defensive; "
+            "market_bear allows them only during soft/hard defense."
+        ),
+    )
+    parser.add_argument(
+        "--bear-candidate-max-size-multiplier",
+        type=float,
+        default=DEFAULT_BEAR_CANDIDATE_MAX_SIZE_MULTIPLIER,
+        help="Cap for bear-candidate position sizing before normal exposure and single-name caps.",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -1124,6 +1230,8 @@ def main(argv: list[str] | None = None) -> int:
         rebound_budget_signal_active_days=args.rebound_budget_signal_active_days,
         rebound_budget_cap=args.rebound_budget_cap,
         allow_rebound_budget_in_hard_defense=args.allow_rebound_budget_in_hard_defense,
+        bear_candidate_mode=args.bear_candidate_mode,
+        bear_candidate_max_size_multiplier=args.bear_candidate_max_size_multiplier,
     )
 
     summary = result["summary"]

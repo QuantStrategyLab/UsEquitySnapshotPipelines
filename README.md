@@ -299,6 +299,30 @@ This does not let TACO select stocks and does not turn a small TACO budget into
 a full right-side risk-on allocation. The base strategy's risk gate and
 candidate ranking still decide what can be bought.
 
+To research bear-market dip buying inside the MAGS-style pullback strategy,
+enable the research-only bear candidate switch. The default is `off`.
+`market_safe` only allows below-200SMA single-name rebound candidates while the
+market trend filter is not in `soft_defense` or `hard_defense`; `market_bear`
+only allows them while the market filter is defensive. The switch does not
+change live routing and does not override the product exposure caps:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/backtest_dynamic_mega_leveraged_pullback.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
+  --start 2017-10-02 \
+  --candidate-universe-size 15 \
+  --top-n 3 \
+  --return-mode leveraged_product \
+  --bear-candidate-mode market_safe \
+  --bear-candidate-max-size-multiplier 0.35 \
+  --output-dir data/output/dynamic_mega_leveraged_pullback_bear_research
+```
+
+Use `--return-mode margin_stock --leverage-multiple 1.0 --margin-borrow-rate 0`
+to compare the same selection rules against unlevered underlying stocks.
+
 Run a small parameter matrix:
 
 ```bash
