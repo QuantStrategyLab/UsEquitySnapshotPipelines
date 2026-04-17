@@ -29,6 +29,13 @@ PLUGIN_MODE_PAPER = "paper"
 PLUGIN_MODE_ADVISORY = "advisory"
 PLUGIN_MODE_LIVE = "live"
 SUPPORTED_PLUGIN_MODES = (SHADOW_MODE, PLUGIN_MODE_PAPER, PLUGIN_MODE_ADVISORY, PLUGIN_MODE_LIVE)
+PLUGIN_COMPATIBLE_STRATEGIES: dict[str, tuple[str, ...]] = {
+    PLUGIN_CRISIS_RESPONSE_SHADOW: ("tqqq_growth_income",),
+    PLUGIN_TACO_REBOUND_SHADOW: (
+        "dynamic_mega_leveraged_pullback",
+        "mags_official_leveraged_pullback",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,15 @@ def _validate_plugin_mode(plugin_name: str, mode: str) -> None:
     if mode not in SUPPORTED_PLUGIN_MODES:
         modes = ", ".join(SUPPORTED_PLUGIN_MODES)
         raise ValueError(f"{plugin_name} supports only configured modes {modes}; got mode={mode!r}")
+
+
+def _validate_plugin_strategy(plugin_name: str, strategy: str) -> None:
+    compatible = PLUGIN_COMPATIBLE_STRATEGIES.get(plugin_name, ())
+    if compatible and strategy not in compatible:
+        choices = ", ".join(compatible)
+        raise ValueError(
+            f"{plugin_name} is strategy-limited and can only be mounted to: {choices}; got strategy={strategy!r}"
+        )
 
 
 def _flatten_strategy_plugin_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -416,12 +432,13 @@ def _strategy_plugin_entries(
         plugin_config = _flatten_strategy_plugin_entry(entry)
         strategy = _safe_scope_name(plugin_config.get("strategy"), field="strategy")
         plugin = _safe_scope_name(plugin_config.get("plugin"), field="plugin")
-        plugin_config["strategy"] = strategy
-        plugin_config["plugin"] = plugin
         if plugin_filter and plugin not in plugin_filter:
             continue
         if strategy_filter and strategy not in strategy_filter:
             continue
+        _validate_plugin_strategy(plugin, strategy)
+        plugin_config["strategy"] = strategy
+        plugin_config["plugin"] = plugin
         selected.append(plugin_config)
     return tuple(selected)
 
@@ -483,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "PLUGIN_CRISIS_RESPONSE_SHADOW",
     "PLUGIN_TACO_REBOUND_SHADOW",
+    "PLUGIN_COMPATIBLE_STRATEGIES",
     "PLUGIN_MODE_ADVISORY",
     "PLUGIN_MODE_LIVE",
     "PLUGIN_MODE_PAPER",
