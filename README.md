@@ -288,6 +288,25 @@ python scripts/research_mega_cap_leader_rotation_concentration_variants.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_concentration_variants
 ```
 
+Run the research-only rebalance-frequency and daily-risk variants for the
+balanced Top2 / Top4 sleeve:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_mega_cap_leader_rotation_frequency_risk.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --rebalance-frequencies monthly,biweekly,weekly \
+  --daily-risk-modes none,hard_cash,partial_cash \
+  --blend-top2-weight 0.50 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_frequency_risk
+```
+
 The same validation CLI can run a broader lagged stability grid across Top2 /
 Top3 / Top4, QQQ-defense settings, and sector concentration caps:
 

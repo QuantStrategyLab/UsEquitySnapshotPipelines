@@ -36,6 +36,11 @@ mix produced `36.41%` CAGR and `-30.56%` max drawdown. The dynamic Top2
 drawdown switch reduced drawdown too, but it was more parameter-sensitive and
 had higher turnover.
 
+The rebalance-frequency and daily-risk research did not improve the current
+balanced candidate. Monthly rebalancing remained better than weekly or
+biweekly rebalancing, and daily soft/hard risk exposure cuts reduced returns
+without improving max drawdown enough to justify the complexity.
+
 ## Validation Setup
 
 - Validation date: `2026-04-17`
@@ -329,6 +334,94 @@ Interpretation:
   continuously, and overlap naturally reduces concentration without waiting for
   a late stress trigger.
 
+## Frequency And Daily Risk Research
+
+This run tests whether the `50% Top2 / 50% Top4` balanced candidate improves
+with faster rebalance schedules or daily risk exposure cuts.
+
+Command output:
+`data/output/mega_cap_leader_rotation_dynamic_top50_frequency_risk`
+
+Setup:
+
+- Backtest window: `2017-10-02` to `2026-04-16`
+- Universe lag: `21` trading days
+- Base sleeve mix: `50% Top2 / 50% Top4`
+- Rebalance frequencies: monthly, every 10 trading sessions, and weekly
+- Daily risk modes:
+  - `none`: no daily exposure overlay
+  - `hard_cash`: daily hard-defense days go to BOXX, soft-defense days stay
+    fully invested
+  - `partial_cash`: daily soft-defense days scale stocks to 50%, hard-defense
+    days go to BOXX
+- Turnover cost: `5` bps
+
+Full-period result:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Turnover/Year | Avg Stock |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monthly, no daily risk | 36.41% | -30.56% | 1.12 | 1.19 | 3.56 | 99.02% |
+| Biweekly, no daily risk | 29.47% | -29.94% | 0.99 | 0.98 | 4.36 | 98.65% |
+| Weekly, no daily risk | 30.41% | -30.63% | 1.01 | 0.99 | 5.01 | 98.88% |
+| Monthly, hard cash | 30.82% | -32.34% | 1.03 | 0.95 | 6.02 | 94.50% |
+| Monthly, partial cash | 25.94% | -30.78% | 0.94 | 0.84 | 8.17 | 86.37% |
+| Biweekly, partial cash | 22.73% | -27.77% | 0.87 | 0.82 | 8.68 | 86.00% |
+
+Selected yearly returns:
+
+| Year | Monthly | Biweekly | Weekly | Monthly hard cash | Monthly partial cash | QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2018 | 8.21% | 17.30% | 22.65% | 3.67% | -1.68% | -0.13% |
+| 2019 | 8.00% | 15.15% | 25.18% | 7.45% | 4.06% | 38.96% |
+| 2020 | 90.11% | 82.33% | 93.64% | 74.75% | 62.77% | 48.41% |
+| 2021 | 15.32% | 11.29% | 1.70% | 15.32% | 15.32% | 27.42% |
+| 2022 | 16.33% | -5.40% | 5.32% | 4.76% | -2.57% | -32.58% |
+| 2023 | 67.46% | 58.56% | 50.93% | 67.46% | 58.36% | 54.86% |
+| 2024 | 48.80% | 37.82% | 5.77% | 48.80% | 48.80% | 25.58% |
+| 2025 | 25.77% | 3.58% | 22.76% | 11.53% | 8.97% | 20.77% |
+
+Rolling-window summary:
+
+| Run | Window | Min CAGR | Median CAGR | Worst MaxDD | Min Excess vs QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Monthly, no daily risk | 3Y | 30.54% | 35.04% | -30.56% | -4.72% |
+| Monthly, no daily risk | 5Y | 24.46% | 34.61% | -30.56% | 12.34% |
+| Biweekly, no daily risk | 3Y | 18.75% | 29.43% | -29.94% | -5.31% |
+| Biweekly, no daily risk | 5Y | 19.01% | 24.81% | -29.94% | 3.90% |
+| Weekly, no daily risk | 3Y | 17.48% | 26.41% | -30.63% | -7.81% |
+| Weekly, no daily risk | 5Y | 16.02% | 26.60% | -30.63% | 0.91% |
+| Monthly, hard cash | 3Y | 24.91% | 28.90% | -32.34% | -8.64% |
+| Monthly, hard cash | 5Y | 18.69% | 29.08% | -32.34% | 6.58% |
+| Monthly, partial cash | 3Y | 18.57% | 23.70% | -30.78% | -13.02% |
+| Monthly, partial cash | 5Y | 13.38% | 24.21% | -30.78% | 1.26% |
+
+Daily risk-regime observations:
+
+- The daily risk detector marked `17.2%` of days as soft defense and `4.5%` as
+  hard defense in this sample.
+- In 2022, it marked 169 soft-defense days and 65 hard-defense days. That
+  sounds intuitive for an inflation/Fed bear market, but it was harmful for
+  this strategy because the leader-rotation sleeve was correctly holding
+  energy and health-care winners. Cutting exposure muted the strategy's main
+  2022 advantage.
+- Weekly and biweekly rebalancing increased turnover and often replaced
+  winners too quickly. Monthly rebalancing kept the beneficial hold discipline
+  and remains the default research cadence.
+
+Interpretation:
+
+- Do not promote weekly or biweekly rebalancing from this sample. The drawdown
+  improvement was small or nonexistent, while CAGR and rolling-window stability
+  degraded.
+- Do not add daily cash-defense exposure cuts to the balanced Top2/Top4
+  candidate yet. It behaved like an over-broad crisis filter and hurt 2022,
+  exactly the kind of environment this leader-rotation strategy handled well on
+  its own.
+- If daily risk logic is revisited later, it should be narrower than the
+  current QQQ/breadth soft-hard detector and should distinguish true systemic
+  liquidity crises from ordinary bear markets where sector leadership still
+  works.
+
 ## Commands
 
 Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
@@ -422,6 +515,24 @@ python scripts/research_mega_cap_leader_rotation_concentration_variants.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_concentration_variants
 ```
 
+Run the rebalance-frequency and daily-risk research:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_mega_cap_leader_rotation_frequency_risk.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --rebalance-frequencies monthly,biweekly,weekly \
+  --daily-risk-modes none,hard_cash,partial_cash \
+  --blend-top2-weight 0.50 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_frequency_risk
+```
+
 The validation command writes:
 
 - `validation_summary.csv`
@@ -435,6 +546,13 @@ The concentration research command writes:
 - `concentration_variant_rolling_summary.csv`
 - `concentration_variant_mode_history.csv`
 
+The frequency and daily-risk research command writes:
+
+- `frequency_risk_summary.csv`
+- `frequency_risk_yearly_summary.csv`
+- `frequency_risk_rolling_summary.csv`
+- `frequency_risk_daily_history.csv`
+
 ## Promotion Guardrails
 
 Before considering any live strategy based on this research:
@@ -447,7 +565,9 @@ Before considering any live strategy based on this research:
    an aggressive variant.
 4. Treat `50% Top2 / 50% Top4` as the current balanced research candidate, not
    a live profile. It still needs more validation before promotion.
-5. Keep this separate from MAGS and dynamic leveraged pullback. This is a
+5. Keep the balanced candidate monthly by default. Weekly/biweekly rebalancing
+   and broad daily cash-defense overlays did not improve the research result.
+6. Keep this separate from MAGS and dynamic leveraged pullback. This is a
    Russell Top50 leader-rotation idea, not a MAGS plugin.
-6. Do not combine it with TACO or Crisis Response until the base strategy is
+7. Do not combine it with TACO or Crisis Response until the base strategy is
    independently validated.
