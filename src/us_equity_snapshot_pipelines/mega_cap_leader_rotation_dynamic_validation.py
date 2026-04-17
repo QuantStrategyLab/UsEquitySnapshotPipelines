@@ -18,12 +18,18 @@ from .russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_LAG_TRADING_DAYS = (0, 1, 5, 21)
 DEFAULT_VALIDATION_CONFIGS = "top2_cap50:2:0.50,top3_cap35:3:0.35"
+DEFAULT_MAX_NAMES_PER_SECTOR_VALUES = (0,)
 VALIDATION_SUMMARY_COLUMNS = (
     "Run",
     "Config",
+    "Risk Mode",
     "Universe Lag Trading Days",
+    "Max Names Per Sector",
     "Top N",
     "Single Name Cap",
+    "Risk On Exposure",
+    "Soft Defense Exposure",
+    "Hard Defense Exposure",
     "Start",
     "End",
     "CAGR",
@@ -46,7 +52,9 @@ VALIDATION_SUMMARY_COLUMNS = (
 YEARLY_SUMMARY_COLUMNS = (
     "Run",
     "Config",
+    "Risk Mode",
     "Universe Lag Trading Days",
+    "Max Names Per Sector",
     "Year",
     "Strategy Return",
     "Strategy Max Drawdown",
@@ -62,6 +70,14 @@ class ValidationConfig:
     name: str
     top_n: int
     single_name_cap: float
+
+
+@dataclass(frozen=True)
+class RiskMode:
+    name: str
+    risk_on_exposure: float
+    soft_defense_exposure: float
+    hard_defense_exposure: float
 
 
 def parse_csv_ints(raw_value: str | Iterable[int] | None, *, default: tuple[int, ...]) -> tuple[int, ...]:
@@ -101,6 +117,39 @@ def parse_validation_configs(raw_value: str | Iterable[str] | None) -> tuple[Val
     if not configs:
         raise ValueError("at least one strategy config is required")
     return tuple(configs)
+
+
+def parse_risk_modes(raw_value: str | Iterable[str] | None) -> tuple[RiskMode, ...]:
+    if raw_value is None:
+        return ()
+    values = raw_value.split(",") if isinstance(raw_value, str) else list(raw_value)
+    modes: list[RiskMode] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        parts = text.split(":")
+        if len(parts) != 4:
+            raise ValueError("risk modes must use name:risk_on:soft_defense:hard_defense entries")
+        name = parts[0].strip()
+        if not name:
+            raise ValueError("risk mode name must not be empty")
+        exposures = tuple(float(part) for part in parts[1:])
+        if any(exposure < 0.0 or exposure > 1.0 for exposure in exposures):
+            raise ValueError("risk mode exposures must be in [0, 1]")
+        if name in seen:
+            continue
+        seen.add(name)
+        modes.append(
+            RiskMode(
+                name=name,
+                risk_on_exposure=exposures[0],
+                soft_defense_exposure=exposures[1],
+                hard_defense_exposure=exposures[2],
+            )
+        )
+    return tuple(modes)
 
 
 def _normalize_trading_index(price_history: pd.DataFrame) -> pd.DatetimeIndex:
@@ -187,7 +236,9 @@ def _build_yearly_summary(
     *,
     run_name: str,
     config: ValidationConfig,
+    risk_mode: RiskMode,
     lag_trading_days: int,
+    max_names_per_sector: int,
     portfolio_returns: pd.Series,
     reference_returns: pd.DataFrame,
     benchmark_symbol: str,
@@ -213,7 +264,9 @@ def _build_yearly_summary(
             {
                 "Run": run_name,
                 "Config": config.name,
+                "Risk Mode": risk_mode.name,
                 "Universe Lag Trading Days": int(lag_trading_days),
+                "Max Names Per Sector": int(max_names_per_sector),
                 "Year": int(year),
                 "Strategy Return": _period_return(strategy_returns),
                 "Strategy Max Drawdown": _period_max_drawdown(strategy_returns),
@@ -234,6 +287,8 @@ def run_dynamic_universe_validation(
     end_date: str | None = None,
     universe_lag_trading_days: Iterable[int] = DEFAULT_LAG_TRADING_DAYS,
     validation_configs: Iterable[ValidationConfig] | str | None = None,
+    risk_modes: Iterable[RiskMode] | str | None = None,
+    max_names_per_sector_values: Iterable[int] = DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
     benchmark_symbol: str = BENCHMARK_SYMBOL,
     broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
     safe_haven: str = SAFE_HAVEN,
@@ -254,7 +309,25 @@ def run_dynamic_universe_validation(
         if validation_configs is None or isinstance(validation_configs, str)
         else tuple(validation_configs)
     )
+    risk_mode_values = (
+        parse_risk_modes(risk_modes)
+        if risk_modes is None or isinstance(risk_modes, str)
+        else tuple(risk_modes)
+    )
+    if not risk_mode_values:
+        risk_mode_values = (
+            RiskMode(
+                name="custom",
+                risk_on_exposure=float(risk_on_exposure),
+                soft_defense_exposure=float(soft_defense_exposure),
+                hard_defense_exposure=float(hard_defense_exposure),
+            ),
+        )
     lag_values = parse_csv_ints(tuple(universe_lag_trading_days), default=DEFAULT_LAG_TRADING_DAYS)
+    sector_cap_values = parse_csv_ints(
+        tuple(max_names_per_sector_values),
+        default=DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
+    )
     trading_index = _normalize_trading_index(pd.DataFrame(price_history))
     summary_rows: list[dict[str, object]] = []
     yearly_rows: list[dict[str, object]] = []
@@ -266,52 +339,63 @@ def run_dynamic_universe_validation(
             trading_index=trading_index,
         )
         for config in configs:
-            run_name = f"{config.name}_lag{int(lag_days)}"
-            result = run_backtest(
-                price_history,
-                lagged_universe,
-                start_date=start_date,
-                end_date=end_date,
-                pool_name=f"dynamic_lag{int(lag_days)}",
-                benchmark_symbol=benchmark_symbol,
-                broad_benchmark_symbol=broad_benchmark_symbol,
-                safe_haven=safe_haven,
-                top_n=config.top_n,
-                hold_buffer=hold_buffer,
-                single_name_cap=config.single_name_cap,
-                hold_bonus=hold_bonus,
-                risk_on_exposure=risk_on_exposure,
-                soft_defense_exposure=soft_defense_exposure,
-                hard_defense_exposure=hard_defense_exposure,
-                soft_breadth_threshold=soft_breadth_threshold,
-                hard_breadth_threshold=hard_breadth_threshold,
-                min_price_usd=min_price_usd,
-                min_adv20_usd=min_adv20_usd,
-                min_history_days=min_history_days,
-                turnover_cost_bps=turnover_cost_bps,
-            )
-            summary = dict(result["summary"])
-            summary.update(
-                {
-                    "Run": run_name,
-                    "Config": config.name,
-                    "Universe Lag Trading Days": int(lag_days),
-                    "Top N": int(config.top_n),
-                    "Single Name Cap": float(config.single_name_cap),
-                }
-            )
-            summary_rows.append(summary)
-            yearly_rows.extend(
-                _build_yearly_summary(
-                    run_name=run_name,
-                    config=config,
-                    lag_trading_days=int(lag_days),
-                    portfolio_returns=result["portfolio_returns"],
-                    reference_returns=result["reference_returns"],
-                    benchmark_symbol=benchmark_symbol,
-                    broad_benchmark_symbol=broad_benchmark_symbol,
-                )
-            )
+            for risk_mode in risk_mode_values:
+                for sector_cap in sector_cap_values:
+                    sector_label = "all" if int(sector_cap) <= 0 else str(int(sector_cap))
+                    run_name = f"{config.name}_{risk_mode.name}_sector{sector_label}_lag{int(lag_days)}"
+                    result = run_backtest(
+                        price_history,
+                        lagged_universe,
+                        start_date=start_date,
+                        end_date=end_date,
+                        pool_name=f"dynamic_lag{int(lag_days)}",
+                        benchmark_symbol=benchmark_symbol,
+                        broad_benchmark_symbol=broad_benchmark_symbol,
+                        safe_haven=safe_haven,
+                        top_n=config.top_n,
+                        hold_buffer=hold_buffer,
+                        single_name_cap=config.single_name_cap,
+                        max_names_per_sector=int(sector_cap),
+                        hold_bonus=hold_bonus,
+                        risk_on_exposure=risk_mode.risk_on_exposure,
+                        soft_defense_exposure=risk_mode.soft_defense_exposure,
+                        hard_defense_exposure=risk_mode.hard_defense_exposure,
+                        soft_breadth_threshold=soft_breadth_threshold,
+                        hard_breadth_threshold=hard_breadth_threshold,
+                        min_price_usd=min_price_usd,
+                        min_adv20_usd=min_adv20_usd,
+                        min_history_days=min_history_days,
+                        turnover_cost_bps=turnover_cost_bps,
+                    )
+                    summary = dict(result["summary"])
+                    summary.update(
+                        {
+                            "Run": run_name,
+                            "Config": config.name,
+                            "Risk Mode": risk_mode.name,
+                            "Universe Lag Trading Days": int(lag_days),
+                            "Max Names Per Sector": int(sector_cap),
+                            "Top N": int(config.top_n),
+                            "Single Name Cap": float(config.single_name_cap),
+                            "Risk On Exposure": float(risk_mode.risk_on_exposure),
+                            "Soft Defense Exposure": float(risk_mode.soft_defense_exposure),
+                            "Hard Defense Exposure": float(risk_mode.hard_defense_exposure),
+                        }
+                    )
+                    summary_rows.append(summary)
+                    yearly_rows.extend(
+                        _build_yearly_summary(
+                            run_name=run_name,
+                            config=config,
+                            risk_mode=risk_mode,
+                            lag_trading_days=int(lag_days),
+                            max_names_per_sector=int(sector_cap),
+                            portfolio_returns=result["portfolio_returns"],
+                            reference_returns=result["reference_returns"],
+                            benchmark_symbol=benchmark_symbol,
+                            broad_benchmark_symbol=broad_benchmark_symbol,
+                        )
+                    )
 
     summary_frame = pd.DataFrame(summary_rows)
     yearly_frame = pd.DataFrame(yearly_rows)
@@ -334,6 +418,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", dest="end_date")
     parser.add_argument("--universe-lag-days", default=",".join(str(value) for value in DEFAULT_LAG_TRADING_DAYS))
     parser.add_argument("--strategy-configs", default=DEFAULT_VALIDATION_CONFIGS)
+    parser.add_argument(
+        "--risk-modes",
+        help="Comma-separated name:risk_on:soft_defense:hard_defense entries; defaults to exposure flags",
+    )
+    parser.add_argument(
+        "--max-names-per-sector-values",
+        default=",".join(str(value) for value in DEFAULT_MAX_NAMES_PER_SECTOR_VALUES),
+        help="Comma-separated per-sector selected-name caps; 0 disables the cap",
+    )
     parser.add_argument("--benchmark-symbol", default=BENCHMARK_SYMBOL)
     parser.add_argument("--broad-benchmark-symbol", default=BROAD_BENCHMARK_SYMBOL)
     parser.add_argument("--safe-haven", default=SAFE_HAVEN)
@@ -363,6 +456,11 @@ def main(argv: list[str] | None = None) -> int:
         end_date=args.end_date,
         universe_lag_trading_days=parse_csv_ints(args.universe_lag_days, default=DEFAULT_LAG_TRADING_DAYS),
         validation_configs=parse_validation_configs(args.strategy_configs),
+        risk_modes=parse_risk_modes(args.risk_modes),
+        max_names_per_sector_values=parse_csv_ints(
+            args.max_names_per_sector_values,
+            default=DEFAULT_MAX_NAMES_PER_SECTOR_VALUES,
+        ),
         benchmark_symbol=args.benchmark_symbol,
         broad_benchmark_symbol=args.broad_benchmark_symbol,
         safe_haven=args.safe_haven,
