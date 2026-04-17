@@ -2,7 +2,9 @@
 
 This repo is the upstream artifact producer for snapshot-backed US equity strategies. Broker platform repos remain downstream consumers.
 
-## Current profiles
+## Snapshot-backed profiles produced here
+
+These are artifact profiles produced by this repository for downstream broker runtimes. This list is not a record of which platform or account currently deploys any strategy.
 
 - `tech_communication_pullback_enhancement`
 - `russell_1000_multi_factor_defensive`
