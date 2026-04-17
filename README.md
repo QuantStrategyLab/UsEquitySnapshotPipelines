@@ -270,6 +270,24 @@ python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_long_cycle_validation
 ```
 
+Run the research-only Top2 / Top4 concentration variants, including fixed
+dual-sleeve blends and Top2 shadow drawdown switches:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_mega_cap_leader_rotation_concentration_variants.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.50,0.75 \
+  --dynamic-drawdown-thresholds 0.08,0.10,0.12 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_concentration_variants
+```
+
 The same validation CLI can run a broader lagged stability grid across Top2 /
 Top3 / Top4, QQQ-defense settings, and sector concentration caps:
 

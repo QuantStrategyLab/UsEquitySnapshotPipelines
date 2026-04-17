@@ -30,6 +30,12 @@ point-in-time Top50 universe snapshot (`2017-09-29`). On the `2017-10-02` to
 3-year window still trailed QQQ slightly. This keeps the idea in research:
 promising, but not yet a live profile.
 
+The concentration-variant research found a cleaner balance than either pure
+Top2 or a threshold-based dynamic switch: a fixed `50% Top2 / 50% Top4` sleeve
+mix produced `36.41%` CAGR and `-30.56%` max drawdown. The dynamic Top2
+drawdown switch reduced drawdown too, but it was more parameter-sensitive and
+had higher turnover.
+
 ## Validation Setup
 
 - Validation date: `2026-04-17`
@@ -243,6 +249,86 @@ Rolling-window interpretation:
 - None of these variants currently uses TACO or Crisis Response. They are
   standalone leader-rotation strategy tests.
 
+## Concentration Variant Research
+
+This run tests two ways to reduce Top2 concentration risk without adding TACO,
+Crisis Response, AI, or cash defense:
+
+1. Fixed dual sleeve: blend Top2 and Top4 daily weights.
+2. Dynamic concentration: run Top2 as a shadow sleeve, but switch the traded
+   sleeve to Top4 after the Top2 shadow drawdown breaches a threshold.
+
+Command output:
+`data/output/mega_cap_leader_rotation_dynamic_top50_concentration_variants`
+
+Setup:
+
+- Backtest window: `2017-10-02` to `2026-04-16`
+- Universe lag: `21` trading days
+- Base sleeves:
+  - Top2: top 2, 50% single-name cap
+  - Top4: top 4, 25% single-name cap
+- Dynamic switch thresholds: Top2 shadow drawdown of `-8%`, `-10%`, and `-12%`
+- Turnover cost: `5` bps
+- Rolling windows: `3` and `5` complete calendar years
+
+Full-period result:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Total Return | Turnover/Year |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Top2 cap50 | 39.83% | -38.79% | 1.10 | 1.03 | 1649.57% | 3.51 |
+| Top4 cap25 | 32.27% | -27.28% | 1.10 | 1.18 | 988.51% | 3.57 |
+| 25% Top2 / 75% Top4 | 34.42% | -28.19% | 1.12 | 1.22 | 1149.50% | 3.56 |
+| 50% Top2 / 50% Top4 | 36.41% | -30.56% | 1.12 | 1.19 | 1315.98% | 3.54 |
+| 75% Top2 / 25% Top4 | 38.21% | -34.78% | 1.11 | 1.10 | 1484.13% | 3.53 |
+| Dynamic Top2 DD -8% -> Top4 | 32.72% | -28.43% | 1.00 | 1.15 | 1020.92% | 5.24 |
+| Dynamic Top2 DD -10% -> Top4 | 34.48% | -30.08% | 1.02 | 1.15 | 1153.66% | 5.10 |
+| Dynamic Top2 DD -12% -> Top4 | 34.07% | -33.47% | 1.01 | 1.02 | 1121.40% | 4.98 |
+
+Selected yearly returns:
+
+| Year | Top2 | Top4 | 50/50 blend | Dynamic DD -10% | QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2017 | 11.02% | 5.35% | 8.16% | 11.02% | 7.31% |
+| 2018 | 4.72% | 11.43% | 8.21% | 3.10% | -0.13% |
+| 2019 | 2.51% | 13.57% | 8.00% | 13.57% | 38.96% |
+| 2020 | 106.72% | 73.39% | 90.11% | 89.92% | 48.41% |
+| 2021 | 18.17% | 11.73% | 15.32% | 7.74% | 27.42% |
+| 2022 | 22.61% | 9.79% | 16.33% | 13.45% | -32.58% |
+| 2023 | 82.75% | 52.73% | 67.46% | 69.03% | 54.86% |
+| 2024 | 55.29% | 41.49% | 48.80% | 45.55% | 25.58% |
+| 2025 | 21.41% | 28.94% | 25.77% | 25.61% | 20.77% |
+| 2026 | 42.26% | 37.76% | 40.18% | 34.44% | 4.39% |
+
+Rolling-window summary:
+
+| Run | Window | Min CAGR | Median CAGR | Worst MaxDD | Min Excess vs QQQ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Top2 | 3Y | 30.49% | 41.45% | -38.79% | -2.20% |
+| Top2 | 5Y | 26.36% | 39.67% | -38.79% | 14.25% |
+| Top4 | 3Y | 23.44% | 30.06% | -27.28% | -7.95% |
+| Top4 | 5Y | 21.94% | 28.93% | -27.28% | 7.49% |
+| 50/50 blend | 3Y | 30.54% | 35.04% | -30.56% | -4.72% |
+| 50/50 blend | 5Y | 24.46% | 34.61% | -30.56% | 12.34% |
+| Dynamic DD -10% | 3Y | 27.56% | 32.51% | -30.08% | -5.55% |
+| Dynamic DD -10% | 5Y | 22.18% | 32.73% | -30.08% | 10.07% |
+
+Interpretation:
+
+- The fixed `50% Top2 / 50% Top4` blend is the cleanest balanced candidate in
+  this run. It keeps CAGR above `36%` while reducing max drawdown by roughly
+  eight percentage points versus pure Top2.
+- A more conservative `25% Top2 / 75% Top4` blend had the best Calmar in this
+  grid, but it gives up more return. It is the conservative blend candidate.
+- The dynamic drawdown switch is viable, but not better than the fixed blend.
+  The `-10%` Top2 shadow drawdown threshold produced `34.48%` CAGR and
+  `-30.08%` max drawdown, with higher turnover than the fixed blend. The
+  result is also threshold-sensitive, so it should not be promoted without more
+  out-of-sample data.
+- The fixed blend is easier to reason about operationally: both sleeves can run
+  continuously, and overlap naturally reduces concentration without waiting for
+  a late stress trigger.
+
 ## Commands
 
 Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
@@ -319,11 +405,35 @@ python scripts/validate_mega_cap_leader_rotation_dynamic_universe.py \
   --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_long_cycle_validation
 ```
 
+Run the concentration-variant research:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_mega_cap_leader_rotation_concentration_variants.py \
+  --prices data/output/mega_cap_leader_rotation_dynamic_top50_validation_price_refresh/input/mega_cap_leader_rotation_expanded_price_history.csv \
+  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top50_backtest/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --start 2017-10-02 \
+  --end 2026-04-16 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.50,0.75 \
+  --dynamic-drawdown-thresholds 0.08,0.10,0.12 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/mega_cap_leader_rotation_dynamic_top50_concentration_variants
+```
+
 The validation command writes:
 
 - `validation_summary.csv`
 - `yearly_validation_summary.csv`
 - `rolling_window_summary.csv` when `--rolling-window-years` is provided
+
+The concentration research command writes:
+
+- `concentration_variant_summary.csv`
+- `concentration_variant_yearly_summary.csv`
+- `concentration_variant_rolling_summary.csv`
+- `concentration_variant_mode_history.csv`
 
 ## Promotion Guardrails
 
@@ -335,7 +445,9 @@ Before considering any live strategy based on this research:
 3. Prefer `top4_cap25_no_defense` as the robust research baseline. Treat
    `top3_cap35_no_defense_sector2` as the higher-return candidate and Top2 as
    an aggressive variant.
-4. Keep this separate from MAGS and dynamic leveraged pullback. This is a
+4. Treat `50% Top2 / 50% Top4` as the current balanced research candidate, not
+   a live profile. It still needs more validation before promotion.
+5. Keep this separate from MAGS and dynamic leveraged pullback. This is a
    Russell Top50 leader-rotation idea, not a MAGS plugin.
-5. Do not combine it with TACO or Crisis Response until the base strategy is
+6. Do not combine it with TACO or Crisis Response until the base strategy is
    independently validated.
