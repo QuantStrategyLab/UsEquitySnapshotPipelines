@@ -274,6 +274,11 @@ python scripts/backtest_dynamic_mega_leveraged_pullback.py \
 Use `--return-mode margin_stock --margin-borrow-rate 0.055` to test the same
 selection and risk gate as 2x margin-financed underlying stock exposure. The
 default mode remains daily-reset 2x long products with `--leveraged-expense-rate`.
+The current risk-budget research is summarized in
+`docs/dynamic-mega-leveraged-pullback-risk-budget-research.md`; it keeps
+`max_product_exposure=0.80` and `single_name_cap=0.25` as the robust default,
+with `0.85` and `0.90` max-exposure variants treated as explicit higher-risk
+research candidates rather than default changes.
 
 To keep the MAGS-style pullback path auditable, TACO rebound inputs remain
 research-only for now. You can still pass a deterministic signal file with
