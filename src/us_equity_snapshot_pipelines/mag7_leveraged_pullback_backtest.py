@@ -20,7 +20,7 @@ from .mega_cap_leader_rotation_backtest import (
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 
 PROFILE = "mag7_leveraged_pullback"
-DYNAMIC_PROFILE = "dynamic_mega_leveraged_pullback"
+DYNAMIC_PROFILE = "mag7_leveraged_pullback_dynamic_universe_research"
 MAGS_OFFICIAL_PROFILE = "mags_official_leveraged_pullback"
 BENCHMARK_SYMBOL = "QQQ"
 DEFAULT_DYNAMIC_CANDIDATE_UNIVERSE_SIZE = 10
