@@ -18,7 +18,7 @@ from us_equity_snapshot_pipelines.strategy_plugin_runner import (
 )
 
 STRATEGY_NAME = "tqqq_growth_income"
-LEFT_SIDE_STRATEGY_NAME = "dynamic_mega_leveraged_pullback"
+LEFT_SIDE_STRATEGY_NAME = "mega_cap_leader_rotation_top50_balanced"
 
 
 def _quiet_prices() -> pd.DataFrame:

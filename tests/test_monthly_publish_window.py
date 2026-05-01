@@ -4,11 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.contracts import (
-    DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE,
-    MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE,
-    MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
-)
+from us_equity_snapshot_pipelines.contracts import MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE
 from us_equity_snapshot_pipelines.monthly_publish_window import (
     MONTHLY_SNAPSHOT_PROFILES,
     evaluate_monthly_publish_decision,
@@ -51,6 +47,7 @@ def test_uses_nyse_holiday_fallback_for_good_friday_month_end() -> None:
 
 
 def test_mega_cap_profile_is_monthly_snapshot_profile() -> None:
-    assert MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE in MONTHLY_SNAPSHOT_PROFILES
-    assert MEGA_CAP_LEADER_ROTATION_AGGRESSIVE_PROFILE in MONTHLY_SNAPSHOT_PROFILES
-    assert DYNAMIC_MEGA_LEVERAGED_PULLBACK_PROFILE in MONTHLY_SNAPSHOT_PROFILES
+    assert MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE in MONTHLY_SNAPSHOT_PROFILES
+    assert "mega_cap_leader_rotation_dynamic_top20" not in MONTHLY_SNAPSHOT_PROFILES
+    assert "mega_cap_leader_rotation_aggressive" not in MONTHLY_SNAPSHOT_PROFILES
+    assert "dynamic_mega_leveraged_pullback" not in MONTHLY_SNAPSHOT_PROFILES

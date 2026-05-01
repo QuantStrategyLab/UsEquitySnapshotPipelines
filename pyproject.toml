@@ -20,10 +20,7 @@ test = ["pytest>=8"]
 [project.scripts]
 useq-build-tech-communication-pullback-snapshot = "us_equity_snapshot_pipelines.tech_communication_pullback:main"
 useq-build-russell-1000-snapshot = "us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive:main"
-useq-build-mega-cap-leader-rotation-dynamic-top20-snapshot = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_top20:main"
-useq-build-mega-cap-leader-rotation-aggressive-snapshot = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_aggressive:main"
 useq-build-mega-cap-leader-rotation-top50-balanced-snapshot = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_top50_balanced:main"
-useq-build-dynamic-mega-leveraged-pullback-snapshot = "us_equity_snapshot_pipelines.dynamic_mega_leveraged_pullback:main"
 useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
 useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
 useq-validate-mega-cap-leader-rotation-dynamic-universe = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_validation:main"
@@ -31,7 +28,6 @@ useq-research-mega-cap-leader-rotation-concentration-variants = "us_equity_snaps
 useq-research-mega-cap-leader-rotation-frequency-risk = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_frequency_risk_research:main"
 useq-research-russell-1000-proxy-long-history = "us_equity_snapshot_pipelines.russell_1000_proxy_long_history:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
-useq-backtest-dynamic-mega-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
 useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_panic_rebound_backtest:main"
 useq-backtest-taco-panic-rebound-overlay-compare = "us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare:main"

@@ -8,7 +8,7 @@ from typing import Iterable, Mapping
 import pandas as pd
 
 from .artifacts import write_release_status_summary, write_snapshot_manifest
-from .contracts import MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE, SnapshotProfileContract, get_profile_contract
+from .contracts import MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE, SnapshotProfileContract, get_profile_contract
 from .dynamic_mega_universe import (
     normalize_price_history,
     ranked_active_dynamic_universe,
@@ -17,7 +17,6 @@ from .dynamic_mega_universe import (
 from .mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
-    DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
     SAFE_HAVEN,
     _dynamic_mega_issuer_key,
     _normalize_universe,
@@ -41,6 +40,7 @@ DEFAULT_HARD_DEFENSE_EXPOSURE = 0.50
 DEFAULT_SOFT_BREADTH_THRESHOLD = 0.0
 DEFAULT_HARD_BREADTH_THRESHOLD = 0.0
 DEFAULT_MIN_ADV20_USD = 20_000_000.0
+DEFAULT_PUBLISH_UNIVERSE_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -131,7 +131,7 @@ def _build_signal_description(metadata: Mapping[str, object], ranking: pd.DataFr
 
 def build_artifacts(
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
+    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
     prices_path: str | Path,
     universe_path: str | Path,
     output_dir: str | Path,
@@ -144,7 +144,7 @@ def build_artifacts(
     benchmark_symbol: str = BENCHMARK_SYMBOL,
     broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
     safe_haven: str = SAFE_HAVEN,
-    dynamic_universe_size: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    dynamic_universe_size: int = DEFAULT_PUBLISH_UNIVERSE_SIZE,
     holdings_count: int = DEFAULT_HOLDINGS_COUNT,
     single_name_cap: float = DEFAULT_SINGLE_NAME_CAP,
     hold_buffer: int = DEFAULT_HOLD_BUFFER,
@@ -261,8 +261,8 @@ def build_artifacts(
 
 def build_parser(
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
-    dynamic_universe_size_default: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+    dynamic_universe_size_default: int = DEFAULT_PUBLISH_UNIVERSE_SIZE,
     holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
     single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,
     soft_defense_exposure_default: float = DEFAULT_SOFT_DEFENSE_EXPOSURE,
@@ -302,8 +302,8 @@ def build_parser(
 def main(
     argv: list[str] | None = None,
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_DYNAMIC_TOP20_PROFILE,
-    dynamic_universe_size_default: int = DEFAULT_DYNAMIC_MEGA_UNIVERSE_SIZE,
+    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+    dynamic_universe_size_default: int = DEFAULT_PUBLISH_UNIVERSE_SIZE,
     holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
     single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,
     soft_defense_exposure_default: float = DEFAULT_SOFT_DEFENSE_EXPOSURE,

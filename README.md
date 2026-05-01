@@ -29,7 +29,6 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 | --- | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
 | `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
-| `mega_cap_leader_rotation_dynamic_top20` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow live here; scheduled publish uses the latest weighted Russell 1000 holdings snapshot to derive top20 |
 | `mega_cap_leader_rotation_top50_balanced` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow for the balanced Top50 live profile |
 
 This table describes artifact publishing cadence only. Strategy-level cadence remains documented in `UsEquityStrategies`; broker execution schedules should follow that strategy-layer source.
@@ -59,7 +58,7 @@ The command writes:
 - `release_status_summary.json`
 
 See `docs/operator_runbook.md` and `docs/operator_runbook.zh-CN.md` for the manual GitHub Actions publish flow.
-The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, including the latest weighted holdings snapshot used by mega-cap dynamic top20, then they build and publish the scheduled snapshot profiles from those refreshed inputs.
+The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, including the latest weighted holdings snapshot used by the mega-cap Top50 profile, then they build and publish the scheduled snapshot profiles from those refreshed inputs.
 
 Prepare / refresh shared Russell 1000 source inputs:
 
@@ -78,7 +77,7 @@ The source-input refresh writes:
 - `r1000_universe_history.csv`
 - `r1000_symbol_aliases.csv`
 - `r1000_universe_snapshot_metadata.csv`
-- `r1000_latest_holdings_snapshot.csv` for scheduled mega-cap dynamic top20 ranking
+- `r1000_latest_holdings_snapshot.csv` for scheduled mega-cap Top50 ranking
 
 Build a Russell 1000 snapshot:
 
@@ -91,41 +90,6 @@ python scripts/build_russell_1000_feature_snapshot.py \
   --output-dir data/output/russell_1000_multi_factor_defensive
 ```
 
-
-Build a mega-cap dynamic top20 snapshot from a previously prepared dynamic universe history:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_mega_cap_leader_rotation_dynamic_top20_snapshot.py \
-  --prices /path/to/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
-  --universe /path/to/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
-  --as-of 2026-04-01 \
-  --output-dir data/output/mega_cap_leader_rotation_dynamic_top20
-```
-
-The dynamic top20 builder intentionally requires `mega_rank`, `source_weight`,
-`weight`, `source_market_value`, or `market_value` when the active universe has
-more than 20 names. The monthly scheduled path uses
-`r1000_latest_holdings_snapshot.csv`, which preserves the iShares `weight` and
-`market_value` fields, to avoid accidentally publishing a broad Russell 1000
-snapshot under the concentrated mega-cap profile.
-
-Build the aggressive mega-cap profile from a larger ranked universe or curated
-expanded universe file:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_mega_cap_leader_rotation_aggressive_snapshot.py \
-  --prices /path/to/r1000_price_history.csv \
-  --universe /path/to/r1000_latest_holdings_snapshot.csv \
-  --as-of 2026-04-01 \
-  --dynamic-universe-size 50 \
-  --output-dir data/output/mega_cap_leader_rotation_aggressive
-```
-
-This profile uses the same feature schema as dynamic top20, but writes a
-separate `mega_cap_leader_rotation_aggressive` contract and defaults to a
-higher-risk top-3/no-defense runtime profile.
 
 Build the balanced Top50 profile:
 
@@ -155,8 +119,8 @@ python scripts/backtest_russell_1000_multi_factor_defensive.py \
 
 ## Research-only backtests
 
-`mega_cap_leader_rotation_dynamic_top20` is now a selectable snapshot-backed profile documented in
-`../UsEquityStrategies/docs/research/mega_cap_leader_rotation.md`. Static `mega_cap_leader_rotation` pools remain research-only.
+Static `mega_cap_leader_rotation` pools remain research-only. The runtime path now publishes only
+`mega_cap_leader_rotation_top50_balanced` for this family.
 
 Run the first-pass mega-cap leader rotation backtest with local input files:
 
@@ -393,102 +357,6 @@ borrowing. The command writes
 `summary.csv`, `portfolio_returns.csv`, `weights_history.csv`,
 `turnover_history.csv`, `candidate_scores.csv`, `trades.csv`,
 `exposure_history.csv`, and `reference_returns.csv`.
-
-To test a point-in-time dynamic leader pool instead of the static MAG7 list,
-pass a universe history. The same CLI can also read a concatenated Roundhill
-MAGS holdings CSV directly; rows with `Account=MAGS` are mapped back to the
-seven underlying stocks, and swap exposure is combined with stock exposure:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/backtest_dynamic_mega_leveraged_pullback.py \
-  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
-  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
-  --start 2023-12-01 \
-  --candidate-universe-size 10 \
-  --top-n 3 \
-  --leverage-multiple 2.0 \
-  --return-mode leveraged_product \
-  --output-dir data/output/dynamic_mega_leveraged_pullback_backtest
-```
-
-Use `--return-mode margin_stock --margin-borrow-rate 0.055` to test the same
-selection and risk gate as 2x margin-financed underlying stock exposure. The
-default mode remains daily-reset 2x long products with `--leveraged-expense-rate`.
-The current risk-budget research is summarized in
-`docs/dynamic-mega-leveraged-pullback-risk-budget-research.md`; it keeps
-`max_product_exposure=0.80` and `single_name_cap=0.25` as the robust default,
-with `0.85` and `0.90` max-exposure variants treated as explicit higher-risk
-research candidates rather than default changes.
-
-To keep the MAGS-style pullback path auditable, TACO rebound inputs remain
-research-only for now. You can still pass a deterministic signal file with
-`as_of` and `sleeve_suggestion` columns to test whether a small left-side budget
-would help, but this is not a promoted plugin mount. The budget is additive to
-the strategy's normal product exposure, capped by `--rebound-budget-cap`, and
-blocked by default during `hard_defense`:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/backtest_dynamic_mega_leveraged_pullback.py \
-  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
-  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
-  --start 2023-12-01 \
-  --candidate-universe-size 10 \
-  --top-n 3 \
-  --leverage-multiple 2.0 \
-  --return-mode leveraged_product \
-  --rebound-budget-signals data/output/taco_rebound_research/dynamic_mega_leveraged_pullback/signals.csv \
-  --rebound-budget-cap 0.10 \
-  --output-dir data/output/dynamic_mega_leveraged_pullback_taco_rebound_budget_backtest
-```
-
-This does not let TACO select stocks and does not turn a small TACO budget into
-a full right-side risk-on allocation. The base strategy's risk gate and
-candidate ranking still decide what can be bought. For high-confidence
-event-reversal research, a signal row can set `allow_hard_defense=true` to let
-that row's small rebound budget pass through `hard_defense`; leave it absent or
-false for ordinary tariff softening so the bear-market defense still blocks it.
-Do not wire this MAGS research path into the strategy plugin runner until a
-separate validation pass promotes it.
-
-To research bear-market dip buying inside the MAGS-style pullback strategy,
-enable the research-only bear candidate switch. The default is `off`.
-`market_safe` only allows below-200SMA single-name rebound candidates while the
-market trend filter is not in `soft_defense` or `hard_defense`; `market_bear`
-only allows them while the market filter is defensive. The switch does not
-change live routing and does not override the product exposure caps:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/backtest_dynamic_mega_leveraged_pullback.py \
-  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
-  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
-  --start 2017-10-02 \
-  --candidate-universe-size 15 \
-  --top-n 3 \
-  --return-mode leveraged_product \
-  --bear-candidate-mode market_safe \
-  --bear-candidate-max-size-multiplier 0.35 \
-  --output-dir data/output/dynamic_mega_leveraged_pullback_bear_research
-```
-
-Use `--return-mode margin_stock --leverage-multiple 1.0 --margin-borrow-rate 0`
-to compare the same selection rules against unlevered underlying stocks.
-
-Run a small parameter matrix:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/backtest_dynamic_mega_leveraged_pullback_matrix.py \
-  --prices data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_price_history.csv \
-  --universe data/output/mega_cap_leader_rotation_dynamic_universe_top20_backtest/input/mega_cap_leader_rotation_dynamic_top20_universe_history.csv \
-  --start 2017-10-02 \
-  --candidate-universe-sizes 7,10,15,20 \
-  --top-n-values 2,3,4 \
-  --return-mode leveraged_product \
-  --output-dir data/output/dynamic_mega_leveraged_pullback_matrix
-```
 
 Run the research-only 2018-to-present Trump/Biden trade-war / TACO-like panic
 rebound event study:
@@ -776,7 +644,7 @@ python scripts/build_taco_rebound_shadow_signal.py \
   --geopolitical-deescalation-sleeve 0.10 \
   --tariff-softening-sleeve 0.05 \
   --max-sleeve 0.10 \
-  --output-dir data/output/taco_rebound_research/dynamic_mega_leveraged_pullback
+  --output-dir data/output/taco_rebound_research/research_only
 ```
 
 This TACO research artifact does not select stocks and does not mutate a
