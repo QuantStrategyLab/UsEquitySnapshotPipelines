@@ -28,6 +28,7 @@ useq-research-mega-cap-leader-rotation-concentration-variants = "us_equity_snaps
 useq-research-mega-cap-leader-rotation-frequency-risk = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_frequency_risk_research:main"
 useq-research-russell-1000-proxy-long-history = "us_equity_snapshot_pipelines.russell_1000_proxy_long_history:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
+useq-backtest-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest:main"
 useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
 useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_panic_rebound_backtest:main"
 useq-backtest-taco-panic-rebound-overlay-compare = "us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare:main"
