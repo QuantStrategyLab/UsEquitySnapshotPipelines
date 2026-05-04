@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 from typing import Mapping
 
@@ -98,24 +99,37 @@ def _strategy_kwargs() -> dict[str, object]:
         "min_trade_ratio": float(config["min_trade_ratio"]),
         "min_trade_floor": float(config["min_trade_floor"]),
         "rebalance_threshold_ratio": float(config["rebalance_threshold_ratio"]),
+        "small_account_deploy_ratio": float(config.get("small_account_deploy_ratio", 0.6)),
+        "mid_account_deploy_ratio": float(config.get("mid_account_deploy_ratio", 0.57)),
+        "large_account_deploy_ratio": float(config.get("large_account_deploy_ratio", 0.5)),
+        "trade_layer_decay_coeff": float(config.get("trade_layer_decay_coeff", 0.04)),
         "income_layer_start_usd": float(config["income_layer_start_usd"]),
         "income_layer_max_ratio": float(config["income_layer_max_ratio"]),
         "income_layer_qqqi_weight": float(config["income_layer_qqqi_weight"]),
         "income_layer_spyi_weight": float(config["income_layer_spyi_weight"]),
-        "trend_entry_buffer": float(config["trend_entry_buffer"]),
-        "trend_mid_buffer": float(config["trend_mid_buffer"]),
-        "trend_exit_buffer": float(config["trend_exit_buffer"]),
-        "attack_allocation_mode": str(config["attack_allocation_mode"]),
-        "blend_gate_trend_source": str(config["blend_gate_trend_source"]),
-        "blend_gate_soxl_weight": float(config["blend_gate_soxl_weight"]),
-        "blend_gate_mid_soxl_weight": float(config["blend_gate_mid_soxl_weight"]),
-        "blend_gate_active_soxx_weight": float(config["blend_gate_active_soxx_weight"]),
-        "blend_gate_defensive_soxx_weight": float(config["blend_gate_defensive_soxx_weight"]),
+        "trend_entry_buffer": float(config.get("trend_entry_buffer", 0.03)),
+        "trend_mid_buffer": float(config.get("trend_mid_buffer", 0.06)),
+        "trend_exit_buffer": float(config.get("trend_exit_buffer", 0.03)),
+        "attack_allocation_mode": str(config.get("attack_allocation_mode", "soxx_gate_tiered_blend")),
+        "blend_gate_trend_source": str(config.get("blend_gate_trend_source", "SOXX")),
+        "blend_gate_soxl_weight": float(config.get("blend_gate_soxl_weight", 0.75)),
+        "blend_gate_mid_soxl_weight": float(config.get("blend_gate_mid_soxl_weight", 0.65)),
+        "blend_gate_active_soxx_weight": float(config.get("blend_gate_active_soxx_weight", 0.20)),
+        "blend_gate_defensive_soxx_weight": float(config.get("blend_gate_defensive_soxx_weight", 0.15)),
         "blend_gate_rsi_cap_enabled": bool(config.get("blend_gate_rsi_cap_enabled", False)),
         "blend_gate_rsi_threshold": float(config.get("blend_gate_rsi_threshold", 70.0)),
         "blend_gate_bollinger_cap_enabled": bool(config.get("blend_gate_bollinger_cap_enabled", False)),
         "blend_gate_overlay_stack_triggers": bool(config.get("blend_gate_overlay_stack_triggers", False)),
     }
+
+
+def _call_strategy_kwargs() -> dict[str, object]:
+    kwargs = _strategy_kwargs()
+    supported = set(inspect.signature(build_rebalance_plan).parameters)
+    supported.discard("indicators")
+    supported.discard("account_state")
+    supported.discard("translator")
+    return {key: value for key, value in kwargs.items() if key in supported}
 
 
 def _indicator_snapshot_at(
@@ -331,7 +345,7 @@ def run_backtest(
                 indicators,
                 account_state,
                 translator=lambda key, **kwargs: key,
-                **_strategy_kwargs(),
+                **_call_strategy_kwargs(),
             )
         except Exception:
             continue
