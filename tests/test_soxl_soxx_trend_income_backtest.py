@@ -6,7 +6,7 @@ from us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest import run_bac
 
 
 def _build_synthetic_prices() -> pd.DataFrame:
-    dates = pd.bdate_range("2023-01-02", periods=280)
+    dates = pd.bdate_range("2023-01-02", periods=420)
     rows = []
     for idx, as_of in enumerate(dates):
         soxx = 100.0 + idx * 0.6
@@ -30,15 +30,15 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     result = run_backtest(
         prices,
         initial_equity=100_000.0,
-        start_date="2023-07-03",
-        end_date="2024-01-05",
+        start_date="2023-10-02",
+        end_date="2024-03-29",
         turnover_cost_bps=5.0,
     )
 
     summary = result["summary"]
 
-    assert summary["Start"] >= "2023-07-03"
-    assert summary["End"] == "2024-01-05"
+    assert summary["Start"] >= "2023-10-02"
+    assert summary["End"] == "2024-03-29"
     assert summary["CAGR"] > 0
     assert summary["Max Drawdown"] <= 0
     assert not result["trades"].empty
