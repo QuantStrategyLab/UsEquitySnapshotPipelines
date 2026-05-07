@@ -143,6 +143,34 @@ For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
 That avoids QQQI/SPYI inception dates truncating the 2010+ SOXL sample.
 
+To create replayable SOXL/SOXX archives, use the archive runner instead of
+one-off research commands. It writes `price_history.csv`, `summary.csv`,
+portfolio/trade/signal outputs, `backtest_config.json`,
+`data_quality_report.csv`, and `source_manifest.json` with file hashes and
+redacted source metadata.
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive \
+  --mode live-full \
+  --download \
+  --archive-date 2026-05-08
+```
+
+For long-history core validation, use the built-in `BOXX=BIL` download alias
+and disabled income layer:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive \
+  --mode core-long \
+  --download \
+  --archive-date 2026-05-08
+```
+
+If Yahoo rate-limits downloads, set `YFINANCE_PROXY` in the shell or pass
+`--proxy`; proxy values are intentionally redacted from `source_manifest.json`.
+
 Run the first-pass mega-cap leader rotation backtest with local input files:
 
 ```bash

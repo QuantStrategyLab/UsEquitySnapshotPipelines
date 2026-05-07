@@ -137,7 +137,6 @@ def build_indicator_history(
                     .clip(lower=floor)
                 )
                 history["rsi14_dynamic_threshold"] = dynamic_threshold
-                history["rsi14"] = rsi - dynamic_threshold + floor
             bollinger_mid = close.rolling(int(bollinger_window)).mean()
             bollinger_stddev = close.rolling(int(bollinger_window)).std(ddof=0)
             history["bb_mid"] = bollinger_mid
@@ -174,6 +173,9 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "blend_gate_defensive_soxx_weight": float(config.get("blend_gate_defensive_soxx_weight", 0.15)),
         "blend_gate_rsi_cap_enabled": bool(config.get("blend_gate_rsi_cap_enabled", False)),
         "blend_gate_rsi_threshold": float(config.get("blend_gate_rsi_threshold", 70.0)),
+        "blend_gate_dynamic_rsi_threshold_enabled": bool(
+            config.get("blend_gate_dynamic_rsi_threshold_enabled", False)
+        ),
         "blend_gate_bollinger_cap_enabled": bool(config.get("blend_gate_bollinger_cap_enabled", False)),
         "blend_gate_overlay_stack_triggers": bool(config.get("blend_gate_overlay_stack_triggers", False)),
     }
@@ -388,6 +390,8 @@ def run_backtest(
     )
     dynamic_floor = float(dynamic_rsi_floor) if dynamic_rsi_floor is not None else rsi_threshold
     strategy_overrides["blend_gate_rsi_threshold"] = dynamic_floor if dynamic_rsi_enabled else rsi_threshold
+    if dynamic_rsi_enabled:
+        strategy_overrides["blend_gate_dynamic_rsi_threshold_enabled"] = True
 
     close_matrix = _build_close_matrix(prices)
     indicator_history = build_indicator_history(
@@ -494,6 +498,9 @@ def run_backtest(
                 "overlay_trigger_reasons": ",".join(plan.get("overlay_trigger_reasons", ())),
                 "blend_gate_rsi_threshold": plan.get("blend_gate_rsi_threshold"),
                 "blend_gate_rsi_cap_enabled": plan.get("blend_gate_rsi_cap_enabled"),
+                "blend_gate_dynamic_rsi_threshold_enabled": plan.get(
+                    "blend_gate_dynamic_rsi_threshold_enabled"
+                ),
                 "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
                 "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
             }

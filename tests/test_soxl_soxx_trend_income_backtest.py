@@ -69,4 +69,8 @@ def test_soxl_soxx_dynamic_rsi_quantile_uses_floor() -> None:
 
     assert {"rsi14", "rsi14_raw", "rsi14_dynamic_threshold", "bb_upper"}.issubset(soxx.columns)
     assert soxx["rsi14_dynamic_threshold"].dropna().ge(70.0).all()
-    assert soxx["rsi14"].dropna().le(soxx["rsi14_raw"].dropna()).all()
+    pd.testing.assert_series_equal(
+        soxx["rsi14"].dropna(),
+        soxx["rsi14_raw"].dropna(),
+        check_names=False,
+    )
