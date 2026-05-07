@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -26,7 +25,7 @@ from .soxl_soxx_trend_income_backtest import (
     _format_summary,
     run_backtest,
 )
-from .yfinance_prices import download_price_history
+from .yfinance_prices import _resolve_yfinance_proxy, download_price_history
 
 DEFAULT_CORE_LONG_PRICE_START = "2010-01-01"
 DEFAULT_DYNAMIC_RSI_QUANTILE_WINDOW = 252
@@ -202,6 +201,12 @@ def _json_safe(value):
     return value
 
 
+def _archive_proxy_used(*, source_kind: str, proxy: str | None) -> bool:
+    if source_kind != "yfinance":
+        return False
+    return bool(_resolve_yfinance_proxy(proxy))
+
+
 def _write_backtest_outputs(
     *,
     output_dir: Path,
@@ -335,7 +340,7 @@ def archive_backtest(
             "price_end": price_end,
             "requested_symbols": list(spec.symbols),
             "symbol_aliases": {key: list(value) for key, value in sorted(merged_aliases.items())},
-            "proxy_used": bool(proxy or os.environ.get("YFINANCE_PROXY")),
+            "proxy_used": _archive_proxy_used(source_kind=source_kind, proxy=proxy),
         },
         "data_quality": _source_ranges(data_quality_report),
         "backtest": config,
