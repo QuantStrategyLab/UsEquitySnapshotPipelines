@@ -14,9 +14,8 @@ from us_equity_snapshot_pipelines.crisis_response_research import (
     run_crisis_response_research,
 )
 from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
-    CONTEXT_GATE_RUBRIC,
-    CONTEXT_GATE_BUBBLE,
     CONTEXT_GATE_BUBBLE_OR_FINANCIAL,
+    CONTEXT_GATE_RUBRIC,
     apply_context_gate_to_signal,
     build_crisis_context_opinions,
     build_bubble_context_gate,
@@ -26,6 +25,7 @@ from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
     run_crisis_guard_research,
 )
 from us_equity_snapshot_pipelines.taco_panic_rebound_research import (
+    DEFAULT_SYMBOLS,
     EVENT_KIND_SHOCK,
     EVENT_KIND_SOFTENING,
     GEOPOLITICAL_DEESCALATION_EVENTS_2026,
@@ -33,9 +33,23 @@ from us_equity_snapshot_pipelines.taco_panic_rebound_research import (
     TACO_EVENTS_WITH_GEOPOLITICAL_DEESCALATION,
     TradeWarEvent,
     analyze_event_windows,
+    build_parser,
     price_history_to_close_matrix,
     resolve_trade_war_event_set,
     summarize_symbol_windows,
+    split_symbols,
+)
+from us_equity_snapshot_pipelines.taco_panic_rebound_backtest import run_backtest as run_portfolio_backtest
+from us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare import (
+    AUDIT_MODE_CRISIS_VETO,
+    add_synthetic_attack_close,
+    apply_price_crisis_guard_to_weights,
+    build_dual_audit_decisions,
+    build_price_crisis_guard_signal,
+    build_price_stress_scan,
+    build_tqqq_growth_income_base_weights,
+    filter_events_by_price_stress,
+    run_overlay_comparison,
 )
 
 
@@ -50,6 +64,14 @@ def _sample_prices() -> pd.DataFrame:
         rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
         rows.append({"symbol": "TQQQ", "as_of": as_of, "close": tqqq_close, "volume": 1_000_000})
     return pd.DataFrame(rows)
+
+
+def test_default_symbols_exclude_abandoned_china_etf_bucket() -> None:
+    abandoned = {"YINN", "YANG", "FXI", "MCHI", "KWEB", "CQQQ"}
+
+    assert abandoned.isdisjoint(DEFAULT_SYMBOLS)
+    assert abandoned.isdisjoint(split_symbols(None))
+    assert abandoned.isdisjoint(build_parser().get_default("symbols").split(","))
 
 
 def test_price_history_to_close_matrix_pivots_long_history() -> None:
@@ -102,19 +124,6 @@ def test_summarize_symbol_windows_ranks_larger_rebound() -> None:
 
     assert summary["symbol"].iloc[0] == "TQQQ"
     assert summary.loc[summary["symbol"].eq("TQQQ"), "hit_rate_max_rebound_gt_20pct_5d"].iloc[0] == 1.0
-
-from us_equity_snapshot_pipelines.taco_panic_rebound_backtest import run_backtest as run_portfolio_backtest
-from us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare import (
-    AUDIT_MODE_CRISIS_VETO,
-    add_synthetic_attack_close,
-    apply_price_crisis_guard_to_weights,
-    build_dual_audit_decisions,
-    build_price_crisis_guard_signal,
-    build_price_stress_scan,
-    build_tqqq_growth_income_base_weights,
-    filter_events_by_price_stress,
-    run_overlay_comparison,
-)
 
 
 def test_full_event_set_includes_presidential_period_events() -> None:
