@@ -451,6 +451,18 @@ def run_backtest(
         current_min_trade = float(plan["current_min_trade"])
         trend_symbol = str(plan.get("trend_symbol", "SOXX")).lower()
         trend_indicators = indicators.get(trend_symbol, {})
+        trend_rsi14 = plan.get("trend_rsi14")
+        if trend_rsi14 is None:
+            trend_rsi14 = trend_indicators.get("rsi14")
+        trend_bb_mid = plan.get("trend_bb_mid")
+        if trend_bb_mid is None:
+            trend_bb_mid = trend_indicators.get("bb_mid")
+        trend_bb_upper = plan.get("trend_bb_upper")
+        if trend_bb_upper is None:
+            trend_bb_upper = trend_indicators.get("bb_upper")
+        trend_bb_lower = plan.get("trend_bb_lower")
+        if trend_bb_lower is None:
+            trend_bb_lower = trend_indicators.get("bb_lower")
         signal_rows.append(
             {
                 "as_of": as_of,
@@ -467,12 +479,12 @@ def run_backtest(
                 "trend_exit_line": plan.get("trend_exit_line"),
                 "trend_ma20": plan.get("trend_ma20"),
                 "trend_ma20_slope": plan.get("trend_ma20_slope"),
-                "trend_rsi14": plan.get("trend_rsi14"),
+                "trend_rsi14": trend_rsi14,
                 "trend_rsi14_raw": trend_indicators.get("rsi14_raw"),
                 "trend_rsi14_dynamic_threshold": trend_indicators.get("rsi14_dynamic_threshold"),
-                "trend_bb_mid": plan.get("trend_bb_mid"),
-                "trend_bb_upper": plan.get("trend_bb_upper"),
-                "trend_bb_lower": plan.get("trend_bb_lower"),
+                "trend_bb_mid": trend_bb_mid,
+                "trend_bb_upper": trend_bb_upper,
+                "trend_bb_lower": trend_bb_lower,
                 "reserved_cash": plan.get("reserved_cash"),
                 "investable_cash": plan.get("investable_cash"),
                 "threshold_value": threshold_value,
