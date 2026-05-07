@@ -21,14 +21,27 @@ def _fake_yfinance_download(symbols, *, start, end, auto_adjust, progress, threa
     return frame
 
 
-def test_archive_core_long_download_writes_replayable_manifest(tmp_path) -> None:
+def _sample_archive_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2020-01-01", periods=520)
+    rows = []
+    for idx, as_of in enumerate(dates):
+        for symbol, base, step in (
+            ("SOXL", 50.0, 0.35),
+            ("SOXX", 100.0, 0.20),
+            ("BOXX", 80.0, 0.01),
+        ):
+            rows.append({"symbol": symbol, "as_of": as_of, "close": base + idx * step})
+    return pd.DataFrame(rows)
+
+
+def test_archive_core_long_download_writes_replayable_manifest(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@example.test:8080")
     archive_dir = archive_backtest(
         mode="core-long",
         output_dir=tmp_path,
         price_start="2020-01-01",
         start_date="2020-01-01",
         download_fn=_fake_yfinance_download,
-        proxy="http://user:secret@example.test:8080",
         sanitized_argv=["--mode", "core-long", "--download", "--proxy", "<redacted>"],
     )
 
@@ -51,4 +64,20 @@ def test_archive_core_long_download_writes_replayable_manifest(tmp_path) -> None
     assert manifest["price_source"]["auto_adjust"] is True
     assert manifest["price_source"]["proxy_used"] is True
     assert manifest["price_source"]["symbol_aliases"] == {"BOXX": ["BIL"]}
+    assert "secret" not in manifest_text
+
+
+def test_archive_local_prices_do_not_report_proxy_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("YFINANCE_PROXY", "http://user:secret@example.test:8080")
+    archive_dir = archive_backtest(
+        mode="core-long",
+        output_dir=tmp_path,
+        prices=_sample_archive_prices(),
+        start_date="2020-01-01",
+    )
+
+    manifest_text = (archive_dir / "source_manifest.json").read_text(encoding="utf-8")
+    manifest = json.loads(manifest_text)
+    assert manifest["source_kind"] == "local_prices"
+    assert manifest["price_source"]["proxy_used"] is False
     assert "secret" not in manifest_text
