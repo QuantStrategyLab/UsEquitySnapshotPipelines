@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest import run_backtest
+from us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest import build_indicator_history, run_backtest
 
 
 def _build_synthetic_prices() -> pd.DataFrame:
@@ -43,3 +43,30 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert summary["Max Drawdown"] <= 0
     assert not result["trades"].empty
     assert not result["signal_history"].empty
+    assert "trend_rsi14" in result["signal_history"].columns
+    assert "trend_bb_upper" in result["signal_history"].columns
+    assert result["signal_history"]["trend_rsi14"].notna().any()
+    assert result["signal_history"]["trend_bb_upper"].notna().any()
+
+
+def test_soxl_soxx_dynamic_rsi_quantile_uses_floor() -> None:
+    dates = pd.bdate_range("2023-01-02", periods=320)
+    close_matrix = pd.DataFrame(
+        {
+            "SOXL": [50.0 + idx * 0.4 for idx in range(len(dates))],
+            "SOXX": [100.0 + idx * 0.2 for idx in range(len(dates))],
+        },
+        index=dates,
+    )
+
+    indicators = build_indicator_history(
+        close_matrix,
+        dynamic_rsi_quantile_window=252,
+        dynamic_rsi_quantile=0.90,
+        dynamic_rsi_floor=70.0,
+    )
+    soxx = indicators["soxx"]
+
+    assert {"rsi14", "rsi14_raw", "rsi14_dynamic_threshold", "bb_upper"}.issubset(soxx.columns)
+    assert soxx["rsi14_dynamic_threshold"].dropna().ge(70.0).all()
+    assert soxx["rsi14"].dropna().le(soxx["rsi14_raw"].dropna()).all()
