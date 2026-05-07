@@ -122,6 +122,27 @@ python scripts/backtest_russell_1000_multi_factor_defensive.py \
 Static `mega_cap_leader_rotation` pools remain research-only. The runtime path now publishes only
 `mega_cap_leader_rotation_top50_balanced` for this family.
 
+Run the SOXL/SOXX trend-income research backtest with local prices:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest \
+  --prices data/output/soxl_soxx_trend_income_archive_2026-05-04/price_history.csv \
+  --start 2024-01-30 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/soxl_soxx_trend_income_research
+```
+
+The SOXL/SOXX research backtest builds the same SOXX RSI and Bollinger-band
+inputs consumed by the runtime strategy. To test a regime-aware overheat gate,
+add `--dynamic-rsi-quantile-window 252 --dynamic-rsi-quantile 0.90
+--dynamic-rsi-floor 70`. This models `max(70, rolling 252d RSI 90th
+percentile)` while keeping the production manifest unchanged.
+
+For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
+proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
+That avoids QQQI/SPYI inception dates truncating the 2010+ SOXL sample.
+
 Run the first-pass mega-cap leader rotation backtest with local input files:
 
 ```bash

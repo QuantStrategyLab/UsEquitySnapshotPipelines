@@ -20,6 +20,9 @@ DEFAULT_INITIAL_EQUITY_USD = 100_000.0
 DEFAULT_PRICE_START = "2023-01-01"
 DEFAULT_BACKTEST_START = "2024-01-30"
 DEFAULT_TURNOVER_COST_BPS = 5.0
+DEFAULT_RSI_WINDOW = 14
+DEFAULT_BOLLINGER_WINDOW = 20
+DEFAULT_BOLLINGER_STD = 2.0
 DEFAULT_DOWNLOAD_SYMBOLS = list(MANAGED_SYMBOLS)
 DEFAULT_OUTPUT_COLUMNS = (
     "Start",
@@ -71,6 +74,37 @@ def _build_close_matrix(price_history: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_indicator_history(close_matrix: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    return build_indicator_history(
+        close_matrix,
+        rsi_window=DEFAULT_RSI_WINDOW,
+        bollinger_window=DEFAULT_BOLLINGER_WINDOW,
+        bollinger_std=DEFAULT_BOLLINGER_STD,
+    )
+
+
+def _build_rsi(close: pd.Series, window: int) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1 / int(window), min_periods=int(window), adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / int(window), min_periods=int(window), adjust=False).mean()
+    relative_strength = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + relative_strength))
+    rsi = rsi.where(avg_loss.ne(0.0), 100.0)
+    rsi = rsi.where(avg_gain.ne(0.0), 0.0)
+    return rsi
+
+
+def build_indicator_history(
+    close_matrix: pd.DataFrame,
+    *,
+    rsi_window: int = DEFAULT_RSI_WINDOW,
+    bollinger_window: int = DEFAULT_BOLLINGER_WINDOW,
+    bollinger_std: float = DEFAULT_BOLLINGER_STD,
+    dynamic_rsi_quantile_window: int | None = None,
+    dynamic_rsi_quantile: float | None = None,
+    dynamic_rsi_floor: float | None = None,
+) -> dict[str, pd.DataFrame]:
     indicators: dict[str, pd.DataFrame] = {}
     for symbol in ("SOXL", "SOXX"):
         if symbol not in close_matrix.columns:
@@ -87,13 +121,35 @@ def _build_indicator_history(close_matrix: pd.DataFrame) -> dict[str, pd.DataFra
             ma20 = close.rolling(20).mean()
             history["ma20"] = ma20
             history["ma20_slope"] = ma20.diff()
+            rsi = _build_rsi(close, int(rsi_window))
+            history["rsi14_raw"] = rsi
+            history["rsi14"] = rsi
+            if dynamic_rsi_quantile_window is not None or dynamic_rsi_quantile is not None:
+                quantile_window = int(dynamic_rsi_quantile_window or 252)
+                quantile = float(dynamic_rsi_quantile if dynamic_rsi_quantile is not None else 0.90)
+                floor = float(dynamic_rsi_floor if dynamic_rsi_floor is not None else 70.0)
+                min_periods = max(60, min(quantile_window, 126) // 2)
+                dynamic_threshold = (
+                    rsi.rolling(quantile_window, min_periods=min_periods)
+                    .quantile(quantile)
+                    .shift(1)
+                    .fillna(floor)
+                    .clip(lower=floor)
+                )
+                history["rsi14_dynamic_threshold"] = dynamic_threshold
+                history["rsi14"] = rsi - dynamic_threshold + floor
+            bollinger_mid = close.rolling(int(bollinger_window)).mean()
+            bollinger_stddev = close.rolling(int(bollinger_window)).std(ddof=0)
+            history["bb_mid"] = bollinger_mid
+            history["bb_upper"] = bollinger_mid + (float(bollinger_std) * bollinger_stddev)
+            history["bb_lower"] = bollinger_mid - (float(bollinger_std) * bollinger_stddev)
         indicators[symbol.lower()] = history
     return indicators
 
 
-def _strategy_kwargs() -> dict[str, object]:
+def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str, object]:
     config = soxl_soxx_trend_income_manifest.default_config
-    return {
+    kwargs = {
         "trend_ma_window": int(config["trend_ma_window"]),
         "cash_reserve_ratio": float(config["cash_reserve_ratio"]),
         "min_trade_ratio": float(config["min_trade_ratio"]),
@@ -121,10 +177,14 @@ def _strategy_kwargs() -> dict[str, object]:
         "blend_gate_bollinger_cap_enabled": bool(config.get("blend_gate_bollinger_cap_enabled", False)),
         "blend_gate_overlay_stack_triggers": bool(config.get("blend_gate_overlay_stack_triggers", False)),
     }
+    for key, value in dict(overrides or {}).items():
+        if value is not None and key in kwargs:
+            kwargs[key] = value
+    return kwargs
 
 
-def _call_strategy_kwargs() -> dict[str, object]:
-    kwargs = _strategy_kwargs()
+def _call_strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str, object]:
+    kwargs = _strategy_kwargs(overrides)
     supported = set(inspect.signature(build_rebalance_plan).parameters)
     supported.discard("indicators")
     supported.discard("account_state")
@@ -294,6 +354,14 @@ def run_backtest(
     start_date: str = DEFAULT_BACKTEST_START,
     end_date: str | None = None,
     turnover_cost_bps: float = DEFAULT_TURNOVER_COST_BPS,
+    blend_gate_rsi_cap_enabled: bool | None = None,
+    blend_gate_rsi_threshold: float | None = None,
+    blend_gate_bollinger_cap_enabled: bool | None = None,
+    blend_gate_overlay_stack_triggers: bool | None = None,
+    dynamic_rsi_quantile_window: int | None = None,
+    dynamic_rsi_quantile: float | None = None,
+    dynamic_rsi_floor: float | None = None,
+    disable_income_layer: bool = False,
 ) -> dict[str, object]:
     prices = _build_price_frame(price_history)
     if end_date is not None:
@@ -301,8 +369,36 @@ def run_backtest(
     if prices.empty:
         raise RuntimeError("No usable price history remains inside the selected date range")
 
+    strategy_overrides: dict[str, object] = {}
+    if blend_gate_rsi_cap_enabled is not None:
+        strategy_overrides["blend_gate_rsi_cap_enabled"] = bool(blend_gate_rsi_cap_enabled)
+    if blend_gate_bollinger_cap_enabled is not None:
+        strategy_overrides["blend_gate_bollinger_cap_enabled"] = bool(blend_gate_bollinger_cap_enabled)
+    if blend_gate_overlay_stack_triggers is not None:
+        strategy_overrides["blend_gate_overlay_stack_triggers"] = bool(blend_gate_overlay_stack_triggers)
+    if disable_income_layer:
+        strategy_overrides["income_layer_start_usd"] = 1e18
+        strategy_overrides["income_layer_max_ratio"] = 0.0
+
+    dynamic_rsi_enabled = dynamic_rsi_quantile_window is not None or dynamic_rsi_quantile is not None
+    rsi_threshold = (
+        float(blend_gate_rsi_threshold)
+        if blend_gate_rsi_threshold is not None
+        else float(soxl_soxx_trend_income_manifest.default_config.get("blend_gate_rsi_threshold", 70.0))
+    )
+    dynamic_floor = float(dynamic_rsi_floor) if dynamic_rsi_floor is not None else rsi_threshold
+    strategy_overrides["blend_gate_rsi_threshold"] = dynamic_floor if dynamic_rsi_enabled else rsi_threshold
+
     close_matrix = _build_close_matrix(prices)
-    indicator_history = _build_indicator_history(close_matrix)
+    indicator_history = build_indicator_history(
+        close_matrix,
+        rsi_window=DEFAULT_RSI_WINDOW,
+        bollinger_window=DEFAULT_BOLLINGER_WINDOW,
+        bollinger_std=DEFAULT_BOLLINGER_STD,
+        dynamic_rsi_quantile_window=dynamic_rsi_quantile_window if dynamic_rsi_enabled else None,
+        dynamic_rsi_quantile=dynamic_rsi_quantile if dynamic_rsi_enabled else None,
+        dynamic_rsi_floor=dynamic_floor if dynamic_rsi_enabled else None,
+    )
     index = close_matrix.index
     index = index[index >= pd.Timestamp(start_date).normalize()]
     if len(index) < 2:
@@ -345,7 +441,7 @@ def run_backtest(
                 indicators,
                 account_state,
                 translator=lambda key, **kwargs: key,
-                **_call_strategy_kwargs(),
+                **_call_strategy_kwargs(strategy_overrides),
             )
         except Exception:
             continue
@@ -353,6 +449,20 @@ def run_backtest(
         target_values = dict(plan["targets"])
         threshold_value = float(plan["threshold_value"])
         current_min_trade = float(plan["current_min_trade"])
+        trend_symbol = str(plan.get("trend_symbol", "SOXX")).lower()
+        trend_indicators = indicators.get(trend_symbol, {})
+        trend_rsi14 = plan.get("trend_rsi14")
+        if trend_rsi14 is None:
+            trend_rsi14 = trend_indicators.get("rsi14")
+        trend_bb_mid = plan.get("trend_bb_mid")
+        if trend_bb_mid is None:
+            trend_bb_mid = trend_indicators.get("bb_mid")
+        trend_bb_upper = plan.get("trend_bb_upper")
+        if trend_bb_upper is None:
+            trend_bb_upper = trend_indicators.get("bb_upper")
+        trend_bb_lower = plan.get("trend_bb_lower")
+        if trend_bb_lower is None:
+            trend_bb_lower = trend_indicators.get("bb_lower")
         signal_rows.append(
             {
                 "as_of": as_of,
@@ -367,11 +477,25 @@ def run_backtest(
                 "trend_entry_line": plan.get("trend_entry_line"),
                 "trend_mid_line": plan.get("trend_mid_line"),
                 "trend_exit_line": plan.get("trend_exit_line"),
+                "trend_ma20": plan.get("trend_ma20"),
+                "trend_ma20_slope": plan.get("trend_ma20_slope"),
+                "trend_rsi14": trend_rsi14,
+                "trend_rsi14_raw": trend_indicators.get("rsi14_raw"),
+                "trend_rsi14_dynamic_threshold": trend_indicators.get("rsi14_dynamic_threshold"),
+                "trend_bb_mid": trend_bb_mid,
+                "trend_bb_upper": trend_bb_upper,
+                "trend_bb_lower": trend_bb_lower,
                 "reserved_cash": plan.get("reserved_cash"),
                 "investable_cash": plan.get("investable_cash"),
                 "threshold_value": threshold_value,
                 "current_min_trade": current_min_trade,
                 "total_equity": current_equity,
+                "overlay_trigger_count": plan.get("overlay_trigger_count"),
+                "overlay_trigger_reasons": ",".join(plan.get("overlay_trigger_reasons", ())),
+                "blend_gate_rsi_threshold": plan.get("blend_gate_rsi_threshold"),
+                "blend_gate_rsi_cap_enabled": plan.get("blend_gate_rsi_cap_enabled"),
+                "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
+                "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
             }
         )
 
@@ -448,6 +572,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", dest="end_date", help="Backtest end date")
     parser.add_argument("--initial-equity", type=float, default=DEFAULT_INITIAL_EQUITY_USD)
     parser.add_argument("--turnover-cost-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
+    parser.add_argument("--disable-rsi-cap", action="store_true", help="Disable the RSI overheat downgrade overlay")
+    parser.add_argument(
+        "--disable-bollinger-cap",
+        action="store_true",
+        help="Disable the Bollinger upper-band overheat downgrade overlay",
+    )
+    parser.add_argument(
+        "--disable-overlay-stack-triggers",
+        action="store_true",
+        help="Downgrade at most one tier when multiple overheat overlays fire",
+    )
+    parser.add_argument("--rsi-threshold", type=float, help="Static RSI threshold for the overheat overlay")
+    parser.add_argument(
+        "--dynamic-rsi-quantile-window",
+        type=int,
+        help="Use a rolling RSI quantile threshold over this many trading days",
+    )
+    parser.add_argument(
+        "--dynamic-rsi-quantile",
+        type=float,
+        help="Rolling RSI quantile to use with --dynamic-rsi-quantile-window, for example 0.90",
+    )
+    parser.add_argument(
+        "--dynamic-rsi-floor",
+        type=float,
+        help="Lower bound for the dynamic RSI threshold; defaults to the static RSI threshold",
+    )
+    parser.add_argument(
+        "--disable-income-layer",
+        action="store_true",
+        help="Disable QQQI/SPYI income layer for long-history core SOXL/SOXX research",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -473,6 +629,14 @@ def main(argv: list[str] | None = None) -> int:
         start_date=args.start_date,
         end_date=args.end_date,
         turnover_cost_bps=float(args.turnover_cost_bps),
+        blend_gate_rsi_cap_enabled=False if args.disable_rsi_cap else None,
+        blend_gate_rsi_threshold=args.rsi_threshold,
+        blend_gate_bollinger_cap_enabled=False if args.disable_bollinger_cap else None,
+        blend_gate_overlay_stack_triggers=False if args.disable_overlay_stack_triggers else None,
+        dynamic_rsi_quantile_window=args.dynamic_rsi_quantile_window,
+        dynamic_rsi_quantile=args.dynamic_rsi_quantile,
+        dynamic_rsi_floor=args.dynamic_rsi_floor,
+        disable_income_layer=bool(args.disable_income_layer),
     )
 
     summary_frame = _format_summary(result["summary"])
@@ -493,6 +657,14 @@ def main(argv: list[str] | None = None) -> int:
             "start_date": args.start_date,
             "end_date": args.end_date,
             "turnover_cost_bps": float(args.turnover_cost_bps),
+            "disable_rsi_cap": bool(args.disable_rsi_cap),
+            "disable_bollinger_cap": bool(args.disable_bollinger_cap),
+            "disable_overlay_stack_triggers": bool(args.disable_overlay_stack_triggers),
+            "rsi_threshold": args.rsi_threshold,
+            "dynamic_rsi_quantile_window": args.dynamic_rsi_quantile_window,
+            "dynamic_rsi_quantile": args.dynamic_rsi_quantile,
+            "dynamic_rsi_floor": args.dynamic_rsi_floor,
+            "disable_income_layer": bool(args.disable_income_layer),
         })
         print(f"wrote research backtest outputs -> {output_dir}")
     return 0
