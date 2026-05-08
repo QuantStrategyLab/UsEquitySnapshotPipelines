@@ -35,6 +35,7 @@ useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_
 useq-backtest-taco-panic-rebound-overlay-compare = "us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare:main"
 useq-backtest-crisis-regime-guard = "us_equity_snapshot_pipelines.crisis_regime_guard_research:main"
 useq-backtest-crisis-response = "us_equity_snapshot_pipelines.crisis_response_research:main"
+useq-backtest-global-etf-universe-sensitivity = "us_equity_snapshot_pipelines.global_etf_rotation_universe_sensitivity:main"
 useq-build-crisis-context-pack = "us_equity_snapshot_pipelines.crisis_context_research:main"
 useq-build-crisis-response-shadow-signal = "us_equity_snapshot_pipelines.crisis_response_shadow_plugin:main"
 useq-build-taco-rebound-shadow-signal = "us_equity_snapshot_pipelines.taco_rebound_shadow_plugin:main"
