@@ -133,6 +133,8 @@ The VPS `ccbot-bridge` should watch those labels and dispatch the issue to a sel
 
 Codex should open a draft PR first. It may mark the PR ready and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces. `Auto Merge Codex Remediation PR` then performs the final merge gate after GitHub CI succeeds. It skips draft PRs, PRs without the marker, PRs without `auto-merge-ok`, and PRs touching blocked paths.
 
+If CI fails on a Codex remediation PR, or a reviewer requests changes, `Codex PR Feedback` comments the failure or review summary back to the source `codex-bridge` issue. That issue update lets the VPS bridge dispatch Codex again to fix the same PR branch.
+
 ## Troubleshooting
 
 - If source-input refresh fails, snapshot publish may still run against the last successful source inputs.

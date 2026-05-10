@@ -69,6 +69,7 @@ The first-stage monthly review control plane is reporting-only:
 - `ai_review.yml` reviews that issue and posts a bilingual artifact/contract-health comment.
 - It also creates a separate `codex-bridge` remediation issue for the VPS `ccbot-bridge` / Codex runner.
 - Codex remediation PRs are merged only by `auto_merge_codex_pr.yml` when CI is green, the PR is not draft, the `auto-merge-ok` label is present, and changed files stay inside the low-risk review/reporting surface.
+- If a Codex remediation PR fails CI or receives a changes-requested review, `codex_pr_feedback.yml` comments back on the source `codex-bridge` issue so ccbot can dispatch Codex to fix the same PR branch.
 
 This keeps US equity snapshot review aligned with the broader monthly audit control plane while keeping code changes and merging in separate, auditable steps.
 

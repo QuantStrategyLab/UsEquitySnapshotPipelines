@@ -17,6 +17,7 @@ ALLOWED_EXACT = {
     ".github/workflows/monthly_review.yml",
     ".github/workflows/ai_review.yml",
     ".github/workflows/auto_merge_codex_pr.yml",
+    ".github/workflows/codex_pr_feedback.yml",
     "scripts/run_monthly_report_bundle.py",
     "scripts/post_monthly_ai_review_issue.py",
     "scripts/render_monthly_ai_review.py",

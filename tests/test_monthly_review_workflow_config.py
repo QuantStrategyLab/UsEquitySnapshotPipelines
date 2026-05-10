@@ -5,6 +5,7 @@ from pathlib import Path
 
 MONTHLY_REVIEW = Path(".github/workflows/monthly_review.yml")
 AI_REVIEW = Path(".github/workflows/ai_review.yml")
+CODEX_FEEDBACK = Path(".github/workflows/codex_pr_feedback.yml")
 
 
 def test_monthly_review_workflow_creates_issue_and_triggers_ai_review() -> None:
@@ -41,3 +42,15 @@ def test_auto_merge_workflow_requires_codex_branch_and_guarded_label() -> None:
     assert "scripts/evaluate_codex_pr_merge.py" in workflow
     assert "gh pr merge" in workflow
     assert "auto-merge-ok" not in workflow  # label check lives in evaluate_codex_pr_merge.py
+
+
+def test_codex_feedback_workflow_requeues_failed_ci_and_review_feedback() -> None:
+    workflow = CODEX_FEEDBACK.read_text(encoding="utf-8")
+
+    assert "workflow_run:" in workflow
+    assert "pull_request_review:" in workflow
+    assert "codex/monthly-review-issue-" in workflow
+    assert "codex-monthly-remediation:issue-" in workflow
+    assert "gh issue comment" in workflow
+    assert "Codex PR CI Feedback" in workflow
+    assert "Codex PR Review Feedback" in workflow

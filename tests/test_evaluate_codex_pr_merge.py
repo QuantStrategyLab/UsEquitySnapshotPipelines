@@ -11,6 +11,7 @@ def test_evaluate_changed_files_allows_only_monthly_review_surface() -> None:
             "tests/test_monthly_report_bundle.py",
             "scripts/run_monthly_report_bundle.py",
             ".github/workflows/monthly_review.yml",
+            ".github/workflows/codex_pr_feedback.yml",
         ]
     )
     blocked = evaluate_changed_files(["src/us_equity_snapshot_pipelines/contracts.py", "pyproject.toml"])
