@@ -140,7 +140,13 @@ def _route_watch_label(feature_row: pd.Series, bubble_fragility_active: bool) ->
     return "" if label == CONTEXT_LABEL_NORMAL else label
 
 
-def _build_evidence(feature_row: pd.Series) -> dict[str, Any]:
+def _build_evidence(
+    feature_row: pd.Series,
+    *,
+    benchmark_symbol: str = DEFAULT_BENCHMARK_SYMBOL,
+) -> dict[str, Any]:
+    benchmark_symbol = str(benchmark_symbol or DEFAULT_BENCHMARK_SYMBOL).strip().upper()
+    benchmark_drawdown = _field_float(feature_row, f"{benchmark_symbol}_drawdown_252d")
     valuation_context = (
         _field_bool(feature_row, "bubble_context")
         or _field_bool(feature_row, "external_valuation_context")
@@ -157,6 +163,8 @@ def _build_evidence(feature_row: pd.Series) -> dict[str, Any]:
         "exogenous_context": _field_bool(feature_row, "exogenous_context"),
         "policy_rescue_context": _field_bool(feature_row, "policy_rescue_context"),
         "metrics": {
+            "benchmark_symbol": benchmark_symbol,
+            "benchmark_drawdown_252d": benchmark_drawdown,
             "qqq_drawdown_252d": _field_float(feature_row, "QQQ_drawdown_252d"),
             "financial_drawdown_min_252d": _field_float(feature_row, "financial_drawdown_min_252d"),
             "financial_relative_return_min_126d": _field_float(feature_row, "financial_relative_return_min_126d"),
@@ -376,7 +384,7 @@ def build_crisis_response_shadow_signal(
         risk_multiplier_suggestion = None
         would_trade_if_enabled = False
 
-    evidence = _build_evidence(feature_row)
+    evidence = _build_evidence(feature_row, benchmark_symbol=benchmark_symbol)
     generated_at = datetime.now(timezone.utc).isoformat()
     data_freshness = {
         "requested_as_of": requested_date.date().isoformat(),

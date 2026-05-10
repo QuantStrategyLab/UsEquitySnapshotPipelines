@@ -81,6 +81,47 @@ def test_shadow_signal_routes_financial_credit_crisis_without_live_execution() -
     assert payload["execution_controls"]["live_allocation_mutation_allowed"] is False
 
 
+def test_shadow_signal_evidence_uses_configured_benchmark_drawdown() -> None:
+    dates = pd.bdate_range("2024-01-02", periods=310)
+    rows: list[dict[str, object]] = []
+    soxx = pd.Series(100.0, index=dates)
+    soxx.iloc[245:] = pd.Series(
+        [100.0 - idx * (35.0 / (len(dates) - 245 - 1)) for idx in range(len(dates) - 245)],
+        index=dates[245:],
+    )
+    soxl = pd.Series(100.0, index=dates)
+    soxl.iloc[245:] = pd.Series(
+        [100.0 - idx * (70.0 / (len(dates) - 245 - 1)) for idx in range(len(dates) - 245)],
+        index=dates[245:],
+    )
+    for symbol, series in {
+        "SOXX": soxx,
+        "SOXL": soxl,
+        "SPY": pd.Series(100.0, index=dates),
+    }.items():
+        for as_of, close in series.items():
+            rows.append({"symbol": symbol, "as_of": as_of, "close": close, "volume": 1_000_000})
+
+    payload = build_crisis_response_shadow_signal(
+        pd.DataFrame(rows),
+        events=(),
+        as_of=str(dates[-1].date()),
+        start_date=str(dates[0].date()),
+        benchmark_symbol="SOXX",
+        attack_symbol="SOXL",
+        financial_symbols=(),
+        credit_pairs=(),
+        rate_symbols=(),
+        max_price_age_days=2,
+    )
+
+    metrics = payload["evidence"]["metrics"]
+    assert metrics["benchmark_symbol"] == "SOXX"
+    assert metrics["benchmark_drawdown_252d"] is not None
+    assert metrics["benchmark_drawdown_252d"] < -0.30
+    assert metrics["qqq_drawdown_252d"] is None
+
+
 def test_shadow_signal_writes_daily_json_csv_and_evidence(tmp_path) -> None:
     prices = _financial_crisis_prices()
     as_of = str(pd.to_datetime(prices["as_of"]).max().date())
