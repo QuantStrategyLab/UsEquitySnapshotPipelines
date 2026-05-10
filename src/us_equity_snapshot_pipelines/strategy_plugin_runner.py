@@ -27,7 +27,7 @@ PLUGIN_CRISIS_RESPONSE_SHADOW = "crisis_response_shadow"
 PLUGIN_TACO_REBOUND_SHADOW = TACO_REBOUND_PROFILE
 SUPPORTED_PLUGIN_MODES = (SHADOW_MODE,)
 PLUGIN_COMPATIBLE_STRATEGIES: dict[str, tuple[str, ...]] = {
-    PLUGIN_CRISIS_RESPONSE_SHADOW: ("tqqq_growth_income",),
+    PLUGIN_CRISIS_RESPONSE_SHADOW: ("tqqq_growth_income", "soxl_soxx_trend_income"),
 }
 PLUGIN_RESEARCH_ONLY_REASONS: dict[str, str] = {
     PLUGIN_TACO_REBOUND_SHADOW: (

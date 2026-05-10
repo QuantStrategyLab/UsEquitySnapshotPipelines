@@ -164,7 +164,9 @@ To research alternative SOXL delever gates without changing production, use
 `--soxl-delever-symbol`, `--soxl-delever-window`,
 `--soxl-delever-threshold`, `--soxl-delever-retention-ratio`, and
 `--soxl-delever-redirect-symbol`. The current best research candidate is a
-SOXX 10-day volatility gate at `0.50` that redirects SOXL into SOXX.
+SOXX 20-day volatility gate at `0.50` that redirects SOXL into SOXX. See
+`docs/tqqq-soxl-optimization-research.md` for the TQQQ/SOXL no-regression
+optimization sweep.
 
 For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
@@ -749,9 +751,9 @@ underlying strategy artifact build remains independent; downstream systems read
 the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
 and treat the plugin as notification-only shadow context.
 Plugin mounts are strategy-limited by code and tests. Keep the crisis plugin
-scoped to defensive TQQQ-style risk-off behavior. Keep MAGS/TACO experiments in
-research commands until a future PR adds a validated TQQQ TACO overlay plugin or
-explicitly promotes another strategy mount.
+scoped to defensive TQQQ/SOXL-style risk-off behavior. Keep MAGS/TACO
+experiments in research commands until a future PR adds a validated TQQQ TACO
+overlay plugin or explicitly promotes another strategy mount.
 
 The only supported plugin mode is `shadow`. The runner rejects `paper`,
 `advisory`, and `live` plugin modes; the current product decision is that the

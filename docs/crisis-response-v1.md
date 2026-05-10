@@ -7,9 +7,9 @@ auditable.
 
 The production-facing plugin contract is now split:
 
-- `crisis_response_shadow` is defense-only for TQQQ-style black-swan risk. It
-  may emit `true_crisis` / `defend` or `no_action` / `watch_only`; it must not
-  emit TACO routes or sleeves.
+- `crisis_response_shadow` is defense-only for TQQQ/SOXL-style leveraged
+  equity black-swan risk. It may emit `true_crisis` / `defend` or `no_action` /
+  `watch_only`; it must not emit TACO routes or sleeves.
 - TACO rebound work is separate from crisis defense and remains research-only
   for MAGS-style pullback strategies. A TQQQ overlay candidate should be
   promoted through a separate validation path before any runner mount.
@@ -56,13 +56,14 @@ The production-facing crisis shadow plugin narrows this to:
 - TACO sleeve: start with `0.05` account sleeve in historical research. It is
   not part of `crisis_response_shadow`, and the MAGS path is not a promoted
   runner plugin.
-- Crisis drawdown: `QQQ` drawdown from trailing high <= `-0.20`.
+- Crisis drawdown: configured benchmark drawdown from trailing high <= `-0.20`
+  (`QQQ` for TQQQ, `SOXX` for SOXL).
 - Crisis confirmation: `5` trading days.
 - Crisis risk multiplier: `0.25`; do not full-clear risk exposure in V1.
 - Defense-only shadow crisis plugin default: `0.0` risk multiplier when a
   true-crisis route is emitted for manual review.
-- Bubble proxy: `QQQ` 252-trading-day return >= `0.75`, remembered for 126
-  trading days.
+- Bubble proxy: configured benchmark 252-trading-day return >= `0.75`,
+  remembered for 126 trading days.
 - Financial proxy: `XLF` drawdown and relative weakness vs `SPY`.
 - Safe asset in long history tests: `SHY`; live safe asset can be mapped by the
   execution platform, for example BOXX/SGOV/CASH, but that is not part of this

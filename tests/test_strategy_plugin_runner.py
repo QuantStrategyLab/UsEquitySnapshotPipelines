@@ -16,6 +16,7 @@ from us_equity_snapshot_pipelines.strategy_plugin_runner import (
 )
 
 STRATEGY_NAME = "tqqq_growth_income"
+SOXL_STRATEGY_NAME = "soxl_soxx_trend_income"
 LEFT_SIDE_STRATEGY_NAME = "mega_cap_leader_rotation_top50_balanced"
 
 
@@ -29,6 +30,23 @@ def _quiet_prices() -> pd.DataFrame:
                     "symbol": symbol,
                     "as_of": as_of,
                     "close": 100.0 + offset * 0.01,
+                    "volume": 1_000_000,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _soxl_quiet_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2025-01-02", periods=230)
+    rows: list[dict[str, object]] = []
+    for symbol in ("SOXX", "SOXL", "SPY"):
+        for offset, as_of in enumerate(dates):
+            multiplier = 3.0 if symbol == "SOXL" else 1.0
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "as_of": as_of,
+                    "close": 100.0 + offset * 0.01 * multiplier,
                     "volume": 1_000_000,
                 }
             )
@@ -224,6 +242,45 @@ def test_strategy_plugin_runner_uses_default_mode_when_entry_mode_is_omitted(tmp
     assert payload["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
     assert payload["configured_mode"] == "shadow"
     assert payload["execution_controls"]["notification_profile"] == "shadow_only"
+
+
+def test_strategy_plugin_runner_mounts_crisis_shadow_to_soxl_strategy(tmp_path) -> None:
+    prices_path = tmp_path / "soxl_prices.csv"
+    output_dir = tmp_path / SOXL_STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW
+    _soxl_quiet_prices().to_csv(prices_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": SOXL_STRATEGY_NAME,
+                "plugin": PLUGIN_CRISIS_RESPONSE_SHADOW,
+                "enabled": True,
+                "inputs": {
+                    "prices": str(prices_path),
+                    "as_of": "2025-11-19",
+                    "start_date": "2025-01-02",
+                    "benchmark_symbol": "SOXX",
+                    "attack_symbol": "SOXL",
+                    "financial_symbols": [],
+                    "credit_pairs": [],
+                    "rate_symbols": [],
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    result = summary["strategy_plugins"][0]
+    assert result["strategy"] == SOXL_STRATEGY_NAME
+    assert result["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
+    assert result["effective_mode"] == "shadow"
+    payload = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert payload["strategy"] == SOXL_STRATEGY_NAME
+    assert payload["evidence"]["metrics"]["benchmark_symbol"] == "SOXX"
+    assert payload["execution_controls"]["broker_order_allowed"] is False
 
 
 def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:
