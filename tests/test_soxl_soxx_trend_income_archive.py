@@ -11,12 +11,16 @@ def _fake_yfinance_download(symbols, *, start, end, auto_adjust, progress, threa
     del end, progress, threads
     assert auto_adjust is True
     dates = pd.bdate_range(start, periods=520)
-    columns = pd.MultiIndex.from_product([["Close", "Volume"], symbols])
+    columns = pd.MultiIndex.from_product([["Open", "High", "Low", "Close", "Volume"], symbols])
     frame = pd.DataFrame(index=dates, columns=columns, dtype=float)
     for idx, symbol in enumerate(symbols):
         base = 50.0 + idx * 25.0
         step = 0.15 + idx * 0.03
-        frame[("Close", symbol)] = [base + row_idx * step for row_idx in range(len(dates))]
+        closes = [base + row_idx * step for row_idx in range(len(dates))]
+        frame[("Open", symbol)] = [close - 0.05 for close in closes]
+        frame[("High", symbol)] = [close + 0.25 for close in closes]
+        frame[("Low", symbol)] = [close - 0.25 for close in closes]
+        frame[("Close", symbol)] = closes
         frame[("Volume", symbol)] = 1_000_000.0 + idx
     return frame
 
@@ -53,6 +57,8 @@ def test_archive_core_long_download_writes_replayable_manifest(tmp_path, monkeyp
 
     prices = pd.read_csv(archive_dir / "price_history.csv")
     assert {"SOXL", "SOXX", "BOXX"} <= set(prices["symbol"])
+    assert {"open", "high", "low", "close", "volume"} <= set(prices.columns)
+    assert prices["high"].notna().any()
 
     quality = pd.read_csv(archive_dir / "data_quality_report.csv")
     boxx_quality = quality.loc[quality["symbol"].eq("BOXX")].iloc[0]

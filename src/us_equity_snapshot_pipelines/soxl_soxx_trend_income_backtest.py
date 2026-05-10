@@ -36,6 +36,7 @@ DEFAULT_OUTPUT_COLUMNS = (
     "Rebalances/Year",
     "Turnover/Year",
     "Avg Stock Exposure",
+    "Chandelier Stops",
     "Final Equity",
 )
 
@@ -55,9 +56,14 @@ def _build_price_frame(price_history) -> pd.DataFrame:
     frame["symbol"] = frame["symbol"].map(_normalize_symbol)
     frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    for column in ("open", "high", "low", "volume"):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.loc[frame["symbol"].ne("")].dropna(subset=["as_of", "close"])
+    output_columns = ["symbol", "as_of", "close"]
+    output_columns.extend(column for column in ("open", "high", "low", "volume") if column in frame.columns)
     return (
-        frame.loc[:, ["symbol", "as_of", "close"]]
+        frame.loc[:, output_columns]
         .drop_duplicates(subset=["symbol", "as_of"], keep="last")
         .sort_values(["as_of", "symbol"])
         .reset_index(drop=True)
@@ -65,12 +71,72 @@ def _build_price_frame(price_history) -> pd.DataFrame:
 
 
 def _build_close_matrix(price_history: pd.DataFrame) -> pd.DataFrame:
-    close_matrix = (
-        price_history.pivot_table(index="as_of", columns="symbol", values="close", aggfunc="last")
+    return _build_field_matrix(price_history, "close")
+
+
+def _empty_matrix_index(price_history: pd.DataFrame) -> pd.DatetimeIndex:
+    return pd.DatetimeIndex(pd.to_datetime(price_history["as_of"]).dropna().sort_values().unique())
+
+
+def _build_field_matrix(price_history: pd.DataFrame, field: str) -> pd.DataFrame:
+    if field not in price_history.columns:
+        return pd.DataFrame(index=_empty_matrix_index(price_history))
+    values = pd.to_numeric(price_history[field], errors="coerce")
+    frame = price_history.assign(**{field: values})
+    frame = frame.dropna(subset=[field])
+    if frame.empty:
+        return pd.DataFrame(index=_empty_matrix_index(price_history))
+    field_matrix = (
+        frame.pivot_table(index="as_of", columns="symbol", values=field, aggfunc="last")
         .sort_index()
         .ffill()
     )
-    return close_matrix
+    return field_matrix
+
+
+def _build_chandelier_stop_history(
+    price_history: pd.DataFrame,
+    *,
+    symbol: str,
+    window: int,
+    atr_multiple: float,
+) -> pd.DataFrame:
+    symbol = _normalize_symbol(symbol)
+    close_matrix = _build_close_matrix(price_history)
+    if symbol not in close_matrix.columns:
+        return pd.DataFrame(
+            columns=["close", "high", "low", "true_range", "atr", "stop_line", "triggered"],
+            index=close_matrix.index,
+        )
+    high_matrix = _build_field_matrix(price_history, "high").reindex(close_matrix.index).ffill()
+    low_matrix = _build_field_matrix(price_history, "low").reindex(close_matrix.index).ffill()
+    close = close_matrix[symbol].astype(float)
+    high = high_matrix[symbol].astype(float) if symbol in high_matrix.columns else close
+    low = low_matrix[symbol].astype(float) if symbol in low_matrix.columns else close
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            (high - low).abs(),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    effective_window = max(2, int(window))
+    atr = true_range.rolling(effective_window, min_periods=effective_window).mean()
+    rolling_high = high.rolling(effective_window, min_periods=effective_window).max()
+    stop_line = rolling_high - (float(atr_multiple) * atr)
+    return pd.DataFrame(
+        {
+            "close": close,
+            "high": high,
+            "low": low,
+            "true_range": true_range,
+            "atr": atr,
+            "stop_line": stop_line,
+            "triggered": close < stop_line,
+        }
+    )
 
 
 def _build_indicator_history(close_matrix: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -364,6 +430,10 @@ def run_backtest(
     dynamic_rsi_quantile: float | None = None,
     dynamic_rsi_floor: float | None = None,
     disable_income_layer: bool = False,
+    chandelier_stop_enabled: bool = False,
+    chandelier_stop_symbol: str = "SOXX",
+    chandelier_window: int = 22,
+    chandelier_atr_multiple: float = 3.0,
 ) -> dict[str, object]:
     prices = _build_price_frame(price_history)
     if end_date is not None:
@@ -394,6 +464,17 @@ def run_backtest(
         strategy_overrides["blend_gate_dynamic_rsi_threshold_enabled"] = True
 
     close_matrix = _build_close_matrix(prices)
+    chandelier_symbol = _normalize_symbol(chandelier_stop_symbol or "SOXX")
+    chandelier_history = (
+        _build_chandelier_stop_history(
+            prices,
+            symbol=chandelier_symbol,
+            window=int(chandelier_window),
+            atr_multiple=float(chandelier_atr_multiple),
+        )
+        if chandelier_stop_enabled
+        else pd.DataFrame(index=close_matrix.index)
+    )
     indicator_history = build_indicator_history(
         close_matrix,
         rsi_window=DEFAULT_RSI_WINDOW,
@@ -414,6 +495,7 @@ def run_backtest(
     turnover_history = pd.Series(index=index, dtype=float, name="turnover")
     signal_rows: list[dict[str, object]] = []
     trade_rows: list[dict[str, object]] = []
+    chandelier_stop_count = 0
 
     first_prices = close_matrix.loc[index[0]]
     initial_boxx_price = float(first_prices.get("BOXX", np.nan))
@@ -453,6 +535,19 @@ def run_backtest(
         target_values = dict(plan["targets"])
         threshold_value = float(plan["threshold_value"])
         current_min_trade = float(plan["current_min_trade"])
+        chandelier_row = (
+            chandelier_history.loc[as_of]
+            if chandelier_stop_enabled and as_of in chandelier_history.index
+            else pd.Series(dtype=object)
+        )
+        chandelier_triggered = bool(chandelier_row.get("triggered", False)) if not chandelier_row.empty else False
+        if chandelier_triggered and float(target_values.get("SOXL", 0.0) or 0.0) > 0.0:
+            target_values["BOXX"] = (
+                float(target_values.get("BOXX", 0.0) or 0.0)
+                + float(target_values.get("SOXL", 0.0))
+            )
+            target_values["SOXL"] = 0.0
+            chandelier_stop_count += 1
         trend_symbol = str(plan.get("trend_symbol", "SOXX")).lower()
         trend_indicators = indicators.get(trend_symbol, {})
         trend_rsi14 = plan.get("trend_rsi14")
@@ -503,6 +598,16 @@ def run_backtest(
                 ),
                 "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
                 "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
+                "chandelier_stop_enabled": bool(chandelier_stop_enabled),
+                "chandelier_stop_symbol": chandelier_symbol,
+                "chandelier_window": int(chandelier_window),
+                "chandelier_atr_multiple": float(chandelier_atr_multiple),
+                "chandelier_stop_close": chandelier_row.get("close") if not chandelier_row.empty else None,
+                "chandelier_stop_high": chandelier_row.get("high") if not chandelier_row.empty else None,
+                "chandelier_stop_low": chandelier_row.get("low") if not chandelier_row.empty else None,
+                "chandelier_atr": chandelier_row.get("atr") if not chandelier_row.empty else None,
+                "chandelier_stop_line": chandelier_row.get("stop_line") if not chandelier_row.empty else None,
+                "chandelier_stop_triggered": chandelier_triggered,
             }
         )
 
@@ -554,6 +659,7 @@ def run_backtest(
 
     used_weights = weights_history.loc[:, (weights_history != 0.0).any(axis=0)]
     summary = _summarize_returns(portfolio_returns, used_weights)
+    summary["Chandelier Stops"] = float(chandelier_stop_count)
     return {
         "summary": summary,
         "portfolio_returns": portfolio_returns,
@@ -611,6 +717,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable QQQI/SPYI income layer for long-history core SOXL/SOXX research",
     )
+    parser.add_argument(
+        "--enable-chandelier-stop",
+        action="store_true",
+        help=(
+            "Enable research-only Chandelier-style SOXL delever overlay. "
+            "Uses true range when high/low are present and close-only range otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--chandelier-stop-symbol",
+        default="SOXX",
+        help="Symbol used to compute the Chandelier stop",
+    )
+    parser.add_argument("--chandelier-window", type=int, default=22, help="Lookback window for the Chandelier stop")
+    parser.add_argument(
+        "--chandelier-atr-multiple",
+        type=float,
+        default=3.0,
+        help="ATR multiple for the Chandelier stop",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -644,6 +770,10 @@ def main(argv: list[str] | None = None) -> int:
         dynamic_rsi_quantile=args.dynamic_rsi_quantile,
         dynamic_rsi_floor=args.dynamic_rsi_floor,
         disable_income_layer=bool(args.disable_income_layer),
+        chandelier_stop_enabled=bool(args.enable_chandelier_stop),
+        chandelier_stop_symbol=args.chandelier_stop_symbol,
+        chandelier_window=int(args.chandelier_window),
+        chandelier_atr_multiple=float(args.chandelier_atr_multiple),
     )
 
     summary_frame = _format_summary(result["summary"])
@@ -672,6 +802,10 @@ def main(argv: list[str] | None = None) -> int:
             "dynamic_rsi_quantile": args.dynamic_rsi_quantile,
             "dynamic_rsi_floor": args.dynamic_rsi_floor,
             "disable_income_layer": bool(args.disable_income_layer),
+            "chandelier_stop_enabled": bool(args.enable_chandelier_stop),
+            "chandelier_stop_symbol": args.chandelier_stop_symbol,
+            "chandelier_window": int(args.chandelier_window),
+            "chandelier_atr_multiple": float(args.chandelier_atr_multiple),
         })
         print(f"wrote research backtest outputs -> {output_dir}")
     return 0
