@@ -52,5 +52,9 @@ def test_codex_feedback_workflow_requeues_failed_ci_and_review_feedback() -> Non
     assert "codex/monthly-review-issue-" in workflow
     assert "codex-monthly-remediation:issue-" in workflow
     assert "gh issue comment" in workflow
+    assert 'MAX_CODEX_FEEDBACK_ROUNDS: "3"' in workflow
+    assert "gh issue edit" in workflow
+    assert "--remove-label codex-bridge" in workflow
+    assert "Codex PR Retry Limit Reached" in workflow
     assert "Codex PR CI Feedback" in workflow
     assert "Codex PR Review Feedback" in workflow
