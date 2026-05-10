@@ -681,8 +681,8 @@ to run on the same daily cadence as the TQQQ artifact
 pipeline, but it is `shadow_only`: no broker writes, no order placement, and no
 live allocation mutation. Downstream notifications may read the latest JSON and
 display it as an observation beside the TQQQ status, not as an executable trade
-instruction. Advisory or live promotion remains a separate manual decision
-after enough deterministic shadow logs have accumulated.
+instruction. Paper, advisory, and live plugin modes are not part of the current
+contract.
 
 The crisis shadow plugin is intentionally defense-only. It does not emit
 `taco_fake_crisis`, does not suggest a TACO sleeve, and does not buy event
@@ -690,7 +690,7 @@ rebounds. Its executable route is only a true-crisis `defend` signal, with the
 defensive destination documented as cash or a money-market / Treasury-bill
 parking sleeve. Policy, tariff, or geopolitical panic can still appear as
 watch-only context, but TACO routing lives outside this crisis plugin and needs
-its own research/promotion path.
+its own research path.
 
 Build the independent TACO rebound research signal when you need a deterministic
 event-rebound audit file. MAGS usage is intentionally research-only for now;
@@ -733,31 +733,26 @@ python scripts/run_strategy_plugins.py --config /path/to/strategy_plugins.toml
 This is intentionally a sidecar. If the runner is disabled or fails, the
 underlying strategy artifact build remains independent; downstream systems read
 the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
-and implement the configured `mode` directly.
+and treat the plugin as notification-only shadow context.
 Plugin mounts are strategy-limited by code and tests. Keep the crisis plugin
 scoped to defensive TQQQ-style risk-off behavior. Keep MAGS/TACO experiments in
 research commands until a future PR adds a validated TQQQ TACO overlay plugin or
 explicitly promotes another strategy mount.
 
-Supported modes are `shadow`, `paper`, `advisory`, and `live`. `mode` is the
-single plugin behavior contract: if it is `shadow`, the downstream platform
-treats it as shadow; if it is `paper`, `advisory`, or `live`, the platform
-implements that mode's semantics. Platform risk checks, kill switches, and data
-freshness guards may block unsafe execution, but they should not reinterpret the
-configured mode. This repository still writes artifacts only, so the payload
-separates platform-mode fields such as `broker_order_allowed` from repository
-capability fields such as `repository_broker_write_allowed=false`. Use
-`default_mode` as the fallback and set per-plugin `mode` only when a plugin
-should override that default.
+The only supported plugin mode is `shadow`. The runner rejects `paper`,
+`advisory`, and `live` plugin modes; the current product decision is that the
+plugin is a notification and review signal, not an automated execution layer.
+This repository still writes artifacts only, so the payload separates platform
+behavior fields such as `broker_order_allowed=false` from repository capability
+fields such as `repository_broker_write_allowed=false`. Keep `default_mode =
+"shadow"` as the fallback and omit per-plugin `mode` unless a legacy config
+needs to spell out the same value.
 
 Mode meanings:
 
 | Mode | Meaning |
 | --- | --- |
 | `shadow` | Signal, evidence, logs, and optional notification context only |
-| `paper` | Paper ledger of hypothetical plugin actions; no real allocation change |
-| `advisory` | Human-confirmed recommendation; no automatic execution |
-| `live` | Platform adapter may affect execution under explicit risk limits |
 
 The `Publish Strategy Plugins` GitHub workflow runs the
 `tqqq_growth_income` / `crisis_response_shadow` plugin in `shadow` mode on a

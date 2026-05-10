@@ -1,19 +1,21 @@
-# Crisis Response Live Promotion Spec
+# Crisis Response Notification-Only Spec
 
 This document is the handoff contract for future Crisis Response work. It
-defines how the deterministic research candidate can move toward live use
-without silently changing V1 semantics or letting unreviewed logic control
-capital before there is enough production evidence.
+defines how the deterministic research candidate remains observable without
+silently changing V1 semantics or letting unreviewed logic control capital.
 
 ## Current Position
 
-The current crisis-response work is a research candidate, not an automatic live
-trading system.
+The current crisis-response work is a notification-only shadow plugin, not an
+automatic live trading system.
 
 - V1 remains frozen in `docs/crisis-response-v1.md`.
-- V2 context features remain research-only until promoted through this spec.
-- A future live plugin must start in shadow mode: write signals and audit logs,
-  but do not place orders and do not change live allocations.
+- V2 context features remain research-only unless explicitly promoted into the
+  notification artifact.
+- The plugin writes signals and audit logs, but does not place orders, maintain a
+  paper ledger, or change live allocations.
+- `shadow` is the only supported plugin mode. `paper`, `advisory`, and `live`
+  plugin modes are retired.
 - The route must come from deterministic, testable rules. Model-based review is
   not part of the trading path.
 - Every promotion step must preserve the 1999-to-date, post-2010, post-2015,
@@ -33,19 +35,19 @@ The current research candidate is:
 | 2022 rate bear | Rate-bear context defaults to `no_action` unless financial-system stress appears |
 | Policy shocks | `no_action` / watch-only inside the crisis plugin |
 | TACO sleeve | Separate research only; no MAGS runtime mount |
-| Live behavior | Not enabled |
+| Live behavior | Not enabled; notification-only shadow mode |
 
 Do not change this candidate while building the shadow plugin unless the user
 explicitly asks for a new research experiment.
 
-The live/promotion contract is intentionally split. `crisis_response_shadow`
+The notification contract is intentionally split. `crisis_response_shadow`
 is a TQQQ black-swan defense plugin; it can recommend moving the main book to
-cash or a money-market / Treasury-bill parking sleeve only after a promoted
-true-crisis route. It must not recommend buying event rebounds. Reversible
-policy, tariff, or geopolitical rebound research belongs outside
+cash or a money-market / Treasury-bill parking sleeve as manual review context
+only after a true-crisis route. It must not recommend buying event rebounds.
+Reversible policy, tariff, or geopolitical rebound research belongs outside
 `crisis_response_shadow`. MAGS-style TACO usage is research-only for now. The
-preferred promoted direction is a separate TQQQ TACO overlay candidate after it
-passes its own validation and receives an explicit runner mount.
+preferred direction is a separate TQQQ TACO overlay candidate after it passes
+its own validation and receives an explicit runner mount.
 
 The TACO research artifact may emit an `allow_hard_defense` /
 `event_rebound_break_bear` flag for high-confidence geopolitical de-escalation
@@ -60,11 +62,9 @@ hard-defense regime remains visible in logs.
 | 0 | Research | Backtests and audit reports only | Analyze deterministic reports | None |
 | 1 | Shadow plugin | Produce daily signal and evidence files | Inspect logs and data freshness | None |
 | 2 | Evidence review | Review recent shadow signals in batches | Check route quality and data issues | None |
-| 3 | Advisory | Produce a recommendation requiring human confirmation | Human reviewer | Manual only |
-| 4 | Limited live | Execute only inside small, explicit risk budget | Audit and kill-switch reviewer | Bounded |
-| 5 | Full automation | Not approved by this spec | Still audited and kill-switched | Future decision |
 
-The next approved engineering target is Phase 1 plus Phase 2 preparation.
+The approved engineering target is Phase 1 plus Phase 2 preparation. Automatic
+plugin execution is outside this spec.
 
 ## Phase 1 Shadow Plugin Requirements
 
@@ -76,7 +76,7 @@ Required properties:
 - No order placement.
 - No broker API write calls.
 - No live allocation mutation.
-- No implicit promotion to advisory or live mode.
+- No implicit promotion to paper, advisory, or live plugin mode.
 - Idempotent daily output for the same `as_of` date and inputs.
 - Clear data-freshness and data-quality fields.
 - Explicit kill switch when evidence is missing, stale, contradictory, or
@@ -106,15 +106,15 @@ data/output/crisis_response_shadow/
   audit/YYYY-MM-DD_evidence.csv
 ```
 
-Suggested runner configuration schema:
+Runner configuration schema:
 
 - Use `docs/examples/strategy_plugins.example.toml` as the checked-in example.
 - Keep real runtime TOML with deployment or platform configuration.
-- Use top-level `default_mode` as the fallback and set per-plugin `mode` only
-  when a plugin should override the default.
+- Keep top-level `default_mode = "shadow"`.
+- Omit per-plugin `mode` unless a legacy config needs to spell out `shadow`.
 - Keep input paths under `[strategy_plugins.inputs]`, output paths under
-  `[strategy_plugins.outputs]`, and strategy/plugin/mode/enabled at the plugin
-  mount level.
+  `[strategy_plugins.outputs]`, and strategy/plugin/enabled at the plugin mount
+  level.
 
 Run it as a separate sidecar job:
 
@@ -133,21 +133,16 @@ black-swan strategy and blocks `taco_rebound_shadow` from runtime mounts while
 MAGS remains research-only. A future TQQQ TACO overlay plugin must update the
 compatibility table and tests in its own PR.
 
-The runner accepts `mode = "shadow"`, `paper`, `advisory`, or `live` and writes
-that mode into each plugin artifact. `mode` is the single plugin behavior
-contract. Downstream platform adapters must implement the selected mode
-directly instead of running a second mode-selection layer. Platform risk checks,
-kill switches, and data-freshness guards may block unsafe execution, but they
-must not silently reinterpret `live` as `advisory`, `paper` as `shadow`, or any
-other mode substitution.
+The runner accepts only `mode = "shadow"` and writes that mode into each plugin
+artifact. Downstream platform adapters must read the artifact as notification
+context and must not run a second plugin mode-selection layer.
 
-This repository remains artifact-only in all modes: it does not place orders,
-call broker write APIs, or mutate live allocations. The payload therefore keeps
-two concepts separate:
+This repository remains artifact-only: it does not place orders, call broker
+write APIs, maintain paper ledgers, or mutate live allocations. The payload
+therefore keeps two concepts separate:
 
-- Platform behavior fields, derived from `mode`, such as
-  `broker_order_allowed`, `live_allocation_mutation_allowed`,
-  `paper_ledger_required`, and `human_confirmation_required`.
+- Platform behavior fields, fixed for notification-only mode, such as
+  `broker_order_allowed=false` and `live_allocation_mutation_allowed=false`.
 - Repository capability fields, always false here, such as
   `repository_broker_write_allowed` and
   `repository_allocation_mutation_allowed`.
@@ -157,9 +152,6 @@ Mode meanings:
 | Mode | Meaning | Capital impact |
 | --- | --- | --- |
 | `shadow` | Write signal, evidence, freshness, and optional notification context only | None |
-| `paper` | Maintain a simulated ledger of what would have happened if enabled | None |
-| `advisory` | Produce a recommendation that requires human confirmation | Manual only |
-| `live` | Allow a platform adapter to affect execution under explicit risk limits | Bounded by config |
 
 ## Shadow Signal Schema
 
@@ -173,15 +165,15 @@ Required top-level fields:
 | `as_of` | string | Signal date in `YYYY-MM-DD` |
 | `strategy` | string | Strategy profile this plugin artifact is mounted to |
 | `plugin` | string | Plugin name, for example `crisis_response_shadow` |
-| `mode` | string | Runner mode such as `shadow`, `paper`, `advisory`, or `live` |
-| `configured_mode` | string | Requested runner mode such as `shadow`, `paper`, `advisory`, or `live` |
-| `effective_mode` | string | Mode that downstream platform adapters must implement |
+| `mode` | string | Always `shadow` |
+| `configured_mode` | string | Always `shadow` |
+| `effective_mode` | string | Always `shadow` |
 | `schema_version` | string | Start with `crisis_response_shadow.v1` |
 | `canonical_route` | string | One of `true_crisis`, `no_action` |
 | `watch_label` | string | Optional context label such as `systemic_stress_watch` or `rate_bear` |
 | `suggested_action` | string | One of `defend`, `watch_only`, `no_action`, `blocked` |
 | `risk_multiplier_suggestion` | number or null | Recommendation only inside this repository |
-| `would_trade_if_enabled` | boolean | Whether advisory/live mode would ask for action |
+| `would_trade_if_enabled` | boolean | Whether the shadow signal would warrant manual review if enabled operationally |
 | `price_scanner_active` | boolean | Confirmed price-crisis scanner state |
 | `bubble_fragility_active` | boolean | Early valuation/fragility scanner state |
 | `kill_switch_active` | boolean | True when the signal is blocked |
@@ -267,8 +259,7 @@ Evidence review must answer:
 3. Is there a likely false-positive true-crisis risk?
 4. Is there a likely false-negative true-crisis risk?
 5. Is this closer to 2000, 2008, 2020, 2022, 2011, policy/no-action, or normal?
-6. Should the system stay shadow, be considered for human-confirmed advisory,
-   or remain blocked?
+6. Should the notification remain visible, be downgraded, or remain blocked?
 
 ## Audit Windows
 
@@ -304,26 +295,9 @@ Phase 2 evidence review can start after:
 - Review notes, if any, are stored separately from raw signals.
 - Review cannot override the deterministic route.
 
-Phase 3 advisory requires:
-
-- At least 30 to 60 trading days of shadow logs.
-- Zero unexplained false-positive `true_crisis` cases.
-- Any `would_trade_if_enabled=true` days reviewed by a human.
-- Authorized point-in-time external valuation and credit context, or a kill
-  switch that blocks decisions dependent on missing data.
-- Written user approval to move from shadow to advisory.
-- No automatic promotion from shadow to advisory or live trading.
-
-Phase 4 limited live requires:
-
-- Explicit user approval.
-- Explicit maximum risk budget.
-- Explicit maximum turnover and cooldown.
-- Human override path.
-- Daily audit logs.
-- Automatic fallback to `no_action` or `blocked` on data errors.
-
-Phase 5 full automation is not approved here.
+No later plugin execution phases are approved here. Any future request for
+automatic action must be designed as a new contract, not a mode flip in this
+plugin.
 
 ## Kill Switch Rules
 
@@ -337,8 +311,7 @@ when any of these occur:
 - Event classification required by a separate TACO rebound artifact is missing.
 - The route depends on a newly added feature that has not passed historical
   audit-effectiveness checks.
-- The code is running outside approved `shadow`, `paper`, `advisory`, or `live`
-  mode.
+- The code is running outside approved `shadow` mode.
 
 ## Rules For Future Agents
 
@@ -348,11 +321,11 @@ Future agents must follow these constraints:
 - Do not add a TACO sleeve back into `crisis_response_shadow`.
 - Do not mount `taco_rebound_shadow` to MAGS runtime configs; keep that path
   research-only unless a future validation explicitly promotes it.
-- Do not promote V2 research into live allocation in the same change that adds a
-  new feature.
+- Do not promote V2 research into allocation changes in the same change that
+  adds a new feature.
 - Do not optimize thresholds against one crisis window without checking 2015+,
   2020, 2022, 2018-2019, and 2025+ controls.
-- Do not treat high backtest CAGR as proof that a live plugin is ready.
+- Do not treat high backtest CAGR as proof that an automatic plugin is ready.
 - Do not add broker write calls to the shadow plugin.
 - Do not store proxy credentials or API keys in the repository.
 - Do not use provisional external data for production decisions.
@@ -366,4 +339,5 @@ Recommended next tasks:
    immediately after a high-volatility `would_trade_if_enabled=true` day with
    complete logs.
 3. Keep review notes separate from raw shadow signals.
-4. Run shadow-only for 30 to 60 trading days before advisory mode.
+4. Keep the plugin shadow-only unless a new, explicitly approved contract
+   replaces this notification-only design.
