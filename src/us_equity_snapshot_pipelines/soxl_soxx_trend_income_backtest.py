@@ -37,12 +37,37 @@ DEFAULT_OUTPUT_COLUMNS = (
     "Turnover/Year",
     "Avg Stock Exposure",
     "Chandelier Stops",
+    "SOXL Delever Stops",
     "Final Equity",
 )
 
 
 def _normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
+
+
+def _normalize_overlay_kind(value: str | None) -> str:
+    text = str(value or "none").strip().lower().replace("-", "_")
+    aliases = {
+        "off": "none",
+        "disabled": "none",
+        "chandelier_stop": "chandelier",
+        "vol": "volatility",
+        "realized_volatility": "volatility",
+        "rolling_drawdown": "drawdown",
+        "ret": "momentum",
+    }
+    return aliases.get(text, text)
+
+
+def _clamp_ratio(value: float, *, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        result = float(default)
+    if not np.isfinite(result):
+        result = float(default)
+    return max(0.0, min(1.0, result))
 
 
 def _build_price_frame(price_history) -> pd.DataFrame:
@@ -135,6 +160,65 @@ def _build_chandelier_stop_history(
             "atr": atr,
             "stop_line": stop_line,
             "triggered": close < stop_line,
+        }
+    )
+
+
+def _build_soxl_delever_overlay_history(
+    price_history: pd.DataFrame,
+    *,
+    kind: str,
+    symbol: str,
+    window: int,
+    threshold: float | None,
+    atr_multiple: float,
+) -> pd.DataFrame:
+    kind = _normalize_overlay_kind(kind)
+    if kind == "chandelier":
+        history = _build_chandelier_stop_history(
+            price_history,
+            symbol=symbol,
+            window=window,
+            atr_multiple=atr_multiple,
+        )
+        history["kind"] = "chandelier"
+        history["metric"] = history["close"] - history["stop_line"]
+        history["threshold"] = 0.0
+        return history
+
+    symbol = _normalize_symbol(symbol)
+    close_matrix = _build_close_matrix(price_history)
+    if symbol not in close_matrix.columns:
+        return pd.DataFrame(
+            columns=["close", "metric", "threshold", "triggered", "kind"],
+            index=close_matrix.index,
+        )
+
+    close = close_matrix[symbol].astype(float)
+    effective_window = max(2, int(window))
+    if kind == "drawdown":
+        effective_threshold = float(threshold if threshold is not None else -0.05)
+        rolling_high = close.rolling(effective_window, min_periods=effective_window).max()
+        metric = close / rolling_high - 1.0
+        triggered = metric <= effective_threshold
+    elif kind == "volatility":
+        effective_threshold = float(threshold if threshold is not None else 0.45)
+        metric = close.pct_change().rolling(effective_window, min_periods=effective_window).std(ddof=0) * np.sqrt(252)
+        triggered = metric >= effective_threshold
+    elif kind == "momentum":
+        effective_threshold = float(threshold if threshold is not None else -0.06)
+        metric = close.pct_change(effective_window)
+        triggered = metric <= effective_threshold
+    else:
+        raise ValueError("unsupported SOXL delever overlay kind")
+
+    return pd.DataFrame(
+        {
+            "close": close,
+            "metric": metric,
+            "threshold": effective_threshold,
+            "triggered": triggered,
+            "kind": kind,
         }
     )
 
@@ -434,6 +518,13 @@ def run_backtest(
     chandelier_stop_symbol: str = "SOXX",
     chandelier_window: int = 22,
     chandelier_atr_multiple: float = 3.0,
+    soxl_delever_overlay_kind: str = "none",
+    soxl_delever_overlay_symbol: str | None = None,
+    soxl_delever_overlay_window: int | None = None,
+    soxl_delever_overlay_threshold: float | None = None,
+    soxl_delever_overlay_atr_multiple: float | None = None,
+    soxl_delever_overlay_retention_ratio: float = 0.0,
+    soxl_delever_overlay_redirect_symbol: str = "BOXX",
 ) -> dict[str, object]:
     prices = _build_price_frame(price_history)
     if end_date is not None:
@@ -464,15 +555,33 @@ def run_backtest(
         strategy_overrides["blend_gate_dynamic_rsi_threshold_enabled"] = True
 
     close_matrix = _build_close_matrix(prices)
-    chandelier_symbol = _normalize_symbol(chandelier_stop_symbol or "SOXX")
-    chandelier_history = (
-        _build_chandelier_stop_history(
+    overlay_kind = _normalize_overlay_kind(soxl_delever_overlay_kind)
+    if chandelier_stop_enabled and overlay_kind == "none":
+        overlay_kind = "chandelier"
+    soxl_delever_enabled = overlay_kind != "none"
+    overlay_symbol = _normalize_symbol(soxl_delever_overlay_symbol or chandelier_stop_symbol or "SOXX")
+    overlay_window = int(soxl_delever_overlay_window or chandelier_window)
+    overlay_atr_multiple = float(
+        soxl_delever_overlay_atr_multiple
+        if soxl_delever_overlay_atr_multiple is not None
+        else chandelier_atr_multiple
+    )
+    overlay_retention_ratio = _clamp_ratio(soxl_delever_overlay_retention_ratio)
+    overlay_redirect_symbol = _normalize_symbol(soxl_delever_overlay_redirect_symbol or "BOXX")
+    if overlay_redirect_symbol not in MANAGED_SYMBOLS:
+        expected = ", ".join(MANAGED_SYMBOLS)
+        raise ValueError(f"unsupported SOXL delever redirect symbol {overlay_redirect_symbol!r}; expected one of {expected}")
+
+    delever_history = (
+        _build_soxl_delever_overlay_history(
             prices,
-            symbol=chandelier_symbol,
-            window=int(chandelier_window),
-            atr_multiple=float(chandelier_atr_multiple),
+            kind=overlay_kind,
+            symbol=overlay_symbol,
+            window=overlay_window,
+            threshold=soxl_delever_overlay_threshold,
+            atr_multiple=overlay_atr_multiple,
         )
-        if chandelier_stop_enabled
+        if soxl_delever_enabled
         else pd.DataFrame(index=close_matrix.index)
     )
     indicator_history = build_indicator_history(
@@ -495,7 +604,7 @@ def run_backtest(
     turnover_history = pd.Series(index=index, dtype=float, name="turnover")
     signal_rows: list[dict[str, object]] = []
     trade_rows: list[dict[str, object]] = []
-    chandelier_stop_count = 0
+    soxl_delever_stop_count = 0
 
     first_prices = close_matrix.loc[index[0]]
     initial_boxx_price = float(first_prices.get("BOXX", np.nan))
@@ -535,19 +644,22 @@ def run_backtest(
         target_values = dict(plan["targets"])
         threshold_value = float(plan["threshold_value"])
         current_min_trade = float(plan["current_min_trade"])
-        chandelier_row = (
-            chandelier_history.loc[as_of]
-            if chandelier_stop_enabled and as_of in chandelier_history.index
+        delever_row = (
+            delever_history.loc[as_of]
+            if soxl_delever_enabled and as_of in delever_history.index
             else pd.Series(dtype=object)
         )
-        chandelier_triggered = bool(chandelier_row.get("triggered", False)) if not chandelier_row.empty else False
-        if chandelier_triggered and float(target_values.get("SOXL", 0.0) or 0.0) > 0.0:
-            target_values["BOXX"] = (
-                float(target_values.get("BOXX", 0.0) or 0.0)
-                + float(target_values.get("SOXL", 0.0))
+        delever_triggered = bool(delever_row.get("triggered", False)) if not delever_row.empty else False
+        if delever_triggered and float(target_values.get("SOXL", 0.0) or 0.0) > 0.0:
+            soxl_target_value = float(target_values.get("SOXL", 0.0))
+            retained_value = soxl_target_value * overlay_retention_ratio
+            redirected_value = soxl_target_value - retained_value
+            target_values["SOXL"] = retained_value
+            target_values[overlay_redirect_symbol] = (
+                float(target_values.get(overlay_redirect_symbol, 0.0) or 0.0)
+                + redirected_value
             )
-            target_values["SOXL"] = 0.0
-            chandelier_stop_count += 1
+            soxl_delever_stop_count += 1
         trend_symbol = str(plan.get("trend_symbol", "SOXX")).lower()
         trend_indicators = indicators.get(trend_symbol, {})
         trend_rsi14 = plan.get("trend_rsi14")
@@ -598,16 +710,26 @@ def run_backtest(
                 ),
                 "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
                 "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
-                "chandelier_stop_enabled": bool(chandelier_stop_enabled),
-                "chandelier_stop_symbol": chandelier_symbol,
-                "chandelier_window": int(chandelier_window),
-                "chandelier_atr_multiple": float(chandelier_atr_multiple),
-                "chandelier_stop_close": chandelier_row.get("close") if not chandelier_row.empty else None,
-                "chandelier_stop_high": chandelier_row.get("high") if not chandelier_row.empty else None,
-                "chandelier_stop_low": chandelier_row.get("low") if not chandelier_row.empty else None,
-                "chandelier_atr": chandelier_row.get("atr") if not chandelier_row.empty else None,
-                "chandelier_stop_line": chandelier_row.get("stop_line") if not chandelier_row.empty else None,
-                "chandelier_stop_triggered": chandelier_triggered,
+                "chandelier_stop_enabled": bool(soxl_delever_enabled and overlay_kind == "chandelier"),
+                "chandelier_stop_symbol": overlay_symbol,
+                "chandelier_window": overlay_window,
+                "chandelier_atr_multiple": overlay_atr_multiple,
+                "chandelier_stop_close": delever_row.get("close") if not delever_row.empty else None,
+                "chandelier_stop_high": delever_row.get("high") if not delever_row.empty else None,
+                "chandelier_stop_low": delever_row.get("low") if not delever_row.empty else None,
+                "chandelier_atr": delever_row.get("atr") if not delever_row.empty else None,
+                "chandelier_stop_line": delever_row.get("stop_line") if not delever_row.empty else None,
+                "chandelier_stop_triggered": bool(delever_triggered and overlay_kind == "chandelier"),
+                "soxl_delever_overlay_enabled": bool(soxl_delever_enabled),
+                "soxl_delever_overlay_kind": overlay_kind,
+                "soxl_delever_overlay_symbol": overlay_symbol,
+                "soxl_delever_overlay_window": overlay_window,
+                "soxl_delever_overlay_threshold": delever_row.get("threshold") if not delever_row.empty else None,
+                "soxl_delever_overlay_atr_multiple": overlay_atr_multiple if overlay_kind == "chandelier" else None,
+                "soxl_delever_overlay_retention_ratio": overlay_retention_ratio,
+                "soxl_delever_overlay_redirect_symbol": overlay_redirect_symbol,
+                "soxl_delever_overlay_metric": delever_row.get("metric") if not delever_row.empty else None,
+                "soxl_delever_overlay_triggered": delever_triggered,
             }
         )
 
@@ -659,7 +781,8 @@ def run_backtest(
 
     used_weights = weights_history.loc[:, (weights_history != 0.0).any(axis=0)]
     summary = _summarize_returns(portfolio_returns, used_weights)
-    summary["Chandelier Stops"] = float(chandelier_stop_count)
+    summary["Chandelier Stops"] = float(soxl_delever_stop_count if overlay_kind == "chandelier" else 0.0)
+    summary["SOXL Delever Stops"] = float(soxl_delever_stop_count)
     return {
         "summary": summary,
         "portfolio_returns": portfolio_returns,
@@ -737,6 +860,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=3.0,
         help="ATR multiple for the Chandelier stop",
     )
+    parser.add_argument(
+        "--soxl-delever-overlay",
+        default="none",
+        choices=("none", "chandelier", "drawdown", "volatility", "momentum"),
+        help="Research-only SOXL delever overlay family",
+    )
+    parser.add_argument("--soxl-delever-symbol", help="Symbol used by the SOXL delever overlay")
+    parser.add_argument("--soxl-delever-window", type=int, help="Lookback window for the SOXL delever overlay")
+    parser.add_argument(
+        "--soxl-delever-threshold",
+        type=float,
+        help="Overlay threshold: negative for drawdown/momentum, annualized ratio for volatility",
+    )
+    parser.add_argument(
+        "--soxl-delever-atr-multiple",
+        type=float,
+        help="ATR multiple when --soxl-delever-overlay=chandelier",
+    )
+    parser.add_argument(
+        "--soxl-delever-retention-ratio",
+        type=float,
+        default=0.0,
+        help="Fraction of the SOXL target retained when the overlay triggers",
+    )
+    parser.add_argument(
+        "--soxl-delever-redirect-symbol",
+        default="BOXX",
+        help="Managed symbol receiving the removed SOXL target value",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -774,6 +926,13 @@ def main(argv: list[str] | None = None) -> int:
         chandelier_stop_symbol=args.chandelier_stop_symbol,
         chandelier_window=int(args.chandelier_window),
         chandelier_atr_multiple=float(args.chandelier_atr_multiple),
+        soxl_delever_overlay_kind=args.soxl_delever_overlay,
+        soxl_delever_overlay_symbol=args.soxl_delever_symbol,
+        soxl_delever_overlay_window=args.soxl_delever_window,
+        soxl_delever_overlay_threshold=args.soxl_delever_threshold,
+        soxl_delever_overlay_atr_multiple=args.soxl_delever_atr_multiple,
+        soxl_delever_overlay_retention_ratio=float(args.soxl_delever_retention_ratio),
+        soxl_delever_overlay_redirect_symbol=args.soxl_delever_redirect_symbol,
     )
 
     summary_frame = _format_summary(result["summary"])
@@ -806,6 +965,13 @@ def main(argv: list[str] | None = None) -> int:
             "chandelier_stop_symbol": args.chandelier_stop_symbol,
             "chandelier_window": int(args.chandelier_window),
             "chandelier_atr_multiple": float(args.chandelier_atr_multiple),
+            "soxl_delever_overlay": args.soxl_delever_overlay,
+            "soxl_delever_symbol": args.soxl_delever_symbol,
+            "soxl_delever_window": args.soxl_delever_window,
+            "soxl_delever_threshold": args.soxl_delever_threshold,
+            "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
+            "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
+            "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,
         })
         print(f"wrote research backtest outputs -> {output_dir}")
     return 0
