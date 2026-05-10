@@ -27,6 +27,16 @@ def _price_history() -> pd.DataFrame:
 
 
 class GlobalEtfRotationUniverseSensitivityTests(unittest.TestCase):
+    def test_build_download_symbols_adds_canary_and_safe_haven(self) -> None:
+        symbols = research._build_download_symbols(("VOO", "XLK", "VOO"), safe_haven="BIL")
+
+        self.assertEqual(symbols[:2], ("VOO", "XLK"))
+        self.assertIn("SPY", symbols)
+        self.assertIn("EFA", symbols)
+        self.assertIn("EEM", symbols)
+        self.assertIn("AGG", symbols)
+        self.assertIn("BIL", symbols)
+
     def test_build_pool_variants_adds_sector_expansion_without_duplicates(self) -> None:
         variants = research.build_pool_variants(
             base_pool=("VOO", "XLK", "VOO"),

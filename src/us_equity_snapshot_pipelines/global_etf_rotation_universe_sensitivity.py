@@ -48,6 +48,16 @@ def _normalize_symbols(raw: str | Sequence[str] | None) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def _build_download_symbols(
+    ranking_symbols: Sequence[str],
+    *,
+    canary_assets: Sequence[str] = DEFAULT_CANARY_ASSETS,
+    safe_haven: str = DEFAULT_SAFE_HAVEN,
+) -> tuple[str, ...]:
+    combined = (*ranking_symbols, *canary_assets, safe_haven)
+    return tuple(dict.fromkeys(str(symbol).strip().upper() for symbol in combined if str(symbol).strip()))
+
+
 def build_pool_variants(
     *,
     base_pool: Sequence[str] = DEFAULT_BASE_POOL,
@@ -236,8 +246,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         symbols = _normalize_symbols(args.symbols)
         if not symbols:
             raise SystemExit("either --prices or --symbols must be supplied")
+        download_symbols = _build_download_symbols(
+            symbols,
+            canary_assets=DEFAULT_CANARY_ASSETS,
+            safe_haven=str(args.safe_haven),
+        )
         price_history = download_price_history(
-            list(symbols),
+            list(download_symbols),
             start=str(args.price_start),
             end=args.price_end,
         )
