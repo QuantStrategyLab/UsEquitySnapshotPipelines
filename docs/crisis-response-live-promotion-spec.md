@@ -128,10 +128,10 @@ registers it. A plugin is mounted to a strategy through each
 `[[strategy_plugins]]` entry; the strategy core must remain independent of the
 runner and must not import plugin code. Plugins are strategy-limited in the
 runner: a mount is rejected unless the plugin is explicitly declared compatible
-with that strategy. This keeps `crisis_response_shadow` scoped to the TQQQ
-black-swan strategy and blocks `taco_rebound_shadow` from runtime mounts while
-MAGS remains research-only. A future TQQQ TACO overlay plugin must update the
-compatibility table and tests in its own PR.
+with that strategy. This keeps `crisis_response_shadow` scoped to TQQQ/SOXL
+black-swan defense strategies and blocks `taco_rebound_shadow` from runtime
+mounts while MAGS remains research-only. A future TQQQ TACO overlay plugin must
+update the compatibility table and tests in its own PR.
 
 The runner accepts only `mode = "shadow"` and writes that mode into each plugin
 artifact. Downstream platform adapters must read the artifact as notification
