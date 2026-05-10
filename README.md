@@ -1,5 +1,12 @@
 # UsEquitySnapshotPipelines
 
+[English](#english) | [中文](#中文)
+
+---
+
+<a id="english"></a>
+## English
+
 `UsEquitySnapshotPipelines` is the upstream feature-snapshot and release pipeline repo for US equity strategies.
 It is intentionally separate from broker execution repos.
 
@@ -158,6 +165,90 @@ To research a Chandelier-style SOXL delever overlay, add
 research backtest's SOXL target value into BOXX for triggered days; it does not
 change the production strategy manifest. See
 `docs/soxl-soxx-chandelier-stop-research.md` for the initial read.
+
+---
+
+<a id="中文"></a>
+## 中文
+
+`UsEquitySnapshotPipelines` 是 US equity 策略的上游特征快照和发布流水线仓库。
+它和券商执行仓库保持分离。
+
+## 边界
+
+这个仓库负责：
+
+- 为快照型 US equity 策略准备 universe 和价格输入
+- 生成 feature snapshot
+- 生成候选排名和 target preview artifacts
+- 生成 snapshot manifest 和 release status summary
+- 提供可选的 GCS 发布辅助逻辑
+
+这个仓库不负责：
+
+- 券商 API 接入
+- 账户 / 持仓对账
+- 下单
+- Telegram 运行时通知
+- Cloud Run service 配置
+
+下游平台仓库（`InteractiveBrokersPlatform`、`LongBridgePlatform`、`CharlesSchwabPlatform`）应只消费已发布的 artifact contract。
+
+## 当前已迁移 profile
+
+| Profile | 状态 | Artifact 计划频率 | 说明 |
+| --- | --- | --- | --- |
+| `tech_communication_pullback_enhancement` | 已迁移到上游 pipeline | monthly | snapshot builder、ranking、release summary 和 publish flow 在本仓库 |
+| `russell_1000_multi_factor_defensive` | 已迁移到上游 pipeline | monthly | source-input refresh、snapshot builder、backtest CLI、ranking、release summary 和 publish flow 在本仓库 |
+| `mega_cap_leader_rotation_top50_balanced` | 已迁移到上游 pipeline | monthly scheduled + manual publish | balanced Top50 live profile 的 snapshot builder、ranking、release summary 和 publish flow 在本仓库 |
+
+这个表只描述 artifact 发布频率。策略层频率仍以 `UsEquityStrategies` 为准；券商执行计划应跟随策略层来源。
+
+## 本地 smoke 命令
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src python -m pytest -q
+```
+
+构建 tech/communication pullback snapshot：
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/build_tech_communication_pullback_snapshot.py \
+  --prices /path/to/price_history.csv \
+  --universe /path/to/universe.csv \
+  --as-of 2026-04-01 \
+  --output-dir data/output/tech_communication_pullback_enhancement
+```
+
+该命令会写出：
+
+- `tech_communication_pullback_enhancement_feature_snapshot_latest.csv`
+- `tech_communication_pullback_enhancement_feature_snapshot_latest.csv.manifest.json`
+- `tech_communication_pullback_enhancement_ranking_latest.csv`
+- `release_status_summary.json`
+
+手动 GitHub Actions 发布流程见 `docs/operator_runbook.md` 和 `docs/operator_runbook.zh-CN.md`。
+计划任务每月运行：先刷新共享 Russell 1000 输入数据，包括 mega-cap Top50 profile 使用的最新加权持仓快照，然后构建并发布计划内的 snapshot profiles。
+
+## 月度 AI Review
+
+第一阶段月度 review 控制面只做报告，不直接修改代码：
+
+- `monthly_review.yml` 在 `Publish Snapshot Artifacts` workflow 成功后运行，也支持手工触发。
+- 它下载 publish run artifacts，构建 `data/output/monthly_report_bundle/`，并创建或更新 `monthly-review` issue。
+- `ai_review.yml` review 该 issue，并发布双语 artifact/contract-health 评论。
+- 它也会为 VPS `ccbot-bridge` / Codex runner 创建单独的 `codex-bridge` remediation issue。
+- Codex remediation PR 只有在 CI 通过、PR 非 draft、带有 `auto-merge-ok` label，且变更限制在低风险 review/reporting surface 内时，才由 `auto_merge_codex_pr.yml` 合并。
+- 如果 Codex remediation PR 的 CI 失败或收到 changes-requested review，`codex_pr_feedback.yml` 会回评源 `codex-bridge` issue，让 ccbot 派发 Codex 修同一条 PR 分支。最多允许三轮自动反馈，然后移除 `codex-bridge`，等待人工 review。
+
+这个流程让 US equity snapshot review 与更大的月度审计控制面对齐，同时把代码修改和合并保留在独立、可审计的步骤里。
+
+## 研究和回测
+
+静态 `mega_cap_leader_rotation` 池仍然只是 research-only。运行时路径目前只发布该系列的 `mega_cap_leader_rotation_top50_balanced`。
+
+SOXL/SOXX trend-income 的 research backtest 可以使用本地价格数据运行。默认研究路径会构建 runtime 策略使用的 SOXX RSI 和 Bollinger-band 输入；也可以通过动态 RSI 分位、Chandelier-style delever overlay 等参数研究替代保护机制。Chandelier overlay 默认关闭，只在研究回测中把触发日的 SOXL target value reroute 到 BOXX，不改变生产 manifest。初始研究说明见 `docs/soxl-soxx-chandelier-stop-research.md`。
 
 To research alternative SOXL delever gates without changing production, use
 `--soxl-delever-overlay volatility|drawdown|momentum` with
