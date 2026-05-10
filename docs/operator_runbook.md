@@ -105,6 +105,36 @@ Default scheduled output prefixes:
 
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 
+## Monthly AI Review
+
+After a successful scheduled `Publish Snapshot Artifacts` run, `Monthly Snapshot Review` downloads that run's artifacts and assembles:
+
+```text
+data/output/monthly_report_bundle/monthly_report_bundle.json
+data/output/monthly_report_bundle/ai_review_input.md
+data/output/monthly_report_bundle/job_summary.md
+```
+
+The workflow creates or updates a GitHub issue labeled `monthly-review` and triggers `AI Monthly Review`. The AI review posts a bilingual comment focused on:
+
+- artifact completeness for each expected snapshot profile
+- contract version, snapshot date, row count, and ranking-preview health
+- missing or stale evidence that should block downstream confidence
+- downstream impact for broker/runtime repositories
+
+After posting the review comment, the workflow creates or updates a separate remediation issue labeled:
+
+```text
+codex-bridge
+monthly-codex-remediation
+```
+
+The VPS `ccbot-bridge` should watch those labels and dispatch the issue to a self-hosted Codex window. Keep the real bridge config local under `~/.ccbot/github_codex_bridge.json`; do not commit it to this repository.
+
+Codex should open a draft PR first. It may mark the PR ready and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces. `Auto Merge Codex Remediation PR` then performs the final merge gate after GitHub CI succeeds. It skips draft PRs, PRs without the marker, PRs without `auto-merge-ok`, and PRs touching blocked paths.
+
+If CI fails on a Codex remediation PR, or a reviewer requests changes, `Codex PR Feedback` comments the failure or review summary back to the source `codex-bridge` issue. That issue update lets the VPS bridge dispatch Codex again to fix the same PR branch.
+
 ## Troubleshooting
 
 - If source-input refresh fails, snapshot publish may still run against the last successful source inputs.

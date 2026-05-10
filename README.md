@@ -60,6 +60,19 @@ The command writes:
 See `docs/operator_runbook.md` and `docs/operator_runbook.zh-CN.md` for the manual GitHub Actions publish flow.
 The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, including the latest weighted holdings snapshot used by the mega-cap Top50 profile, then they build and publish the scheduled snapshot profiles from those refreshed inputs.
 
+## Monthly AI Review
+
+The first-stage monthly review control plane is reporting-only:
+
+- `monthly_review.yml` runs after a successful `Publish Snapshot Artifacts` workflow or by manual dispatch.
+- It downloads the publish run artifacts, builds `data/output/monthly_report_bundle/`, and creates or updates a `monthly-review` issue.
+- `ai_review.yml` reviews that issue and posts a bilingual artifact/contract-health comment.
+- It also creates a separate `codex-bridge` remediation issue for the VPS `ccbot-bridge` / Codex runner.
+- Codex remediation PRs are merged only by `auto_merge_codex_pr.yml` when CI is green, the PR is not draft, the `auto-merge-ok` label is present, and changed files stay inside the low-risk review/reporting surface.
+- If a Codex remediation PR fails CI or receives a changes-requested review, `codex_pr_feedback.yml` comments back on the source `codex-bridge` issue so ccbot can dispatch Codex to fix the same PR branch.
+
+This keeps US equity snapshot review aligned with the broader monthly audit control plane while keeping code changes and merging in separate, auditable steps.
+
 Prepare / refresh shared Russell 1000 source inputs:
 
 ```bash

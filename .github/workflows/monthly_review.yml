@@ -1,0 +1,104 @@
+name: Monthly Snapshot Review
+
+"on":
+  workflow_run:
+    workflows: ["Publish Snapshot Artifacts"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Optional Publish Snapshot Artifacts run id to review"
+        required: false
+        default: ""
+      report_month:
+        description: "Optional report month in YYYY-MM format"
+        required: false
+        default: ""
+
+jobs:
+  monthly-review:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+
+    env:
+      REVIEW_LABEL: monthly-review
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve source run
+        id: source
+        run: |
+          set -euo pipefail
+          run_id="${{ inputs.source_run_id || github.event.workflow_run.id || '' }}"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          if [ -n "${run_id}" ]; then
+            echo "Reviewing artifacts from run ${run_id}."
+          else
+            echo "No source run id supplied; review bundle will inspect local data/output only."
+          fi
+
+      - name: Download source artifacts
+        if: steps.source.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p data/output/monthly_review_inputs
+          gh run download "${{ steps.source.outputs.run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir data/output/monthly_review_inputs
+
+      - name: Build monthly review bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/run_monthly_report_bundle.py \
+            --artifact-root "${artifact_root}" \
+            --output-dir data/output/monthly_report_bundle \
+            --report-month "${{ inputs.report_month || '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Append bundle summary
+        run: cat data/output/monthly_report_bundle/job_summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create monthly review issue
+        id: review_issue
+        run: |
+          set -euo pipefail
+          title="Monthly Snapshot AI Review: ${{ steps.bundle.outputs.report_month }}"
+          python scripts/post_monthly_ai_review_issue.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${title}" \
+            --label "${REVIEW_LABEL}" \
+            --body-file data/output/monthly_report_bundle/ai_review_input.md >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger AI monthly review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run ai_review.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            -f issue_number="${{ steps.review_issue.outputs.issue_number }}"
+
+      - name: Upload monthly review bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: monthly-snapshot-review-${{ steps.bundle.outputs.report_month }}
+          path: data/output/monthly_report_bundle/

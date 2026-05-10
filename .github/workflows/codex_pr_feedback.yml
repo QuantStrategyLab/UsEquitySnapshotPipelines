@@ -1,0 +1,128 @@
+name: Codex PR Feedback
+
+"on":
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  ci-feedback:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && startsWith(github.event.workflow_run.head_branch, 'codex/monthly-review-issue-')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Post CI failure back to Codex issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_NAME: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          mkdir -p data/output/codex_feedback
+          gh pr list --state open --head "${BRANCH_NAME}" --json number,title,url,body > data/output/codex_feedback/pr.json
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import textwrap
+          from pathlib import Path
+
+          prs = json.loads(Path("data/output/codex_feedback/pr.json").read_text(encoding="utf-8"))
+          if not prs:
+              Path("data/output/codex_feedback/skip.txt").write_text("No open Codex PR found.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          pr = prs[0]
+          body = pr.get("body") or ""
+          match = re.search(r"<!--\s*codex-monthly-remediation:issue-(\d+)\s*-->", body)
+          if not match:
+              Path("data/output/codex_feedback/skip.txt").write_text("No source issue marker found.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          issue_number = match.group(1)
+          comment = textwrap.dedent(
+              f"""\
+              <!-- codex-pr-feedback:ci:{pr['number']} -->
+              ## Codex PR CI Feedback
+
+              CI failed for the Codex remediation PR.
+
+              - PR: {pr['url']}
+              - Branch: `{os.environ['BRANCH_NAME']}`
+              - Workflow: `{os.environ['RUN_NAME']}`
+              - Run: {os.environ['RUN_URL']}
+
+              Codex should inspect the failing GitHub Actions logs, update the same PR branch, run targeted tests, and keep the PR draft until the fix is verified.
+              """
+          )
+          Path("data/output/codex_feedback/issue_number.txt").write_text(issue_number, encoding="utf-8")
+          Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
+          PY
+          if [ -f data/output/codex_feedback/issue_number.txt ]; then
+            gh issue comment "$(cat data/output/codex_feedback/issue_number.txt)" --body-file data/output/codex_feedback/comment.md
+          else
+            cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  review-feedback:
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' && startsWith(github.event.pull_request.head.ref, 'codex/monthly-review-issue-')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Post review feedback back to Codex issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REVIEW_URL: ${{ github.event.review.html_url }}
+          REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+        run: |
+          mkdir -p data/output/codex_feedback
+          python3 - <<'PY'
+          import os
+          import re
+          import textwrap
+          from pathlib import Path
+
+          body = os.environ.get("PR_BODY") or ""
+          match = re.search(r"<!--\s*codex-monthly-remediation:issue-(\d+)\s*-->", body)
+          if not match:
+              Path("data/output/codex_feedback/skip.txt").write_text("No source issue marker found.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          review_body = (os.environ.get("REVIEW_BODY") or "_No review body supplied._").strip()
+          comment = textwrap.dedent(
+              f"""\
+              <!-- codex-pr-feedback:review:{os.environ['PR_NUMBER']} -->
+              ## Codex PR Review Feedback
+
+              A review requested changes on the Codex remediation PR.
+
+              - PR: {os.environ['PR_URL']}
+              - Reviewer: @{os.environ['REVIEW_AUTHOR']}
+              - Review: {os.environ['REVIEW_URL']}
+
+              ### Review Body
+
+              {review_body}
+
+              Codex should update the same PR branch, address the requested changes, run targeted tests, and leave the PR draft until the fix is verified.
+              """
+          )
+          Path("data/output/codex_feedback/issue_number.txt").write_text(match.group(1), encoding="utf-8")
+          Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
+          PY
+          if [ -f data/output/codex_feedback/issue_number.txt ]; then
+            gh issue comment "$(cat data/output/codex_feedback/issue_number.txt)" --body-file data/output/codex_feedback/comment.md
+          else
+            cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
+          fi

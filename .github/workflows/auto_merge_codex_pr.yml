@@ -1,0 +1,65 @@
+name: Auto Merge Codex Remediation PR
+
+"on":
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  auto-merge:
+    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'codex/monthly-review-issue-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve Codex remediation PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p data/output/codex_auto_merge
+          branch="${{ github.event.workflow_run.head_branch }}"
+          pr_number=$(gh pr list --state open --head "${branch}" --json number --jq '.[0].number // empty')
+          if [ -z "${pr_number}" ]; then
+            echo "No open PR found for ${branch}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate merge guard
+        id: merge_guard
+        if: steps.pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr view "${{ steps.pr.outputs.pr_number }}" \
+            --json number,isDraft,body,url,files,labels > data/output/codex_auto_merge/pr.json
+          python3 scripts/evaluate_codex_pr_merge.py \
+            --pr-json data/output/codex_auto_merge/pr.json \
+            --summary-file data/output/codex_auto_merge/summary.md \
+            --decision-file data/output/codex_auto_merge/decision.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          decision = json.loads(Path("data/output/codex_auto_merge/decision.json").read_text(encoding="utf-8"))
+          print(f"should_merge={str(bool(decision['should_merge'])).lower()}")
+          print(f"reason={decision['reason']}")
+          PY
+
+      - name: Append merge guard summary
+        if: steps.pr.outputs.pr_number != ''
+        run: cat data/output/codex_auto_merge/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge Codex remediation PR
+        if: steps.merge_guard.outputs.should_merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ steps.pr.outputs.pr_number }}" --rebase --delete-branch
