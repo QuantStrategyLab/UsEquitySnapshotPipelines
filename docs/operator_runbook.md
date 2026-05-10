@@ -105,6 +105,25 @@ Default scheduled output prefixes:
 
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 
+## Monthly AI Review
+
+After a successful scheduled `Publish Snapshot Artifacts` run, `Monthly Snapshot Review` downloads that run's artifacts and assembles:
+
+```text
+data/output/monthly_report_bundle/monthly_report_bundle.json
+data/output/monthly_report_bundle/ai_review_input.md
+data/output/monthly_report_bundle/job_summary.md
+```
+
+The workflow creates or updates a GitHub issue labeled `monthly-review` and triggers `AI Monthly Review`. The AI review posts a bilingual comment focused on:
+
+- artifact completeness for each expected snapshot profile
+- contract version, snapshot date, row count, and ranking-preview health
+- missing or stale evidence that should block downstream confidence
+- downstream impact for broker/runtime repositories
+
+This stage is reporting-only. It does not open remediation PRs and does not auto-merge code.
+
 ## Troubleshooting
 
 - If source-input refresh fails, snapshot publish may still run against the last successful source inputs.

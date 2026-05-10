@@ -60,6 +60,17 @@ The command writes:
 See `docs/operator_runbook.md` and `docs/operator_runbook.zh-CN.md` for the manual GitHub Actions publish flow.
 The scheduled workflows run monthly: first they refresh the shared Russell 1000 input data, including the latest weighted holdings snapshot used by the mega-cap Top50 profile, then they build and publish the scheduled snapshot profiles from those refreshed inputs.
 
+## Monthly AI Review
+
+The first-stage monthly review control plane is reporting-only:
+
+- `monthly_review.yml` runs after a successful `Publish Snapshot Artifacts` workflow or by manual dispatch.
+- It downloads the publish run artifacts, builds `data/output/monthly_report_bundle/`, and creates or updates a `monthly-review` issue.
+- `ai_review.yml` reviews that issue and posts a bilingual artifact/contract-health comment.
+- It does not create code-change PRs, run auto-fixes, or auto-merge anything.
+
+This keeps US equity snapshot review aligned with the broader monthly audit control plane while leaving automated remediation for a later guarded phase.
+
 Prepare / refresh shared Russell 1000 source inputs:
 
 ```bash
