@@ -122,7 +122,16 @@ The workflow creates or updates a GitHub issue labeled `monthly-review` and trig
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
 
-This stage is reporting-only. It does not open remediation PRs and does not auto-merge code.
+After posting the review comment, the workflow creates or updates a separate remediation issue labeled:
+
+```text
+codex-bridge
+monthly-codex-remediation
+```
+
+The VPS `ccbot-bridge` should watch those labels and dispatch the issue to a self-hosted Codex window. Keep the real bridge config local under `~/.ccbot/github_codex_bridge.json`; do not commit it to this repository.
+
+Codex should open a draft PR first. It may mark the PR ready and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces. `Auto Merge Codex Remediation PR` then performs the final merge gate after GitHub CI succeeds. It skips draft PRs, PRs without the marker, PRs without `auto-merge-ok`, and PRs touching blocked paths.
 
 ## Troubleshooting
 

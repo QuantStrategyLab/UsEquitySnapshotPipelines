@@ -156,3 +156,25 @@ jobs:
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Queue Codex remediation issue
+        id: codex_issue
+        run: |
+          python3 scripts/post_codex_remediation_issue.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --source-issue-number "${{ inputs.issue_number || github.event.issue.number }}" \
+            --source-issue-title "${{ steps.issue_context.outputs.issue_title }}" \
+            --source-issue-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/${{ inputs.issue_number || github.event.issue.number }}" \
+            --review-file data/output/ai_review/final_review.md >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append Codex queue summary
+        run: |
+          {
+            echo ""
+            echo "## Codex remediation queue"
+            echo "- Issue: ${{ steps.codex_issue.outputs.issue_url }}"
+            echo "- Action: \`${{ steps.codex_issue.outputs.issue_action }}\`"
+            echo "- Runner: VPS ccbot-bridge watches \`codex-bridge\` issues"
+          } >> "$GITHUB_STEP_SUMMARY"
