@@ -159,6 +159,13 @@ research backtest's SOXL target value into BOXX for triggered days; it does not
 change the production strategy manifest. See
 `docs/soxl-soxx-chandelier-stop-research.md` for the initial read.
 
+To research alternative SOXL delever gates without changing production, use
+`--soxl-delever-overlay volatility|drawdown|momentum` with
+`--soxl-delever-symbol`, `--soxl-delever-window`,
+`--soxl-delever-threshold`, `--soxl-delever-retention-ratio`, and
+`--soxl-delever-redirect-symbol`. The current best research candidate is a
+SOXX 10-day volatility gate at `0.50` that redirects SOXL into SOXX.
+
 For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
 That avoids QQQI/SPYI inception dates truncating the 2010+ SOXL sample.

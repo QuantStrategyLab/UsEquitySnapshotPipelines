@@ -54,6 +54,25 @@ def _build_chandelier_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_volatile_soxx_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2023-01-02", periods=420)
+    rows = []
+    for idx, as_of in enumerate(dates):
+        shock = 0.0
+        if 240 <= idx < 255:
+            shock = 4.0 if idx % 2 == 0 else -4.0
+        values = {
+            "SOXL": 50.0 + idx * 1.1 + shock * 2.0,
+            "SOXX": 100.0 + idx * 0.6 + shock,
+            "BOXX": 100.0,
+            "QQQI": 50.0 + idx * 0.05,
+            "SPYI": 50.0 + idx * 0.03,
+        }
+        for symbol, close in values.items():
+            rows.append({"symbol": symbol, "as_of": as_of, "close": close})
+    return pd.DataFrame(rows)
+
+
 def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     prices = _build_synthetic_prices()
     result = run_backtest(
@@ -97,6 +116,32 @@ def test_soxl_soxx_chandelier_stop_research_overlay_moves_soxl_to_boxx() -> None
     assert not triggered.empty
     assert triggered["chandelier_stop_line"].notna().all()
     assert (triggered["chandelier_stop_close"] < triggered["chandelier_stop_line"]).all()
+
+
+def test_soxl_soxx_volatility_delever_research_overlay_keeps_partial_soxl() -> None:
+    result = run_backtest(
+        _build_volatile_soxx_prices(),
+        initial_equity=100_000.0,
+        start_date="2023-10-02",
+        end_date="2024-03-29",
+        turnover_cost_bps=5.0,
+        soxl_delever_overlay_kind="volatility",
+        soxl_delever_overlay_symbol="SOXX",
+        soxl_delever_overlay_window=10,
+        soxl_delever_overlay_threshold=0.20,
+        soxl_delever_overlay_retention_ratio=0.50,
+        soxl_delever_overlay_redirect_symbol="SOXX",
+    )
+
+    signal_history = result["signal_history"]
+    triggered = signal_history.loc[signal_history["soxl_delever_overlay_triggered"].astype(bool)]
+
+    assert result["summary"]["SOXL Delever Stops"] >= 1
+    assert result["summary"]["Chandelier Stops"] == 0
+    assert not triggered.empty
+    assert triggered["soxl_delever_overlay_kind"].eq("volatility").all()
+    assert triggered["soxl_delever_overlay_metric"].ge(0.20).all()
+    assert triggered["soxl_delever_overlay_retention_ratio"].eq(0.50).all()
 
 
 def test_soxl_soxx_dynamic_rsi_quantile_uses_floor() -> None:

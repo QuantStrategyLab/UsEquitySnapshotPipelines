@@ -55,3 +55,48 @@ longer core SOXL/SOXX window degrades both CAGR and drawdown.
 
 This supports keeping the current live strategy unchanged and using the new
 flags only for bounded research sweeps.
+
+## Follow-Up Overlay Sweep
+
+The follow-up sweep tested additional SOXL delever gates under the same
+research-only rule: do not accept a candidate that reduces CAGR in either the
+2024-01-31 live-full window or the 2010-09-29 core-long window.
+
+Families tested:
+
+- Chandelier stop with SOXX / SOXL stop symbols.
+- Rolling drawdown gate.
+- Short-window realized-volatility gate.
+- Short-window momentum shock gate.
+- SOXL retention ratios of `0%`, `25%`, `50%`, and `75%`.
+- Redirect targets of `BOXX` and `SOXX`.
+
+The only clean common winner in the exact replay was a SOXX volatility gate:
+
+```bash
+--soxl-delever-overlay volatility \
+--soxl-delever-symbol SOXX \
+--soxl-delever-window 10 \
+--soxl-delever-threshold 0.50 \
+--soxl-delever-retention-ratio 0.0 \
+--soxl-delever-redirect-symbol SOXX
+```
+
+| Window | Variant | CAGR | Max drawdown | Delever days |
+| --- | ---: | ---: | ---: | ---: |
+| 2024-01-31 to 2026-05-07 live-full | Baseline archive | 130.18% | -36.10% | 0 |
+| 2024-01-31 to 2026-05-07 live-full | SOXX 10d vol >= 50%, SOXL -> SOXX | 131.39% | -30.61% | 8 |
+| 2010-09-29 to 2026-05-07 core-long | Baseline archive | 46.41% | -44.00% | 0 |
+| 2010-09-29 to 2026-05-07 core-long | SOXX 10d vol >= 50%, SOXL -> SOXX | 47.80% | -42.31% | 20 |
+
+Interpretation:
+
+- This candidate satisfies the no-CAGR-sacrifice constraint in both validation
+  windows.
+- Redirecting into SOXX, rather than BOXX, avoids abandoning the semiconductor
+  trend while removing SOXL leverage during volatility spikes.
+- The trigger count is sparse enough to avoid behaving like a monthly health
+  audit or permanent risk throttle.
+- This is still research evidence, not a production default. Promotion should
+  require a separate PR in the strategy repo and an explicit live-policy
+  decision.
