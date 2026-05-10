@@ -54,6 +54,15 @@ class PluginRunResult:
 
 
 PluginRunner = Callable[[Mapping[str, Any], str], PluginRunResult]
+PluginPayloadBuilder = Callable[[pd.DataFrame, Mapping[str, Any]], dict[str, Any]]
+PluginOutputWriter = Callable[[Mapping[str, Any], str | Path], Mapping[str, Path]]
+
+
+@dataclass(frozen=True)
+class PluginExecutionSpec:
+    default_plugin: str
+    build_payload: PluginPayloadBuilder
+    write_outputs: PluginOutputWriter
 
 
 def load_plugin_config(path: str | Path) -> dict[str, Any]:
@@ -252,113 +261,101 @@ def _build_taco_rebound_kwargs(plugin_config: Mapping[str, Any]) -> dict[str, An
     return kwargs
 
 
+PLUGIN_MODE_EXECUTION_CONTROLS: dict[str, dict[str, Any]] = {
+    SHADOW_MODE: {
+        "capital_impact": "none",
+        "broker_order_allowed": False,
+        "live_allocation_mutation_allowed": False,
+        "paper_ledger_required": False,
+        "human_confirmation_required": False,
+        "risk_controls_required": False,
+        "notification_profile": "shadow_only",
+    },
+    PLUGIN_MODE_PAPER: {
+        "capital_impact": "none",
+        "broker_order_allowed": False,
+        "live_allocation_mutation_allowed": False,
+        "paper_ledger_required": True,
+        "human_confirmation_required": False,
+        "risk_controls_required": False,
+        "notification_profile": "paper",
+    },
+    PLUGIN_MODE_ADVISORY: {
+        "capital_impact": "manual_only",
+        "broker_order_allowed": False,
+        "live_allocation_mutation_allowed": False,
+        "paper_ledger_required": False,
+        "human_confirmation_required": True,
+        "risk_controls_required": False,
+        "notification_profile": "advisory",
+    },
+    PLUGIN_MODE_LIVE: {
+        "capital_impact": "bounded_by_platform_policy",
+        "broker_order_allowed": True,
+        "live_allocation_mutation_allowed": True,
+        "paper_ledger_required": False,
+        "human_confirmation_required": False,
+        "risk_controls_required": True,
+        "notification_profile": "live",
+    },
+}
+
+
 def _mode_execution_controls(mode: str) -> dict[str, Any]:
-    if mode == SHADOW_MODE:
-        return {
-            "capital_impact": "none",
-            "broker_order_allowed": False,
-            "live_allocation_mutation_allowed": False,
-            "paper_ledger_required": False,
-            "human_confirmation_required": False,
-            "risk_controls_required": False,
-            "notification_profile": "shadow_only",
-        }
-    if mode == PLUGIN_MODE_PAPER:
-        return {
-            "capital_impact": "none",
-            "broker_order_allowed": False,
-            "live_allocation_mutation_allowed": False,
-            "paper_ledger_required": True,
-            "human_confirmation_required": False,
-            "risk_controls_required": False,
-            "notification_profile": "paper",
-        }
-    if mode == PLUGIN_MODE_ADVISORY:
-        return {
-            "capital_impact": "manual_only",
-            "broker_order_allowed": False,
-            "live_allocation_mutation_allowed": False,
-            "paper_ledger_required": False,
-            "human_confirmation_required": True,
-            "risk_controls_required": False,
-            "notification_profile": "advisory",
-        }
-    if mode == PLUGIN_MODE_LIVE:
-        return {
-            "capital_impact": "bounded_by_platform_policy",
-            "broker_order_allowed": True,
-            "live_allocation_mutation_allowed": True,
-            "paper_ledger_required": False,
-            "human_confirmation_required": False,
-            "risk_controls_required": True,
-            "notification_profile": "live",
-        }
-    raise ValueError(f"unsupported plugin mode: {mode!r}")
+    try:
+        return dict(PLUGIN_MODE_EXECUTION_CONTROLS[mode])
+    except KeyError as exc:
+        raise ValueError(f"unsupported plugin mode: {mode!r}") from exc
 
 
-def run_crisis_response_shadow_plugin(plugin_config: Mapping[str, Any], default_mode: str) -> PluginRunResult:
-    strategy = _safe_scope_name(plugin_config.get("strategy"), field="strategy")
-    plugin = _safe_scope_name(plugin_config.get("plugin", PLUGIN_CRISIS_RESPONSE_SHADOW), field="plugin")
-    mode = _plugin_mode(plugin_config, default_mode)
-    output_dir = str(plugin_config.get("output_dir") or _default_plugin_output_dir(strategy, plugin)).strip()
-    enabled = _as_bool(plugin_config.get("enabled"), default=True)
-    if not enabled:
-        return PluginRunResult(
-            strategy=strategy,
-            plugin=plugin,
-            enabled=False,
-            mode=mode,
-            effective_mode=None,
-            status="skipped",
-            output_dir=output_dir,
-            message="plugin disabled",
-        )
-    _validate_plugin_mode(plugin, mode)
+def _apply_plugin_contract(payload: Mapping[str, Any], *, strategy: str, plugin: str, mode: str) -> dict[str, Any]:
+    contracted_payload = dict(payload)
+    contracted_payload["strategy"] = strategy
+    contracted_payload["plugin"] = plugin
+    contracted_payload["mode"] = mode
+    contracted_payload["configured_mode"] = mode
+    contracted_payload["effective_mode"] = mode
 
-    prices_path = str(plugin_config.get("prices", "")).strip()
-    if not prices_path:
-        raise ValueError(f"{plugin} for strategy={strategy} requires a prices path")
-    price_history = read_table(prices_path)
+    execution_controls = dict(contracted_payload.get("execution_controls") or {})
+    execution_controls.update(_mode_execution_controls(mode))
+    execution_controls["configured_mode"] = mode
+    execution_controls["effective_mode"] = mode
+    execution_controls["repository_broker_write_allowed"] = False
+    execution_controls["repository_allocation_mutation_allowed"] = False
+    execution_controls["mode_note"] = (
+        "Mode is the platform behavior contract; this repository writes artifacts and does not call brokers"
+    )
+    contracted_payload["execution_controls"] = execution_controls
+    return contracted_payload
+
+
+def _build_crisis_response_payload(price_history: pd.DataFrame, plugin_config: Mapping[str, Any]) -> dict[str, Any]:
     external_context = _optional_table(plugin_config.get("external_context"))
     event_set = str(plugin_config.get("event_set", DEFAULT_EVENT_SET)).strip() or DEFAULT_EVENT_SET
-
-    payload = build_crisis_response_shadow_signal(
+    return build_crisis_response_shadow_signal(
         price_history,
         events=resolve_trade_war_event_set(event_set),
         external_context=external_context,
         **_build_crisis_response_kwargs(plugin_config),
     )
-    payload["strategy"] = strategy
-    payload["plugin"] = plugin
-    payload["mode"] = mode
-    payload["configured_mode"] = mode
-    payload["effective_mode"] = mode
-    payload.setdefault("execution_controls", {})
-    payload["execution_controls"].update(_mode_execution_controls(mode))
-    payload["execution_controls"]["configured_mode"] = mode
-    payload["execution_controls"]["effective_mode"] = mode
-    payload["execution_controls"]["repository_broker_write_allowed"] = False
-    payload["execution_controls"]["repository_allocation_mutation_allowed"] = False
-    payload["execution_controls"]["mode_note"] = (
-        "Mode is the platform behavior contract; this repository writes artifacts and does not call brokers"
-    )
-    paths = write_crisis_response_shadow_outputs(payload, output_dir)
-    return PluginRunResult(
-        strategy=strategy,
-        plugin=plugin,
-        enabled=True,
-        mode=mode,
-        effective_mode=mode,
-        status="ok",
-        output_dir=output_dir,
-        latest_signal_path=str(paths["latest_signal"]),
-        message=f"route={payload['canonical_route']} action={payload['suggested_action']}",
+
+
+def _build_taco_rebound_payload(price_history: pd.DataFrame, plugin_config: Mapping[str, Any]) -> dict[str, Any]:
+    event_set = str(plugin_config.get("event_set", DEFAULT_EVENT_SET)).strip() or DEFAULT_EVENT_SET
+    return build_taco_rebound_shadow_signal(
+        price_history,
+        events=resolve_trade_war_event_set(event_set),
+        **_build_taco_rebound_kwargs(plugin_config),
     )
 
 
-def run_taco_rebound_shadow_plugin(plugin_config: Mapping[str, Any], default_mode: str) -> PluginRunResult:
+def _run_table_strategy_plugin(
+    plugin_config: Mapping[str, Any],
+    default_mode: str,
+    spec: PluginExecutionSpec,
+) -> PluginRunResult:
     strategy = _safe_scope_name(plugin_config.get("strategy"), field="strategy")
-    plugin = _safe_scope_name(plugin_config.get("plugin", PLUGIN_TACO_REBOUND_SHADOW), field="plugin")
+    plugin = _safe_scope_name(plugin_config.get("plugin", spec.default_plugin), field="plugin")
     mode = _plugin_mode(plugin_config, default_mode)
     output_dir = str(plugin_config.get("output_dir") or _default_plugin_output_dir(strategy, plugin)).strip()
     enabled = _as_bool(plugin_config.get("enabled"), default=True)
@@ -378,29 +375,9 @@ def run_taco_rebound_shadow_plugin(plugin_config: Mapping[str, Any], default_mod
     prices_path = str(plugin_config.get("prices", "")).strip()
     if not prices_path:
         raise ValueError(f"{plugin} for strategy={strategy} requires a prices path")
-    price_history = read_table(prices_path)
-    event_set = str(plugin_config.get("event_set", DEFAULT_EVENT_SET)).strip() or DEFAULT_EVENT_SET
-
-    payload = build_taco_rebound_shadow_signal(
-        price_history,
-        events=resolve_trade_war_event_set(event_set),
-        **_build_taco_rebound_kwargs(plugin_config),
-    )
-    payload["strategy"] = strategy
-    payload["plugin"] = plugin
-    payload["mode"] = mode
-    payload["configured_mode"] = mode
-    payload["effective_mode"] = mode
-    payload.setdefault("execution_controls", {})
-    payload["execution_controls"].update(_mode_execution_controls(mode))
-    payload["execution_controls"]["configured_mode"] = mode
-    payload["execution_controls"]["effective_mode"] = mode
-    payload["execution_controls"]["repository_broker_write_allowed"] = False
-    payload["execution_controls"]["repository_allocation_mutation_allowed"] = False
-    payload["execution_controls"]["mode_note"] = (
-        "Mode is the platform behavior contract; this repository writes artifacts and does not call brokers"
-    )
-    paths = write_taco_rebound_shadow_outputs(payload, output_dir)
+    payload = spec.build_payload(read_table(prices_path), plugin_config)
+    payload = _apply_plugin_contract(payload, strategy=strategy, plugin=plugin, mode=mode)
+    paths = spec.write_outputs(payload, output_dir)
     return PluginRunResult(
         strategy=strategy,
         plugin=plugin,
@@ -412,6 +389,26 @@ def run_taco_rebound_shadow_plugin(plugin_config: Mapping[str, Any], default_mod
         latest_signal_path=str(paths["latest_signal"]),
         message=f"route={payload['canonical_route']} action={payload['suggested_action']}",
     )
+
+
+CRISIS_RESPONSE_SHADOW_SPEC = PluginExecutionSpec(
+    default_plugin=PLUGIN_CRISIS_RESPONSE_SHADOW,
+    build_payload=_build_crisis_response_payload,
+    write_outputs=write_crisis_response_shadow_outputs,
+)
+TACO_REBOUND_SHADOW_SPEC = PluginExecutionSpec(
+    default_plugin=PLUGIN_TACO_REBOUND_SHADOW,
+    build_payload=_build_taco_rebound_payload,
+    write_outputs=write_taco_rebound_shadow_outputs,
+)
+
+
+def run_crisis_response_shadow_plugin(plugin_config: Mapping[str, Any], default_mode: str) -> PluginRunResult:
+    return _run_table_strategy_plugin(plugin_config, default_mode, CRISIS_RESPONSE_SHADOW_SPEC)
+
+
+def run_taco_rebound_shadow_plugin(plugin_config: Mapping[str, Any], default_mode: str) -> PluginRunResult:
+    return _run_table_strategy_plugin(plugin_config, default_mode, TACO_REBOUND_SHADOW_SPEC)
 
 
 PLUGIN_RUNNERS: dict[str, PluginRunner] = {
