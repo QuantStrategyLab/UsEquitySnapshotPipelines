@@ -25,10 +25,7 @@ from .taco_rebound_shadow_plugin import (
 DEFAULT_RUNNER_OUTPUT_DIR = "data/output/strategy_plugins"
 PLUGIN_CRISIS_RESPONSE_SHADOW = "crisis_response_shadow"
 PLUGIN_TACO_REBOUND_SHADOW = TACO_REBOUND_PROFILE
-PLUGIN_MODE_PAPER = "paper"
-PLUGIN_MODE_ADVISORY = "advisory"
-PLUGIN_MODE_LIVE = "live"
-SUPPORTED_PLUGIN_MODES = (SHADOW_MODE, PLUGIN_MODE_PAPER, PLUGIN_MODE_ADVISORY, PLUGIN_MODE_LIVE)
+SUPPORTED_PLUGIN_MODES = (SHADOW_MODE,)
 PLUGIN_COMPATIBLE_STRATEGIES: dict[str, tuple[str, ...]] = {
     PLUGIN_CRISIS_RESPONSE_SHADOW: ("tqqq_growth_income",),
 }
@@ -266,37 +263,7 @@ PLUGIN_MODE_EXECUTION_CONTROLS: dict[str, dict[str, Any]] = {
         "capital_impact": "none",
         "broker_order_allowed": False,
         "live_allocation_mutation_allowed": False,
-        "paper_ledger_required": False,
-        "human_confirmation_required": False,
-        "risk_controls_required": False,
         "notification_profile": "shadow_only",
-    },
-    PLUGIN_MODE_PAPER: {
-        "capital_impact": "none",
-        "broker_order_allowed": False,
-        "live_allocation_mutation_allowed": False,
-        "paper_ledger_required": True,
-        "human_confirmation_required": False,
-        "risk_controls_required": False,
-        "notification_profile": "paper",
-    },
-    PLUGIN_MODE_ADVISORY: {
-        "capital_impact": "manual_only",
-        "broker_order_allowed": False,
-        "live_allocation_mutation_allowed": False,
-        "paper_ledger_required": False,
-        "human_confirmation_required": True,
-        "risk_controls_required": False,
-        "notification_profile": "advisory",
-    },
-    PLUGIN_MODE_LIVE: {
-        "capital_impact": "bounded_by_platform_policy",
-        "broker_order_allowed": True,
-        "live_allocation_mutation_allowed": True,
-        "paper_ledger_required": False,
-        "human_confirmation_required": False,
-        "risk_controls_required": True,
-        "notification_profile": "live",
     },
 }
 
@@ -507,9 +474,6 @@ __all__ = [
     "PLUGIN_TACO_REBOUND_SHADOW",
     "PLUGIN_COMPATIBLE_STRATEGIES",
     "PLUGIN_RESEARCH_ONLY_REASONS",
-    "PLUGIN_MODE_ADVISORY",
-    "PLUGIN_MODE_LIVE",
-    "PLUGIN_MODE_PAPER",
     "PluginRunResult",
     "load_plugin_config",
     "main",

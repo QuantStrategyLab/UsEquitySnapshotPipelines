@@ -7,8 +7,7 @@ plugin = "crisis_response_shadow"
 enabled = true
 # The runner enforces plugin/strategy compatibility. This plugin is scoped to
 # the TQQQ black-swan defense strategy.
-# mode is optional when it matches default_mode.
-# Set mode = "paper", "advisory", or "live" here to override this plugin only.
+# mode is optional when it matches default_mode; only shadow notification mode is supported.
 
 [strategy_plugins.inputs]
 prices = "data/output/crisis_response_shadow/input/price_history.csv"

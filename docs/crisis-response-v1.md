@@ -17,12 +17,12 @@ The production-facing plugin contract is now split:
 ## Default state
 
 - Production default: disabled.
-- Initial rollout mode: paper / shadow logging.
-- Live impact, if enabled later: bounded by strategy configuration; do not let
-  any external model or unreviewed logic place orders or bypass max-impact
-  limits.
-- Crisis plugin live/shadow destination: cash or money-market / Treasury-bill
-  parking sleeve, selected by the downstream platform.
+- Initial rollout mode: shadow notification only.
+- Live impact: none. The plugin does not place orders, mutate allocations, or
+  maintain a paper ledger.
+- Crisis plugin destination context: cash or money-market / Treasury-bill
+  parking sleeve can be shown as review context, but any action is manual and
+  outside the plugin contract.
 
 ## Inputs
 
@@ -59,8 +59,8 @@ The production-facing crisis shadow plugin narrows this to:
 - Crisis drawdown: `QQQ` drawdown from trailing high <= `-0.20`.
 - Crisis confirmation: `5` trading days.
 - Crisis risk multiplier: `0.25`; do not full-clear risk exposure in V1.
-- Defense-only shadow/live crisis plugin default: `0.0` risk multiplier when a
-  promoted true-crisis route is explicitly enabled downstream.
+- Defense-only shadow crisis plugin default: `0.0` risk multiplier when a
+  true-crisis route is emitted for manual review.
 - Bubble proxy: `QQQ` 252-trading-day return >= `0.75`, remembered for 126
   trading days.
 - Financial proxy: `XLF` drawdown and relative weakness vs `SPY`.

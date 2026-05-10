@@ -10,9 +10,6 @@ from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRI
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     PLUGIN_CRISIS_RESPONSE_SHADOW,
     PLUGIN_TACO_REBOUND_SHADOW,
-    PLUGIN_MODE_ADVISORY,
-    PLUGIN_MODE_LIVE,
-    PLUGIN_MODE_PAPER,
     load_plugin_config,
     main,
     run_configured_plugins,
@@ -138,9 +135,6 @@ def test_strategy_plugin_runner_executes_strategy_scoped_shadow_plugin(tmp_path)
     assert payload["effective_mode"] == "shadow"
     assert payload["execution_controls"]["broker_order_allowed"] is False
     assert payload["execution_controls"]["live_allocation_mutation_allowed"] is False
-    assert payload["execution_controls"]["paper_ledger_required"] is False
-    assert payload["execution_controls"]["human_confirmation_required"] is False
-    assert payload["execution_controls"]["risk_controls_required"] is False
     assert payload["execution_controls"]["notification_profile"] == "shadow_only"
     assert payload["execution_controls"]["repository_broker_write_allowed"] is False
     assert payload["execution_controls"]["repository_allocation_mutation_allowed"] is False
@@ -218,19 +212,18 @@ def test_strategy_plugin_runner_can_skip_disabled_strategy_plugin(tmp_path) -> N
 def test_strategy_plugin_runner_uses_default_mode_when_entry_mode_is_omitted(tmp_path) -> None:
     config = _shadow_plugin_config(tmp_path)
     del config["strategy_plugins"][0]["mode"]
-    config["default_mode"] = PLUGIN_MODE_PAPER
 
     summary = run_configured_plugins(config)
 
     result = summary["strategy_plugins"][0]
-    assert result["mode"] == PLUGIN_MODE_PAPER
-    assert result["effective_mode"] == PLUGIN_MODE_PAPER
+    assert result["mode"] == "shadow"
+    assert result["effective_mode"] == "shadow"
     latest_signal = tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json"
     payload = json.loads(latest_signal.read_text(encoding="utf-8"))
     assert payload["strategy"] == STRATEGY_NAME
     assert payload["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
-    assert payload["configured_mode"] == PLUGIN_MODE_PAPER
-    assert payload["execution_controls"]["paper_ledger_required"] is True
+    assert payload["configured_mode"] == "shadow"
+    assert payload["execution_controls"]["notification_profile"] == "shadow_only"
 
 
 def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:
@@ -313,75 +306,12 @@ def test_strategy_plugin_runner_rejects_incompatible_plugin_strategy_mount(tmp_p
         run_configured_plugins(config)
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_controls"),
-    [
-        (
-            PLUGIN_MODE_PAPER,
-            {
-                "capital_impact": "none",
-                "broker_order_allowed": False,
-                "live_allocation_mutation_allowed": False,
-                "paper_ledger_required": True,
-                "human_confirmation_required": False,
-                "risk_controls_required": False,
-                "notification_profile": "paper",
-            },
-        ),
-        (
-            PLUGIN_MODE_ADVISORY,
-            {
-                "capital_impact": "manual_only",
-                "broker_order_allowed": False,
-                "live_allocation_mutation_allowed": False,
-                "paper_ledger_required": False,
-                "human_confirmation_required": True,
-                "risk_controls_required": False,
-                "notification_profile": "advisory",
-            },
-        ),
-        (
-            PLUGIN_MODE_LIVE,
-            {
-                "capital_impact": "bounded_by_platform_policy",
-                "broker_order_allowed": True,
-                "live_allocation_mutation_allowed": True,
-                "paper_ledger_required": False,
-                "human_confirmation_required": False,
-                "risk_controls_required": True,
-                "notification_profile": "live",
-            },
-        ),
-    ],
-)
-def test_strategy_plugin_runner_modes_set_unified_execution_contract(
-    tmp_path, mode: str, expected_controls: dict[str, object]
-) -> None:
+@pytest.mark.parametrize("mode", ["paper", "advisory", "live", "broker_write"])
+def test_strategy_plugin_runner_rejects_non_shadow_mode(tmp_path, mode: str) -> None:
     config = _shadow_plugin_config(tmp_path)
     config["strategy_plugins"][0]["mode"] = mode
 
-    summary = run_configured_plugins(config)
-
-    result = summary["strategy_plugins"][0]
-    assert result["mode"] == mode
-    assert result["effective_mode"] == mode
-    latest_signal = tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW / "latest_signal.json"
-    payload = json.loads(latest_signal.read_text(encoding="utf-8"))
-    assert payload["configured_mode"] == mode
-    assert payload["effective_mode"] == mode
-    assert payload["mode"] == mode
-    for key, expected in expected_controls.items():
-        assert payload["execution_controls"][key] == expected
-    assert payload["execution_controls"]["repository_broker_write_allowed"] is False
-    assert payload["execution_controls"]["repository_allocation_mutation_allowed"] is False
-    assert "platform behavior contract" in payload["execution_controls"]["mode_note"]
-
-
-def test_strategy_plugin_runner_rejects_unknown_mode(tmp_path) -> None:
-    config = _shadow_plugin_config(tmp_path)
-    config["strategy_plugins"][0]["mode"] = "broker_write"
-
-    with pytest.raises(ValueError, match="supports only configured modes"):
+    with pytest.raises(ValueError, match="supports only configured modes shadow"):
         run_configured_plugins(config)
 
 
