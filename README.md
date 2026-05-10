@@ -152,6 +152,13 @@ add `--dynamic-rsi-quantile-window 252 --dynamic-rsi-quantile 0.90
 --dynamic-rsi-floor 70`. This models `max(70, rolling 252d RSI 90th
 percentile)` while keeping the production manifest unchanged.
 
+To research a Chandelier-style SOXL delever overlay, add
+`--enable-chandelier-stop --chandelier-stop-symbol SOXX --chandelier-window 22
+--chandelier-atr-multiple 3`. This is disabled by default and only reroutes the
+research backtest's SOXL target value into BOXX for triggered days; it does not
+change the production strategy manifest. See
+`docs/soxl-soxx-chandelier-stop-research.md` for the initial read.
+
 For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
 That avoids QQQI/SPYI inception dates truncating the 2010+ SOXL sample.

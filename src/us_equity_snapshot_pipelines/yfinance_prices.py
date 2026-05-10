@@ -14,6 +14,7 @@ DEFAULT_SYMBOL_ALIASES = {
     "HEIA": "HEI-A",
     "LENB": "LEN-B",
 }
+PRICE_HISTORY_COLUMNS = ("symbol", "as_of", "open", "high", "low", "close", "volume")
 
 
 def _normalize_symbol_alias_candidates(candidates) -> list[str]:
@@ -118,43 +119,64 @@ def _build_yfinance_proxy_config(proxy: str | None = None) -> dict[str, str] | N
 def normalize_yfinance_download(data, symbols) -> pd.DataFrame:
     symbol_pairs = _normalize_input_symbols(symbols)
     if data is None or len(symbol_pairs) == 0:
-        return pd.DataFrame(columns=["symbol", "as_of", "close", "volume"])
+        return pd.DataFrame(columns=PRICE_HISTORY_COLUMNS)
 
-    if isinstance(data.columns, pd.MultiIndex):
-        close_frame = data["Close"].copy()
-        volume_frame = data["Volume"].copy()
-    else:
-        close_frame = data[["Close"]].copy() if "Close" in data.columns else pd.DataFrame(index=data.index)
-        close_frame.columns = [symbol_pairs[0][1]] if len(close_frame.columns) == 1 else close_frame.columns
-        volume_frame = data[["Volume"]].copy() if "Volume" in data.columns else pd.DataFrame(index=data.index)
-        volume_frame.columns = [symbol_pairs[0][1]] if len(volume_frame.columns) == 1 else volume_frame.columns
-
-    close_frame.index = pd.to_datetime(close_frame.index).tz_localize(None).normalize()
-    volume_frame.index = pd.to_datetime(volume_frame.index).tz_localize(None).normalize()
-    close_frame.columns = close_frame.columns.map(str).str.upper()
-    volume_frame.columns = volume_frame.columns.map(str).str.upper()
+    field_frames = {
+        field: _extract_yfinance_field_frame(data, field, symbol_pairs)
+        for field in ("Open", "High", "Low", "Close", "Volume")
+    }
+    close_frame = field_frames["Close"]
 
     rows: list[dict[str, object]] = []
     for original_symbol, download_symbol in symbol_pairs:
         if download_symbol not in close_frame.columns:
             continue
         closes = pd.to_numeric(close_frame[download_symbol], errors="coerce")
-        volumes = (
-            pd.to_numeric(volume_frame[download_symbol], errors="coerce")
-            if download_symbol in volume_frame.columns
-            else pd.Series(index=closes.index, dtype=float)
-        )
+        values_by_field = {
+            field.lower(): (
+                pd.to_numeric(frame[download_symbol], errors="coerce")
+                if download_symbol in frame.columns
+                else pd.Series(index=closes.index, dtype=float)
+            )
+            for field, frame in field_frames.items()
+        }
         for as_of, close in closes.dropna().items():
-            volume = volumes.get(as_of)
             rows.append(
                 {
                     "symbol": original_symbol,
                     "as_of": pd.Timestamp(as_of).normalize(),
+                    "open": _optional_float(values_by_field["open"].get(as_of)),
+                    "high": _optional_float(values_by_field["high"].get(as_of)),
+                    "low": _optional_float(values_by_field["low"].get(as_of)),
                     "close": float(close),
-                    "volume": float(volume) if pd.notna(volume) else float("nan"),
+                    "volume": _optional_float(values_by_field["volume"].get(as_of)),
                 }
             )
-    return pd.DataFrame(rows, columns=["symbol", "as_of", "close", "volume"]).sort_values(["as_of", "symbol"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows, columns=PRICE_HISTORY_COLUMNS)
+        .sort_values(["as_of", "symbol"])
+        .reset_index(drop=True)
+    )
+
+
+def _optional_float(value) -> float:
+    return float(value) if pd.notna(value) else float("nan")
+
+
+def _extract_yfinance_field_frame(data: pd.DataFrame, field: str, symbol_pairs) -> pd.DataFrame:
+    if isinstance(data.columns, pd.MultiIndex):
+        if field in data.columns.get_level_values(0):
+            frame = data[field].copy()
+        else:
+            frame = pd.DataFrame(index=data.index)
+    else:
+        frame = data[[field]].copy() if field in data.columns else pd.DataFrame(index=data.index)
+        if len(frame.columns) == 1:
+            frame.columns = [symbol_pairs[0][1]]
+
+    frame.index = pd.to_datetime(frame.index).tz_localize(None).normalize()
+    frame.columns = frame.columns.map(str).str.upper()
+    return frame
 
 
 def download_price_history(
@@ -217,7 +239,11 @@ def download_price_history(
             normalized = pd.concat([normalized, *retry_frames], ignore_index=True)
         chunks.append(normalized)
 
-    frame = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=["symbol", "as_of", "close", "volume"])
+    frame = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=PRICE_HISTORY_COLUMNS)
     if frame.empty:
         raise RuntimeError("No price history downloaded")
-    return frame.drop_duplicates(subset=["symbol", "as_of"], keep="last").sort_values(["as_of", "symbol"]).reset_index(drop=True)
+    return (
+        frame.drop_duplicates(subset=["symbol", "as_of"], keep="last")
+        .sort_values(["as_of", "symbol"])
+        .reset_index(drop=True)
+    )
