@@ -22,6 +22,7 @@ jobs:
           BRANCH_NAME: ${{ github.event.workflow_run.head_branch }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_NAME: ${{ github.event.workflow_run.name }}
+          MAX_CODEX_FEEDBACK_ROUNDS: "3"
         run: |
           mkdir -p data/output/codex_feedback
           gh pr list --state open --head "${BRANCH_NAME}" --json number,title,url,body > data/output/codex_feedback/pr.json
@@ -64,7 +65,48 @@ jobs:
           Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
           PY
           if [ -f data/output/codex_feedback/issue_number.txt ]; then
-            gh issue comment "$(cat data/output/codex_feedback/issue_number.txt)" --body-file data/output/codex_feedback/comment.md
+            issue_number="$(cat data/output/codex_feedback/issue_number.txt)"
+            gh issue view "${issue_number}" --comments --json comments > data/output/codex_feedback/issue.json
+            python3 - <<'PY'
+            import json
+            import os
+            import textwrap
+            from pathlib import Path
+
+            output_dir = Path("data/output/codex_feedback")
+            issue = json.loads((output_dir / "issue.json").read_text(encoding="utf-8"))
+            comments = [comment.get("body") or "" for comment in issue.get("comments", [])]
+            previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
+            max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
+            comment_path = output_dir / "comment.md"
+            if previous_rounds >= max_rounds:
+                comment = textwrap.dedent(
+                    f"""\
+                    <!-- codex-pr-feedback:limit -->
+                    ## Codex PR Retry Limit Reached
+
+                    Automatic Codex feedback reached the retry limit.
+
+                    - Previous feedback rounds: `{previous_rounds}`
+                    - Maximum automatic rounds: `{max_rounds}`
+
+                    The workflow removed `codex-bridge` from this issue. Please inspect the PR and re-apply the label only if another automated Codex pass is still appropriate.
+                    """
+                )
+                comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
+                (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
+            else:
+                attempt = previous_rounds + 1
+                comment = comment_path.read_text(encoding="utf-8").rstrip()
+                comment_path.write_text(
+                    f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
+                    encoding="utf-8",
+                )
+            PY
+            if [ -f data/output/codex_feedback/limit_reached ]; then
+              gh issue edit "${issue_number}" --remove-label codex-bridge || true
+            fi
+            gh issue comment "${issue_number}" --body-file data/output/codex_feedback/comment.md
           else
             cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -85,6 +127,7 @@ jobs:
           REVIEW_URL: ${{ github.event.review.html_url }}
           REVIEW_AUTHOR: ${{ github.event.review.user.login }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          MAX_CODEX_FEEDBACK_ROUNDS: "3"
         run: |
           mkdir -p data/output/codex_feedback
           python3 - <<'PY'
@@ -122,7 +165,48 @@ jobs:
           Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
           PY
           if [ -f data/output/codex_feedback/issue_number.txt ]; then
-            gh issue comment "$(cat data/output/codex_feedback/issue_number.txt)" --body-file data/output/codex_feedback/comment.md
+            issue_number="$(cat data/output/codex_feedback/issue_number.txt)"
+            gh issue view "${issue_number}" --comments --json comments > data/output/codex_feedback/issue.json
+            python3 - <<'PY'
+            import json
+            import os
+            import textwrap
+            from pathlib import Path
+
+            output_dir = Path("data/output/codex_feedback")
+            issue = json.loads((output_dir / "issue.json").read_text(encoding="utf-8"))
+            comments = [comment.get("body") or "" for comment in issue.get("comments", [])]
+            previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
+            max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
+            comment_path = output_dir / "comment.md"
+            if previous_rounds >= max_rounds:
+                comment = textwrap.dedent(
+                    f"""\
+                    <!-- codex-pr-feedback:limit -->
+                    ## Codex PR Retry Limit Reached
+
+                    Automatic Codex feedback reached the retry limit.
+
+                    - Previous feedback rounds: `{previous_rounds}`
+                    - Maximum automatic rounds: `{max_rounds}`
+
+                    The workflow removed `codex-bridge` from this issue. Please inspect the PR and re-apply the label only if another automated Codex pass is still appropriate.
+                    """
+                )
+                comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
+                (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
+            else:
+                attempt = previous_rounds + 1
+                comment = comment_path.read_text(encoding="utf-8").rstrip()
+                comment_path.write_text(
+                    f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
+                    encoding="utf-8",
+                )
+            PY
+            if [ -f data/output/codex_feedback/limit_reached ]; then
+              gh issue edit "${issue_number}" --remove-label codex-bridge || true
+            fi
+            gh issue comment "${issue_number}" --body-file data/output/codex_feedback/comment.md
           else
             cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
           fi
