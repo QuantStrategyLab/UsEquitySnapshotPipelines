@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRISIS
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     PLUGIN_CRISIS_RESPONSE_SHADOW,
     PLUGIN_TACO_REBOUND_SHADOW,
@@ -34,6 +35,43 @@ def _quiet_prices() -> pd.DataFrame:
                     "volume": 1_000_000,
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def _financial_crisis_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2007-01-02", periods=310)
+    rows: list[dict[str, object]] = []
+    qqq = pd.Series(100.0, index=dates)
+    qqq.iloc[245:] = pd.Series(
+        [100.0 - idx * (35.0 / (len(dates) - 245 - 1)) for idx in range(len(dates) - 245)],
+        index=dates[245:],
+    )
+    tqqq = pd.Series(100.0, index=dates)
+    tqqq.iloc[245:] = pd.Series(
+        [100.0 - idx * (70.0 / (len(dates) - 245 - 1)) for idx in range(len(dates) - 245)],
+        index=dates[245:],
+    )
+    xlf = pd.Series(100.0, index=dates)
+    xlf.iloc[220:] = pd.Series(
+        [100.0 - idx * (55.0 / (len(dates) - 220 - 1)) for idx in range(len(dates) - 220)],
+        index=dates[220:],
+    )
+    hyg = pd.Series(100.0, index=dates)
+    hyg.iloc[235:] = pd.Series(
+        [100.0 - idx * (18.0 / (len(dates) - 235 - 1)) for idx in range(len(dates) - 235)],
+        index=dates[235:],
+    )
+    prices = {
+        "QQQ": qqq,
+        "TQQQ": tqqq,
+        "SPY": pd.Series(100.0, index=dates),
+        "XLF": xlf,
+        "HYG": hyg,
+        "IEF": pd.Series(100.0, index=dates),
+    }
+    for symbol, series in prices.items():
+        for as_of, close in series.items():
+            rows.append({"symbol": symbol, "as_of": as_of, "close": close, "volume": 1_000_000})
     return pd.DataFrame(rows)
 
 
@@ -107,6 +145,49 @@ def test_strategy_plugin_runner_executes_strategy_scoped_shadow_plugin(tmp_path)
     assert payload["execution_controls"]["repository_broker_write_allowed"] is False
     assert payload["execution_controls"]["repository_allocation_mutation_allowed"] is False
     assert "platform behavior contract" in payload["execution_controls"]["mode_note"]
+
+
+def test_strategy_plugin_runner_rehearses_triggered_shadow_artifact_without_execution_permissions(tmp_path) -> None:
+    prices = _financial_crisis_prices()
+    prices_path = tmp_path / "crisis_prices.csv"
+    output_dir = tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW
+    as_of = str(pd.to_datetime(prices["as_of"]).max().date())
+    prices.to_csv(prices_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": STRATEGY_NAME,
+                "plugin": PLUGIN_CRISIS_RESPONSE_SHADOW,
+                "enabled": True,
+                "inputs": {
+                    "prices": str(prices_path),
+                    "as_of": as_of,
+                    "start_date": "2007-01-02",
+                    "financial_symbols": ["XLF"],
+                    "credit_pairs": ["HYG:IEF"],
+                    "rate_symbols": [],
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    result = summary["strategy_plugins"][0]
+    assert result["status"] == "ok"
+    assert result["message"] == f"route={ROUTE_TRUE_CRISIS} action=defend"
+    payload = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert payload["canonical_route"] == ROUTE_TRUE_CRISIS
+    assert payload["suggested_action"] == "defend"
+    assert payload["would_trade_if_enabled"] is True
+    assert payload["price_scanner_active"] is True
+    assert payload["execution_controls"]["broker_order_allowed"] is False
+    assert payload["execution_controls"]["live_allocation_mutation_allowed"] is False
+    assert payload["execution_controls"]["repository_broker_write_allowed"] is False
+    assert payload["execution_controls"]["repository_allocation_mutation_allowed"] is False
 
 
 def test_strategy_plugin_runner_defaults_output_under_strategy_plugin_scope(tmp_path, monkeypatch) -> None:
