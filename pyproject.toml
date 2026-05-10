@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "pandas>=2.0",
   "yfinance>=0.2.40",
-  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@v0.7.24",
+  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@ed55a6af0245323dbed82060e89be96d8f77f756",
 ]
 
 [project.optional-dependencies]

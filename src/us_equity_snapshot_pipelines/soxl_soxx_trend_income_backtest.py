@@ -269,8 +269,11 @@ def build_indicator_history(
         )
         if symbol == "SOXX":
             ma20 = close.rolling(20).mean()
+            realized_volatility_20 = close.pct_change(fill_method=None).rolling(20).std() * np.sqrt(252)
             history["ma20"] = ma20
             history["ma20_slope"] = ma20.diff()
+            history["realized_volatility"] = realized_volatility_20
+            history["realized_volatility_20"] = realized_volatility_20
             rsi = _build_rsi(close, int(rsi_window))
             history["rsi14_raw"] = rsi
             history["rsi14"] = rsi
@@ -328,6 +331,24 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         ),
         "blend_gate_bollinger_cap_enabled": bool(config.get("blend_gate_bollinger_cap_enabled", False)),
         "blend_gate_overlay_stack_triggers": bool(config.get("blend_gate_overlay_stack_triggers", False)),
+        "blend_gate_volatility_delever_enabled": bool(
+            config.get("blend_gate_volatility_delever_enabled", False)
+        ),
+        "blend_gate_volatility_delever_symbol": str(
+            config.get("blend_gate_volatility_delever_symbol", "SOXX")
+        ),
+        "blend_gate_volatility_delever_window": int(
+            config.get("blend_gate_volatility_delever_window", 20)
+        ),
+        "blend_gate_volatility_delever_threshold": float(
+            config.get("blend_gate_volatility_delever_threshold", 0.50)
+        ),
+        "blend_gate_volatility_delever_retention_ratio": float(
+            config.get("blend_gate_volatility_delever_retention_ratio", 0.0)
+        ),
+        "blend_gate_volatility_delever_redirect_symbol": str(
+            config.get("blend_gate_volatility_delever_redirect_symbol", "SOXX")
+        ),
     }
     for key, value in dict(overrides or {}).items():
         if value is not None and key in kwargs:
@@ -571,6 +592,8 @@ def run_backtest(
     if overlay_redirect_symbol not in MANAGED_SYMBOLS:
         expected = ", ".join(MANAGED_SYMBOLS)
         raise ValueError(f"unsupported SOXL delever redirect symbol {overlay_redirect_symbol!r}; expected one of {expected}")
+    if soxl_delever_enabled:
+        strategy_overrides["blend_gate_volatility_delever_enabled"] = False
 
     delever_history = (
         _build_soxl_delever_overlay_history(
@@ -644,6 +667,9 @@ def run_backtest(
         target_values = dict(plan["targets"])
         threshold_value = float(plan["threshold_value"])
         current_min_trade = float(plan["current_min_trade"])
+        core_volatility_delever_triggered = bool(plan.get("blend_gate_volatility_delever_triggered"))
+        if core_volatility_delever_triggered:
+            soxl_delever_stop_count += 1
         delever_row = (
             delever_history.loc[as_of]
             if soxl_delever_enabled and as_of in delever_history.index
@@ -690,6 +716,7 @@ def run_backtest(
                 "trend_exit_line": plan.get("trend_exit_line"),
                 "trend_ma20": plan.get("trend_ma20"),
                 "trend_ma20_slope": plan.get("trend_ma20_slope"),
+                "trend_realized_volatility_20": trend_indicators.get("realized_volatility_20"),
                 "trend_rsi14": trend_rsi14,
                 "trend_rsi14_raw": trend_indicators.get("rsi14_raw"),
                 "trend_rsi14_dynamic_threshold": trend_indicators.get("rsi14_dynamic_threshold"),
@@ -710,6 +737,21 @@ def run_backtest(
                 ),
                 "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
                 "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
+                "blend_gate_volatility_delever_enabled": plan.get("blend_gate_volatility_delever_enabled"),
+                "blend_gate_volatility_delever_symbol": plan.get("blend_gate_volatility_delever_symbol"),
+                "blend_gate_volatility_delever_window": plan.get("blend_gate_volatility_delever_window"),
+                "blend_gate_volatility_delever_threshold": plan.get("blend_gate_volatility_delever_threshold"),
+                "blend_gate_volatility_delever_metric": plan.get("blend_gate_volatility_delever_metric"),
+                "blend_gate_volatility_delever_triggered": core_volatility_delever_triggered,
+                "blend_gate_volatility_delever_retention_ratio": plan.get(
+                    "blend_gate_volatility_delever_retention_ratio"
+                ),
+                "blend_gate_volatility_delever_redirect_symbol": plan.get(
+                    "blend_gate_volatility_delever_redirect_symbol"
+                ),
+                "blend_gate_volatility_delever_removed_ratio": plan.get(
+                    "blend_gate_volatility_delever_removed_ratio"
+                ),
                 "chandelier_stop_enabled": bool(soxl_delever_enabled and overlay_kind == "chandelier"),
                 "chandelier_stop_symbol": overlay_symbol,
                 "chandelier_window": overlay_window,

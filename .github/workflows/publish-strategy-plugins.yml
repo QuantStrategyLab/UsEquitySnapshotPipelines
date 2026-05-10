@@ -21,13 +21,27 @@ on:
         required: false
         type: string
       gcs_prefix:
-        description: Optional GCS prefix for the plugin artifact directory.
+        description: Optional legacy TQQQ GCS prefix override.
+        required: false
+        type: string
+      soxl_gcs_prefix:
+        description: Optional SOXL GCS prefix override.
         required: false
         type: string
 
 jobs:
   crisis-response-shadow:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - strategy_profile: tqqq_growth_income
+            benchmark_symbol: QQQ
+            attack_symbol: TQQQ
+          - strategy_profile: soxl_soxx_trend_income
+            benchmark_symbol: SOXX
+            attack_symbol: SOXL
     permissions:
       contents: read
       id-token: write
@@ -38,12 +52,17 @@ jobs:
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
-      GCS_PREFIX: ${{ inputs.gcs_prefix || vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
+      INPUT_TQQQ_GCS_PREFIX: ${{ inputs.gcs_prefix }}
+      INPUT_SOXL_GCS_PREFIX: ${{ inputs.soxl_gcs_prefix }}
+      TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
+      SOXL_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/crisis_response_shadow' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
-      STRATEGY_PROFILE: tqqq_growth_income
+      STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_NAME: crisis_response_shadow
-      PRICE_INPUT_DIR: data/input/strategy_plugins/crisis_response_shadow
-      PLUGIN_OUTPUT_DIR: data/output/tqqq_growth_income/plugins/crisis_response_shadow
+      PLUGIN_BENCHMARK_SYMBOL: ${{ matrix.benchmark_symbol }}
+      PLUGIN_ATTACK_SYMBOL: ${{ matrix.attack_symbol }}
+      PRICE_INPUT_DIR: data/input/strategy_plugins/${{ matrix.strategy_profile }}/crisis_response_shadow
+      PLUGIN_OUTPUT_DIR: data/output/${{ matrix.strategy_profile }}/plugins/crisis_response_shadow
       RUNNER_OUTPUT_DIR: data/output/strategy_plugins
 
     steps:
@@ -60,6 +79,17 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e .
+
+      - name: Resolve publish target
+        run: |
+          set -euo pipefail
+          if [ "${STRATEGY_PROFILE}" = "soxl_soxx_trend_income" ]; then
+            gcs_prefix="${INPUT_SOXL_GCS_PREFIX:-${SOXL_GCS_PREFIX}}"
+          else
+            gcs_prefix="${INPUT_TQQQ_GCS_PREFIX:-${TQQQ_GCS_PREFIX}}"
+          fi
+          echo "GCS_PREFIX=${gcs_prefix}" >> "$GITHUB_ENV"
+          echo "Resolved ${STRATEGY_PROFILE} ${PLUGIN_NAME} publish prefix: ${gcs_prefix}"
 
       - name: Check whether Google Cloud auth is needed
         id: gcp-auth-check
@@ -94,8 +124,6 @@ jobs:
           from pathlib import Path
 
           from us_equity_snapshot_pipelines.crisis_response_shadow_plugin import (
-              DEFAULT_ATTACK_SYMBOL,
-              DEFAULT_BENCHMARK_SYMBOL,
               DEFAULT_CONTEXT_CREDIT_PAIRS,
               DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
               DEFAULT_CONTEXT_RATE_SYMBOLS,
@@ -103,9 +131,11 @@ jobs:
           )
           from us_equity_snapshot_pipelines.yfinance_prices import download_price_history
 
+          benchmark_symbol = os.environ["PLUGIN_BENCHMARK_SYMBOL"]
+          attack_symbol = os.environ["PLUGIN_ATTACK_SYMBOL"]
           symbols = [
-              DEFAULT_BENCHMARK_SYMBOL,
-              DEFAULT_ATTACK_SYMBOL,
+              benchmark_symbol,
+              attack_symbol,
               DEFAULT_MARKET_SYMBOL,
               *DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
               *DEFAULT_CONTEXT_RATE_SYMBOLS,
@@ -143,6 +173,8 @@ jobs:
           [strategy_plugins.inputs]
           prices = "${prices_path}"
           event_set = "full"
+          benchmark_symbol = "${PLUGIN_BENCHMARK_SYMBOL}"
+          attack_symbol = "${PLUGIN_ATTACK_SYMBOL}"
           financial_symbols = ["XLF", "KRE"]
           credit_pairs = ["HYG:IEF", "LQD:IEF"]
           rate_symbols = ["IEF", "TLT"]
@@ -193,7 +225,7 @@ jobs:
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: strategy-plugin-crisis-response-shadow-${{ github.run_id }}
+          name: strategy-plugin-crisis-response-shadow-${{ matrix.strategy_profile }}-${{ github.run_id }}
           path: |
             ${{ env.PRICE_INPUT_DIR }}
             ${{ env.PLUGIN_OUTPUT_DIR }}

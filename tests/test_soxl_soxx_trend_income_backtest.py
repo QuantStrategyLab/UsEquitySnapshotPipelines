@@ -73,6 +73,25 @@ def _build_volatile_soxx_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_high_volatility_soxx_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2023-01-02", periods=420)
+    rows = []
+    for idx, as_of in enumerate(dates):
+        shock = 0.0
+        if 240 <= idx < 255:
+            shock = 15.0 if idx % 2 == 0 else -15.0
+        values = {
+            "SOXL": 50.0 + idx * 1.1 + shock * 2.0,
+            "SOXX": 100.0 + idx * 0.6 + shock,
+            "BOXX": 100.0,
+            "QQQI": 50.0 + idx * 0.05,
+            "SPYI": 50.0 + idx * 0.03,
+        }
+        for symbol, close in values.items():
+            rows.append({"symbol": symbol, "as_of": as_of, "close": close})
+    return pd.DataFrame(rows)
+
+
 def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     prices = _build_synthetic_prices()
     result = run_backtest(
@@ -93,8 +112,40 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert not result["signal_history"].empty
     assert "trend_rsi14" in result["signal_history"].columns
     assert "trend_bb_upper" in result["signal_history"].columns
+    assert "trend_realized_volatility_20" in result["signal_history"].columns
     assert result["signal_history"]["trend_rsi14"].notna().any()
     assert result["signal_history"]["trend_bb_upper"].notna().any()
+    assert result["signal_history"]["trend_realized_volatility_20"].notna().any()
+
+
+def test_build_indicator_history_includes_soxx_realized_volatility() -> None:
+    prices = _build_synthetic_prices()
+    close_matrix = prices.pivot(index="as_of", columns="symbol", values="close")
+
+    indicators = build_indicator_history(close_matrix)
+
+    assert "realized_volatility_20" in indicators["soxx"].columns
+    assert "realized_volatility" in indicators["soxx"].columns
+    assert indicators["soxx"]["realized_volatility_20"].notna().any()
+
+
+def test_soxl_soxx_live_volatility_delever_moves_soxl_to_soxx() -> None:
+    result = run_backtest(
+        _build_high_volatility_soxx_prices(),
+        initial_equity=100_000.0,
+        start_date="2023-10-02",
+        end_date="2024-03-29",
+        turnover_cost_bps=5.0,
+    )
+
+    signal_history = result["signal_history"]
+    triggered = signal_history.loc[signal_history["blend_gate_volatility_delever_triggered"].astype(bool)]
+
+    assert result["summary"]["SOXL Delever Stops"] >= 1
+    assert not triggered.empty
+    assert triggered["blend_gate_volatility_delever_window"].eq(20).all()
+    assert triggered["blend_gate_volatility_delever_metric"].ge(0.50).all()
+    assert triggered["blend_gate_volatility_delever_redirect_symbol"].eq("SOXX").all()
 
 
 def test_soxl_soxx_chandelier_stop_research_overlay_moves_soxl_to_boxx() -> None:
