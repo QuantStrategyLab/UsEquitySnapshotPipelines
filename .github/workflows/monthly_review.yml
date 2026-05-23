@@ -119,7 +119,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: |
             CryptoCodexAuditBridge
-          permission-contents: write
+          permission-actions: write
 
       - name: Trigger Monthly Review Automation
         env:
@@ -167,7 +167,7 @@ jobs:
               token = os.environ.get("APP_TOKEN", "").strip() or os.environ.get("CODEX_AUDIT_DISPATCH_TOKEN", "").strip()
               if not token:
                   raise RuntimeError(
-                      "Codex review dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN"
+                      "Codex review workflow dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN"
                   )
               target_repository = os.environ["TARGET_REPOSITORY"].strip()
               if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target_repository):
@@ -176,16 +176,20 @@ jobs:
               if mode not in {"review_only", "review_and_fix"}:
                   raise RuntimeError(f"Unsupported Codex review mode: {mode}")
               payload = {
-                  "event_type": "monthly-review-created",
-                  "client_payload": {
+                  "ref": "main",
+                  "inputs": {
                       "source_repo": os.environ["GITHUB_REPOSITORY"],
                       "source_ref": os.environ["GITHUB_REF_NAME"],
                       "issue_number": os.environ["ISSUE_NUMBER"],
                       "mode": mode,
-                      "auto_merge": os.environ["AUTO_MERGE"].strip().lower() == "true",
+                      "auto_merge": str(os.environ["AUTO_MERGE"].strip().lower() == "true").lower(),
                   },
               }
-              status = dispatch(token, f"https://api.github.com/repos/{target_repository}/dispatches", payload)
+              status = dispatch(
+                  token,
+                  f"https://api.github.com/repos/{target_repository}/actions/workflows/selfhosted_monthly_review.yml/dispatches",
+                  payload,
+              )
               if status not in (201, 204):
                   raise RuntimeError(f"Unexpected Codex dispatch status: {status}")
               print(
