@@ -14,10 +14,7 @@ on:
         options:
           - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
-          - mega_cap_leader_rotation_dynamic_top20
-          - mega_cap_leader_rotation_aggressive
           - mega_cap_leader_rotation_top50_balanced
-          - dynamic_mega_leveraged_pullback
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
         required: true
@@ -75,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_dynamic_top20","mega_cap_leader_rotation_aggressive","mega_cap_leader_rotation_top50_balanced","dynamic_mega_leveraged_pullback"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
     permissions:
       contents: read
       id-token: write
@@ -303,7 +300,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${PROFILE}" in
-              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_dynamic_top20|mega_cap_leader_rotation_aggressive|mega_cap_leader_rotation_top50_balanced|dynamic_mega_leveraged_pullback)
+              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_top50_balanced)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"

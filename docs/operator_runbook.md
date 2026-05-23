@@ -115,23 +115,21 @@ data/output/monthly_report_bundle/ai_review_input.md
 data/output/monthly_report_bundle/job_summary.md
 ```
 
-The workflow creates or updates a GitHub issue labeled `monthly-review` and triggers `AI Monthly Review`. The AI review posts a bilingual comment focused on:
+The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/CryptoCodexAuditBridge`, which runs Codex on the self-hosted VPS runner and posts the audit result back to the issue. The review focuses on:
 
 - artifact completeness for each expected snapshot profile
 - contract version, snapshot date, row count, and ranking-preview health
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
 
-After posting the review comment, the workflow creates or updates a separate remediation issue labeled:
+Codex may open a remediation PR directly for safe low-risk fixes. The legacy Claude workflow is compatibility fallback only; enable it with `LEGACY_AI_REVIEW_ENABLED=true` and configure `ANTHROPIC_API_KEY` only when Codex dispatch is unavailable. In that fallback path, the workflow creates or updates a separate remediation issue labeled:
 
 ```text
 codex-bridge
 monthly-codex-remediation
 ```
 
-The VPS `ccbot-bridge` should watch those labels and dispatch the issue to a self-hosted Codex window. Keep the real bridge config local under `~/.ccbot/github_codex_bridge.json`; do not commit it to this repository.
-
-Codex should open a draft PR first. It may mark the PR ready and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces. `Auto Merge Codex Remediation PR` then performs the final merge gate after GitHub CI succeeds. It skips draft PRs, PRs without the marker, PRs without `auto-merge-ok`, and PRs touching blocked paths.
+Direct bridge PRs are not auto-merged by default. Set `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
 
 If CI fails on a Codex remediation PR, or a reviewer requests changes, `Codex PR Feedback` comments the failure or review summary back to the source `codex-bridge` issue. That issue update lets the VPS bridge dispatch Codex again to fix the same PR branch. The workflow permits up to three automatic feedback rounds, then removes `codex-bridge` and leaves the issue for human review.
 
