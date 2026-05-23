@@ -231,7 +231,7 @@ jobs:
             ${{ env.PLUGIN_OUTPUT_DIR }}
             ${{ env.RUNNER_OUTPUT_DIR }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
       - name: Append job summary
         run: |
