@@ -11,7 +11,7 @@ name: AI Monthly Review
 
 jobs:
   ai-review:
-    if: contains(github.event.issue.labels.*.name, 'monthly-review') || inputs.issue_number != ''
+    if: vars.LEGACY_AI_REVIEW_ENABLED == 'true' && (contains(github.event.issue.labels.*.name, 'monthly-review') || inputs.issue_number != '')
     runs-on: ubuntu-latest
     permissions:
       contents: read

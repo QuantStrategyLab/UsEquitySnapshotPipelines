@@ -26,6 +26,12 @@ jobs:
 
     env:
       REVIEW_LABEL: monthly-review
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      SELFHOSTED_CODEX_REVIEW_ENABLED: ${{ vars.SELFHOSTED_CODEX_REVIEW_ENABLED || 'true' }}
+      SELFHOSTED_CODEX_REVIEW_REPOSITORY: ${{ vars.SELFHOSTED_CODEX_REVIEW_REPOSITORY || 'QuantStrategyLab/CryptoCodexAuditBridge' }}
+      SELFHOSTED_CODEX_REVIEW_MODE: ${{ vars.SELFHOSTED_CODEX_REVIEW_MODE || 'review_and_fix' }}
+      SELFHOSTED_CODEX_REVIEW_AUTO_MERGE: ${{ vars.SELFHOSTED_CODEX_REVIEW_AUTO_MERGE || 'false' }}
+      LEGACY_AI_REVIEW_ENABLED: ${{ vars.LEGACY_AI_REVIEW_ENABLED || 'false' }}
 
     steps:
       - name: Checkout
@@ -88,14 +94,148 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trigger AI monthly review
+      - name: Detect Self-hosted Review GitHub App Credentials
+        id: codex_review_app_credentials
+        if: success() && env.SELFHOSTED_CODEX_REVIEW_ENABLED != 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_ID: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
         run: |
-          gh workflow run ai_review.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${GITHUB_REF_NAME}" \
-            -f issue_number="${{ steps.review_issue.outputs.issue_number }}"
+          set -euo pipefail
+          if [ -n "${APP_ID:-}" ] && [ -n "${APP_PRIVATE_KEY:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App Token For Self-hosted Review
+        id: codex_review_app_token
+        if: steps.codex_review_app_credentials.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            CryptoCodexAuditBridge
+          permission-contents: write
+
+      - name: Trigger Monthly Review Automation
+        env:
+          APP_TOKEN: ${{ steps.codex_review_app_token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CODEX_AUDIT_DISPATCH_TOKEN: ${{ secrets.CODEX_AUDIT_DISPATCH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          ISSUE_NUMBER: ${{ steps.review_issue.outputs.issue_number }}
+          TARGET_REPOSITORY: ${{ env.SELFHOSTED_CODEX_REVIEW_REPOSITORY }}
+          REVIEW_MODE: ${{ env.SELFHOSTED_CODEX_REVIEW_MODE }}
+          AUTO_MERGE: ${{ env.SELFHOSTED_CODEX_REVIEW_AUTO_MERGE }}
+          CODEX_REVIEW_ENABLED: ${{ env.SELFHOSTED_CODEX_REVIEW_ENABLED }}
+          LEGACY_API_REVIEW_ENABLED: ${{ env.LEGACY_AI_REVIEW_ENABLED }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          def enabled(name: str) -> bool:
+              return os.environ.get(name, "").strip().lower() == "true"
+
+          def dispatch(token: str, url: str, payload: dict) -> int:
+              request = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode("utf-8"),
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "us-equity-snapshot-monthly-review",
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  return response.status
+
+          def dispatch_codex() -> None:
+              token = os.environ.get("APP_TOKEN", "").strip() or os.environ.get("CODEX_AUDIT_DISPATCH_TOKEN", "").strip()
+              if not token:
+                  raise RuntimeError(
+                      "Codex review dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN"
+                  )
+              target_repository = os.environ["TARGET_REPOSITORY"].strip()
+              if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target_repository):
+                  raise RuntimeError(f"Invalid Codex review repository: {target_repository!r}")
+              mode = os.environ["REVIEW_MODE"].strip() or "review_and_fix"
+              if mode not in {"review_only", "review_and_fix"}:
+                  raise RuntimeError(f"Unsupported Codex review mode: {mode}")
+              payload = {
+                  "event_type": "monthly-review-created",
+                  "client_payload": {
+                      "source_repo": os.environ["GITHUB_REPOSITORY"],
+                      "source_ref": os.environ["GITHUB_REF_NAME"],
+                      "issue_number": os.environ["ISSUE_NUMBER"],
+                      "mode": mode,
+                      "auto_merge": os.environ["AUTO_MERGE"].strip().lower() == "true",
+                  },
+              }
+              status = dispatch(token, f"https://api.github.com/repos/{target_repository}/dispatches", payload)
+              if status not in (201, 204):
+                  raise RuntimeError(f"Unexpected Codex dispatch status: {status}")
+              print(
+                  f"Dispatched CryptoCodexAuditBridge review for issue #{os.environ['ISSUE_NUMBER']} "
+                  f"to {target_repository}"
+              )
+
+          def dispatch_legacy_api() -> None:
+              if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+                  raise RuntimeError("Legacy API review fallback is enabled but ANTHROPIC_API_KEY is not configured")
+              repository = os.environ["GITHUB_REPOSITORY"]
+              ref_name = os.environ["GITHUB_REF_NAME"]
+              issue_number = os.environ["ISSUE_NUMBER"]
+              payload = {"ref": ref_name, "inputs": {"issue_number": issue_number}}
+              status = dispatch(
+                  os.environ["GITHUB_TOKEN"],
+                  f"https://api.github.com/repos/{repository}/actions/workflows/ai_review.yml/dispatches",
+                  payload,
+              )
+              if status not in (201, 204):
+                  raise RuntimeError(f"Unexpected legacy AI dispatch status: {status}")
+              print(f"Dispatched legacy API AI monthly review for issue #{issue_number} on ref {ref_name}")
+
+          codex_error = ""
+          if enabled("CODEX_REVIEW_ENABLED"):
+              try:
+                  dispatch_codex()
+                  raise SystemExit(0)
+              except (RuntimeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                  codex_error = str(exc)
+                  print(f"Codex monthly review dispatch failed: {codex_error}")
+          else:
+              codex_error = "Codex monthly review is disabled"
+              print(codex_error)
+
+          if enabled("LEGACY_API_REVIEW_ENABLED"):
+              try:
+                  dispatch_legacy_api()
+                  raise SystemExit(0)
+              except (RuntimeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+                  raise RuntimeError(
+                      f"Codex monthly review failed ({codex_error}); legacy API review fallback also failed: {exc}"
+                  ) from exc
+
+          raise RuntimeError(
+              "Codex monthly review failed or was disabled, and legacy API fallback is disabled. "
+              "Set LEGACY_AI_REVIEW_ENABLED=true and configure ANTHROPIC_API_KEY "
+              f"to enable the API fallback. Codex failure: {codex_error}"
+          )
+          PY
 
       - name: Upload monthly review bundle
         uses: actions/upload-artifact@v7

@@ -69,16 +69,17 @@ The scheduled workflows run monthly: first they refresh the shared Russell 1000 
 
 ## Monthly AI Review
 
-The first-stage monthly review control plane is reporting-only:
+The monthly review control plane is only for snapshot artifact repositories:
 
 - `monthly_review.yml` runs after a successful `Publish Snapshot Artifacts` workflow or by manual dispatch.
 - It downloads the publish run artifacts, builds `data/output/monthly_report_bundle/`, and creates or updates a `monthly-review` issue.
-- `ai_review.yml` reviews that issue and posts a bilingual artifact/contract-health comment.
-- It also creates a separate `codex-bridge` remediation issue for the VPS `ccbot-bridge` / Codex runner.
-- Codex remediation PRs are merged only by `auto_merge_codex_pr.yml` when CI is green, the PR is not draft, the `auto-merge-ok` label is present, and changed files stay inside the low-risk review/reporting surface.
-- If a Codex remediation PR fails CI or receives a changes-requested review, `codex_pr_feedback.yml` comments back on the source `codex-bridge` issue so ccbot can dispatch Codex to fix the same PR branch. It allows up to three automatic feedback rounds, then removes `codex-bridge` so the issue waits for human review.
+- The default review route dispatches `QuantStrategyLab/CryptoCodexAuditBridge`, which runs Codex on the self-hosted VPS runner.
+- Codex reads the monthly issue, posts the audit result back to the issue, and may open a PR directly for safe low-risk fixes.
+- The legacy Claude review workflow is compatibility fallback only. Enable it with `LEGACY_AI_REVIEW_ENABLED=true` and configure `ANTHROPIC_API_KEY` if Codex dispatch is unavailable.
+- Direct bridge PRs are not auto-merged by default. `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` lets the bridge request GitHub auto-merge explicitly.
+- The legacy `auto_merge_codex_pr.yml` and `codex_pr_feedback.yml` guard the older ccbot-style remediation PR path and still require CI, `auto-merge-ok`, and low-risk file changes.
 
-This keeps US equity snapshot review aligned with the broader monthly audit control plane while keeping code changes and merging in separate, auditable steps.
+This keeps US equity snapshot review aligned with the crypto snapshot review path while avoiding monthly report audits for non-snapshot repositories.
 
 Prepare / refresh shared Russell 1000 source inputs:
 
@@ -233,16 +234,17 @@ python scripts/build_tech_communication_pullback_snapshot.py \
 
 ## 月度 AI Review
 
-第一阶段月度 review 控制面只做报告，不直接修改代码：
+月度 review 控制面只用于 snapshot artifact 仓库：
 
 - `monthly_review.yml` 在 `Publish Snapshot Artifacts` workflow 成功后运行，也支持手工触发。
 - 它下载 publish run artifacts，构建 `data/output/monthly_report_bundle/`，并创建或更新 `monthly-review` issue。
-- `ai_review.yml` review 该 issue，并发布双语 artifact/contract-health 评论。
-- 它也会为 VPS `ccbot-bridge` / Codex runner 创建单独的 `codex-bridge` remediation issue。
-- Codex remediation PR 只有在 CI 通过、PR 非 draft、带有 `auto-merge-ok` label，且变更限制在低风险 review/reporting surface 内时，才由 `auto_merge_codex_pr.yml` 合并。
-- 如果 Codex remediation PR 的 CI 失败或收到 changes-requested review，`codex_pr_feedback.yml` 会回评源 `codex-bridge` issue，让 ccbot 派发 Codex 修同一条 PR 分支。最多允许三轮自动反馈，然后移除 `codex-bridge`，等待人工 review。
+- 默认 review 路线 dispatch `QuantStrategyLab/CryptoCodexAuditBridge`，由 self-hosted VPS runner 上的 Codex 执行。
+- Codex 读取 monthly issue，把审计结果回帖到 issue，并可直接为低风险修复开 PR。
+- 旧 Claude review workflow 只作为兼容 fallback。只有设置 `LEGACY_AI_REVIEW_ENABLED=true` 并配置 `ANTHROPIC_API_KEY` 后，Codex dispatch 不可用时才会触发。
+- Direct bridge PR 默认不会自动合并。只有设置 `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` 时，bridge 才会显式请求 GitHub auto-merge。
+- 旧 `auto_merge_codex_pr.yml` 和 `codex_pr_feedback.yml` 继续保护 ccbot-style remediation PR 路线，仍要求 CI、`auto-merge-ok` 和低风险文件变更。
 
-这个流程让 US equity snapshot review 与更大的月度审计控制面对齐，同时把代码修改和合并保留在独立、可审计的步骤里。
+这个流程让 US equity snapshot review 和 crypto snapshot review 路线一致，同时避免非 snapshot 仓库发布月报审计。
 
 ## 研究和回测
 

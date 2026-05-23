@@ -103,6 +103,25 @@ execute_publish=true
 
 workflow 仍保留月末交易日 guard：如果解析得到的 `snapshot_as_of` 不是该月份最后一个 NYSE 交易日，会写出 skip artifact，并且不会发布到 GCS。
 
+## 月度 AI Review
+
+定时 `Publish Snapshot Artifacts` 成功后，`Monthly Snapshot Review` 会下载该 run 的 artifacts，并组装：
+
+```text
+data/output/monthly_report_bundle/monthly_report_bundle.json
+data/output/monthly_report_bundle/ai_review_input.md
+data/output/monthly_report_bundle/job_summary.md
+```
+
+workflow 会创建或更新带 `monthly-review` label 的 GitHub issue。默认路线会 dispatch `QuantStrategyLab/CryptoCodexAuditBridge`，由 self-hosted VPS runner 上的 Codex 执行审计，并把结果回帖到 issue。审计重点包括：
+
+- 每个预期 snapshot profile 的 artifact 完整性
+- contract version、snapshot date、row count 和 ranking-preview 健康度
+- 会影响下游信心的缺失或过期证据
+- 对 broker/runtime 仓库的下游影响
+
+Codex 可以直接为低风险修复开 PR，默认不会自动合并。只有确认 branch protection 和 CI gate 后，才设置 `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` 让 bridge 显式请求 GitHub auto-merge。旧 Claude workflow 只作为兼容 fallback；只有 Codex dispatch 不可用时，才设置 `LEGACY_AI_REVIEW_ENABLED=true` 并配置 `ANTHROPIC_API_KEY`。
+
 ## 排障规则
 
 - 如果 source-input refresh 失败，snapshot publish 仍可能使用上一份成功发布的 source input 运行。
