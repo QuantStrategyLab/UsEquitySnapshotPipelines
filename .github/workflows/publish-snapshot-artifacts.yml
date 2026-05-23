@@ -428,7 +428,7 @@ jobs:
           name: ${{ steps.build.outputs.artifact_name }}
           path: ${{ steps.build.outputs.artifact_dir }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
       - name: Append job summary
         run: |

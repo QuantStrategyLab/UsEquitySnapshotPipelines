@@ -171,7 +171,7 @@ jobs:
           name: us-equity-source-inputs-${{ github.run_id }}
           path: data/input/refreshed/r1000_official_monthly_v2_alias
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
       - name: Append job summary
         run: |
