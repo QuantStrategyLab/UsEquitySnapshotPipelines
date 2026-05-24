@@ -28,7 +28,7 @@
 
 ## Remaining intentional dependency
 
-This repository still imports `us_equity_strategies.strategies.*` for runtime constants and signal/weight calculation. That keeps the offline snapshot preview aligned with the live strategy engine without moving broker execution code here.
+This repository still imports `us_equity_strategies.strategies.*` for runtime constants and signal/weight calculation. That keeps the offline snapshot preview aligned with the shared runtime strategy engine without moving broker execution code here.
 
 ## Execution repos remain downstream only
 

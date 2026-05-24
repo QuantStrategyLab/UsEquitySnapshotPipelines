@@ -2,11 +2,11 @@
 
 This note records the point-in-time validation added for the dynamic Russell
 Top50 leader-rotation research. It is research-only and must not be used to
-promote a live strategy by itself.
+promote a runtime profile by itself.
 
 ## Current Conclusion
 
-Static MAGS / static MAG7 style pools remain rejected for live promotion because
+Static MAGS / static MAG7 style pools remain rejected for runtime promotion because
 they are structurally hindsight-biased.
 
 Dynamic Top50 Top2 is not rejected. It remains the aggressive candidate if an
@@ -28,7 +28,7 @@ The longest honest validation available in this repo starts from the first
 point-in-time Top50 universe snapshot (`2017-09-29`). On the `2017-10-02` to
 `2026-04-16` sample, the lagged Top2 variant improved QQQ materially, but one
 3-year window still trailed QQQ slightly. This keeps the idea in research:
-promising, but not yet a live profile.
+promising, but not yet runtime-enabled.
 
 The concentration-variant research found a cleaner balance than either pure
 Top2 or a threshold-based dynamic switch: a fixed `50% Top2 / 50% Top4` sleeve
@@ -555,7 +555,7 @@ The frequency and daily-risk research command writes:
 
 ## Promotion Guardrails
 
-Before considering any live strategy based on this research:
+Before considering any runtime strategy based on this research:
 
 1. Replace stale ticker gaps (`CELG`, `DWDP`, `UTX`) with a point-in-time symbol
    mapping or a vendor source that keeps delisted history.
@@ -564,7 +564,7 @@ Before considering any live strategy based on this research:
    `top3_cap35_no_defense_sector2` as the higher-return candidate and Top2 as
    an aggressive variant.
 4. Treat `50% Top2 / 50% Top4` as the current balanced research candidate, not
-   a live profile. It still needs more validation before promotion.
+   a runtime-enabled profile. It still needs more validation before promotion.
 5. Keep the balanced candidate monthly by default. Weekly/biweekly rebalancing
    and broad daily cash-defense overlays did not improve the research result.
 6. Keep this separate from MAGS and dynamic leveraged pullback. This is a
