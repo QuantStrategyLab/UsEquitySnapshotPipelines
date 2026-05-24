@@ -175,7 +175,7 @@ jobs:
               if mode not in {"review_only", "review_and_fix"}:
                   raise RuntimeError(f"Unsupported Codex review mode: {mode}")
               provider = os.environ["REVIEW_PROVIDER"].strip() or "codex"
-              if provider not in {"codex", "openai", "auto"}:
+              if provider not in {"api", "anthropic", "codex", "openai", "auto"}:
                   raise RuntimeError(f"Unsupported Codex review provider: {provider}")
               payload = {
                   "ref": "main",
