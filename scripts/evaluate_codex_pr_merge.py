@@ -15,7 +15,6 @@ ALLOWED_PREFIXES = (
 ALLOWED_EXACT = {
     "README.md",
     ".github/workflows/monthly_review.yml",
-    ".github/workflows/ai_review.yml",
     ".github/workflows/auto_merge_codex_pr.yml",
     ".github/workflows/codex_pr_feedback.yml",
     "scripts/run_monthly_report_bundle.py",
