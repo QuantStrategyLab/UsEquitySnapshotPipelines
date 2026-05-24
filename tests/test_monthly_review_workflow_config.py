@@ -23,6 +23,7 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "CODEX_AUDIT_DISPATCH_TOKEN" in workflow
     assert "permission-actions: write" in workflow
     assert "SELFHOSTED_CODEX_REVIEW_PROVIDER" in workflow
+    assert "SELFHOSTED_CODEX_REVIEW_PROVIDER || 'auto'" in workflow
     assert '"provider": provider' in workflow
     assert "selfhosted_monthly_review.yml" in workflow
     assert "actions/workflows/selfhosted_monthly_review.yml/dispatches" in workflow

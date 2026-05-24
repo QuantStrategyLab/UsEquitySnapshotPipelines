@@ -122,7 +122,7 @@ The workflow creates or updates a GitHub issue labeled `monthly-review`. By defa
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
 
-The monthly review workflow dispatches `CryptoCodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`. `codex` may open a remediation PR directly for safe low-risk fixes. `openai` posts an API review comment from the bridge, and `auto` falls back to OpenAI review when Codex fails and the bridge has `OPENAI_API_KEY`.
+The monthly review workflow dispatches `CryptoCodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`. `auto` is the default and runs Codex first, falls back to OpenAI review when Codex fails and the bridge has `OPENAI_API_KEY`, and fails loudly when the API fallback is not configured. `codex` disables API fallback; `openai` posts an API review comment only.
 
 Direct bridge PRs are not auto-merged by default. Set `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
 
