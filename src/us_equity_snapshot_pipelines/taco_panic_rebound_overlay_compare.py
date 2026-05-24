@@ -393,7 +393,7 @@ def build_tqqq_growth_income_base_weights(
     pullback_rebound_threshold: float = DEFAULT_PULLBACK_REBOUND_THRESHOLD,
     pullback_rebound_volatility_multiplier: float = DEFAULT_PULLBACK_REBOUND_VOLATILITY_MULTIPLIER,
 ) -> pd.DataFrame:
-    """Approximate the current fixed dual-drive live profile for research comparison."""
+    """Approximate the current fixed dual-drive runtime profile for research comparison."""
     frame = _normalize_close(close)
     benchmark_symbol = str(benchmark_symbol).strip().upper()
     attack_symbol = str(attack_symbol).strip().upper()

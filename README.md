@@ -36,7 +36,7 @@ Downstream platforms (`InteractiveBrokersPlatform`, `LongBridgePlatform`, `Charl
 | --- | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | migrated upstream pipeline | monthly | snapshot builder, ranking, release summary, publish flow live here |
 | `russell_1000_multi_factor_defensive` | migrated upstream pipeline | monthly | source-input refresh, snapshot builder, backtest CLI, ranking, release summary, publish flow live here |
-| `mega_cap_leader_rotation_top50_balanced` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow for the balanced Top50 live profile |
+| `mega_cap_leader_rotation_top50_balanced` | migrated upstream pipeline | monthly scheduled + manual publish | snapshot builder, ranking, release summary, and publish flow for the balanced Top50 runtime-enabled profile |
 
 This table describes artifact publishing cadence only. Strategy-level cadence remains documented in `UsEquityStrategies`; broker execution schedules should follow that strategy-layer source.
 
@@ -201,7 +201,7 @@ change the production strategy manifest. See
 | --- | --- | --- | --- |
 | `tech_communication_pullback_enhancement` | 已迁移到上游 pipeline | monthly | snapshot builder、ranking、release summary 和 publish flow 在本仓库 |
 | `russell_1000_multi_factor_defensive` | 已迁移到上游 pipeline | monthly | source-input refresh、snapshot builder、backtest CLI、ranking、release summary 和 publish flow 在本仓库 |
-| `mega_cap_leader_rotation_top50_balanced` | 已迁移到上游 pipeline | monthly scheduled + manual publish | balanced Top50 live profile 的 snapshot builder、ranking、release summary 和 publish flow 在本仓库 |
+| `mega_cap_leader_rotation_top50_balanced` | 已迁移到上游 pipeline | monthly scheduled + manual publish | balanced Top50 runtime-enabled profile 的 snapshot builder、ranking、release summary 和 publish flow 在本仓库 |
 
 这个表只描述 artifact 发布频率。策略层频率仍以 `UsEquityStrategies` 为准；券商执行计划应跟随策略层来源。
 
@@ -521,7 +521,7 @@ python scripts/backtest_mag7_leveraged_pullback.py \
   --output-dir data/output/mag7_leveraged_pullback_backtest
 ```
 
-This strategy is not a live profile. It buys strong MAG7 names on controlled
+This strategy is research-only and is not runtime-enabled. It buys strong MAG7 names on controlled
 pullbacks, trims exposure near short-term highs, caps single-name exposure, and
 models the invested sleeve as daily-reset 2x long products rather than margin
 borrowing. The command writes
@@ -542,7 +542,7 @@ python scripts/backtest_taco_panic_rebound.py \
   --output-dir data/output/taco_panic_rebound_2018_present_research
 ```
 
-This is an event-window research tool, not a live strategy. It uses a fixed
+This is an event-window research-only tool and is not runtime-enabled. It uses a fixed
 trade-war event calendar, finds the post-shock trough within the configured
 window, then reports 5 / 10 / 21 / 42 / 63 trading-day rebounds by symbol. Use
 `--event-set first-term`, `--event-set biden`, or `--event-set second-term` for

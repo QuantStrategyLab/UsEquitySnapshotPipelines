@@ -50,10 +50,10 @@ fallback true range. Parameters were `SOXX`, `window=22`, `atr_multiple=3`.
 | 2010-09-29 to 2026-05-07 core-long | Baseline archive | 46.41% | -44.00% | n/a |
 | 2010-09-29 to 2026-05-07 core-long | Close-only Chandelier | 19.89% | -49.12% | 491 |
 
-The short live-full window gets lower drawdown but gives up too much CAGR. The
+The short full-exposure window gets lower drawdown but gives up too much CAGR. The
 longer core SOXL/SOXX window degrades both CAGR and drawdown.
 
-This supports keeping the current live strategy unchanged and using the new
+This supports keeping the current baseline runtime strategy unchanged and using the new
 flags only for bounded research sweeps.
 
 ## Follow-Up Overlay Sweep
