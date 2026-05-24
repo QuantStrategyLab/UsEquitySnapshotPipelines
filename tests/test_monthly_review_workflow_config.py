@@ -4,7 +4,6 @@ from pathlib import Path
 
 
 MONTHLY_REVIEW = Path(".github/workflows/monthly_review.yml")
-AI_REVIEW = Path(".github/workflows/ai_review.yml")
 CODEX_FEEDBACK = Path(".github/workflows/codex_pr_feedback.yml")
 PUBLISH_SNAPSHOT_ARTIFACTS = Path(".github/workflows/publish-snapshot-artifacts.yml")
 
@@ -34,18 +33,8 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "auto_optimization" not in workflow
 
 
-def test_ai_review_workflow_posts_bilingual_review_comment() -> None:
-    workflow = AI_REVIEW.read_text(encoding="utf-8")
-
-    assert "vars.LEGACY_AI_REVIEW_ENABLED == 'true'" in workflow
-    assert "anthropics/claude-code-action@v1" in workflow
-    assert "UsEquitySnapshotPipelines" in workflow
-    assert "Return only the final bilingual review" in workflow
-    assert "scripts/render_monthly_ai_review.py" in workflow
-    assert "scripts/post_monthly_ai_review_comment.py" in workflow
-    assert "scripts/post_codex_remediation_issue.py" in workflow
-    assert "codex_issue" in workflow
-    assert "Do not use Bash" in workflow
+def test_source_local_legacy_ai_review_workflow_is_removed() -> None:
+    assert not Path(".github/workflows/ai_review.yml").exists()
 
 
 def test_auto_merge_workflow_requires_codex_branch_and_guarded_label() -> None:
