@@ -73,9 +73,9 @@ The monthly review control plane is only for snapshot artifact repositories:
 
 - `monthly_review.yml` runs after a successful `Publish Snapshot Artifacts` workflow or by manual dispatch.
 - It downloads the publish run artifacts, builds `data/output/monthly_report_bundle/`, and creates or updates a `monthly-review` issue.
-- The default review route dispatches `QuantStrategyLab/CryptoCodexAuditBridge`, which runs Codex on the self-hosted VPS runner.
-- Codex reads the monthly issue, posts the audit result back to the issue, and may open a PR directly for safe low-risk fixes.
-- The legacy Claude review workflow is compatibility fallback only. Enable it with `LEGACY_AI_REVIEW_ENABLED=true` and configure `ANTHROPIC_API_KEY` if Codex dispatch is unavailable.
+- The review route dispatches `QuantStrategyLab/CryptoCodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`.
+- `codex` is the default provider: Codex reads the monthly issue, posts the audit result back to the issue, and may open a PR directly for safe low-risk fixes.
+- `openai` posts an API review comment from the bridge; `auto` tries Codex first and falls back to OpenAI review when the bridge has `OPENAI_API_KEY`.
 - Direct bridge PRs are not auto-merged by default. `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` lets the bridge request GitHub auto-merge explicitly.
 - The legacy `auto_merge_codex_pr.yml` and `codex_pr_feedback.yml` guard the older ccbot-style remediation PR path and still require CI, `auto-merge-ok`, and low-risk file changes.
 
@@ -238,9 +238,9 @@ python scripts/build_tech_communication_pullback_snapshot.py \
 
 - `monthly_review.yml` 在 `Publish Snapshot Artifacts` workflow 成功后运行，也支持手工触发。
 - 它下载 publish run artifacts，构建 `data/output/monthly_report_bundle/`，并创建或更新 `monthly-review` issue。
-- 默认 review 路线 dispatch `QuantStrategyLab/CryptoCodexAuditBridge`，由 self-hosted VPS runner 上的 Codex 执行。
-- Codex 读取 monthly issue，把审计结果回帖到 issue，并可直接为低风险修复开 PR。
-- 旧 Claude review workflow 只作为兼容 fallback。只有设置 `LEGACY_AI_REVIEW_ENABLED=true` 并配置 `ANTHROPIC_API_KEY` 后，Codex dispatch 不可用时才会触发。
+- review 路线 dispatch `QuantStrategyLab/CryptoCodexAuditBridge`，由 bridge 通过 `SELFHOSTED_CODEX_REVIEW_PROVIDER` 统一决定 provider。
+- `codex` 是默认 provider：Codex 读取 monthly issue，把审计结果回帖到 issue，并可直接为低风险修复开 PR。
+- `openai` 由 bridge 回帖 API 审阅；`auto` 先跑 Codex，如果 bridge 配置了 `OPENAI_API_KEY`，Codex 失败时回落到 OpenAI 审阅。
 - Direct bridge PR 默认不会自动合并。只有设置 `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` 时，bridge 才会显式请求 GitHub auto-merge。
 - 旧 `auto_merge_codex_pr.yml` 和 `codex_pr_feedback.yml` 继续保护 ccbot-style remediation PR 路线，仍要求 CI、`auto-merge-ok` 和低风险文件变更。
 

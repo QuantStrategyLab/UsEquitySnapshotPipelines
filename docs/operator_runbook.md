@@ -122,12 +122,7 @@ The workflow creates or updates a GitHub issue labeled `monthly-review`. By defa
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
 
-Codex may open a remediation PR directly for safe low-risk fixes. The legacy Claude workflow is compatibility fallback only; enable it with `LEGACY_AI_REVIEW_ENABLED=true` and configure `ANTHROPIC_API_KEY` only when Codex dispatch is unavailable. In that fallback path, the workflow creates or updates a separate remediation issue labeled:
-
-```text
-codex-bridge
-monthly-codex-remediation
-```
+The monthly review workflow dispatches `CryptoCodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`. `codex` may open a remediation PR directly for safe low-risk fixes. `openai` posts an API review comment from the bridge, and `auto` falls back to OpenAI review when Codex fails and the bridge has `OPENAI_API_KEY`.
 
 Direct bridge PRs are not auto-merged by default. Set `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
 
