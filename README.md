@@ -827,7 +827,10 @@ price-stress scanner is open.
 For platform-style deployment, use the sidecar plugin runner instead of wiring
 plugins into a strategy function. The runner reads strategy-scoped plugin
 mounts from TOML and executes only explicitly configured plugins. Current
-Crisis Response writes artifacts here; any platform execution is downstream.
+Crisis Response implementation lives in the public
+`QuantStrategyLab/QuantStrategyPlugins` repository; this repository keeps
+compatibility entrypoints and writes artifacts through that package. Any
+platform execution is downstream.
 `taco_rebound_shadow` is deliberately blocked in the runner while MAGS remains
 research-only and the TQQQ overlay path has not been promoted.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
@@ -868,7 +871,7 @@ The `Publish Strategy Plugins` GitHub workflow runs the
 weekday post-close schedule. Its default GCS prefix is:
 
 ```text
-gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow
+gs://<runtime-artifact-bucket>/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow
 ```
 
 Downstream platforms should mount only the resulting `latest_signal.json` and
