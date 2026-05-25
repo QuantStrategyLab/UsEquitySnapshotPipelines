@@ -354,7 +354,7 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
             config.get("blend_gate_volatility_delever_window", 10)
         ),
         "blend_gate_volatility_delever_threshold": float(
-            config.get("blend_gate_volatility_delever_threshold", 0.50)
+            config.get("blend_gate_volatility_delever_threshold", 0.55)
         ),
         "blend_gate_volatility_delever_retention_ratio": float(
             config.get("blend_gate_volatility_delever_retention_ratio", 0.0)
@@ -560,6 +560,7 @@ def run_backtest(
     soxl_delever_overlay_atr_multiple: float | None = None,
     soxl_delever_overlay_retention_ratio: float = 0.0,
     soxl_delever_overlay_redirect_symbol: str = "BOXX",
+    strategy_overrides: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     prices = _build_price_frame(price_history)
     if end_date is not None:
@@ -567,7 +568,7 @@ def run_backtest(
     if prices.empty:
         raise RuntimeError("No usable price history remains inside the selected date range")
 
-    strategy_overrides: dict[str, object] = {}
+    strategy_overrides = dict(strategy_overrides or {})
     if blend_gate_rsi_cap_enabled is not None:
         strategy_overrides["blend_gate_rsi_cap_enabled"] = bool(blend_gate_rsi_cap_enabled)
     if blend_gate_bollinger_cap_enabled is not None:

@@ -160,7 +160,7 @@ def test_soxl_soxx_live_volatility_delever_moves_soxl_to_soxx() -> None:
     assert result["summary"]["SOXL Delever Stops"] >= 1
     assert not triggered.empty
     assert triggered["blend_gate_volatility_delever_window"].eq(10).all()
-    assert triggered["blend_gate_volatility_delever_metric"].ge(0.50).all()
+    assert triggered["blend_gate_volatility_delever_metric"].ge(0.55).all()
     assert triggered["blend_gate_volatility_delever_redirect_symbol"].eq("SOXX").all()
 
 
