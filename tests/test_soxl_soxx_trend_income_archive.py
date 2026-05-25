@@ -33,6 +33,8 @@ def _sample_archive_prices() -> pd.DataFrame:
             ("SOXL", 50.0, 0.35),
             ("SOXX", 100.0, 0.20),
             ("BOXX", 80.0, 0.01),
+            ("QQQ", 90.0, 0.12),
+            ("SPY", 85.0, 0.08),
         ):
             rows.append({"symbol": symbol, "as_of": as_of, "close": base + idx * step})
     return pd.DataFrame(rows)
@@ -51,6 +53,7 @@ def test_archive_core_long_download_writes_replayable_manifest(tmp_path, monkeyp
 
     assert (archive_dir / "price_history.csv").exists()
     assert (archive_dir / "summary.csv").exists()
+    assert (archive_dir / "window_summary.csv").exists()
     assert (archive_dir / "backtest_config.json").exists()
     assert (archive_dir / "data_quality_report.csv").exists()
     assert (archive_dir / "source_manifest.json").exists()
@@ -70,7 +73,13 @@ def test_archive_core_long_download_writes_replayable_manifest(tmp_path, monkeyp
     assert manifest["price_source"]["auto_adjust"] is True
     assert manifest["price_source"]["proxy_used"] is True
     assert manifest["price_source"]["symbol_aliases"] == {"BOXX": ["BIL"]}
+    assert "window_summary" in manifest["artifacts"]
     assert "secret" not in manifest_text
+
+    window_summary = pd.read_csv(archive_dir / "window_summary.csv")
+    assert {"QQQ Max Drawdown", "SPY Max Drawdown", "Within Worst Benchmark Drawdown"} <= set(
+        window_summary.columns
+    )
 
 
 def test_archive_local_prices_do_not_report_proxy_usage(tmp_path, monkeypatch) -> None:

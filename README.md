@@ -256,20 +256,32 @@ To research alternative SOXL delever gates without changing production, use
 `--soxl-delever-overlay volatility|drawdown|momentum` with
 `--soxl-delever-symbol`, `--soxl-delever-window`,
 `--soxl-delever-threshold`, `--soxl-delever-retention-ratio`, and
-`--soxl-delever-redirect-symbol`. The current best research candidate is a
-SOXX 20-day volatility gate at `0.50` that redirects SOXL into SOXX. See
+`--soxl-delever-redirect-symbol`. The current promoted production gate is a
+SOXX 10-day volatility gate at `0.50` that redirects SOXL into SOXX. See
 `docs/tqqq-soxl-optimization-research.md` for the TQQQ/SOXL no-regression
 optimization sweep.
 
 For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
-That avoids QQQI/SPYI inception dates truncating the 2010+ SOXL sample.
+That avoids diversified income-basket inception dates truncating the 2010+
+SOXL sample.
 
 To create replayable SOXL/SOXX archives, use the archive runner instead of
 one-off research commands. It writes `price_history.csv`, `summary.csv`,
-portfolio/trade/signal outputs, `backtest_config.json`,
+`window_summary.csv`, portfolio/trade/signal outputs, `backtest_config.json`,
 `data_quality_report.csv`, and `source_manifest.json` with file hashes and
 redacted source metadata.
+
+The standard `window_summary.csv` caps normal long-cycle windows at the latest
+15 years. Earlier internet-bubble / GFC-style synthetic stress windows stay in
+the Crisis Response / Crisis Guard research artifacts instead of the ordinary
+strategy-cycle table.
+When `QQQ` / `SPY` price history is present, the same window table also reports
+benchmark max drawdown and whether the combined portfolio drawdown stayed within
+the benchmark drawdown. `SPY` is the primary acceptance benchmark because idle
+capital would otherwise be broad-index exposure; `Within Primary Benchmark
+Drawdown` is therefore the combined strategy-layer plus income-layer drawdown
+check, not a separate income-sleeve-only test.
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -290,8 +302,36 @@ python -m us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive \
   --archive-date 2026-05-08
 ```
 
-If Yahoo rate-limits downloads, set `YFINANCE_PROXY` in the shell or pass
-`--proxy`; proxy values are intentionally redacted from `source_manifest.json`.
+The TQQQ growth-income profile has a matching real-product archive runner.
+`real-core` keeps the production income layer disabled for 15-year core-cycle
+validation, while `real-full` uses the diversified income sleeve
+(`SCHD`/`DGRO`/`SGOV`/`SPYI`/`QQQI`) and starts from the shorter live-product
+window. The full-income archive records the `log_loss_budget` income ratio
+diagnostics in `signal_history.csv`, so the income layer can be audited against
+the stress-loss budget instead of only a fixed allocation cap:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.tqqq_growth_income_archive \
+  --mode real-core \
+  --download \
+  --archive-date 2026-05-25
+
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.tqqq_growth_income_archive \
+  --mode real-full \
+  --download \
+  --archive-date 2026-05-25
+```
+
+If Yahoo rate-limits downloads, set `YFINANCE_PROXY` in the shell, pass
+`--proxy`, or pass `--proxy-list <path-or-url>` to try HTTP(S)/SOCKS proxy
+candidates one by one. Use `socks5h://user:password@host:port` when DNS should
+resolve through the proxy. The download helper falls back from yfinance to
+Yahoo's chart JSON endpoint and requires every requested symbol to be present
+before writing an archive. Proxy values are intentionally redacted from
+`source_manifest.json`; public free proxy lists are suitable only for low-stakes
+recovery attempts.
 
 Run the first-pass mega-cap leader rotation backtest with local input files:
 
@@ -826,11 +866,11 @@ price-stress scanner is open.
 
 For platform-style deployment, use the sidecar plugin runner instead of wiring
 plugins into a strategy function. The runner reads strategy-scoped plugin
-mounts from TOML and executes only explicitly configured plugins. Current
-Crisis Response implementation lives in the public
+mounts from TOML and executes only explicitly configured plugins. Current Crisis
+Response and TACO plugin/research implementations live in the public
 `QuantStrategyLab/QuantStrategyPlugins` repository; this repository keeps
-compatibility entrypoints and writes artifacts through that package. Any
-platform execution is downstream.
+compatibility entrypoints and writes artifacts through that package. Any platform
+execution is downstream.
 `taco_rebound_shadow` is deliberately blocked in the runner while MAGS remains
 research-only and the TQQQ overlay path has not been promoted.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real

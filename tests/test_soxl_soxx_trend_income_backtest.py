@@ -18,6 +18,9 @@ def _build_synthetic_prices() -> pd.DataFrame:
             ("SOXL", soxl),
             ("SOXX", soxx),
             ("BOXX", boxx),
+            ("SCHD", 70.0 + idx * 0.02),
+            ("DGRO", 60.0 + idx * 0.02),
+            ("SGOV", 100.0 + idx * 0.005),
             ("QQQI", qqqi),
             ("SPYI", spyi),
         ):
@@ -36,6 +39,9 @@ def _build_chandelier_prices() -> pd.DataFrame:
             "SOXL": 50.0 + idx * 1.1,
             "SOXX": soxx,
             "BOXX": 100.0,
+            "SCHD": 70.0 + idx * 0.02,
+            "DGRO": 60.0 + idx * 0.02,
+            "SGOV": 100.0 + idx * 0.005,
             "QQQI": 50.0 + idx * 0.05,
             "SPYI": 50.0 + idx * 0.03,
         }
@@ -65,6 +71,9 @@ def _build_volatile_soxx_prices() -> pd.DataFrame:
             "SOXL": 50.0 + idx * 1.1 + shock * 2.0,
             "SOXX": 100.0 + idx * 0.6 + shock,
             "BOXX": 100.0,
+            "SCHD": 70.0 + idx * 0.02,
+            "DGRO": 60.0 + idx * 0.02,
+            "SGOV": 100.0 + idx * 0.005,
             "QQQI": 50.0 + idx * 0.05,
             "SPYI": 50.0 + idx * 0.03,
         }
@@ -84,6 +93,9 @@ def _build_high_volatility_soxx_prices() -> pd.DataFrame:
             "SOXL": 50.0 + idx * 1.1 + shock * 2.0,
             "SOXX": 100.0 + idx * 0.6 + shock,
             "BOXX": 100.0,
+            "SCHD": 70.0 + idx * 0.02,
+            "DGRO": 60.0 + idx * 0.02,
+            "SGOV": 100.0 + idx * 0.005,
             "QQQI": 50.0 + idx * 0.05,
             "SPYI": 50.0 + idx * 0.03,
         }
@@ -112,9 +124,11 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert not result["signal_history"].empty
     assert "trend_rsi14" in result["signal_history"].columns
     assert "trend_bb_upper" in result["signal_history"].columns
+    assert "trend_realized_volatility_10" in result["signal_history"].columns
     assert "trend_realized_volatility_20" in result["signal_history"].columns
     assert result["signal_history"]["trend_rsi14"].notna().any()
     assert result["signal_history"]["trend_bb_upper"].notna().any()
+    assert result["signal_history"]["trend_realized_volatility_10"].notna().any()
     assert result["signal_history"]["trend_realized_volatility_20"].notna().any()
 
 
@@ -124,8 +138,10 @@ def test_build_indicator_history_includes_soxx_realized_volatility() -> None:
 
     indicators = build_indicator_history(close_matrix)
 
-    assert "realized_volatility_20" in indicators["soxx"].columns
     assert "realized_volatility" in indicators["soxx"].columns
+    assert "realized_volatility_10" in indicators["soxx"].columns
+    assert "realized_volatility_20" in indicators["soxx"].columns
+    assert indicators["soxx"]["realized_volatility_10"].notna().any()
     assert indicators["soxx"]["realized_volatility_20"].notna().any()
 
 
@@ -143,7 +159,7 @@ def test_soxl_soxx_live_volatility_delever_moves_soxl_to_soxx() -> None:
 
     assert result["summary"]["SOXL Delever Stops"] >= 1
     assert not triggered.empty
-    assert triggered["blend_gate_volatility_delever_window"].eq(20).all()
+    assert triggered["blend_gate_volatility_delever_window"].eq(10).all()
     assert triggered["blend_gate_volatility_delever_metric"].ge(0.50).all()
     assert triggered["blend_gate_volatility_delever_redirect_symbol"].eq("SOXX").all()
 

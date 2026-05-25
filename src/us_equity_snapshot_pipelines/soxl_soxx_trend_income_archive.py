@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Sequence
 import pandas as pd
 
 from .artifacts import sha256_file, write_json
+from .backtest_windows import build_benchmark_returns, build_window_summary
 from .contracts import SOURCE_PROJECT
 from .soxl_soxx_trend_income_backtest import (
     DEFAULT_BACKTEST_START,
@@ -25,7 +26,11 @@ from .soxl_soxx_trend_income_backtest import (
     _format_summary,
     run_backtest,
 )
-from .yfinance_prices import _resolve_yfinance_proxy, download_price_history
+from .yfinance_prices import (
+    _resolve_yfinance_proxy,
+    download_price_history_with_proxy_candidates,
+    load_proxy_candidates,
+)
 
 DEFAULT_CORE_LONG_PRICE_START = "2010-01-01"
 DEFAULT_DYNAMIC_RSI_QUANTILE_WINDOW = 252
@@ -47,8 +52,8 @@ class ArchiveModeSpec:
 ARCHIVE_MODE_SPECS = {
     "live-full": ArchiveModeSpec(
         mode="live-full",
-        description="Production-style SOXL/SOXX trend-income archive with BOXX, QQQI, and SPYI.",
-        symbols=MANAGED_SYMBOLS,
+        description="Production-style SOXL/SOXX trend-income archive with BOXX and the diversified income basket.",
+        symbols=(*MANAGED_SYMBOLS, "QQQ", "SPY"),
         price_start=DEFAULT_PRICE_START,
         backtest_start=DEFAULT_BACKTEST_START,
         disable_income_layer=False,
@@ -57,7 +62,7 @@ ARCHIVE_MODE_SPECS = {
     "core-long": ArchiveModeSpec(
         mode="core-long",
         description="Long-history SOXL/SOXX core archive with BIL downloaded and stored as BOXX.",
-        symbols=("SOXL", "SOXX", "BOXX"),
+        symbols=("SOXL", "SOXX", "BOXX", "QQQ", "SPY"),
         price_start=DEFAULT_CORE_LONG_PRICE_START,
         backtest_start=DEFAULT_CORE_LONG_PRICE_START,
         disable_income_layer=True,
@@ -201,10 +206,10 @@ def _json_safe(value):
     return value
 
 
-def _archive_proxy_used(*, source_kind: str, proxy: str | None) -> bool:
+def _archive_proxy_used(*, source_kind: str, proxy: str | None, proxy_list: str | None = None) -> bool:
     if source_kind != "yfinance":
         return False
-    return bool(_resolve_yfinance_proxy(proxy))
+    return bool(_resolve_yfinance_proxy(proxy) or str(proxy_list or "").strip())
 
 
 def _write_backtest_outputs(
@@ -219,6 +224,11 @@ def _write_backtest_outputs(
     price_frame.to_csv(output_dir / "price_history.csv", index=False)
     summary_frame = _format_summary(result["summary"])
     summary_frame.to_csv(output_dir / "summary.csv", index=False)
+    window_summary = build_window_summary(
+        result["portfolio_returns"],
+        benchmark_returns=build_benchmark_returns(price_frame),
+    )
+    window_summary.to_csv(output_dir / "window_summary.csv", index=False)
     result["portfolio_returns"].rename("portfolio_return").to_csv(output_dir / "portfolio_returns.csv")
     result["weights_history"].to_csv(output_dir / "weights_history.csv")
     result["turnover_history"].rename("turnover").to_csv(output_dir / "turnover_history.csv")
@@ -246,6 +256,8 @@ def archive_backtest(
     dynamic_rsi_floor: float = DEFAULT_DYNAMIC_RSI_FLOOR,
     symbol_aliases: Mapping[str, Sequence[str]] | None = None,
     proxy: str | None = None,
+    proxy_list: str | None = None,
+    proxy_list_max: int = 12,
     sanitized_argv: Sequence[str] | None = None,
     download_fn: Callable | None = None,
 ) -> Path:
@@ -268,7 +280,7 @@ def archive_backtest(
             prices = pd.read_csv(prices_path)
         else:
             source_kind = "yfinance"
-            prices = download_price_history(
+            prices = download_price_history_with_proxy_candidates(
                 list(spec.symbols),
                 start=effective_price_start,
                 end=price_end,
@@ -276,6 +288,7 @@ def archive_backtest(
                 download_fn=download_fn,
                 symbol_aliases=merged_aliases,
                 proxy=proxy,
+                proxy_candidates=load_proxy_candidates(proxy_list, max_candidates=proxy_list_max) if proxy_list else None,
             )
 
     data_quality_report = _build_data_quality_report(
@@ -340,7 +353,7 @@ def archive_backtest(
             "price_end": price_end,
             "requested_symbols": list(spec.symbols),
             "symbol_aliases": {key: list(value) for key, value in sorted(merged_aliases.items())},
-            "proxy_used": _archive_proxy_used(source_kind=source_kind, proxy=proxy),
+            "proxy_used": _archive_proxy_used(source_kind=source_kind, proxy=proxy, proxy_list=proxy_list),
         },
         "data_quality": _source_ranges(data_quality_report),
         "backtest": config,
@@ -352,6 +365,10 @@ def archive_backtest(
             "summary": {
                 "path": str(output_path / "summary.csv"),
                 "sha256": sha256_file(output_path / "summary.csv"),
+            },
+            "window_summary": {
+                "path": str(output_path / "window_summary.csv"),
+                "sha256": sha256_file(output_path / "window_summary.csv"),
             },
             "backtest_config": {
                 "path": str(output_path / "backtest_config.json"),
@@ -399,6 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-rsi-floor", type=float, default=DEFAULT_DYNAMIC_RSI_FLOOR)
     parser.add_argument("--symbol-alias", action="append", help="Override download alias, for example BOXX=BIL")
     parser.add_argument("--proxy", help="Proxy URL for yfinance; redacted from source_manifest.json")
+    parser.add_argument("--proxy-list", help="Path or URL with one HTTP(S) proxy per line")
+    parser.add_argument("--proxy-list-max", type=int, default=12, help="Maximum proxy candidates to try")
     return parser
 
 
@@ -427,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         dynamic_rsi_floor=float(args.dynamic_rsi_floor),
         symbol_aliases=_parse_symbol_aliases(args.symbol_alias),
         proxy=args.proxy,
+        proxy_list=args.proxy_list,
+        proxy_list_max=int(args.proxy_list_max),
         sanitized_argv=_sanitize_argv(raw_argv),
     )
     print(f"wrote SOXL/SOXX archive -> {archive_dir}")

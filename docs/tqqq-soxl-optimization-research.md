@@ -2,6 +2,11 @@
 
 Research date: 2026-05-10
 
+Promotion note: the current production SOXL/SOXX volatility delever gate uses
+`SOXX 10d realized volatility >= 50%, SOXL -> SOXX`, promoted from the exact
+real-product replay in `soxl-soxx-chandelier-stop-research.md`. The synthetic
+long-history sweep below remains the historical optimization record.
+
 This note records a bounded optimization sweep for the TQQQ and SOXL leveraged
 equity profiles. The acceptance rule is intentionally strict to avoid fitting a
 single crisis window:

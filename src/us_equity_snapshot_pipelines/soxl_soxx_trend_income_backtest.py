@@ -12,10 +12,10 @@ from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 from us_equity_strategies.strategies.soxl_soxx_trend_income import build_rebalance_plan
 
 from .artifacts import write_json
-from .yfinance_prices import download_price_history
+from .yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
 
 PROFILE = "soxl_soxx_trend_income"
-MANAGED_SYMBOLS = ("SOXL", "SOXX", "BOXX", "QQQI", "SPYI")
+MANAGED_SYMBOLS = ("SOXL", "SOXX", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")
 DEFAULT_INITIAL_EQUITY_USD = 100_000.0
 DEFAULT_PRICE_START = "2023-01-01"
 DEFAULT_BACKTEST_START = "2024-01-30"
@@ -269,10 +269,13 @@ def build_indicator_history(
         )
         if symbol == "SOXX":
             ma20 = close.rolling(20).mean()
-            realized_volatility_20 = close.pct_change(fill_method=None).rolling(20).std() * np.sqrt(252)
+            daily_returns = close.pct_change(fill_method=None)
+            realized_volatility_10 = daily_returns.rolling(10).std() * np.sqrt(252)
+            realized_volatility_20 = daily_returns.rolling(20).std() * np.sqrt(252)
             history["ma20"] = ma20
             history["ma20_slope"] = ma20.diff()
             history["realized_volatility"] = realized_volatility_20
+            history["realized_volatility_10"] = realized_volatility_10
             history["realized_volatility_20"] = realized_volatility_20
             rsi = _build_rsi(close, int(rsi_window))
             history["rsi14_raw"] = rsi
@@ -311,10 +314,20 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "mid_account_deploy_ratio": float(config.get("mid_account_deploy_ratio", 0.57)),
         "large_account_deploy_ratio": float(config.get("large_account_deploy_ratio", 0.5)),
         "trade_layer_decay_coeff": float(config.get("trade_layer_decay_coeff", 0.04)),
+        "income_layer_enabled": bool(config.get("income_layer_enabled", True)),
         "income_layer_start_usd": float(config["income_layer_start_usd"]),
         "income_layer_max_ratio": float(config["income_layer_max_ratio"]),
+        "income_layer_ratio_mode": str(config.get("income_layer_ratio_mode", "linear_cap")),
+        "income_layer_log_growth_factor": float(config.get("income_layer_log_growth_factor", 0.70)),
+        "income_layer_stress_drawdown_ratio": float(config.get("income_layer_stress_drawdown_ratio", 0.30)),
+        "income_layer_base_loss_budget_ratio": float(config.get("income_layer_base_loss_budget_ratio", 0.08)),
+        "income_layer_min_loss_budget_ratio": float(config.get("income_layer_min_loss_budget_ratio", 0.06)),
+        "income_layer_loss_budget_decay_per_double": float(
+            config.get("income_layer_loss_budget_decay_per_double", 0.01)
+        ),
         "income_layer_qqqi_weight": float(config["income_layer_qqqi_weight"]),
         "income_layer_spyi_weight": float(config["income_layer_spyi_weight"]),
+        "income_layer_allocations": dict(config.get("income_layer_allocations", {})),
         "trend_entry_buffer": float(config.get("trend_entry_buffer", 0.03)),
         "trend_mid_buffer": float(config.get("trend_mid_buffer", 0.06)),
         "trend_exit_buffer": float(config.get("trend_exit_buffer", 0.03)),
@@ -338,7 +351,7 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
             config.get("blend_gate_volatility_delever_symbol", "SOXX")
         ),
         "blend_gate_volatility_delever_window": int(
-            config.get("blend_gate_volatility_delever_window", 20)
+            config.get("blend_gate_volatility_delever_window", 10)
         ),
         "blend_gate_volatility_delever_threshold": float(
             config.get("blend_gate_volatility_delever_threshold", 0.50)
@@ -423,8 +436,9 @@ def _execute_rebalance(
     current_market_values = {symbol: float(equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS}
     next_market_values = dict(current_market_values)
 
-    sell_order = ("SOXL", "SOXX", "QQQI", "SPYI", "BOXX")
-    buy_order = ("QQQI", "SPYI", "SOXL", "SOXX", "BOXX")
+    income_symbols = tuple(symbol for symbol in MANAGED_SYMBOLS if symbol not in {"SOXL", "SOXX", "BOXX"})
+    sell_order = ("SOXL", "SOXX", *income_symbols, "BOXX")
+    buy_order = (*income_symbols, "SOXL", "SOXX", "BOXX")
 
     cash = float(equity) - sum(current_market_values.values())
     if abs(cash) < 1e-9:
@@ -561,6 +575,7 @@ def run_backtest(
     if blend_gate_overlay_stack_triggers is not None:
         strategy_overrides["blend_gate_overlay_stack_triggers"] = bool(blend_gate_overlay_stack_triggers)
     if disable_income_layer:
+        strategy_overrides["income_layer_enabled"] = False
         strategy_overrides["income_layer_start_usd"] = 1e18
         strategy_overrides["income_layer_max_ratio"] = 0.0
 
@@ -716,6 +731,7 @@ def run_backtest(
                 "trend_exit_line": plan.get("trend_exit_line"),
                 "trend_ma20": plan.get("trend_ma20"),
                 "trend_ma20_slope": plan.get("trend_ma20_slope"),
+                "trend_realized_volatility_10": trend_indicators.get("realized_volatility_10"),
                 "trend_realized_volatility_20": trend_indicators.get("realized_volatility_20"),
                 "trend_rsi14": trend_rsi14,
                 "trend_rsi14_raw": trend_indicators.get("rsi14_raw"),
@@ -725,6 +741,13 @@ def run_backtest(
                 "trend_bb_lower": trend_bb_lower,
                 "reserved_cash": plan.get("reserved_cash"),
                 "investable_cash": plan.get("investable_cash"),
+                "income_layer_ratio": plan.get("income_layer_ratio"),
+                "income_layer_value": plan.get("income_layer_value"),
+                "income_layer_ratio_mode": plan.get("income_layer_ratio_mode"),
+                "income_layer_log_ratio": plan.get("income_layer_log_ratio"),
+                "income_layer_loss_budget_ratio": plan.get("income_layer_loss_budget_ratio"),
+                "income_layer_loss_budget_cap_ratio": plan.get("income_layer_loss_budget_cap_ratio"),
+                "income_layer_stress_drawdown_ratio": plan.get("income_layer_stress_drawdown_ratio"),
                 "threshold_value": threshold_value,
                 "current_min_trade": current_min_trade,
                 "total_equity": current_equity,
@@ -846,6 +869,9 @@ def build_parser() -> argparse.ArgumentParser:
     input_group.add_argument("--download", action="store_true", help="Download price history with yfinance")
     parser.add_argument("--price-start", default=DEFAULT_PRICE_START, help="Download start date used with --download")
     parser.add_argument("--price-end", help="Download end date used with --download")
+    parser.add_argument("--proxy", help="Proxy URL for yfinance downloads")
+    parser.add_argument("--proxy-list", help="Path or URL with one HTTP(S) proxy per line")
+    parser.add_argument("--proxy-list-max", type=int, default=12, help="Maximum proxy candidates to try")
     parser.add_argument("--start", dest="start_date", default=DEFAULT_BACKTEST_START, help="Backtest start date")
     parser.add_argument("--end", dest="end_date", help="Backtest end date")
     parser.add_argument("--initial-equity", type=float, default=DEFAULT_INITIAL_EQUITY_USD)
@@ -880,7 +906,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--disable-income-layer",
         action="store_true",
-        help="Disable QQQI/SPYI income layer for long-history core SOXL/SOXX research",
+        help="Disable the income layer for long-history core SOXL/SOXX research",
     )
     parser.add_argument(
         "--enable-chandelier-stop",
@@ -941,11 +967,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.download:
         if output_dir is None:
             raise EnvironmentError("--output-dir is required when --download is used")
-        prices = download_price_history(
+        prices = download_price_history_with_proxy_candidates(
             DEFAULT_DOWNLOAD_SYMBOLS,
             start=args.price_start,
             end=args.price_end,
             chunk_size=25,
+            proxy=args.proxy,
+            proxy_candidates=load_proxy_candidates(args.proxy_list, max_candidates=args.proxy_list_max)
+            if args.proxy_list
+            else None,
         )
     else:
         prices = pd.read_csv(args.prices)
