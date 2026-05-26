@@ -302,7 +302,43 @@ def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:
     ).exists()
 
 
-def test_strategy_plugin_runner_rejects_taco_rebound_runtime_mount_while_research_only(tmp_path) -> None:
+def test_strategy_plugin_runner_runs_taco_rebound_notification_mount_for_tqqq(tmp_path) -> None:
+    prices_path = tmp_path / "taco_prices.csv"
+    output_dir = tmp_path / STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
+    _taco_rebound_prices().to_csv(prices_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": STRATEGY_NAME,
+                "plugin": PLUGIN_TACO_REBOUND_SHADOW,
+                "enabled": True,
+                "inputs": {
+                    "prices": str(prices_path),
+                    "event_set": "geopolitical-deescalation",
+                    "as_of": "2026-04-02",
+                    "start_date": "2026-03-20",
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    result = summary["strategy_plugins"][0]
+    assert result["strategy"] == STRATEGY_NAME
+    assert result["plugin"] == PLUGIN_TACO_REBOUND_SHADOW
+    assert result["status"] == "ok"
+    assert "route=taco_rebound action=notify_manual_review" in result["message"]
+    latest = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert latest["manual_review_required"] is True
+    assert latest["would_trade_if_enabled"] is False
+    assert "sleeve_suggestion" not in latest
+
+
+def test_strategy_plugin_runner_rejects_taco_rebound_for_non_tqqq_strategy(tmp_path) -> None:
     prices_path = tmp_path / "taco_prices.csv"
     output_dir = tmp_path / LEFT_SIDE_STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
     _taco_rebound_prices().to_csv(prices_path, index=False)
@@ -325,13 +361,13 @@ def test_strategy_plugin_runner_rejects_taco_rebound_runtime_mount_while_researc
         ],
     }
 
-    with pytest.raises(ValueError, match="research-only"):
+    with pytest.raises(ValueError, match="strategy-limited"):
         run_configured_plugins(config)
 
     assert not (output_dir / "latest_signal.json").exists()
 
 
-def test_strategy_plugin_runner_can_skip_disabled_research_only_taco_mount(tmp_path) -> None:
+def test_strategy_plugin_runner_can_skip_disabled_taco_notification_mount(tmp_path) -> None:
     output_dir = tmp_path / LEFT_SIDE_STRATEGY_NAME / "plugins" / PLUGIN_TACO_REBOUND_SHADOW
     config = {
         "output_dir": str(tmp_path / "runner"),

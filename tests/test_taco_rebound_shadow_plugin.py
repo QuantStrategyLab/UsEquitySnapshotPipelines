@@ -6,7 +6,7 @@ import pandas as pd
 
 from us_equity_snapshot_pipelines.taco_panic_rebound_research import EVENT_KIND_SOFTENING, TradeWarEvent
 from us_equity_snapshot_pipelines.taco_rebound_shadow_plugin import (
-    ACTION_INCREASE_REBOUND_BUDGET,
+    ACTION_NOTIFY_MANUAL_REVIEW,
     ROUTE_TACO_REBOUND,
     build_taco_rebound_shadow_signal,
     write_taco_rebound_shadow_outputs,
@@ -24,7 +24,7 @@ def _panic_rebound_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_left_side_budget() -> None:
+def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_manual_review_notice() -> None:
     prices = _panic_rebound_prices()
     dates = pd.bdate_range("2026-03-20", periods=12)
     event = TradeWarEvent(
@@ -45,14 +45,20 @@ def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_left_side_budge
     )
 
     assert payload["canonical_route"] == ROUTE_TACO_REBOUND
-    assert payload["suggested_action"] == ACTION_INCREASE_REBOUND_BUDGET
-    assert payload["sleeve_suggestion"] == 0.10
-    assert payload["allow_hard_defense"] is True
+    assert payload["suggested_action"] == ACTION_NOTIFY_MANUAL_REVIEW
+    assert payload["manual_review_required"] is True
+    assert payload["notification_reason"] == "event rebound context active"
+    assert payload["rebound_context_active"] is True
+    assert payload["would_trade_if_enabled"] is False
+    assert "sleeve_suggestion" not in payload
+    assert "allow_hard_defense" not in payload
     assert payload["event_rebound_break_bear"] is True
     assert payload["selected_event"]["event_id"] == "iran-ceasefire"
-    assert payload["execution_controls"]["intended_strategy_role"] == "left_side_rebound_budget_modifier"
+    assert payload["execution_controls"]["intended_strategy_role"] == "event_rebound_notification"
     assert payload["execution_controls"]["selection_allowed"] is False
-    assert payload["execution_controls"]["hard_defense_override_signal_allowed"] is True
+    assert payload["execution_controls"]["position_sizing_allowed"] is False
+    assert payload["execution_controls"]["allocation_recommendation_allowed"] is False
+    assert payload["execution_controls"]["hard_defense_override_signal_allowed"] is False
 
 
 def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
@@ -81,6 +87,7 @@ def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
     assert paths["signal_csv"].exists()
     assert paths["evidence_csv"].exists()
     latest = json.loads(paths["latest_signal"].read_text(encoding="utf-8"))
-    assert latest["sleeve_suggestion"] == 0.05
-    assert latest["allow_hard_defense"] is False
+    assert latest["manual_review_required"] is True
+    assert "sleeve_suggestion" not in latest
+    assert "allow_hard_defense" not in latest
     assert latest["event_rebound_break_bear"] is False

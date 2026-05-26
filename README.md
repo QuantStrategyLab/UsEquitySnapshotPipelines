@@ -842,9 +842,9 @@ watch-only context, but TACO routing lives outside this crisis plugin and needs
 its own research path.
 
 Build the independent TACO rebound research signal when you need a deterministic
-event-rebound audit file. MAGS usage is intentionally research-only for now;
-the preferred promoted direction is a separate TQQQ TACO overlay candidate after
-its own validation:
+event-rebound audit file. The promoted plugin direction is notification-only:
+it surfaces a manual-review alert and leaves any position sizing decision to the
+operator:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -852,16 +852,13 @@ python scripts/build_taco_rebound_shadow_signal.py \
   --prices data/output/taco_rebound_shadow/input/price_history.csv \
   --event-set geopolitical-deescalation \
   --start 2026-01-01 \
-  --geopolitical-deescalation-sleeve 0.10 \
-  --tariff-softening-sleeve 0.05 \
-  --max-sleeve 0.10 \
   --output-dir data/output/taco_rebound_research/research_only
 ```
 
 This TACO research artifact does not select stocks and does not mutate a
-strategy artifact. It only writes a small rebound-budget suggestion for
-backtests. Conflict escalation events default to a zero sleeve; de-escalation /
-ceasefire / talks events can raise a bounded rebound budget when the
+strategy artifact. It only writes event context and a manual-review notice for
+notifications. Conflict escalation events stay watch-only; de-escalation /
+ceasefire / talks events can raise a manual-review notification when the
 price-stress scanner is open.
 
 For platform-style deployment, use the sidecar plugin runner instead of wiring
@@ -871,8 +868,9 @@ Response and TACO plugin/research implementations live in the public
 `QuantStrategyLab/QuantStrategyPlugins` repository; this repository keeps
 compatibility entrypoints and writes artifacts through that package. Any platform
 execution is downstream.
-`taco_rebound_shadow` is deliberately blocked in the runner while MAGS remains
-research-only and the TQQQ overlay path has not been promoted.
+`taco_rebound_shadow` is deliberately notification-only. It may be mounted for
+TQQQ review artifacts, but it must not be mounted as a MAGS rebound-budget
+input or as any broker-facing allocation input.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
 runtime TOML should live with the deployment or platform configuration, not as a
 committed live config in this repository.
