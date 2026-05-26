@@ -126,6 +126,7 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert "trend_bb_upper" in result["signal_history"].columns
     assert "trend_realized_volatility_10" in result["signal_history"].columns
     assert "trend_realized_volatility_20" in result["signal_history"].columns
+    assert "income_layer_activation_multiplier" in result["signal_history"].columns
     assert result["signal_history"]["trend_rsi14"].notna().any()
     assert result["signal_history"]["trend_bb_upper"].notna().any()
     assert result["signal_history"]["trend_realized_volatility_10"].notna().any()

@@ -57,6 +57,7 @@ def test_tqqq_growth_income_run_backtest_can_open_income_layer() -> None:
     ]
     assert income_weights.sum(axis=1).max() > 0.0
     assert "income_layer_ratio" in result["signal_history"].columns
+    assert "income_layer_activation_multiplier" in result["signal_history"].columns
     assert "income_layer_loss_budget_cap_ratio" in result["signal_history"].columns
 
 
