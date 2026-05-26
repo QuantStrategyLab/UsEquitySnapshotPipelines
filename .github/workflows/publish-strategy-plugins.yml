@@ -127,7 +127,7 @@ jobs:
           import os
           from pathlib import Path
 
-          from us_equity_snapshot_pipelines.crisis_response_shadow_plugin import (
+          from quant_strategy_plugins.crisis_response_shadow_plugin import (
               DEFAULT_CONTEXT_CREDIT_PAIRS,
               DEFAULT_CONTEXT_FINANCIAL_SYMBOLS,
               DEFAULT_CONTEXT_RATE_SYMBOLS,
