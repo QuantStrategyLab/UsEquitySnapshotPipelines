@@ -28,6 +28,10 @@ on:
         description: Optional SOXL GCS prefix override.
         required: false
         type: string
+      taco_gcs_prefix:
+        description: Optional TQQQ TACO rebound GCS prefix override.
+        required: false
+        type: string
 
 jobs:
   crisis-response-shadow:
@@ -242,6 +246,201 @@ jobs:
             echo "- strategy: \`${STRATEGY_PROFILE}\`"
             echo "- plugin: \`${PLUGIN_NAME}\`"
             echo "- mode: \`shadow\`"
+            echo "- plugin_output_dir: \`${PLUGIN_OUTPUT_DIR}\`"
+            echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
+            echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
+            echo
+            echo "Generated plugin files:"
+            find "${PLUGIN_OUTPUT_DIR}" -type f -print | sort | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  taco-rebound-shadow:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
+      PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
+      PRICE_END: ${{ inputs.price_end }}
+      INPUT_TACO_GCS_PREFIX: ${{ inputs.taco_gcs_prefix }}
+      TACO_GCS_PREFIX: ${{ vars.TACO_REBOUND_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/taco_rebound_shadow' }}
+      YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
+      STRATEGY_PROFILE: tqqq_growth_income
+      PLUGIN_NAME: taco_rebound_shadow
+      PLUGIN_BENCHMARK_SYMBOL: QQQ
+      PLUGIN_ATTACK_SYMBOL: TQQQ
+      PLUGIN_EVENT_SET: full-plus-geopolitical-deescalation
+      PLUGIN_START_DATE: '2018-01-01'
+      PRICE_INPUT_DIR: data/input/strategy_plugins/tqqq_growth_income/taco_rebound_shadow
+      PLUGIN_OUTPUT_DIR: data/output/tqqq_growth_income/plugins/taco_rebound_shadow
+      RUNNER_OUTPUT_DIR: data/output/strategy_plugins
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Resolve publish target
+        run: |
+          set -euo pipefail
+          gcs_prefix="${INPUT_TACO_GCS_PREFIX:-${TACO_GCS_PREFIX}}"
+          echo "GCS_PREFIX=${gcs_prefix}" >> "$GITHUB_ENV"
+          echo "Resolved ${STRATEGY_PROFILE} ${PLUGIN_NAME} publish prefix: ${gcs_prefix}"
+
+      - name: Check whether Google Cloud auth is needed
+        id: gcp-auth-check
+        run: |
+          set -euo pipefail
+          needed=false
+          if [ "${EXECUTE_PUBLISH}" = "true" ] && [ -n "${GCS_PREFIX:-}" ]; then
+            needed=true
+          fi
+          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Download plugin price inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "${PRICE_INPUT_DIR}"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.yfinance_prices import download_price_history
+
+          symbols = [
+              os.environ["PLUGIN_BENCHMARK_SYMBOL"],
+              os.environ["PLUGIN_ATTACK_SYMBOL"],
+          ]
+          output_path = Path(os.environ["PRICE_INPUT_DIR"]) / "taco_rebound_shadow_price_history.csv"
+          prices = download_price_history(
+              symbols,
+              start=os.environ.get("PRICE_START") or "2010-01-01",
+              end=os.environ.get("PRICE_END") or None,
+              proxy=os.environ.get("YFINANCE_PROXY") or None,
+          )
+          prices.to_csv(output_path, index=False)
+          print(f"downloaded {len(prices)} price rows -> {output_path}")
+          PY
+
+      - name: Build strategy plugin artifact
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_OUTPUT_DIR}" "${PLUGIN_OUTPUT_DIR}"
+          config_path="${RUNNER_TEMP:-/tmp}/strategy_plugins.toml"
+          prices_path="${PRICE_INPUT_DIR}/taco_rebound_shadow_price_history.csv"
+          cat > "${config_path}" <<EOF
+          output_dir = "${RUNNER_OUTPUT_DIR}"
+          default_mode = "shadow"
+
+          [[strategy_plugins]]
+          strategy = "${STRATEGY_PROFILE}"
+          plugin = "${PLUGIN_NAME}"
+          enabled = true
+
+          [strategy_plugins.inputs]
+          prices = "${prices_path}"
+          event_set = "${PLUGIN_EVENT_SET}"
+          start_date = "${PLUGIN_START_DATE}"
+          benchmark_symbol = "${PLUGIN_BENCHMARK_SYMBOL}"
+          attack_symbol = "${PLUGIN_ATTACK_SYMBOL}"
+
+          [strategy_plugins.outputs]
+          output_dir = "${PLUGIN_OUTPUT_DIR}"
+          EOF
+          python scripts/run_strategy_plugins.py --config "${config_path}" --strategies "${STRATEGY_PROFILE}" --plugins "${PLUGIN_NAME}"
+          test -f "${PLUGIN_OUTPUT_DIR}/latest_signal.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads((Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "latest_signal.json").read_text(encoding="utf-8"))
+          if payload.get("strategy") != os.environ["STRATEGY_PROFILE"]:
+              raise SystemExit(f"unexpected strategy: {payload.get('strategy')!r}")
+          if payload.get("plugin") != os.environ["PLUGIN_NAME"]:
+              raise SystemExit(f"unexpected plugin: {payload.get('plugin')!r}")
+          if payload.get("effective_mode") != "shadow":
+              raise SystemExit(f"unexpected effective_mode: {payload.get('effective_mode')!r}")
+          if payload.get("would_trade_if_enabled") is not False:
+              raise SystemExit("TACO rebound shadow must remain notification-only")
+          controls = payload.get("execution_controls") or {}
+          if controls.get("broker_order_allowed") or controls.get("live_allocation_mutation_allowed"):
+              raise SystemExit("TACO rebound shadow artifact must not allow broker/allocation mutation")
+          print(
+              "validated latest_signal "
+              f"as_of={payload.get('as_of')} route={payload.get('canonical_route')} "
+              f"action={payload.get('suggested_action')}"
+          )
+          PY
+
+      - name: Publish or print GCS plan
+        run: |
+          set -euo pipefail
+          if [ -z "${GCS_PREFIX:-}" ]; then
+            echo "GCS_PREFIX is not set; skipping GCS publish."
+            exit 0
+          fi
+
+          normalized_prefix="${GCS_PREFIX%/}"
+          while IFS= read -r -d '' source_path; do
+            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            destination="${normalized_prefix}/${relative_path}"
+            if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+              gcloud storage cp "${source_path}" "${destination}"
+            else
+              echo "DRY-RUN gcloud storage cp ${source_path} ${destination}"
+            fi
+          done < <(find "${PLUGIN_OUTPUT_DIR}" -type f -print0 | sort -z)
+
+      - name: Upload generated artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: strategy-plugin-taco-rebound-shadow-${{ github.run_id }}
+          path: |
+            ${{ env.PRICE_INPUT_DIR }}
+            ${{ env.PLUGIN_OUTPUT_DIR }}
+            ${{ env.RUNNER_OUTPUT_DIR }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Append job summary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Strategy plugin publish"
+            echo
+            echo "- strategy: \`${STRATEGY_PROFILE}\`"
+            echo "- plugin: \`${PLUGIN_NAME}\`"
+            echo "- mode: \`shadow\`"
+            echo "- event_set: \`${PLUGIN_EVENT_SET}\`"
             echo "- plugin_output_dir: \`${PLUGIN_OUTPUT_DIR}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
