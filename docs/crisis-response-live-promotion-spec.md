@@ -45,15 +45,14 @@ is a TQQQ black-swan defense plugin; it can recommend moving the main book to
 cash or a money-market / Treasury-bill parking sleeve as manual review context
 only after a true-crisis route. It must not recommend buying event rebounds.
 Reversible policy, tariff, or geopolitical rebound research belongs outside
-`crisis_response_shadow`. MAGS-style TACO usage is research-only for now. The
-preferred direction is a separate TQQQ TACO overlay candidate after it passes
-its own validation and receives an explicit runner mount.
+`crisis_response_shadow`. MAGS-style TACO usage remains research-only. The
+preferred promoted direction is a separate TQQQ TACO notification artifact that
+can be mounted for manual review without carrying allocation instructions.
 
-The TACO research artifact may emit an `allow_hard_defense` /
-`event_rebound_break_bear` flag for high-confidence geopolitical de-escalation
-events. That flag does not authorize this repository to trade; it only lets a
-research backtest test a bounded rebound budget while the base strategy's
-hard-defense regime remains visible in logs.
+The TACO notification artifact may emit an `event_rebound_break_bear` context
+flag for high-confidence geopolitical de-escalation events. That flag does not
+authorize this repository to trade and does not imply position size; it only
+makes the manual-review reason visible in logs and notifications.
 
 ## Phase Ladder
 
@@ -129,9 +128,9 @@ registers it. A plugin is mounted to a strategy through each
 runner and must not import plugin code. Plugins are strategy-limited in the
 runner: a mount is rejected unless the plugin is explicitly declared compatible
 with that strategy. This keeps `crisis_response_shadow` scoped to TQQQ/SOXL
-black-swan defense strategies and blocks `taco_rebound_shadow` from runtime
-mounts while MAGS remains research-only. A future TQQQ TACO overlay plugin must
-update the compatibility table and tests in its own PR.
+black-swan defense strategies and keeps `taco_rebound_shadow` scoped to a
+TQQQ-only manual-review notification artifact. It must not be wired into MAGS
+rebound-budget inputs or any broker-facing allocation path.
 
 The runner accepts only `mode = "shadow"` and writes that mode into each plugin
 artifact. Downstream platform adapters must read the artifact as notification
@@ -272,7 +271,7 @@ The shadow and evidence-review process must keep these windows visible:
 | 2011 debt / euro stress | `systemic_stress_watch`; no action unless price scanner confirms |
 | 2020 COVID | Usually `no_action` because exogenous shock and policy rescue dominate |
 | 2022 rate bear | `rate_bear` / `no_action`; do not treat as true crisis without financial stress |
-| 2018-2019 trade war | Crisis plugin stays `no_action` / watch-only; separate TACO plugin may research rebound budget |
+| 2018-2019 trade war | Crisis plugin stays `no_action` / watch-only; separate TACO plugin may notify manual review context |
 | 2025+ policy shocks | Crisis plugin stays `no_action` / watch-only unless systemic stress appears |
 
 `2011_debt_euro_stress` is included in the audit reports as a
@@ -319,8 +318,9 @@ Future agents must follow these constraints:
 
 - Do not change V1 parameters unless the user explicitly asks.
 - Do not add a TACO sleeve back into `crisis_response_shadow`.
-- Do not mount `taco_rebound_shadow` to MAGS runtime configs; keep that path
-  research-only unless a future validation explicitly promotes it.
+- Do not mount `taco_rebound_shadow` to MAGS runtime configs or any allocation
+  input; keep it notification-only unless a future validation explicitly
+  promotes a separate broker-facing mechanism.
 - Do not promote V2 research into allocation changes in the same change that
   adds a new feature.
 - Do not optimize thresholds against one crisis window without checking 2015+,

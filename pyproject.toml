@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "us-equity-snapshot-pipelines"
-version = "0.1.0"
+version = "0.1.1"
 description = "Upstream feature-snapshot and release pipelines for US equity strategies"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ dependencies = [
   "pandas>=2.0",
   "requests[socks]>=2.31",
   "yfinance>=0.2.40",
-  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@c1e4f57234aef076711311d83297bcfe128d4958",
+  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@311a885f18316d5e77bbb74ad088456259915cc6",
   "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@b626ee3e42feabbf6cd427af6faf5655ca6cd76f",
 ]
 

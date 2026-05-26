@@ -41,7 +41,8 @@ The historical research router uses this conservative priority:
 1. `true_crisis`: bubble-burst or financial-crisis risk. Activate crisis guard
    and suppress new TACO entries while active.
 2. `taco_fake_crisis`: policy / tariff / trade-war shock without active
-   true-crisis guard. Allow small TACO sleeve.
+   true-crisis guard. Historical research can compare an event sleeve, but the
+   promoted plugin path is notification-only.
 3. `no_action`: unclear, non-systemic bear market, rate bear, or context
    conflict.
 
@@ -53,9 +54,9 @@ The production-facing crisis shadow plugin narrows this to:
 
 ## Frozen V1 parameters
 
-- TACO sleeve: start with `0.05` account sleeve in historical research. It is
-  not part of `crisis_response_shadow`, and the MAGS path is not a promoted
-  runner plugin.
+- TACO notification: the promoted plugin artifact does not carry a sleeve size.
+  Historical backtests may still compare event sleeves, but those values are
+  research inputs, not runtime instructions.
 - Crisis drawdown: configured benchmark drawdown from trailing high <= `-0.20`
   (`QQQ` for TQQQ, `SOXX` for SOXL).
 - Crisis confirmation: `5` trading days.
