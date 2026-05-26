@@ -859,7 +859,7 @@ This TACO research artifact does not select stocks and does not mutate a
 strategy artifact. It only writes event context and a manual-review notice for
 notifications. Conflict escalation events stay watch-only; de-escalation /
 ceasefire / talks events can raise a manual-review notification when the
-price-stress scanner is open.
+price-stress scanner is open and post-event rebound confirmation passes.
 
 For platform-style deployment, use the sidecar plugin runner instead of wiring
 plugins into a strategy function. The runner reads strategy-scoped plugin
@@ -874,6 +874,9 @@ input or as any broker-facing allocation input.
 Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
 runtime TOML should live with the deployment or platform configuration, not as a
 committed live config in this repository.
+`.github/workflows/publish-strategy-plugins.yml` publishes the scheduled
+`crisis_response_shadow` artifacts for TQQQ/SOXL and the TQQQ-only
+`taco_rebound_shadow` artifact to their configured GCS prefixes.
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \

@@ -47,8 +47,10 @@ def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_manual_review_n
     assert payload["canonical_route"] == ROUTE_TACO_REBOUND
     assert payload["suggested_action"] == ACTION_NOTIFY_MANUAL_REVIEW
     assert payload["manual_review_required"] is True
-    assert payload["notification_reason"] == "event rebound context active"
+    assert payload["notification_reason"] == "event rebound context confirmed"
     assert payload["rebound_context_active"] is True
+    assert payload["event_context_active"] is True
+    assert payload["rebound_confirmation"]["confirmed"] is True
     assert payload["would_trade_if_enabled"] is False
     assert "sleeve_suggestion" not in payload
     assert "allow_hard_defense" not in payload
@@ -59,6 +61,36 @@ def test_taco_rebound_shadow_routes_geopolitical_deescalation_to_manual_review_n
     assert payload["execution_controls"]["position_sizing_allowed"] is False
     assert payload["execution_controls"]["allocation_recommendation_allowed"] is False
     assert payload["execution_controls"]["hard_defense_override_signal_allowed"] is False
+
+
+def test_taco_rebound_shadow_waits_for_rebound_confirmation_before_manual_review() -> None:
+    prices = _panic_rebound_prices()
+    dates = pd.bdate_range("2026-03-20", periods=12)
+    event = TradeWarEvent(
+        event_id="iran-ceasefire",
+        event_date=str(dates[3].date()),
+        kind=EVENT_KIND_SOFTENING,
+        region="iran_middle_east",
+        title="Ceasefire talks",
+        source="test",
+        source_url="https://example.test/ceasefire",
+    )
+
+    payload = build_taco_rebound_shadow_signal(
+        prices,
+        events=(event,),
+        as_of=str(dates[3].date()),
+        start_date=str(dates[0].date()),
+    )
+
+    assert payload["canonical_route"] == "no_action"
+    assert payload["suggested_action"] == "watch_only"
+    assert payload["manual_review_required"] is False
+    assert payload["event_context_active"] is True
+    assert payload["rebound_context_active"] is False
+    assert payload["rebound_confirmation"]["confirmed"] is False
+    assert payload["suppression_reason"] == "rebound confirmation pending"
+    assert "post-event trading confirmation" in payload["rebound_confirmation"]["reason"]
 
 
 def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
@@ -88,6 +120,7 @@ def test_taco_rebound_shadow_writes_artifacts(tmp_path) -> None:
     assert paths["evidence_csv"].exists()
     latest = json.loads(paths["latest_signal"].read_text(encoding="utf-8"))
     assert latest["manual_review_required"] is True
+    assert latest["rebound_confirmation"]["confirmed"] is True
     assert "sleeve_suggestion" not in latest
     assert "allow_hard_defense" not in latest
     assert latest["event_rebound_break_bear"] is False

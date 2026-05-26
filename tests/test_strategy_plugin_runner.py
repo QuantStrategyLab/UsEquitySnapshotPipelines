@@ -334,6 +334,7 @@ def test_strategy_plugin_runner_runs_taco_rebound_notification_mount_for_tqqq(tm
     assert "route=taco_rebound action=notify_manual_review" in result["message"]
     latest = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
     assert latest["manual_review_required"] is True
+    assert latest["rebound_confirmation"]["confirmed"] is True
     assert latest["would_trade_if_enabled"] is False
     assert "sleeve_suggestion" not in latest
 
