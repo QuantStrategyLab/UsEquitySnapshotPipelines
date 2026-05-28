@@ -56,6 +56,9 @@ def _normalize_overlay_kind(value: str | None) -> str:
         "realized_volatility": "volatility",
         "rolling_drawdown": "drawdown",
         "ret": "momentum",
+        "dual_ma": "dual_ma",
+        "dual_sma": "dual_ma",
+        "moving_average_cross": "dual_ma",
     }
     return aliases.get(text, text)
 
@@ -170,6 +173,8 @@ def _build_soxl_delever_overlay_history(
     kind: str,
     symbol: str,
     window: int,
+    fast_window: int | None = None,
+    slow_window: int | None = None,
     threshold: float | None,
     atr_multiple: float,
 ) -> pd.DataFrame:
@@ -201,14 +206,31 @@ def _build_soxl_delever_overlay_history(
         rolling_high = close.rolling(effective_window, min_periods=effective_window).max()
         metric = close / rolling_high - 1.0
         triggered = metric <= effective_threshold
+        extra_columns = {}
     elif kind == "volatility":
         effective_threshold = float(threshold if threshold is not None else 0.45)
         metric = close.pct_change().rolling(effective_window, min_periods=effective_window).std(ddof=0) * np.sqrt(252)
         triggered = metric >= effective_threshold
+        extra_columns = {}
     elif kind == "momentum":
         effective_threshold = float(threshold if threshold is not None else -0.06)
         metric = close.pct_change(effective_window)
         triggered = metric <= effective_threshold
+        extra_columns = {}
+    elif kind == "dual_ma":
+        effective_fast_window = max(2, int(fast_window or 10))
+        effective_slow_window = max(effective_fast_window + 1, int(slow_window or window or 30))
+        fast_ma = close.rolling(effective_fast_window, min_periods=effective_fast_window).mean()
+        slow_ma = close.rolling(effective_slow_window, min_periods=effective_slow_window).mean()
+        effective_threshold = 0.0 if threshold is None else float(threshold)
+        metric = fast_ma / slow_ma - 1.0
+        triggered = metric <= effective_threshold
+        extra_columns = {
+            "fast_window": effective_fast_window,
+            "slow_window": effective_slow_window,
+            "fast_ma": fast_ma,
+            "slow_ma": slow_ma,
+        }
     else:
         raise ValueError("unsupported SOXL delever overlay kind")
 
@@ -219,6 +241,7 @@ def _build_soxl_delever_overlay_history(
             "threshold": effective_threshold,
             "triggered": triggered,
             "kind": kind,
+            **extra_columns,
         }
     )
 
@@ -267,6 +290,9 @@ def build_indicator_history(
             },
             index=close.index,
         )
+        if symbol == "SOXL":
+            history["ma10"] = close.rolling(10).mean()
+            history["ma30"] = close.rolling(30).mean()
         if symbol == "SOXX":
             ma20 = close.rolling(20).mean()
             daily_returns = close.pct_change(fill_method=None)
@@ -559,6 +585,8 @@ def run_backtest(
     soxl_delever_overlay_kind: str = "none",
     soxl_delever_overlay_symbol: str | None = None,
     soxl_delever_overlay_window: int | None = None,
+    soxl_delever_overlay_fast_window: int | None = None,
+    soxl_delever_overlay_slow_window: int | None = None,
     soxl_delever_overlay_threshold: float | None = None,
     soxl_delever_overlay_atr_multiple: float | None = None,
     soxl_delever_overlay_retention_ratio: float = 0.0,
@@ -600,7 +628,9 @@ def run_backtest(
         overlay_kind = "chandelier"
     soxl_delever_enabled = overlay_kind != "none"
     overlay_symbol = _normalize_symbol(soxl_delever_overlay_symbol or chandelier_stop_symbol or "SOXX")
-    overlay_window = int(soxl_delever_overlay_window or chandelier_window)
+    overlay_window = int(soxl_delever_overlay_window or soxl_delever_overlay_slow_window or chandelier_window)
+    overlay_fast_window = int(soxl_delever_overlay_fast_window or 10)
+    overlay_slow_window = int(soxl_delever_overlay_slow_window or soxl_delever_overlay_window or 30)
     overlay_atr_multiple = float(
         soxl_delever_overlay_atr_multiple
         if soxl_delever_overlay_atr_multiple is not None
@@ -620,6 +650,8 @@ def run_backtest(
             kind=overlay_kind,
             symbol=overlay_symbol,
             window=overlay_window,
+            fast_window=overlay_fast_window,
+            slow_window=overlay_slow_window,
             threshold=soxl_delever_overlay_threshold,
             atr_multiple=overlay_atr_multiple,
         )
@@ -796,11 +828,19 @@ def run_backtest(
                 "soxl_delever_overlay_kind": overlay_kind,
                 "soxl_delever_overlay_symbol": overlay_symbol,
                 "soxl_delever_overlay_window": overlay_window,
+                "soxl_delever_overlay_fast_window": delever_row.get("fast_window")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_slow_window": delever_row.get("slow_window")
+                if not delever_row.empty
+                else None,
                 "soxl_delever_overlay_threshold": delever_row.get("threshold") if not delever_row.empty else None,
                 "soxl_delever_overlay_atr_multiple": overlay_atr_multiple if overlay_kind == "chandelier" else None,
                 "soxl_delever_overlay_retention_ratio": overlay_retention_ratio,
                 "soxl_delever_overlay_redirect_symbol": overlay_redirect_symbol,
                 "soxl_delever_overlay_metric": delever_row.get("metric") if not delever_row.empty else None,
+                "soxl_delever_overlay_fast_ma": delever_row.get("fast_ma") if not delever_row.empty else None,
+                "soxl_delever_overlay_slow_ma": delever_row.get("slow_ma") if not delever_row.empty else None,
                 "soxl_delever_overlay_triggered": delever_triggered,
             }
         )
@@ -938,11 +978,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--soxl-delever-overlay",
         default="none",
-        choices=("none", "chandelier", "drawdown", "volatility", "momentum"),
+        choices=("none", "chandelier", "drawdown", "volatility", "momentum", "dual_ma"),
         help="Research-only SOXL delever overlay family",
     )
     parser.add_argument("--soxl-delever-symbol", help="Symbol used by the SOXL delever overlay")
     parser.add_argument("--soxl-delever-window", type=int, help="Lookback window for the SOXL delever overlay")
+    parser.add_argument("--soxl-delever-fast-window", type=int, help="Fast window for dual_ma overlay")
+    parser.add_argument("--soxl-delever-slow-window", type=int, help="Slow window for dual_ma overlay")
     parser.add_argument(
         "--soxl-delever-threshold",
         type=float,
@@ -1008,6 +1050,8 @@ def main(argv: list[str] | None = None) -> int:
         soxl_delever_overlay_kind=args.soxl_delever_overlay,
         soxl_delever_overlay_symbol=args.soxl_delever_symbol,
         soxl_delever_overlay_window=args.soxl_delever_window,
+        soxl_delever_overlay_fast_window=args.soxl_delever_fast_window,
+        soxl_delever_overlay_slow_window=args.soxl_delever_slow_window,
         soxl_delever_overlay_threshold=args.soxl_delever_threshold,
         soxl_delever_overlay_atr_multiple=args.soxl_delever_atr_multiple,
         soxl_delever_overlay_retention_ratio=float(args.soxl_delever_retention_ratio),
@@ -1047,6 +1091,8 @@ def main(argv: list[str] | None = None) -> int:
             "soxl_delever_overlay": args.soxl_delever_overlay,
             "soxl_delever_symbol": args.soxl_delever_symbol,
             "soxl_delever_window": args.soxl_delever_window,
+            "soxl_delever_fast_window": args.soxl_delever_fast_window,
+            "soxl_delever_slow_window": args.soxl_delever_slow_window,
             "soxl_delever_threshold": args.soxl_delever_threshold,
             "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
             "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
