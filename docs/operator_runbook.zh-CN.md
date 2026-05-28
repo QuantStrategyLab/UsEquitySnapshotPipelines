@@ -113,14 +113,14 @@ data/output/monthly_report_bundle/ai_review_input.md
 data/output/monthly_report_bundle/job_summary.md
 ```
 
-workflow 会创建或更新带 `monthly-review` label 的 GitHub issue。默认路线会 dispatch `QuantStrategyLab/CryptoCodexAuditBridge`，由 self-hosted VPS runner 上的 Codex 执行审计，并把结果回帖到 issue。审计重点包括：
+workflow 会创建或更新带 `monthly-review` label 的 GitHub issue。默认路线会 dispatch `QuantStrategyLab/CodexAuditBridge`，由 self-hosted VPS runner 上的 Codex 执行审计，并把结果回帖到 issue。审计重点包括：
 
 - 每个预期 snapshot profile 的 artifact 完整性
 - contract version、snapshot date、row count 和 ranking-preview 健康度
 - 会影响下游信心的缺失或过期证据
 - 对 broker/runtime 仓库的下游影响
 
-月度 review workflow 会 dispatch `CryptoCodexAuditBridge`，由 bridge 通过 `SELFHOSTED_CODEX_REVIEW_PROVIDER` 统一决定 provider。`auto` 是默认值：先跑 self-hosted Codex 路径，Codex 准备或执行失败时回落到已配置的 API reviewers；要启用双 AI fallback，把 `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY` 都配置在 bridge。`codex` 会关闭 API fallback；`api` 汇总 API 审阅；`openai` 和 `anthropic` 只回帖单一 API 审阅。默认不会自动合并，只有确认 branch protection 和 CI gate 后，才设置 `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` 让 bridge 显式请求 GitHub auto-merge。
+月度 review workflow 会 dispatch `CodexAuditBridge`，由 bridge 通过 `SELFHOSTED_CODEX_REVIEW_PROVIDER` 统一决定 provider。`auto` 是默认值：先跑 self-hosted Codex 路径，Codex 准备或执行失败时回落到已配置的 API reviewers；要启用双 AI fallback，把 `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY` 都配置在 bridge。`codex` 会关闭 API fallback；`api` 汇总 API 审阅；`openai` 和 `anthropic` 只回帖单一 API 审阅。默认不会自动合并，只有确认 branch protection 和 CI gate 后，才设置 `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` 让 bridge 显式请求 GitHub auto-merge。
 
 ## 排障规则
 
