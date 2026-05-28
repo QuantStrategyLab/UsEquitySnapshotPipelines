@@ -68,6 +68,8 @@ Families tested:
 - Rolling drawdown gate.
 - Short-window realized-volatility gate.
 - Short-window momentum shock gate.
+- Dual moving-average gate for bounded research sweeps, for example SOXL
+  `10/30` with partial retention and redirect into SOXX.
 - SOXL retention ratios of `0%`, `25%`, `50%`, and `75%`.
 - Redirect targets of `BOXX` and `SOXX`.
 

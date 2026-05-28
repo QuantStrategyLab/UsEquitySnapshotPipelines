@@ -104,6 +104,26 @@ def _build_high_volatility_soxx_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_dual_ma_research_prices() -> pd.DataFrame:
+    dates = pd.bdate_range("2023-01-02", periods=420)
+    rows = []
+    for idx, as_of in enumerate(dates):
+        soxl = 210.0 - idx * 0.25 if idx >= 220 else 50.0 + idx * 0.65
+        values = {
+            "SOXL": soxl,
+            "SOXX": 100.0 + idx * 0.6,
+            "BOXX": 100.0,
+            "SCHD": 70.0 + idx * 0.02,
+            "DGRO": 60.0 + idx * 0.02,
+            "SGOV": 100.0 + idx * 0.005,
+            "QQQI": 50.0 + idx * 0.05,
+            "SPYI": 50.0 + idx * 0.03,
+        }
+        for symbol, close in values.items():
+            rows.append({"symbol": symbol, "as_of": as_of, "close": close})
+    return pd.DataFrame(rows)
+
+
 def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     prices = _build_synthetic_prices()
     result = run_backtest(
@@ -126,6 +146,7 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert "trend_bb_upper" in result["signal_history"].columns
     assert "trend_realized_volatility_10" in result["signal_history"].columns
     assert "trend_realized_volatility_20" in result["signal_history"].columns
+    assert "soxl_delever_overlay_triggered" in result["signal_history"].columns
     assert "income_layer_activation_multiplier" in result["signal_history"].columns
     assert result["signal_history"]["trend_rsi14"].notna().any()
     assert result["signal_history"]["trend_bb_upper"].notna().any()
@@ -140,6 +161,8 @@ def test_build_indicator_history_includes_soxx_realized_volatility() -> None:
     indicators = build_indicator_history(close_matrix)
 
     assert "realized_volatility" in indicators["soxx"].columns
+    assert "ma10" in indicators["soxl"].columns
+    assert "ma30" in indicators["soxl"].columns
     assert "realized_volatility_10" in indicators["soxx"].columns
     assert "realized_volatility_20" in indicators["soxx"].columns
     assert indicators["soxx"]["realized_volatility_10"].notna().any()
@@ -209,6 +232,33 @@ def test_soxl_soxx_volatility_delever_research_overlay_keeps_partial_soxl() -> N
     assert not triggered.empty
     assert triggered["soxl_delever_overlay_kind"].eq("volatility").all()
     assert triggered["soxl_delever_overlay_metric"].ge(0.20).all()
+    assert triggered["soxl_delever_overlay_retention_ratio"].eq(0.50).all()
+
+
+def test_soxl_soxx_dual_ma_research_overlay_keeps_partial_soxl() -> None:
+    result = run_backtest(
+        _build_dual_ma_research_prices(),
+        initial_equity=100_000.0,
+        start_date="2023-10-02",
+        end_date="2024-03-29",
+        turnover_cost_bps=5.0,
+        soxl_delever_overlay_kind="dual_ma",
+        soxl_delever_overlay_symbol="SOXL",
+        soxl_delever_overlay_fast_window=10,
+        soxl_delever_overlay_slow_window=30,
+        soxl_delever_overlay_retention_ratio=0.50,
+        soxl_delever_overlay_redirect_symbol="SOXX",
+    )
+
+    signal_history = result["signal_history"]
+    triggered = signal_history.loc[signal_history["soxl_delever_overlay_triggered"].astype(bool)]
+
+    assert result["summary"]["SOXL Delever Stops"] >= 1
+    assert not triggered.empty
+    assert triggered["soxl_delever_overlay_kind"].eq("dual_ma").all()
+    assert triggered["soxl_delever_overlay_fast_window"].eq(10).all()
+    assert triggered["soxl_delever_overlay_slow_window"].eq(30).all()
+    assert (triggered["soxl_delever_overlay_fast_ma"] < triggered["soxl_delever_overlay_slow_ma"]).all()
     assert triggered["soxl_delever_overlay_retention_ratio"].eq(0.50).all()
 
 
