@@ -71,7 +71,7 @@ The scheduled workflows run monthly: first they refresh the shared Russell 1000 
 
 The monthly review control plane is only for snapshot artifact repositories:
 
-- `monthly_review.yml` runs after a successful `Publish Snapshot Artifacts` workflow or by manual dispatch.
+- `monthly_review.yml` runs after a successful scheduled `Publish Snapshot Artifacts` workflow or by manual dispatch. Manual single-profile snapshot publishes do not trigger a full monthly AI review automatically.
 - It downloads the publish run artifacts, builds `data/output/monthly_report_bundle/`, and creates or updates a `monthly-review` issue.
 - The review route dispatches `QuantStrategyLab/CodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`.
 - `auto` is the default provider: the self-hosted Codex path reads the monthly issue first, posts the audit result back to the issue, and may open a PR directly for safe low-risk fixes. If Codex setup or execution fails, the bridge posts the configured API fallback review; configure both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in the bridge for dual-AI fallback.
@@ -236,7 +236,7 @@ python scripts/build_tech_communication_pullback_snapshot.py \
 
 月度 review 控制面只用于 snapshot artifact 仓库：
 
-- `monthly_review.yml` 在 `Publish Snapshot Artifacts` workflow 成功后运行，也支持手工触发。
+- `monthly_review.yml` 在定时 `Publish Snapshot Artifacts` workflow 成功后运行，也支持手工触发。手动单 profile snapshot publish 不会自动触发完整月度 AI review。
 - 它下载 publish run artifacts，构建 `data/output/monthly_report_bundle/`，并创建或更新 `monthly-review` issue。
 - review 路线 dispatch `QuantStrategyLab/CodexAuditBridge`，由 bridge 通过 `SELFHOSTED_CODEX_REVIEW_PROVIDER` 统一决定 provider。
 - `auto` 是默认 provider：先由 self-hosted Codex 路径读取 monthly issue、回帖审计结果，并可直接为低风险修复开 PR；如果 Codex 准备或执行失败，则回落到 bridge 中已配置的 API 审阅。要启用双 AI fallback，把 `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY` 都配置在 bridge。
