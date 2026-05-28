@@ -18,7 +18,7 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "scripts/post_monthly_ai_review_issue.py" in workflow
     assert "monthly-review" in workflow
     assert "SELFHOSTED_CODEX_REVIEW_ENABLED" in workflow
-    assert "CryptoCodexAuditBridge" in workflow
+    assert "CodexAuditBridge" in workflow
     assert "CODEX_AUDIT_DISPATCH_TOKEN" in workflow
     assert "permission-actions: write" in workflow
     assert "SELFHOSTED_CODEX_REVIEW_PROVIDER" in workflow
