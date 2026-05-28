@@ -238,6 +238,23 @@ jobs:
               f"action={payload.get('suggested_action')}"
           )
           PY
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.artifacts import write_strategy_plugin_release_manifest
+
+          manifest = write_strategy_plugin_release_manifest(
+              output_dir=Path(os.environ["PLUGIN_OUTPUT_DIR"]),
+              repository=os.environ.get("GITHUB_REPOSITORY"),
+              git_sha=os.environ.get("GITHUB_SHA"),
+              run_id=os.environ.get("GITHUB_RUN_ID"),
+              run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT"),
+          )
+          print(f"wrote strategy plugin release manifest -> {manifest}")
+          PY
+          test -f "${PLUGIN_OUTPUT_DIR}/release_manifest.json"
+          test -d "${PLUGIN_OUTPUT_DIR}/releases"
 
       - name: Publish or print GCS plan
         run: |

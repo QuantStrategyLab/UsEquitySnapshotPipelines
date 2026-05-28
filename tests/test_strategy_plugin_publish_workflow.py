@@ -33,6 +33,10 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert 'taco_enabled = ${PLUGIN_TACO_ENABLED}' in workflow
     assert "position_control" in workflow
     assert "notification" in workflow
+    assert "write_strategy_plugin_release_manifest" in workflow
+    assert "GITHUB_RUN_ID" in workflow
+    assert "GITHUB_SHA" in workflow
+    assert "release_manifest.json" in workflow
 
 
 def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
