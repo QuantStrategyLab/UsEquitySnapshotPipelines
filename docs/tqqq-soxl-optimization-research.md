@@ -3,8 +3,7 @@
 Research date: 2026-05-10
 
 Promotion note: the current production SOXL/SOXX volatility delever gate uses
-`SOXX 10d realized volatility >= 50%, SOXL -> SOXX`, promoted from the exact
-real-product replay in `soxl-soxx-chandelier-stop-research.md`. The synthetic
+`SOXX 10d realized volatility >= 55%, SOXL -> SOXX`. The older synthetic
 long-history sweep below remains the historical optimization record.
 
 This note records a bounded optimization sweep for the TQQQ and SOXL leveraged
@@ -94,10 +93,11 @@ Passing candidates:
 Selected `BOXX` redirect variants improved full-sample CAGR and drawdown, but
 failed the strict no-CAGR-regression rule in at least one window.
 
-Conclusion: the strongest SOXL research candidate is the 20-day SOXX
-realized-volatility gate at 50%, redirecting triggered SOXL target exposure into
-SOXX. It passed this bounded sweep, but should remain research-only until a
-separate PR promotes it with implementation tests and operator review.
+Historical conclusion from this sweep: the strongest candidate in that older
+synthetic run was the 20-day SOXX realized-volatility gate at 50%, redirecting
+triggered SOXL target exposure into SOXX. Later exact-replay and income-layer
+work did not promote that older 50% threshold; the current production default is
+the 10-day 55% SOXX realized-volatility gate, redirecting SOXL into SOXX.
 
 ## Local Research Outputs
 

@@ -252,17 +252,14 @@ python scripts/build_tech_communication_pullback_snapshot.py \
 
 SOXL/SOXX trend-income 的 research backtest 可以使用本地价格数据运行。默认研究路径会构建 runtime 策略使用的 SOXX RSI 和 Bollinger-band 输入；也可以通过动态 RSI 分位、Chandelier-style delever overlay 等参数研究替代保护机制。Chandelier overlay 默认关闭，只在研究回测中把触发日的 SOXL target value reroute 到 BOXX，不改变生产 manifest。初始研究说明见 `docs/soxl-soxx-chandelier-stop-research.md`。
 
-To research alternative SOXL delever gates without changing production, use
-`--soxl-delever-overlay volatility|drawdown|momentum|dual_ma` with
-`--soxl-delever-symbol`, `--soxl-delever-window`,
-`--soxl-delever-fast-window`, `--soxl-delever-slow-window`,
-`--soxl-delever-threshold`, `--soxl-delever-retention-ratio`, and
-`--soxl-delever-redirect-symbol`. The `dual_ma` option is research-only and can
-model variants such as SOXL `10/30` partial retention redirected into SOXX. The
-current promoted production gate is a SOXX 10-day volatility gate at `0.50` that
-redirects SOXL into SOXX. See
-`docs/tqqq-soxl-optimization-research.md` for the TQQQ/SOXL no-regression
-optimization sweep.
+如需在不改生产配置的情况下研究替代 SOXL 降杠杆门，可以使用
+`--soxl-delever-overlay volatility|drawdown|momentum|dual_ma`，并配合
+`--soxl-delever-symbol`、`--soxl-delever-window`、
+`--soxl-delever-fast-window`、`--soxl-delever-slow-window`、
+`--soxl-delever-threshold`、`--soxl-delever-retention-ratio` 和
+`--soxl-delever-redirect-symbol`。`dual_ma` 用于研究 SOXL/SOXX 双均线减仓，
+例如 `10/30` 减半转 `SOXX`，默认不启用。当前实盘门槛固定为 `SOXX` 10 日年化实际波动率
+`>= 55%` 时把 `SOXL` 转向 `SOXX`。
 
 For long-history core SOXL/SOXX validation, provide a BOXX-compatible cash
 proxy such as BIL under the `BOXX` symbol and add `--disable-income-layer`.
