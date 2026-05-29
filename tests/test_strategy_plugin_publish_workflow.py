@@ -4,7 +4,7 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
-MARKET_REGIME_PLUGIN_REF = "254c05e5c11007997f883abb01afe5b3e04838fc"
+MARKET_REGIME_PLUGIN_REF = "v0.1.4"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:

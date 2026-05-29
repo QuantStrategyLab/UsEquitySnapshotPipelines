@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import subprocess
 import sys
@@ -80,14 +81,12 @@ ARCHIVE_MODE_SPECS = {
 def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str, object]:
     config = dict(tqqq_growth_income_manifest.default_config)
     config.update(dict(overrides or {}))
-    for key in (
-        "benchmark_symbol",
-        "managed_symbols",
-        "execution_cash_reserve_ratio",
-        "signal_effective_after_trading_days",
-    ):
-        config.pop(key, None)
-    return config
+    accepted_keys = {
+        name
+        for name, parameter in inspect.signature(build_rebalance_plan).parameters.items()
+        if parameter.kind in {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    }
+    return {key: value for key, value in config.items() if key in accepted_keys}
 
 
 def _income_disabled_overrides() -> dict[str, object]:
