@@ -3,6 +3,11 @@
 Status: research-only as of 2026-05-10. Do not promote this overlay into the
 runtime strategy without a separate evidence review and explicit approval.
 
+Current-policy note: the 50% volatility-gate result below is historical
+research evidence. The current runtime default redirects SOXL into SOXX when
+SOXX 10d realized volatility is at least 55%. See
+`docs/tqqq-soxl-optimization-research.md` for the broader optimization record.
+
 ## Question
 
 Can a Chandelier-style stop reduce SOXL crash exposure without damaging the
@@ -73,7 +78,8 @@ Families tested:
 - SOXL retention ratios of `0%`, `25%`, `50%`, and `75%`.
 - Redirect targets of `BOXX` and `SOXX`.
 
-The only clean common winner in the exact replay was a SOXX volatility gate:
+At the time, the only clean common winner in the exact replay was a SOXX
+volatility gate:
 
 ```bash
 --soxl-delever-overlay volatility \
