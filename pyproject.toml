@@ -12,7 +12,7 @@ dependencies = [
   "pandas>=2.0",
   "requests[socks]>=2.31",
   "yfinance>=0.2.40",
-  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@97e9cd71da6e432e2f910cb72de223382696cb0b",
+  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@254c05e5c11007997f883abb01afe5b3e04838fc",
   "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@b626ee3e42feabbf6cd427af6faf5655ca6cd76f",
 ]
 

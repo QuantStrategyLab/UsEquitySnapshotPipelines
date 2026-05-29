@@ -3,6 +3,8 @@ from pathlib import Path
 
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
+PYPROJECT = Path("pyproject.toml")
+MARKET_REGIME_PLUGIN_REF = "254c05e5c11007997f883abb01afe5b3e04838fc"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -37,6 +39,12 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "GITHUB_RUN_ID" in workflow
     assert "GITHUB_SHA" in workflow
     assert "release_manifest.json" in workflow
+
+
+def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
+    pyproject = PYPROJECT.read_text(encoding="utf-8")
+
+    assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
 
 
 def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
