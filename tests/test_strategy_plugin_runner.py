@@ -8,7 +8,9 @@ import pytest
 
 from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRISIS
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
+    GENERAL_MARKET_REGIME_NOTIFICATION_TARGET,
     PLUGIN_CRISIS_RESPONSE_SHADOW,
+    PLUGIN_MARKET_REGIME_CONTROL,
     PLUGIN_TACO_REBOUND_SHADOW,
     load_plugin_config,
     main,
@@ -244,7 +246,7 @@ def test_strategy_plugin_runner_uses_default_mode_when_entry_mode_is_omitted(tmp
     assert payload["execution_controls"]["notification_profile"] == "shadow_only"
 
 
-def test_strategy_plugin_runner_mounts_crisis_shadow_to_soxl_strategy(tmp_path) -> None:
+def test_strategy_plugin_runner_rejects_crisis_shadow_soxl_strategy_mount(tmp_path) -> None:
     prices_path = tmp_path / "soxl_prices.csv"
     output_dir = tmp_path / SOXL_STRATEGY_NAME / "plugins" / PLUGIN_CRISIS_RESPONSE_SHADOW
     _soxl_quiet_prices().to_csv(prices_path, index=False)
@@ -271,16 +273,54 @@ def test_strategy_plugin_runner_mounts_crisis_shadow_to_soxl_strategy(tmp_path) 
         ],
     }
 
+    with pytest.raises(ValueError, match="strategy-limited"):
+        run_configured_plugins(config)
+
+    assert not (output_dir / "latest_signal.json").exists()
+
+
+def test_strategy_plugin_runner_runs_soxl_market_regime_notification_target(tmp_path) -> None:
+    prices_path = tmp_path / "market_regime_prices.csv"
+    output_dir = tmp_path / GENERAL_MARKET_REGIME_NOTIFICATION_TARGET / "plugins" / PLUGIN_MARKET_REGIME_CONTROL
+    _soxl_quiet_prices().to_csv(prices_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "notification_targets": [
+            {
+                "notification_target": GENERAL_MARKET_REGIME_NOTIFICATION_TARGET,
+                "plugin": PLUGIN_MARKET_REGIME_CONTROL,
+                "enabled": True,
+                "inputs": {
+                    "prices": str(prices_path),
+                    "as_of": "2025-11-19",
+                    "benchmark_symbol": "SOXX",
+                    "attack_symbol": "SOXL",
+                    "crisis_enabled": False,
+                    "macro_enabled": False,
+                    "taco_enabled": False,
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
     summary = run_configured_plugins(config)
 
-    result = summary["strategy_plugins"][0]
-    assert result["strategy"] == SOXL_STRATEGY_NAME
-    assert result["plugin"] == PLUGIN_CRISIS_RESPONSE_SHADOW
-    assert result["effective_mode"] == "shadow"
+    assert summary["strategy_plugins"] == []
+    result = summary["notification_targets"][0]
+    assert result["strategy"] == ""
+    assert result["target_type"] == "notification_target"
+    assert result["notification_target"] == GENERAL_MARKET_REGIME_NOTIFICATION_TARGET
+    assert result["plugin"] == PLUGIN_MARKET_REGIME_CONTROL
+    assert result["status"] == "ok"
     payload = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
-    assert payload["strategy"] == SOXL_STRATEGY_NAME
-    assert payload["evidence"]["metrics"]["benchmark_symbol"] == "SOXX"
-    assert payload["execution_controls"]["broker_order_allowed"] is False
+    assert "strategy" not in payload
+    assert payload["target_type"] == "notification_target"
+    assert payload["notification_target"] == GENERAL_MARKET_REGIME_NOTIFICATION_TARGET
+    assert payload["execution_controls"]["capital_impact"] == "notification_only"
+    assert payload["execution_controls"]["strategy_runtime_metadata_allowed"] is False
+    assert payload["execution_controls"]["position_control_allowed"] is False
 
 
 def test_strategy_plugin_runner_filters_by_strategy(tmp_path) -> None:

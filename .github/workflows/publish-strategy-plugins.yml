@@ -24,10 +24,6 @@ on:
         description: Optional legacy TQQQ GCS prefix override.
         required: false
         type: string
-      soxl_gcs_prefix:
-        description: Optional SOXL GCS prefix override.
-        required: false
-        type: string
       taco_gcs_prefix:
         description: Optional TQQQ TACO rebound GCS prefix override.
         required: false
@@ -37,7 +33,7 @@ on:
         required: false
         type: string
       market_regime_soxl_gcs_prefix:
-        description: Optional SOXL market regime control GCS prefix override.
+        description: Optional SOXL market regime notification GCS prefix override.
         required: false
         type: string
 
@@ -49,12 +45,18 @@ jobs:
       matrix:
         include:
           - strategy_profile: tqqq_growth_income
+            target_type: strategy
+            notification_target: ''
+            output_scope: tqqq_growth_income
             benchmark_symbol: QQQ
             attack_symbol: TQQQ
             event_set: full-plus-geopolitical-deescalation
             start_date: '2018-01-01'
             taco_enabled: 'true'
           - strategy_profile: soxl_soxx_trend_income
+            target_type: notification_target
+            notification_target: market_regime_notification
+            output_scope: market_regime_notification
             benchmark_symbol: SOXX
             attack_symbol: SOXL
             event_set: full
@@ -73,9 +75,11 @@ jobs:
       INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}
       INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}
       MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control' }}
-      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/market_regime_control' }}
+      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/market_regime_notification/plugins/market_regime_control' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
+      PLUGIN_TARGET_TYPE: ${{ matrix.target_type }}
+      PLUGIN_NOTIFICATION_TARGET: ${{ matrix.notification_target }}
       PLUGIN_NAME: market_regime_control
       PLUGIN_BENCHMARK_SYMBOL: ${{ matrix.benchmark_symbol }}
       PLUGIN_ATTACK_SYMBOL: ${{ matrix.attack_symbol }}
@@ -83,7 +87,7 @@ jobs:
       PLUGIN_START_DATE: ${{ matrix.start_date }}
       PLUGIN_TACO_ENABLED: ${{ matrix.taco_enabled }}
       PRICE_INPUT_DIR: data/input/strategy_plugins/${{ matrix.strategy_profile }}/market_regime_control
-      PLUGIN_OUTPUT_DIR: data/output/${{ matrix.strategy_profile }}/plugins/market_regime_control
+      PLUGIN_OUTPUT_DIR: data/output/${{ matrix.output_scope }}/plugins/market_regime_control
       RUNNER_OUTPUT_DIR: data/output/strategy_plugins
 
     steps:
@@ -176,7 +180,41 @@ jobs:
           mkdir -p "${RUNNER_OUTPUT_DIR}" "${PLUGIN_OUTPUT_DIR}"
           config_path="${RUNNER_TEMP:-/tmp}/strategy_plugins.toml"
           prices_path="${PRICE_INPUT_DIR}/market_regime_control_price_history.csv"
-          cat > "${config_path}" <<EOF
+          if [ "${PLUGIN_TARGET_TYPE}" = "notification_target" ]; then
+            cat > "${config_path}" <<EOF
+          output_dir = "${RUNNER_OUTPUT_DIR}"
+          default_mode = "shadow"
+
+          [[notification_targets]]
+          notification_target = "${PLUGIN_NOTIFICATION_TARGET}"
+          plugin = "${PLUGIN_NAME}"
+          enabled = true
+
+          [notification_targets.inputs]
+          prices = "${prices_path}"
+          event_set = "${PLUGIN_EVENT_SET}"
+          start_date = "${PLUGIN_START_DATE}"
+          benchmark_symbol = "${PLUGIN_BENCHMARK_SYMBOL}"
+          attack_symbol = "${PLUGIN_ATTACK_SYMBOL}"
+          vix_symbols = ["VIX", "^VIX", "VIXCLS"]
+          credit_pairs = ["HYG:IEF", "LQD:IEF"]
+          financial_symbols = ["XLF", "KRE"]
+          rate_symbols = ["IEF", "TLT"]
+          strategy_policy = "levered_growth_income_v1"
+          realized_vol_threshold = 0.30
+          realized_vol_requires_confirmation = true
+          delever_risk_asset_scalar = 0.0
+          taco_opportunity_size_scalar = 0.0
+          crisis_enabled = true
+          macro_enabled = true
+          taco_enabled = ${PLUGIN_TACO_ENABLED}
+
+          [notification_targets.outputs]
+          output_dir = "${PLUGIN_OUTPUT_DIR}"
+          EOF
+            selector_args=(--notification-targets "${PLUGIN_NOTIFICATION_TARGET}")
+          else
+            cat > "${config_path}" <<EOF
           output_dir = "${RUNNER_OUTPUT_DIR}"
           default_mode = "shadow"
 
@@ -207,7 +245,9 @@ jobs:
           [strategy_plugins.outputs]
           output_dir = "${PLUGIN_OUTPUT_DIR}"
           EOF
-          python scripts/run_strategy_plugins.py --config "${config_path}" --strategies "${STRATEGY_PROFILE}" --plugins "${PLUGIN_NAME}"
+            selector_args=(--strategies "${STRATEGY_PROFILE}")
+          fi
+          python scripts/run_strategy_plugins.py --config "${config_path}" --plugins "${PLUGIN_NAME}" "${selector_args[@]}"
           test -f "${PLUGIN_OUTPUT_DIR}/latest_signal.json"
           python - <<'PY'
           import json
@@ -215,8 +255,15 @@ jobs:
           from pathlib import Path
 
           payload = json.loads((Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "latest_signal.json").read_text(encoding="utf-8"))
-          if payload.get("strategy") != os.environ["STRATEGY_PROFILE"]:
-              raise SystemExit(f"unexpected strategy: {payload.get('strategy')!r}")
+          target_type = os.environ["PLUGIN_TARGET_TYPE"]
+          if target_type == "notification_target":
+              if payload.get("target_type") != "notification_target":
+                  raise SystemExit(f"unexpected target_type: {payload.get('target_type')!r}")
+              if payload.get("notification_target") != os.environ["PLUGIN_NOTIFICATION_TARGET"]:
+                  raise SystemExit(f"unexpected notification_target: {payload.get('notification_target')!r}")
+          else:
+              if payload.get("strategy") != os.environ["STRATEGY_PROFILE"]:
+                  raise SystemExit(f"unexpected strategy: {payload.get('strategy')!r}")
           if payload.get("plugin") != os.environ["PLUGIN_NAME"]:
               raise SystemExit(f"unexpected plugin: {payload.get('plugin')!r}")
           if payload.get("schema_version") != "market_regime_control.v1":
@@ -226,10 +273,16 @@ jobs:
           controls = payload.get("execution_controls") or {}
           if controls.get("broker_order_allowed") or controls.get("live_allocation_mutation_allowed"):
               raise SystemExit("market regime artifact must not allow broker/allocation mutation")
-          if controls.get("strategy_runtime_metadata_allowed") is not True:
-              raise SystemExit("market regime artifact must be mountable as strategy metadata")
-          if not isinstance(payload.get("position_control"), dict):
-              raise SystemExit("market regime artifact must include position_control")
+          if target_type == "notification_target":
+              if controls.get("strategy_runtime_metadata_allowed") is not False:
+                  raise SystemExit("notification target artifact must not be mountable as strategy metadata")
+              if controls.get("position_control_allowed") is not False:
+                  raise SystemExit("notification target artifact must not allow position control")
+          else:
+              if controls.get("strategy_runtime_metadata_allowed") is not True:
+                  raise SystemExit("market regime artifact must be mountable as strategy metadata")
+              if not isinstance(payload.get("position_control"), dict):
+                  raise SystemExit("market regime artifact must include position_control")
           if not isinstance(payload.get("notification"), dict):
               raise SystemExit("market regime artifact must include notification")
           print(
@@ -293,6 +346,8 @@ jobs:
             echo "## Strategy plugin publish"
             echo
             echo "- strategy: \`${STRATEGY_PROFILE}\`"
+            echo "- target_type: \`${PLUGIN_TARGET_TYPE}\`"
+            echo "- notification_target: \`${PLUGIN_NOTIFICATION_TARGET:-<not set>}\`"
             echo "- plugin: \`${PLUGIN_NAME}\`"
             echo "- schema_version: \`market_regime_control.v1\`"
             echo "- mode: \`shadow\`"
@@ -313,9 +368,6 @@ jobs:
           - strategy_profile: tqqq_growth_income
             benchmark_symbol: QQQ
             attack_symbol: TQQQ
-          - strategy_profile: soxl_soxx_trend_income
-            benchmark_symbol: SOXX
-            attack_symbol: SOXL
     permissions:
       contents: read
       id-token: write
@@ -327,9 +379,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       INPUT_TQQQ_GCS_PREFIX: ${{ inputs.gcs_prefix }}
-      INPUT_SOXL_GCS_PREFIX: ${{ inputs.soxl_gcs_prefix }}
       TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
-      SOXL_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/crisis_response_shadow' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_NAME: crisis_response_shadow
@@ -357,11 +407,7 @@ jobs:
       - name: Resolve publish target
         run: |
           set -euo pipefail
-          if [ "${STRATEGY_PROFILE}" = "soxl_soxx_trend_income" ]; then
-            gcs_prefix="${INPUT_SOXL_GCS_PREFIX:-${SOXL_GCS_PREFIX}}"
-          else
-            gcs_prefix="${INPUT_TQQQ_GCS_PREFIX:-${TQQQ_GCS_PREFIX}}"
-          fi
+          gcs_prefix="${INPUT_TQQQ_GCS_PREFIX:-${TQQQ_GCS_PREFIX}}"
           echo "GCS_PREFIX=${gcs_prefix}" >> "$GITHUB_ENV"
           echo "Resolved ${STRATEGY_PROFILE} ${PLUGIN_NAME} publish prefix: ${gcs_prefix}"
 
