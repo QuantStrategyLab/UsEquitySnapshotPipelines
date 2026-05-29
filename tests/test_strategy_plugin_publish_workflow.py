@@ -15,20 +15,27 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "market-regime-control:" in workflow
     assert "strategy_profile: tqqq_growth_income" in workflow
     assert "strategy_profile: soxl_soxx_trend_income" in workflow
+    assert "target_type: notification_target" in workflow
+    assert "notification_target: market_regime_notification" in workflow
+    assert "PLUGIN_TARGET_TYPE: ${{ matrix.target_type }}" in workflow
+    assert "PLUGIN_NOTIFICATION_TARGET: ${{ matrix.notification_target }}" in workflow
     assert "PLUGIN_BENCHMARK_SYMBOL: ${{ matrix.benchmark_symbol }}" in workflow
     assert "PLUGIN_ATTACK_SYMBOL: ${{ matrix.attack_symbol }}" in workflow
     assert "INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}" in workflow
     assert "INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}" in workflow
     assert "PLUGIN_NAME: market_regime_control" in workflow
     assert "market_regime_control.v1" in workflow
+    assert 'notification_target = "${PLUGIN_NOTIFICATION_TARGET}"' in workflow
+    assert "--notification-targets" in workflow
     assert (
         "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
         "tqqq_growth_income/plugins/market_regime_control"
     ) in workflow
     assert (
         "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-        "soxl_soxx_trend_income/plugins/market_regime_control"
+        "market_regime_notification/plugins/market_regime_control"
     ) in workflow
+    assert "soxl_soxx_trend_income/plugins/market_regime_control" not in workflow
     assert 'realized_vol_threshold = 0.30' in workflow
     assert 'realized_vol_requires_confirmation = true' in workflow
     assert 'delever_risk_asset_scalar = 0.0' in workflow
@@ -52,17 +59,14 @@ def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
 
     assert "crisis-response-shadow:" in workflow
     assert "taco-rebound-shadow:" in workflow
-    assert "INPUT_SOXL_GCS_PREFIX: ${{ inputs.soxl_gcs_prefix }}" in workflow
     assert "PLUGIN_NAME: crisis_response_shadow" in workflow
     assert "PLUGIN_NAME: taco_rebound_shadow" in workflow
     assert (
         "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
         "tqqq_growth_income/plugins/crisis_response_shadow"
     ) in workflow
-    assert (
-        "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-        "soxl_soxx_trend_income/plugins/crisis_response_shadow"
-    ) in workflow
+    assert "INPUT_SOXL_GCS_PREFIX" not in workflow
+    assert "soxl_soxx_trend_income/plugins/crisis_response_shadow" not in workflow
     assert 'benchmark_symbol = "${PLUGIN_BENCHMARK_SYMBOL}"' in workflow
     assert 'attack_symbol = "${PLUGIN_ATTACK_SYMBOL}"' in workflow
     assert 'default_mode = "shadow"' in workflow

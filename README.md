@@ -878,8 +878,10 @@ Use `docs/examples/strategy_plugins.example.toml` as the schema example. Real
 runtime TOML should live with the deployment or platform configuration, not as a
 committed live config in this repository.
 `.github/workflows/publish-strategy-plugins.yml` publishes the scheduled
-`crisis_response_shadow` artifacts for TQQQ/SOXL and the TQQQ-only
-`taco_rebound_shadow` artifact to their configured GCS prefixes.
+TQQQ `crisis_response_shadow` compatibility artifact, the TQQQ-only
+`taco_rebound_shadow` artifact, and `market_regime_control` artifacts for the
+TQQQ strategy plus the general SOXL market-regime notification target to their
+configured GCS prefixes.
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -888,12 +890,16 @@ python scripts/run_strategy_plugins.py --config /path/to/strategy_plugins.toml
 
 This is intentionally a sidecar. If the runner is disabled or fails, the
 underlying strategy artifact build remains independent; downstream systems read
-the plugin's `latest_signal.json`, verify its `strategy` / `plugin` identity,
-and treat the plugin as notification-only shadow context.
+the plugin's `latest_signal.json`, verify its `strategy` / `plugin` or
+`notification_target` / `plugin` identity, and treat the plugin as
+notification-only shadow context unless its policy explicitly allows strategy
+runtime metadata.
 Plugin mounts are strategy-limited by code and tests. Keep the crisis plugin
-scoped to defensive TQQQ/SOXL-style risk-off behavior. Keep MAGS/TACO
-experiments in research commands until a future PR adds a validated TQQQ TACO
-overlay plugin or explicitly promotes another strategy mount.
+scoped to the TQQQ compatibility mount. SOXL receives broad macro/crisis
+context through the general `market_regime_notification` target, not through a
+strategy-level plugin mount. Keep MAGS/TACO experiments in research commands
+until a future PR adds a validated TQQQ TACO overlay plugin or explicitly
+promotes another strategy mount.
 
 The only supported plugin mode is `shadow`. The runner rejects `paper`,
 `advisory`, and `live` plugin modes; the current product decision is that the

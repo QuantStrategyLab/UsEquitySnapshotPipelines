@@ -6,7 +6,8 @@ strategy = "tqqq_growth_income"
 plugin = "crisis_response_shadow"
 enabled = true
 # The runner enforces plugin/strategy compatibility. This plugin is scoped to
-# TQQQ/SOXL leveraged equity black-swan defense strategies.
+# the TQQQ compatibility mount; SOXL receives broad market-regime notifications
+# through notification_targets instead of this strategy-level legacy plugin.
 # mode is optional when it matches default_mode; only shadow notification mode is supported.
 
 [strategy_plugins.inputs]

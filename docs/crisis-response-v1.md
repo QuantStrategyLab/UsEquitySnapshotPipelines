@@ -7,9 +7,12 @@ auditable.
 
 The production-facing plugin contract is now split:
 
-- `crisis_response_shadow` is defense-only for TQQQ/SOXL-style leveraged
-  equity black-swan risk. It may emit `true_crisis` / `defend` or `no_action` /
-  `watch_only`; it must not emit TACO routes or sleeves.
+- `crisis_response_shadow` is a defense-only legacy compatibility mount for
+  TQQQ leveraged equity black-swan risk. SOXL receives broad crisis/macro
+  context through the general `market_regime_notification` target instead of a
+  strategy-level crisis plugin mount. The crisis plugin may emit `true_crisis`
+  / `defend` or `no_action` / `watch_only`; it must not emit TACO routes or
+  sleeves.
 - TACO rebound work is separate from crisis defense and remains research-only
   for MAGS-style pullback strategies. A TQQQ overlay candidate should be
   promoted through a separate validation path before any runner mount.

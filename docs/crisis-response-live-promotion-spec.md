@@ -127,9 +127,10 @@ registers it. A plugin is mounted to a strategy through each
 `[[strategy_plugins]]` entry; the strategy core must remain independent of the
 runner and must not import plugin code. Plugins are strategy-limited in the
 runner: a mount is rejected unless the plugin is explicitly declared compatible
-with that strategy. This keeps `crisis_response_shadow` scoped to TQQQ/SOXL
-black-swan defense strategies and keeps `taco_rebound_shadow` scoped to a
-TQQQ-only manual-review notification artifact. It must not be wired into MAGS
+with that strategy. This keeps `crisis_response_shadow` scoped to the TQQQ
+compatibility mount, sends SOXL broad crisis/macro context through the general
+`market_regime_notification` target, and keeps `taco_rebound_shadow` scoped to
+a TQQQ-only manual-review notification artifact. It must not be wired into MAGS
 rebound-budget inputs or any broker-facing allocation path.
 
 The runner accepts only `mode = "shadow"` and writes that mode into each plugin

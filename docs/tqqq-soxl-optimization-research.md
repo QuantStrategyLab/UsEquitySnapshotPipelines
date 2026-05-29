@@ -16,9 +16,10 @@ single crisis window:
 3. A passing candidate remains research evidence only unless a later PR promotes
    it into strategy configuration.
 
-The `crisis_response_shadow` plugin remains notification-only. It can be mounted
-to TQQQ/SOXL defense contexts, but it does not place trades or mutate live
-allocations.
+The `crisis_response_shadow` plugin remains notification-only and strategy
+limited to the TQQQ compatibility mount. SOXL broad crisis/macro context is
+published through the general `market_regime_notification` target instead of a
+strategy-level crisis plugin mount.
 
 ## TQQQ
 
