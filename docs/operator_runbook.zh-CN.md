@@ -1,5 +1,15 @@
 # 操作运行手册
 
+
+## English summary
+
+- Full English version: [`operator_runbook.md`](operator_runbook.md). This summary keeps an English entry point in the Chinese file.
+- Purpose: this document covers `操作运行手册` for `UsEquitySnapshotPipelines`.
+- Main topics: `本仓库生产的 Snapshot Profiles`, `本地手动构建`, `手动 GitHub Actions 发布`, `定时发布`, `月度 AI Review`.
+- Read the boundaries, inputs, outputs, and permission requirements before running commands, CI jobs, dry-runs, releases, or runtime switches.
+- For live trading, secrets, Cloud Run, exchange, or broker API changes, validate in test or dry-run mode first and do not change production only from examples.
+- If this summary differs from the detailed Chinese body, follow the concrete commands, configuration keys, and constraints in the body.
+
 本仓库是 snapshot-backed 美股策略的上游 artifact 生产仓库。券商平台仓库仍然只是下游消费者。
 
 ## 本仓库生产的 Snapshot Profiles
