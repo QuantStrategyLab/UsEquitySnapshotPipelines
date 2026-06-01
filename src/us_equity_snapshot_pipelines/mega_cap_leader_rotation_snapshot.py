@@ -7,7 +7,7 @@ from typing import Iterable, Mapping
 
 import pandas as pd
 
-from .artifacts import write_release_status_summary, write_snapshot_manifest
+from .artifacts import build_snapshot_input_metadata, write_release_status_summary, write_snapshot_manifest
 from .contracts import MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE, SnapshotProfileContract, get_profile_contract
 from .dynamic_mega_universe import (
     normalize_price_history,
@@ -140,6 +140,7 @@ def build_artifacts(
     manifest_output: str | Path | None = None,
     ranking_output: str | Path | None = None,
     release_summary_output: str | Path | None = None,
+    source_input_manifest_path: str | Path | None = None,
     current_holdings: Iterable[str] | None = None,
     benchmark_symbol: str = BENCHMARK_SYMBOL,
     broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
@@ -169,8 +170,9 @@ def build_artifacts(
 
     price_history = normalize_price_history(read_table(prices_path))
     effective_as_of_date = resolve_effective_as_of_date(price_history, as_of_date)
+    universe_snapshot = read_table(universe_path)
     active_universe = ranked_active_dynamic_universe(
-        read_table(universe_path),
+        universe_snapshot,
         as_of_date=effective_as_of_date,
         universe_size=int(dynamic_universe_size),
     )
@@ -237,6 +239,13 @@ def build_artifacts(
         config_path=None,
         manifest_path=manifest_path,
         config_name=contract.profile,
+        input_metadata=build_snapshot_input_metadata(
+            prices_path=prices_path,
+            universe_path=universe_path,
+            price_history=price_history,
+            universe=universe_snapshot,
+            source_input_manifest_path=source_input_manifest_path,
+        ),
     )
     write_release_status_summary(
         contract=contract,
@@ -279,6 +288,7 @@ def build_parser(
     parser.add_argument("--manifest-output", help=f"Manifest output path; default: <output-dir>/{contract.manifest_filename}")
     parser.add_argument("--ranking-output", help=f"Ranking output path; default: <output-dir>/{contract.ranking_filename}")
     parser.add_argument("--release-summary-output", help="Release summary output path; default: <output-dir>/release_status_summary.json")
+    parser.add_argument("--source-input-manifest", help="Optional source input manifest JSON for freshness diagnostics")
     parser.add_argument("--as-of", dest="as_of_date", help="Snapshot date; defaults to latest price date")
     parser.add_argument("--current-holdings", help="Comma-separated current holdings used only for hold-bonus preview")
     parser.add_argument("--benchmark-symbol", default=BENCHMARK_SYMBOL)
@@ -331,6 +341,7 @@ def main(
         manifest_output=args.manifest_output,
         ranking_output=args.ranking_output,
         release_summary_output=args.release_summary_output,
+        source_input_manifest_path=args.source_input_manifest,
         current_holdings=split_symbols(args.current_holdings),
         benchmark_symbol=args.benchmark_symbol,
         broad_benchmark_symbol=args.broad_benchmark_symbol,

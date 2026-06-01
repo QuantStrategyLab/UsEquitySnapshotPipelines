@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from .artifacts import sha256_file, write_json
 from .russell_1000_history import (
     backfill_universe_history_start,
     build_interval_universe_history,
@@ -19,6 +23,7 @@ from .yfinance_prices import download_price_history
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
 
 DEFAULT_EXTRA_SYMBOLS = ("QQQ", "SPY", "BOXX")
+SOURCE_INPUT_MANIFEST_FILENAME = "r1000_source_input_manifest.json"
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ class Russell1000InputDataResult:
     alias_output_path: Path
     metadata_output_path: Path
     latest_snapshot_output_path: Path
+    source_manifest_output_path: Path
     snapshot_dir: Path
     universe_rows: int
     price_rows: int
@@ -36,6 +42,10 @@ class Russell1000InputDataResult:
     download_start: str
     missing_symbol_count: int
     universe_fallback_used: bool = False
+    fallback_reason: str | None = None
+    fallback_streak: int = 0
+    price_as_of: str | None = None
+    universe_as_of: str | None = None
 
 
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
@@ -74,6 +84,121 @@ def merge_price_history(*frames: pd.DataFrame) -> pd.DataFrame:
     if not normalized_frames:
         return pd.DataFrame(columns=["symbol", "as_of", "close", "volume"])
     return normalize_price_history(pd.concat(normalized_frames, ignore_index=True))
+
+
+def _latest_date(frame: pd.DataFrame, columns: Sequence[str]) -> str | None:
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = pd.to_datetime(frame[column], errors="coerce")
+        if values.notna().any():
+            return pd.Timestamp(values.max()).date().isoformat()
+    return None
+
+
+def _load_json_mapping(path: str | Path | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    resolved = Path(path)
+    if not resolved.exists():
+        return {}
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"source input manifest must contain a JSON object: {resolved}")
+    return dict(payload)
+
+
+def _source_fallback_streak(
+    *,
+    existing_source_manifest_path: str | Path | None,
+    fallback_used: bool,
+) -> int:
+    if not fallback_used:
+        return 0
+    previous = _load_json_mapping(existing_source_manifest_path)
+    previous_streak = previous.get("fallback_streak")
+    if previous_streak is None and isinstance(previous.get("fallback"), Mapping):
+        previous_streak = previous["fallback"].get("streak")
+    try:
+        previous_streak_int = int(previous_streak or 0)
+    except (TypeError, ValueError):
+        previous_streak_int = 0
+    previous_used = bool(previous.get("universe_fallback_used") or previous_streak_int > 0)
+    return previous_streak_int + 1 if previous_used else 1
+
+
+def _file_artifact(path: Path, *, row_count: int, as_of: str | None = None) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "row_count": int(row_count),
+        "as_of": as_of,
+        "sha256": sha256_file(path) if path.exists() else None,
+    }
+
+
+def _write_source_input_manifest(
+    *,
+    result: "Russell1000InputDataResult",
+    universe_metadata: pd.DataFrame,
+) -> Path:
+    source_input_status = "universe_fallback" if result.universe_fallback_used else "fresh"
+    payload = {
+        "manifest_type": "source_input_data",
+        "contract_version": "r1000_official_monthly_v2_alias.source_input.v1",
+        "source_input_status": source_input_status,
+        "universe_fallback_used": bool(result.universe_fallback_used),
+        "fallback_reason": result.fallback_reason,
+        "fallback_streak": int(result.fallback_streak),
+        "fallback": {
+            "used": bool(result.universe_fallback_used),
+            "reason": result.fallback_reason,
+            "streak": int(result.fallback_streak),
+        },
+        "price_as_of": result.price_as_of,
+        "universe_as_of": result.universe_as_of,
+        "universe_rows": int(result.universe_rows),
+        "price_rows": int(result.price_rows),
+        "symbol_count": int(result.symbol_count),
+        "download_start": result.download_start,
+        "missing_symbol_count": int(result.missing_symbol_count),
+        "artifacts": {
+            "universe_history": _file_artifact(
+                result.universe_history_path,
+                row_count=result.universe_rows,
+                as_of=result.universe_as_of,
+            ),
+            "price_history": _file_artifact(
+                result.price_history_path,
+                row_count=result.price_rows,
+                as_of=result.price_as_of,
+            ),
+            "symbol_aliases": _file_artifact(
+                result.alias_output_path,
+                row_count=len(read_table(result.alias_output_path)) if result.alias_output_path.exists() else 0,
+            ),
+            "universe_snapshot_metadata": _file_artifact(
+                result.metadata_output_path,
+                row_count=len(universe_metadata),
+                as_of=_latest_date(universe_metadata, ("snapshot_date", "as_of_date", "requested_date")),
+            ),
+            "latest_holdings_snapshot": _file_artifact(
+                result.latest_snapshot_output_path,
+                row_count=len(read_table(result.latest_snapshot_output_path))
+                if result.latest_snapshot_output_path.exists()
+                else 0,
+                as_of=result.universe_as_of,
+            ),
+        },
+        "producer": {
+            "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+            "git_sha": os.environ.get("GITHUB_SHA", ""),
+            "github_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+            "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return write_json(result.source_manifest_output_path, payload)
 
 
 def incremental_start_date(existing_prices: pd.DataFrame, *, requested_start: str, overlap_days: int) -> str:
@@ -172,6 +297,8 @@ def prepare_russell_1000_input_data(
     max_lookback_days: int = 7,
     existing_input_dir: str | Path | None = None,
     existing_prices_path: str | Path | None = None,
+    existing_source_manifest_path: str | Path | None = None,
+    max_universe_fallback_streak: int = 1,
     price_overlap_days: int = 7,
     benchmark_symbol: str = "QQQ",
     safe_haven: str = "BOXX",
@@ -187,8 +314,10 @@ def prepare_russell_1000_input_data(
     alias_output_path = root / "r1000_symbol_aliases.csv"
     metadata_output_path = root / "r1000_universe_snapshot_metadata.csv"
     latest_snapshot_output_path = root / "r1000_latest_holdings_snapshot.csv"
+    source_manifest_output_path = root / SOURCE_INPUT_MANIFEST_FILENAME
 
     universe_fallback_used = False
+    fallback_reason = None
     try:
         snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
             start_date=universe_start,
@@ -211,15 +340,28 @@ def prepare_russell_1000_input_data(
 
         symbol_aliases = build_symbol_alias_candidates(snapshot_tables)
         write_table(build_symbol_alias_table(symbol_aliases), alias_output_path)
-    except Exception:
+    except Exception as exc:
         if not existing_input_dir:
             raise
         existing_inputs = _load_existing_universe_inputs(existing_input_dir)
         universe_fallback_used = True
+        fallback_reason = f"{type(exc).__name__}: {exc}"
+        fallback_streak = _source_fallback_streak(
+            existing_source_manifest_path=existing_source_manifest_path,
+            fallback_used=True,
+        )
+        if fallback_streak > int(max_universe_fallback_streak):
+            raise RuntimeError(
+                "universe_fallback_streak_exceeded:"
+                f"streak={fallback_streak} max={int(max_universe_fallback_streak)} "
+                f"reason={fallback_reason}"
+            ) from exc
         universe_history = existing_inputs["universe_history"]
+        metadata = existing_inputs["metadata"]
+        latest_snapshot = existing_inputs["latest_snapshot"]
         write_table(universe_history, universe_history_path)
-        write_table(existing_inputs["metadata"], metadata_output_path)
-        write_table(existing_inputs["latest_snapshot"], latest_snapshot_output_path)
+        write_table(metadata, metadata_output_path)
+        write_table(latest_snapshot, latest_snapshot_output_path)
         write_table(existing_inputs["alias_table"], alias_output_path)
         symbol_aliases = existing_inputs["symbol_aliases"]
 
@@ -262,13 +404,25 @@ def prepare_russell_1000_input_data(
     merged_prices = merge_price_history(*price_frames)
     write_table(merged_prices, price_history_path)
 
-    return Russell1000InputDataResult(
+    fallback_streak = _source_fallback_streak(
+        existing_source_manifest_path=existing_source_manifest_path,
+        fallback_used=universe_fallback_used,
+    )
+    price_as_of = _latest_date(merged_prices, ("as_of",))
+    universe_as_of = _latest_date(metadata, ("snapshot_date", "as_of_date"))
+    if universe_as_of is None:
+        universe_as_of = _latest_date(latest_snapshot, ("snapshot_date", "as_of_date", "as_of"))
+    if universe_as_of is None:
+        universe_as_of = _latest_date(universe_history, ("start_date",))
+
+    result = Russell1000InputDataResult(
         output_dir=root,
         universe_history_path=universe_history_path,
         price_history_path=price_history_path,
         alias_output_path=alias_output_path,
         metadata_output_path=metadata_output_path,
         latest_snapshot_output_path=latest_snapshot_output_path,
+        source_manifest_output_path=source_manifest_output_path,
         snapshot_dir=snapshot_dir,
         universe_rows=int(len(universe_history)),
         price_rows=int(len(merged_prices)),
@@ -276,7 +430,13 @@ def prepare_russell_1000_input_data(
         download_start=update_start,
         missing_symbol_count=int(len(missing_symbols)),
         universe_fallback_used=universe_fallback_used,
+        fallback_reason=fallback_reason,
+        fallback_streak=fallback_streak,
+        price_as_of=price_as_of,
+        universe_as_of=universe_as_of,
     )
+    _write_source_input_manifest(result=result, universe_metadata=metadata)
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -290,6 +450,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-lookback-days", type=int, default=7)
     parser.add_argument("--existing-input-dir")
     parser.add_argument("--existing-prices")
+    parser.add_argument("--existing-source-manifest")
+    parser.add_argument("--max-universe-fallback-streak", type=int, default=1)
     parser.add_argument("--price-overlap-days", type=int, default=7)
     parser.add_argument("--benchmark-symbol", default="QQQ")
     parser.add_argument("--safe-haven", default="BOXX")
@@ -310,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
         max_lookback_days=args.max_lookback_days,
         existing_input_dir=args.existing_input_dir,
         existing_prices_path=args.existing_prices,
+        existing_source_manifest_path=args.existing_source_manifest,
+        max_universe_fallback_streak=args.max_universe_fallback_streak,
         price_overlap_days=args.price_overlap_days,
         benchmark_symbol=args.benchmark_symbol,
         safe_haven=args.safe_haven,
@@ -321,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote aliases -> {result.alias_output_path}")
     print(f"wrote metadata -> {result.metadata_output_path}")
     print(f"wrote latest weighted holdings snapshot -> {result.latest_snapshot_output_path}")
+    print(f"wrote source input manifest -> {result.source_manifest_output_path}")
     print(
         f"downloaded/updated {result.symbol_count} symbols from {result.download_start}; "
         f"missing_full_history={result.missing_symbol_count}"

@@ -14,7 +14,7 @@ from .tech_communication_pullback_snapshot import (
 )
 from us_equity_strategies.strategies import qqq_tech_enhancement as strategy
 
-from .artifacts import write_release_status_summary, write_snapshot_manifest
+from .artifacts import build_snapshot_input_metadata, write_release_status_summary, write_snapshot_manifest
 from .contracts import TECH_COMMUNICATION_PULLBACK_PROFILE, SnapshotProfileContract, get_profile_contract
 
 
@@ -153,6 +153,7 @@ def build_artifacts(
     manifest_output: str | Path | None = None,
     ranking_output: str | Path | None = None,
     release_summary_output: str | Path | None = None,
+    source_input_manifest_path: str | Path | None = None,
     current_holdings: Iterable[str] | None = None,
     portfolio_total_equity: float | None = None,
     min_price_usd: float = 10.0,
@@ -208,6 +209,13 @@ def build_artifacts(
         config_path=resolved_config_path,
         manifest_path=manifest_path,
         config_name=str(runtime_params.get("runtime_config_name") or contract.profile),
+        input_metadata=build_snapshot_input_metadata(
+            prices_path=prices_path,
+            universe_path=universe_path,
+            price_history=price_history,
+            universe=universe_snapshot,
+            source_input_manifest_path=source_input_manifest_path,
+        ),
     )
     write_release_status_summary(
         contract=contract,
@@ -240,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest-output", help=f"Manifest output path; default: <output-dir>/{contract.manifest_filename}")
     parser.add_argument("--ranking-output", help=f"Ranking output path; default: <output-dir>/{contract.ranking_filename}")
     parser.add_argument("--release-summary-output", help="Release summary output path; default: <output-dir>/release_status_summary.json")
+    parser.add_argument("--source-input-manifest", help="Optional source input manifest JSON for freshness diagnostics")
     parser.add_argument("--config-path", help="Strategy config path. Defaults to the sibling platform config when present.")
     parser.add_argument("--no-default-config", action="store_true", help="Use module defaults instead of sibling platform config.")
     parser.add_argument("--as-of", dest="as_of_date", help="Snapshot date; defaults to latest price date")
@@ -264,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_output=args.manifest_output,
         ranking_output=args.ranking_output,
         release_summary_output=args.release_summary_output,
+        source_input_manifest_path=args.source_input_manifest,
         current_holdings=_split_symbols(args.current_holdings),
         portfolio_total_equity=args.portfolio_total_equity,
         min_price_usd=args.min_price_usd,

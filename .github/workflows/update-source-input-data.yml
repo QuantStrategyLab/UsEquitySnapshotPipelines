@@ -39,6 +39,11 @@ on:
         required: false
         default: '10'
         type: string
+      max_universe_fallback_streak:
+        description: Maximum consecutive monthly universe fallback publishes before failing closed.
+        required: false
+        default: '1'
+        type: string
       benchmark_symbol:
         description: Benchmark symbol to force into source prices.
         required: false
@@ -77,6 +82,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2018-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       PRICE_OVERLAP_DAYS: ${{ inputs.price_overlap_days || '10' }}
+      MAX_UNIVERSE_FALLBACK_STREAK: ${{ inputs.max_universe_fallback_streak || '1' }}
       BENCHMARK_SYMBOL: ${{ inputs.benchmark_symbol || 'QQQ' }}
       SAFE_HAVEN: ${{ inputs.safe_haven || 'BOXX' }}
       EXTRA_SYMBOLS: ${{ inputs.extra_symbols || 'QQQ,SPY,BOXX' }}
@@ -139,6 +145,12 @@ jobs:
           if [ "${downloaded}" -eq "${#files[@]}" ]; then
             echo "EXISTING_INPUT_DIR=data/input/current" >> "$GITHUB_ENV"
           fi
+          source_manifest_path="${OUTPUT_PREFIX%/}/r1000_source_input_manifest.json"
+          if gcloud storage cp "${source_manifest_path}" "data/input/current/r1000_source_input_manifest.json"; then
+            echo "EXISTING_SOURCE_MANIFEST=data/input/current/r1000_source_input_manifest.json" >> "$GITHUB_ENV"
+          else
+            echo "No existing source input manifest found at ${source_manifest_path}."
+          fi
 
       - name: Build refreshed source input data
         run: |
@@ -149,6 +161,7 @@ jobs:
             --universe-start "${UNIVERSE_START}"
             --price-start "${PRICE_START}"
             --price-overlap-days "${PRICE_OVERLAP_DAYS}"
+            --max-universe-fallback-streak "${MAX_UNIVERSE_FALLBACK_STREAK}"
             --benchmark-symbol "${BENCHMARK_SYMBOL}"
             --safe-haven "${SAFE_HAVEN}"
             --extra-symbols "${EXTRA_SYMBOLS}"
@@ -166,43 +179,23 @@ jobs:
           if [ -n "${EXISTING_INPUT_DIR:-}" ]; then
             args+=(--existing-input-dir "${EXISTING_INPUT_DIR}")
           fi
-          if python scripts/update_russell_1000_input_data.py "${args[@]}"; then
-            echo "SOURCE_INPUT_FALLBACK_USED=false" >> "$GITHUB_ENV"
-          else
-            status=$?
-            required_files=(
-              r1000_universe_history.csv
-              r1000_price_history.csv
-              r1000_symbol_aliases.csv
-              r1000_universe_snapshot_metadata.csv
-              r1000_latest_holdings_snapshot.csv
-            )
-            if [ -n "${EXISTING_INPUT_DIR:-}" ]; then
-              missing=0
-              for file in "${required_files[@]}"; do
-                if [ ! -f "${EXISTING_INPUT_DIR}/${file}" ]; then
-                  missing=1
-                  echo "Missing fallback source input: ${EXISTING_INPUT_DIR}/${file}"
-                fi
-              done
-              if [ "${missing}" -eq 0 ]; then
-                echo "::warning::Source input refresh failed; reusing existing source input artifacts from ${OUTPUT_PREFIX}."
-                mkdir -p "${output_dir}"
-                cp "${EXISTING_INPUT_DIR}"/r1000_*.csv "${output_dir}/"
-                echo "SOURCE_INPUT_FALLBACK_USED=true" >> "$GITHUB_ENV"
-                exit 0
-              fi
-            fi
-            exit "${status}"
+          if [ -n "${EXISTING_SOURCE_MANIFEST:-}" ]; then
+            args+=(--existing-source-manifest "${EXISTING_SOURCE_MANIFEST}")
           fi
+          python scripts/update_russell_1000_input_data.py "${args[@]}"
+          source_manifest="${output_dir}/r1000_source_input_manifest.json"
+          fallback_used="$(jq -r '.universe_fallback_used // false' "${source_manifest}")"
+          fallback_streak="$(jq -r '.fallback_streak // 0' "${source_manifest}")"
+          source_status="$(jq -r '.source_input_status // "unknown"' "${source_manifest}")"
+          {
+            echo "SOURCE_INPUT_FALLBACK_USED=${fallback_used}"
+            echo "SOURCE_INPUT_FALLBACK_STREAK=${fallback_streak}"
+            echo "SOURCE_INPUT_STATUS=${source_status}"
+          } >> "$GITHUB_ENV"
 
       - name: Publish refreshed source input data
         run: |
           set -euo pipefail
-          if [ "${SOURCE_INPUT_FALLBACK_USED:-false}" = "true" ]; then
-            echo "Source input fallback was used; skipping publish to avoid rewriting unchanged artifacts."
-            exit 0
-          fi
           output_dir="data/input/refreshed/r1000_official_monthly_v2_alias"
           files=(
             r1000_universe_history.csv
@@ -210,6 +203,7 @@ jobs:
             r1000_symbol_aliases.csv
             r1000_universe_snapshot_metadata.csv
             r1000_latest_holdings_snapshot.csv
+            r1000_source_input_manifest.json
           )
           for file in "${files[@]}"; do
             source_path="${output_dir}/${file}"
@@ -241,11 +235,27 @@ jobs:
             echo "- universe_start: \`${UNIVERSE_START}\`"
             echo "- price_start: \`${PRICE_START}\`"
             echo "- price_overlap_days: \`${PRICE_OVERLAP_DAYS}\`"
+            echo "- max_universe_fallback_streak: \`${MAX_UNIVERSE_FALLBACK_STREAK}\`"
             echo "- benchmark_symbol: \`${BENCHMARK_SYMBOL}\`"
             echo "- safe_haven: \`${SAFE_HAVEN}\`"
             echo "- extra_symbols: \`${EXTRA_SYMBOLS}\`"
             echo "- source_input_fallback_used: \`${SOURCE_INPUT_FALLBACK_USED:-false}\`"
+            echo "- source_input_fallback_streak: \`${SOURCE_INPUT_FALLBACK_STREAK:-0}\`"
+            echo "- source_input_status: \`${SOURCE_INPUT_STATUS:-unknown}\`"
             echo
             echo "Generated files:"
             find "${output_dir}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  rerun-scheduled-failure:
+    needs: update-inputs
+    if: ${{ failure() && github.event_name == 'schedule' && fromJSON(github.run_attempt) < 2 }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Re-run failed jobs once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run rerun "${GITHUB_RUN_ID}" --failed --repo "${GITHUB_REPOSITORY}"
