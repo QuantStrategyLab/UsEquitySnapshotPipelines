@@ -12,12 +12,14 @@ import pandas as pd
 
 from .artifacts import sha256_file, write_json
 from .russell_1000_history import (
+    COMPANIES_MARKETCAP_IWB_HOLDINGS_URL,
     backfill_universe_history_start,
     build_interval_universe_history,
     build_monthly_snapshot_request_dates,
     build_symbol_alias_candidates,
     build_symbol_alias_table,
     collect_symbol_universe,
+    download_companies_marketcap_iwb_holdings_snapshot,
     download_ishares_historical_universe_snapshots,
     resolve_ishares_holdings_snapshot,
 )
@@ -50,6 +52,7 @@ class Russell1000InputDataResult:
     universe_as_of: str | None = None
     missing_price_backfill_warning: str | None = None
     historical_universe_refresh_warning: str | None = None
+    latest_universe_refresh_warning: str | None = None
 
 
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
@@ -172,6 +175,7 @@ def _write_source_input_manifest(
         "missing_symbol_count": int(result.missing_symbol_count),
         "missing_price_backfill_warning": result.missing_price_backfill_warning,
         "historical_universe_refresh_warning": result.historical_universe_refresh_warning,
+        "latest_universe_refresh_warning": result.latest_universe_refresh_warning,
         "artifacts": {
             "universe_history": _file_artifact(
                 result.universe_history_path,
@@ -381,12 +385,13 @@ def _append_latest_refresh_metadata(
     latest_row = {
         "requested_date": requested_date.date().isoformat(),
         "as_of_date": as_of_date.date().isoformat(),
-        "source_kind": "official_json_latest_after_history_failure",
-        "lookback_days": int(record["lookback_days"]),
+        "source_kind": str(record.get("source_kind") or "official_json_latest_after_history_failure"),
+        "lookback_days": record.get("lookback_days"),
         "source_url": str(record["source_url"]),
         "row_count": int(len(record["snapshot"])),
         "refresh_note": "historical_refresh_failed_latest_refreshed",
         "history_refresh_error": history_refresh_error,
+        "latest_refresh_warning": record.get("warning"),
     }
     return pd.concat([pd.DataFrame(metadata).copy(), pd.DataFrame([latest_row])], ignore_index=True)
 
@@ -399,10 +404,24 @@ def _resolve_latest_holdings_snapshot(
 ) -> dict[str, object]:
     requested_dates = build_monthly_snapshot_request_dates(universe_start, universe_end)
     requested_date = max(requested_dates)
-    return resolve_ishares_holdings_snapshot(
-        requested_date,
-        max_lookback_days=max_lookback_days,
-    )
+    try:
+        record = resolve_ishares_holdings_snapshot(
+            requested_date,
+            max_lookback_days=max_lookback_days,
+        )
+    except Exception as exc:
+        as_of_date, snapshot = download_companies_marketcap_iwb_holdings_snapshot()
+        return {
+            "requested_date": requested_date,
+            "as_of_date": as_of_date,
+            "lookback_days": pd.NA,
+            "source_kind": "companies_marketcap_html",
+            "source_url": COMPANIES_MARKETCAP_IWB_HOLDINGS_URL,
+            "snapshot": snapshot,
+            "warning": f"official_latest_failed={type(exc).__name__}: {exc}",
+        }
+    record["source_kind"] = "official_json_latest_after_history_failure"
+    return record
 
 
 def prepare_russell_1000_input_data(
@@ -438,6 +457,7 @@ def prepare_russell_1000_input_data(
     universe_fallback_used = False
     fallback_reason = None
     historical_universe_refresh_warning = None
+    latest_universe_refresh_warning = None
     try:
         snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
             start_date=universe_start,
@@ -495,6 +515,9 @@ def prepare_russell_1000_input_data(
             write_table(alias_table, alias_output_path)
             symbol_aliases = load_symbol_alias_table(alias_output_path)
             historical_universe_refresh_warning = history_refresh_error
+            latest_universe_refresh_warning = (
+                str(latest_record.get("warning")) if latest_record.get("warning") else None
+            )
         except Exception as latest_exc:
             universe_fallback_used = True
             fallback_reason = (
@@ -597,6 +620,7 @@ def prepare_russell_1000_input_data(
         universe_as_of=universe_as_of,
         missing_price_backfill_warning=missing_price_backfill_warning,
         historical_universe_refresh_warning=historical_universe_refresh_warning,
+        latest_universe_refresh_warning=latest_universe_refresh_warning,
     )
     _write_source_input_manifest(result=result, universe_metadata=metadata)
     return result
@@ -657,6 +681,8 @@ def main(argv: list[str] | None = None) -> int:
         print("reused existing universe inputs after upstream holdings refresh failed")
     if result.historical_universe_refresh_warning:
         print(f"warning: historical universe refresh incomplete: {result.historical_universe_refresh_warning}")
+    if result.latest_universe_refresh_warning:
+        print(f"warning: latest universe refresh used secondary source: {result.latest_universe_refresh_warning}")
     if result.missing_price_backfill_warning:
         print(f"warning: missing price backfill skipped: {result.missing_price_backfill_warning}")
     return 0

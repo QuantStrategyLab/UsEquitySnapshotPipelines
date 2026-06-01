@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import csv
+from html import unescape
 import io
 import json
 import re
@@ -25,6 +26,14 @@ ISHARES_IWB_HOLDINGS_JSON_URL_TEMPLATE = (
     f"{ISHARES_IWB_PRODUCT_URL}/1467271812596.ajax"
     "?fileType=json&tab=all&asOfDate={as_of_date}"
 )
+COMPANIES_MARKETCAP_IWB_HOLDINGS_URL = "https://companiesmarketcap.com/ishares-russell-1000-etf/holdings/"
+COMPANIES_MARKETCAP_TICKER_ALIASES = {
+    "BRKA": "BRK.A",
+    "BRKB": "BRK.B",
+    "BFA": "BF.A",
+    "BFB": "BF.B",
+    "HEIA": "HEI.A",
+}
 ISHARES_SNAPSHOT_IDENTIFIER_COLUMNS = ("isin", "cusip", "sedol")
 ISHARES_SNAPSHOT_OPTIONAL_COLUMN_SOURCES = (
     ("ISIN", "isin"),
@@ -310,6 +319,76 @@ def parse_ishares_holdings_json_snapshot(json_text: str, *, as_of_date) -> tuple
             ]
         )
     return pd.Timestamp(as_of_date).normalize(), _finalize_ishares_holdings_snapshot_frame(frame)
+
+
+def _strip_html_text(value: str) -> str:
+    text = re.sub(r"<[^>]*>", " ", str(value or ""))
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def _normalize_companies_marketcap_ticker(value: str) -> str:
+    symbol = str(value or "").strip().upper()
+    return COMPANIES_MARKETCAP_TICKER_ALIASES.get(symbol, symbol)
+
+
+def parse_companies_marketcap_iwb_holdings_html(html_text: str) -> tuple[pd.Timestamp, pd.DataFrame]:
+    payload = str(html_text or "")
+    if not payload.strip():
+        raise ValueError("html_text must not be empty")
+
+    page_text = _strip_html_text(payload)
+    date_match = re.search(r"Etf holdings as of\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", page_text)
+    if date_match is None:
+        raise ValueError("Could not find CompaniesMarketCap IWB holdings as-of date")
+    as_of_date = pd.Timestamp(date_match.group(1)).normalize()
+
+    table_match = re.search(
+        r"<h2[^>]*>\s*Full holdings list\s*</h2>\s*<table\b.*?<tbody>(?P<tbody>.*?)</tbody>",
+        payload,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if table_match is None:
+        raise ValueError("Could not find CompaniesMarketCap IWB full holdings table")
+
+    rows: list[dict[str, object]] = []
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table_match.group("tbody"), flags=re.IGNORECASE | re.DOTALL):
+        cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row_html, flags=re.IGNORECASE | re.DOTALL)
+        if len(cells) < 4:
+            continue
+        weight = pd.to_numeric(_strip_html_text(cells[0]).replace("%", "").replace(",", ""), errors="coerce")
+        name = _strip_html_text(cells[1])
+        symbol = _normalize_companies_marketcap_ticker(_strip_html_text(cells[2]))
+        shares = pd.to_numeric(_strip_html_text(cells[3]).replace(",", ""), errors="coerce")
+        if pd.isna(weight) or not symbol or not re.fullmatch(r"[A-Z0-9.-]+", symbol):
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "sector": "unknown",
+                "name": name,
+                "weight": float(weight),
+                "shares": float(shares) if pd.notna(shares) else float("nan"),
+            }
+        )
+
+    if not rows:
+        raise ValueError("CompaniesMarketCap IWB holdings table did not contain parseable rows")
+    snapshot = pd.DataFrame(rows)
+    return (
+        as_of_date,
+        snapshot.drop_duplicates(subset=["symbol"], keep="first")
+        .sort_values(["weight", "symbol"], ascending=[False, True])
+        .reset_index(drop=True),
+    )
+
+
+def download_companies_marketcap_iwb_holdings_snapshot(
+    url: str = COMPANIES_MARKETCAP_IWB_HOLDINGS_URL,
+) -> tuple[pd.Timestamp, pd.DataFrame]:
+    as_of_date, snapshot = parse_companies_marketcap_iwb_holdings_html(_fetch_text(url))
+    if len(snapshot) < 500:
+        raise RuntimeError(f"CompaniesMarketCap IWB holdings snapshot too small: row_count={len(snapshot)}")
+    return as_of_date, snapshot
 
 
 def build_ishares_holdings_json_url(
