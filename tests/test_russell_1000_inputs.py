@@ -155,7 +155,6 @@ def test_resolve_ishares_holdings_snapshot_skips_failed_candidate() -> None:
     assert [f"{date:%Y-%m-%d}" for date in calls] == ["2026-05-31", "2026-05-30"]
 
 
-
 def test_prepare_russell_1000_input_data_writes_latest_weighted_snapshot(tmp_path, monkeypatch) -> None:
     snapshots = [
         (
@@ -261,6 +260,9 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     def fail_download_snapshots(**_kwargs):
         raise RuntimeError("upstream returned HTML")
 
+    def fail_latest_snapshot(*_args, **_kwargs):
+        raise RuntimeError("latest endpoint also failed")
+
     def fake_download_prices(symbols, *, start, symbol_aliases, **_kwargs):
         observed["symbol_calls"].append(tuple(symbols))
         observed["starts"].append(start)
@@ -277,6 +279,7 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
+    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
     monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
 
     result = russell_1000_inputs.prepare_russell_1000_input_data(
@@ -304,6 +307,128 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     assert manifest["price_as_of"] == "2026-05-30"
     assert manifest["universe_as_of"] == "2026-04-29"
     assert "upstream returned HTML" in manifest["fallback_reason"]
+    assert "latest endpoint also failed" in manifest["fallback_reason"]
+
+
+def test_prepare_russell_1000_input_data_refreshes_latest_universe_after_history_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    existing_dir = tmp_path / "current"
+    existing_dir.mkdir()
+    pd.DataFrame(
+        [
+            {"symbol": "AAPL", "sector": "Information Technology", "start_date": "2026-04-29", "end_date": ""},
+            {"symbol": "MSFT", "sector": "Information Technology", "start_date": "2026-04-29", "end_date": ""},
+        ]
+    ).to_csv(existing_dir / "r1000_universe_history.csv", index=False)
+    pd.DataFrame([{"requested_date": "2026-04-30", "as_of_date": "2026-04-29"}]).to_csv(
+        existing_dir / "r1000_universe_snapshot_metadata.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0}]).to_csv(
+        existing_dir / "r1000_latest_holdings_snapshot.csv",
+        index=False,
+    )
+    pd.DataFrame(
+        [
+            {"symbol": "AAPL", "download_candidate": "AAPL", "priority": 1},
+            {"symbol": "MSFT", "download_candidate": "MSFT", "priority": 1},
+        ]
+    ).to_csv(existing_dir / "r1000_symbol_aliases.csv", index=False)
+    existing_prices = tmp_path / "prices.csv"
+    pd.DataFrame([{"symbol": "AAPL", "as_of": "2026-05-25", "close": 100.0, "volume": 1_000}]).to_csv(
+        existing_prices,
+        index=False,
+    )
+    previous_manifest = tmp_path / "r1000_source_input_manifest.json"
+    previous_manifest.write_text(
+        json.dumps({"universe_fallback_used": True, "fallback_streak": 1}),
+        encoding="utf-8",
+    )
+    observed_requests: list[pd.Timestamp] = []
+
+    def fail_download_snapshots(**_kwargs):
+        raise RuntimeError("2018-01 returned HTML")
+
+    def fake_latest_snapshot(requested_date, *, max_lookback_days):
+        observed_requests.append(pd.Timestamp(requested_date).normalize())
+        assert max_lookback_days == 7
+        return {
+            "requested_date": pd.Timestamp(requested_date).normalize(),
+            "as_of_date": pd.Timestamp("2026-05-30"),
+            "lookback_days": 1,
+            "source_url": "https://example.test/20260530.json",
+            "snapshot": pd.DataFrame(
+                [
+                    {
+                        "symbol": "MSFT",
+                        "sector": "Information Technology",
+                        "weight": 6.0,
+                        "isin": "US5949181045",
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "sector": "Information Technology",
+                        "weight": 7.0,
+                        "isin": "US67066G1040",
+                    },
+                ]
+            ),
+        }
+
+    def fake_download_prices(symbols, *, start, **_kwargs):
+        return pd.DataFrame(
+            [
+                {"symbol": symbol, "as_of": "2026-06-01", "close": 100.0, "volume": 1_000}
+                for symbol in symbols
+                if symbol in {"AAPL", "MSFT", "NVDA", "QQQ", "BOXX"}
+            ]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fail_download_snapshots,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fake_latest_snapshot)
+    monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
+
+    result = russell_1000_inputs.prepare_russell_1000_input_data(
+        output_dir=tmp_path / "out",
+        universe_start="2018-01-01",
+        universe_end="2026-05-31",
+        existing_input_dir=existing_dir,
+        existing_prices_path=existing_prices,
+        existing_source_manifest_path=previous_manifest,
+        max_universe_fallback_streak=1,
+        price_start="2018-01-01",
+        extra_symbols=("QQQ",),
+    )
+
+    history = pd.read_csv(result.universe_history_path)
+    latest = pd.read_csv(result.latest_snapshot_output_path)
+    metadata = pd.read_csv(result.metadata_output_path)
+    manifest = json.loads(result.source_manifest_output_path.read_text(encoding="utf-8"))
+
+    assert observed_requests == [pd.Timestamp("2026-05-31")]
+    assert result.universe_fallback_used is False
+    assert result.fallback_streak == 0
+    assert result.historical_universe_refresh_warning == "RuntimeError: 2018-01 returned HTML"
+    assert manifest["source_input_status"] == "partial_history_refresh"
+    assert manifest["universe_fallback_used"] is False
+    assert manifest["fallback_streak"] == 0
+    assert manifest["universe_as_of"] == "2026-05-30"
+    assert manifest["price_as_of"] == "2026-06-01"
+    assert manifest["historical_universe_refresh_warning"] == "RuntimeError: 2018-01 returned HTML"
+    assert set(latest["symbol"]) == {"MSFT", "NVDA"}
+    assert metadata["as_of_date"].max() == "2026-05-30"
+    old_aapl_end = history.loc[
+        (history["symbol"] == "AAPL") & (history["start_date"] == "2026-04-29"),
+        "end_date",
+    ].iloc[0]
+    assert old_aapl_end == "2026-05-29"
+    assert set(history.loc[history["start_date"] == "2026-05-30", "symbol"]) == {"MSFT", "NVDA"}
 
 
 def test_prepare_russell_1000_input_data_skips_empty_missing_price_backfill(
@@ -402,11 +527,15 @@ def test_prepare_russell_1000_input_data_blocks_stale_repeated_universe_fallback
     def fail_download_snapshots(**_kwargs):
         raise RuntimeError("upstream returned HTML again")
 
+    def fail_latest_snapshot(*_args, **_kwargs):
+        raise RuntimeError("latest endpoint also failed")
+
     monkeypatch.setattr(
         russell_1000_inputs,
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
+    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
 
     try:
         russell_1000_inputs.prepare_russell_1000_input_data(
