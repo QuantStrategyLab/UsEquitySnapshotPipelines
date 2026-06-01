@@ -119,6 +119,50 @@ def test_builds_mega_cap_top50_balanced_artifact_contract(tmp_path) -> None:
     assert summary["release_status"] == "ready"
 
 
+def test_mega_cap_manifest_includes_source_input_diagnostics(tmp_path) -> None:
+    prices_path = tmp_path / "prices.csv"
+    universe_path = tmp_path / "universe.csv"
+    source_manifest_path = tmp_path / "r1000_source_input_manifest.json"
+    output_dir = tmp_path / "output"
+    _sample_prices().to_csv(prices_path, index=False)
+    _sample_ranked_universe().to_csv(universe_path, index=False)
+    source_manifest_path.write_text(
+        json.dumps(
+            {
+                "source_input_status": "universe_fallback",
+                "universe_fallback_used": True,
+                "fallback_reason": "RuntimeError: upstream returned HTML",
+                "fallback_streak": 1,
+                "price_as_of": "2025-03-24",
+                "universe_as_of": "2025-02-28",
+                "producer": {"github_run_id": "12345"},
+                "generated_at": "2025-03-25T00:01:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_artifacts(
+        prices_path=prices_path,
+        universe_path=universe_path,
+        output_dir=output_dir,
+        as_of_date="2025-03-24",
+        min_adv20_usd=1_000_000.0,
+        source_input_manifest_path=source_manifest_path,
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["price_as_of"] == "2025-03-24"
+    assert manifest["universe_as_of"] == "2025-02-28"
+    assert manifest["source_input_status"] == "universe_fallback"
+    assert manifest["source_input_fallback_used"] is True
+    assert manifest["source_input_fallback_streak"] == 1
+    assert "upstream returned HTML" in manifest["source_input_fallback_reason"]
+    assert manifest["source_refresh_run_id"] == "12345"
+    assert manifest["input_artifacts"]["prices"]["row_count"] == len(_sample_prices())
+
+
 def test_build_rejects_unranked_large_universe(tmp_path) -> None:
     prices_path = tmp_path / "prices.csv"
     universe_path = tmp_path / "universe.csv"

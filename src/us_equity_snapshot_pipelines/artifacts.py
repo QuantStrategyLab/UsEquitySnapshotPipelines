@@ -132,6 +132,88 @@ def resolve_snapshot_as_of(snapshot: pd.DataFrame) -> str | None:
     return None
 
 
+def _resolve_frame_as_of(frame: pd.DataFrame, columns: tuple[str, ...]) -> str | None:
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        values = pd.to_datetime(frame[column], errors="coerce")
+        if values.notna().any():
+            return pd.Timestamp(values.max()).date().isoformat()
+    return None
+
+
+def _load_mapping(path: str | Path | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    resolved = Path(path)
+    if not resolved.exists():
+        return {}
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"JSON object expected: {resolved}")
+    return dict(payload)
+
+
+def _artifact_metadata(path: str | Path, frame: pd.DataFrame, *, as_of: str | None) -> dict[str, Any]:
+    resolved = Path(path)
+    payload: dict[str, Any] = {
+        "path": str(resolved),
+        "row_count": int(len(frame)),
+        "as_of": as_of,
+    }
+    if resolved.exists():
+        payload["sha256"] = sha256_file(resolved)
+    return payload
+
+
+def build_snapshot_input_metadata(
+    *,
+    prices_path: str | Path,
+    universe_path: str | Path,
+    price_history: pd.DataFrame,
+    universe: pd.DataFrame,
+    source_input_manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    source_manifest = _load_mapping(source_input_manifest_path)
+    has_source_manifest = bool(source_manifest)
+    source_artifacts = source_manifest.get("artifacts") if isinstance(source_manifest.get("artifacts"), Mapping) else {}
+    price_as_of = (
+        source_manifest.get("price_as_of")
+        or _resolve_frame_as_of(price_history, ("as_of", "date", "snapshot_date"))
+    )
+    universe_as_of = (
+        source_manifest.get("universe_as_of")
+        or _resolve_frame_as_of(universe, ("snapshot_date", "as_of_date", "as_of", "start_date"))
+    )
+    fallback = source_manifest.get("fallback") if isinstance(source_manifest.get("fallback"), Mapping) else {}
+    producer = source_manifest.get("producer") if isinstance(source_manifest.get("producer"), Mapping) else {}
+    source_input_status = (
+        str(source_manifest.get("source_input_status") or "").strip()
+        if has_source_manifest
+        else None
+    )
+    metadata: dict[str, Any] = {
+        "price_as_of": price_as_of,
+        "universe_as_of": universe_as_of,
+        "source_input_status": source_input_status,
+        "source_input_fallback_used": bool(source_manifest.get("universe_fallback_used", False))
+        if has_source_manifest
+        else None,
+        "source_input_fallback_reason": source_manifest.get("fallback_reason") or fallback.get("reason"),
+        "source_input_fallback_streak": source_manifest.get("fallback_streak") or fallback.get("streak"),
+        "source_input_manifest_path": str(source_input_manifest_path) if source_input_manifest_path else None,
+        "source_refresh_run_id": producer.get("github_run_id") or source_manifest.get("github_run_id"),
+        "source_refresh_generated_at": source_manifest.get("generated_at"),
+        "input_artifacts": {
+            "prices": _artifact_metadata(prices_path, price_history, as_of=price_as_of),
+            "universe": _artifact_metadata(universe_path, universe, as_of=universe_as_of),
+        },
+    }
+    if source_artifacts:
+        metadata["source_input_artifacts"] = _json_safe(source_artifacts)
+    return {key: _json_safe(value) for key, value in metadata.items() if value is not None}
+
+
 def write_snapshot_manifest(
     *,
     contract: SnapshotProfileContract,
@@ -140,6 +222,7 @@ def write_snapshot_manifest(
     config_path: str | Path | None,
     manifest_path: str | Path,
     config_name: str | None = None,
+    input_metadata: Mapping[str, Any] | None = None,
 ) -> Path:
     resolved_snapshot = Path(snapshot_path)
     resolved_config = Path(config_path) if config_path else None
@@ -162,6 +245,8 @@ def write_snapshot_manifest(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_project": SOURCE_PROJECT,
     }
+    if input_metadata:
+        payload.update(_json_safe(dict(input_metadata)))
     return write_json(manifest_path, payload)
 
 

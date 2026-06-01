@@ -32,6 +32,10 @@ on:
         description: Optional local, gs://, or http(s) underlying-to-2x-product map path.
         required: false
         type: string
+      source_input_manifest_path:
+        description: Optional local, gs://, or http(s) source input manifest JSON.
+        required: false
+        type: string
       as_of_date:
         description: Optional snapshot date, for example 2026-04-01
         required: false
@@ -85,6 +89,7 @@ jobs:
       PRICES_PATH: ${{ inputs.prices_path }}
       UNIVERSE_PATH: ${{ inputs.universe_path }}
       PRODUCT_MAP_PATH: ${{ inputs.product_map_path }}
+      SOURCE_INPUT_MANIFEST_PATH: ${{ inputs.source_input_manifest_path }}
       AS_OF_DATE: ${{ inputs.as_of_date }}
       ARTIFACT_DIR_INPUT: ${{ inputs.artifact_dir }}
       GCS_PREFIX: ${{ inputs.gcs_prefix }}
@@ -95,6 +100,7 @@ jobs:
       MIN_ADV20_USD: ${{ inputs.min_adv20_usd }}
       SCHEDULED_PRICES_PATH: ${{ vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_UNIVERSE_PATH: ${{ vars.SCHEDULED_US_EQUITY_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv' }}
+      SCHEDULED_SOURCE_INPUT_MANIFEST_PATH: ${{ vars.SCHEDULED_US_EQUITY_SOURCE_INPUT_MANIFEST_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_source_input_manifest.json' }}
       SCHEDULED_TECH_CONFIG_PATH: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_CONFIG_PATH || vars.SCHEDULED_US_EQUITY_CONFIG_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json' }}
       SCHEDULED_TECH_GCS_PREFIX: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX || vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
       SCHEDULED_RUSSELL_CONFIG_PATH: ${{ vars.SCHEDULED_RUSSELL_1000_CONFIG_PATH || '' }}
@@ -137,6 +143,7 @@ jobs:
           prices_path="${PRICES_PATH:-}"
           universe_path="${UNIVERSE_PATH:-}"
           product_map_path="${PRODUCT_MAP_PATH:-}"
+          source_input_manifest_path="${SOURCE_INPUT_MANIFEST_PATH:-}"
           config_path="${CONFIG_PATH:-}"
           gcs_prefix="${GCS_PREFIX:-}"
           execute_publish="${EXECUTE_PUBLISH:-false}"
@@ -146,6 +153,7 @@ jobs:
             use_sample_data="false"
             prices_path="${PRICES_PATH:-${SCHEDULED_PRICES_PATH}}"
             universe_path="${UNIVERSE_PATH:-${SCHEDULED_UNIVERSE_PATH}}"
+            source_input_manifest_path="${SOURCE_INPUT_MANIFEST_PATH:-${SCHEDULED_SOURCE_INPUT_MANIFEST_PATH}}"
             case "${profile}" in
               tech_communication_pullback_enhancement)
                 config_path="${CONFIG_PATH:-${SCHEDULED_TECH_CONFIG_PATH}}"
@@ -194,6 +202,7 @@ jobs:
             echo "PRICES_PATH=${prices_path}"
             echo "UNIVERSE_PATH=${universe_path}"
             echo "PRODUCT_MAP_PATH=${product_map_path}"
+            echo "SOURCE_INPUT_MANIFEST_PATH=${source_input_manifest_path}"
             echo "CONFIG_PATH=${config_path}"
             echo "GCS_PREFIX=${gcs_prefix}"
             echo "EXECUTE_PUBLISH=${execute_publish}"
@@ -205,6 +214,7 @@ jobs:
             echo "prices_path=${prices_path:-<empty>}"
             echo "universe_path=${universe_path:-<empty>}"
             echo "product_map_path=${product_map_path:-<empty>}"
+            echo "source_input_manifest_path=${source_input_manifest_path:-<empty>}"
             echo "config_path=${config_path:-<empty>}"
             echo "gcs_prefix=${gcs_prefix:-<empty>}"
             echo "execute_publish=${execute_publish}"
@@ -215,7 +225,7 @@ jobs:
         run: |
           set -euo pipefail
           needed=false
-          for value in "${PRICES_PATH:-}" "${UNIVERSE_PATH:-}" "${CONFIG_PATH:-}" "${PRODUCT_MAP_PATH:-}"; do
+          for value in "${PRICES_PATH:-}" "${UNIVERSE_PATH:-}" "${CONFIG_PATH:-}" "${PRODUCT_MAP_PATH:-}" "${SOURCE_INPUT_MANIFEST_PATH:-}"; do
             case "${value}" in
               gs://*) needed=true ;;
             esac
@@ -266,6 +276,9 @@ jobs:
             fi
             if [ -n "${PRODUCT_MAP_PATH:-}" ]; then
               resolve_args+=(--product-map "${PRODUCT_MAP_PATH}")
+            fi
+            if [ -n "${SOURCE_INPUT_MANIFEST_PATH:-}" ]; then
+              resolve_args+=(--source-input-manifest "${SOURCE_INPUT_MANIFEST_PATH}")
             fi
             python scripts/resolve_snapshot_inputs.py "${resolve_args[@]}"
             # shellcheck disable=SC1090
@@ -347,6 +360,9 @@ jobs:
           if [ -n "${CURRENT_HOLDINGS:-}" ]; then
             common_args+=(--current-holdings "${CURRENT_HOLDINGS}")
           fi
+          if [ -n "${SOURCE_INPUT_MANIFEST_PATH:-}" ]; then
+            common_args+=(--source-input-manifest "${SOURCE_INPUT_MANIFEST_PATH}")
+          fi
 
           case "${PROFILE}" in
             tech_communication_pullback_enhancement)
@@ -416,6 +432,7 @@ jobs:
           )
           if [ "${EXECUTE_PUBLISH}" = "true" ]; then
             args+=(--execute)
+            args+=(--candidate-prefix "${GCS_PREFIX%/}/candidates/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
           fi
           python scripts/publish_snapshot_artifacts.py "${args[@]}"
 
@@ -437,6 +454,7 @@ jobs:
             echo "- artifact_dir: \`${{ steps.build.outputs.artifact_dir }}\`"
             echo "- use_sample_data: \`${USE_SAMPLE_DATA}\`"
             echo "- product_map_path: \`${PRODUCT_MAP_PATH:-<not set>}\`"
+            echo "- source_input_manifest_path: \`${SOURCE_INPUT_MANIFEST_PATH:-<not set>}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
             echo "- should_publish: \`${{ steps.build.outputs.should_publish }}\`"
@@ -448,3 +466,16 @@ jobs:
             echo "Generated files:"
             find "${{ steps.build.outputs.artifact_dir }}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  rerun-scheduled-failure:
+    needs: build-and-publish
+    if: ${{ failure() && github.event_name == 'schedule' && fromJSON(github.run_attempt) < 2 }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Re-run failed jobs once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run rerun "${GITHUB_RUN_ID}" --failed --repo "${GITHUB_REPOSITORY}"

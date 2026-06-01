@@ -1,0 +1,88 @@
+name: Snapshot Artifact Health
+
+on:
+  schedule:
+    # Daily early-US-session check; catches stale latest manifests before regular execution windows.
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Snapshot profile to check
+        required: true
+        default: mega_cap_leader_rotation_top50_balanced
+        type: choice
+        options:
+          - tech_communication_pullback_enhancement
+          - russell_1000_multi_factor_defensive
+          - mega_cap_leader_rotation_top50_balanced
+      max_month_lag:
+        description: Maximum allowed month lag between snapshot_as_of and run date.
+        required: false
+        default: '1'
+        type: string
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      PROFILE: ${{ matrix.profile }}
+      MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
+      SCHEDULED_TECH_GCS_PREFIX: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX || vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
+      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
+      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Resolve manifest path
+        run: |
+          set -euo pipefail
+          case "${PROFILE}" in
+            tech_communication_pullback_enhancement)
+              prefix="${SCHEDULED_TECH_GCS_PREFIX}"
+              manifest_name="tech_communication_pullback_enhancement_feature_snapshot_latest.csv.manifest.json"
+              ;;
+            russell_1000_multi_factor_defensive)
+              prefix="${SCHEDULED_RUSSELL_GCS_PREFIX}"
+              manifest_name="russell_1000_multi_factor_defensive_feature_snapshot_latest.csv.manifest.json"
+              ;;
+            mega_cap_leader_rotation_top50_balanced)
+              prefix="${SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX}"
+              manifest_name="mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv.manifest.json"
+              ;;
+            *)
+              echo "Unsupported profile: ${PROFILE}" >&2
+              exit 1
+              ;;
+          esac
+          echo "SNAPSHOT_MANIFEST=${prefix%/}/${manifest_name}" >> "$GITHUB_ENV"
+
+      - name: Check manifest freshness
+        run: |
+          set -euo pipefail
+          python scripts/check_snapshot_artifact_health.py \
+            --manifest "${SNAPSHOT_MANIFEST}" \
+            --max-month-lag "${MAX_MONTH_LAG}"

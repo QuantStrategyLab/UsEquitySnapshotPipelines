@@ -297,3 +297,61 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     assert observed["symbol_aliases"]["AAPL"] == ["AAPL"]
     assert refreshed_prices["as_of"].max() == "2026-05-30"
     assert (tmp_path / "out" / "r1000_universe_history.csv").exists()
+    manifest = json.loads(result.source_manifest_output_path.read_text(encoding="utf-8"))
+    assert manifest["source_input_status"] == "universe_fallback"
+    assert manifest["universe_fallback_used"] is True
+    assert manifest["fallback_streak"] == 1
+    assert manifest["price_as_of"] == "2026-05-30"
+    assert manifest["universe_as_of"] == "2026-04-29"
+    assert "upstream returned HTML" in manifest["fallback_reason"]
+
+
+def test_prepare_russell_1000_input_data_blocks_stale_repeated_universe_fallback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    existing_dir = tmp_path / "current"
+    existing_dir.mkdir()
+    pd.DataFrame(
+        [{"symbol": "AAPL", "sector": "Information Technology", "start_date": "2026-04-30", "end_date": ""}]
+    ).to_csv(existing_dir / "r1000_universe_history.csv", index=False)
+    pd.DataFrame([{"requested_date": "2026-05-01", "as_of_date": "2026-04-29"}]).to_csv(
+        existing_dir / "r1000_universe_snapshot_metadata.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0}]).to_csv(
+        existing_dir / "r1000_latest_holdings_snapshot.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "download_candidate": "AAPL", "priority": 1}]).to_csv(
+        existing_dir / "r1000_symbol_aliases.csv",
+        index=False,
+    )
+    previous_manifest = tmp_path / "r1000_source_input_manifest.json"
+    previous_manifest.write_text(
+        json.dumps({"universe_fallback_used": True, "fallback_streak": 1}),
+        encoding="utf-8",
+    )
+
+    def fail_download_snapshots(**_kwargs):
+        raise RuntimeError("upstream returned HTML again")
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fail_download_snapshots,
+    )
+
+    try:
+        russell_1000_inputs.prepare_russell_1000_input_data(
+            output_dir=tmp_path / "out",
+            universe_start="2026-05-01",
+            existing_input_dir=existing_dir,
+            existing_source_manifest_path=previous_manifest,
+            max_universe_fallback_streak=1,
+            price_start="2018-01-01",
+        )
+    except RuntimeError as exc:
+        assert "universe_fallback_streak_exceeded" in str(exc)
+    else:
+        raise AssertionError("expected repeated universe fallback to fail closed")
