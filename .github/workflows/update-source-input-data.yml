@@ -109,22 +109,43 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
           version: '>= 416.0.0'
 
-      - name: Download existing price history if present
+      - name: Download existing source inputs if present
         run: |
           set -euo pipefail
           mkdir -p data/input/current
+          files=(
+            r1000_universe_history.csv
+            r1000_price_history.csv
+            r1000_symbol_aliases.csv
+            r1000_universe_snapshot_metadata.csv
+            r1000_latest_holdings_snapshot.csv
+          )
+          downloaded=0
+          for file in "${files[@]}"; do
+            source_path="${OUTPUT_PREFIX%/}/${file}"
+            target_path="data/input/current/${file}"
+            if gcloud storage cp "${source_path}" "${target_path}"; then
+              downloaded=$((downloaded + 1))
+            else
+              echo "No existing source input found at ${source_path}."
+            fi
+          done
           existing_prices="data/input/current/r1000_price_history.csv"
-          if gcloud storage cp "${OUTPUT_PREFIX%/}/r1000_price_history.csv" "${existing_prices}"; then
+          if [ -f "${existing_prices}" ]; then
             echo "EXISTING_PRICES=${existing_prices}" >> "$GITHUB_ENV"
           else
             echo "No existing price history found at ${OUTPUT_PREFIX%/}/r1000_price_history.csv; building from price_start."
+          fi
+          if [ "${downloaded}" -eq "${#files[@]}" ]; then
+            echo "EXISTING_INPUT_DIR=data/input/current" >> "$GITHUB_ENV"
           fi
 
       - name: Build refreshed source input data
         run: |
           set -euo pipefail
+          output_dir="data/input/refreshed/r1000_official_monthly_v2_alias"
           args=(
-            --output-dir data/input/refreshed/r1000_official_monthly_v2_alias
+            --output-dir "${output_dir}"
             --universe-start "${UNIVERSE_START}"
             --price-start "${PRICE_START}"
             --price-overlap-days "${PRICE_OVERLAP_DAYS}"
@@ -142,11 +163,43 @@ jobs:
           if [ -n "${EXISTING_PRICES:-}" ]; then
             args+=(--existing-prices "${EXISTING_PRICES}")
           fi
-          python scripts/update_russell_1000_input_data.py "${args[@]}"
+          if python scripts/update_russell_1000_input_data.py "${args[@]}"; then
+            echo "SOURCE_INPUT_FALLBACK_USED=false" >> "$GITHUB_ENV"
+          else
+            status=$?
+            required_files=(
+              r1000_universe_history.csv
+              r1000_price_history.csv
+              r1000_symbol_aliases.csv
+              r1000_universe_snapshot_metadata.csv
+              r1000_latest_holdings_snapshot.csv
+            )
+            if [ -n "${EXISTING_INPUT_DIR:-}" ]; then
+              missing=0
+              for file in "${required_files[@]}"; do
+                if [ ! -f "${EXISTING_INPUT_DIR}/${file}" ]; then
+                  missing=1
+                  echo "Missing fallback source input: ${EXISTING_INPUT_DIR}/${file}"
+                fi
+              done
+              if [ "${missing}" -eq 0 ]; then
+                echo "::warning::Source input refresh failed; reusing existing source input artifacts from ${OUTPUT_PREFIX}."
+                mkdir -p "${output_dir}"
+                cp "${EXISTING_INPUT_DIR}"/r1000_*.csv "${output_dir}/"
+                echo "SOURCE_INPUT_FALLBACK_USED=true" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+            exit "${status}"
+          fi
 
       - name: Publish refreshed source input data
         run: |
           set -euo pipefail
+          if [ "${SOURCE_INPUT_FALLBACK_USED:-false}" = "true" ]; then
+            echo "Source input fallback was used; skipping publish to avoid rewriting unchanged artifacts."
+            exit 0
+          fi
           output_dir="data/input/refreshed/r1000_official_monthly_v2_alias"
           files=(
             r1000_universe_history.csv
@@ -188,6 +241,7 @@ jobs:
             echo "- benchmark_symbol: \`${BENCHMARK_SYMBOL}\`"
             echo "- safe_haven: \`${SAFE_HAVEN}\`"
             echo "- extra_symbols: \`${EXTRA_SYMBOLS}\`"
+            echo "- source_input_fallback_used: \`${SOURCE_INPUT_FALLBACK_USED:-false}\`"
             echo
             echo "Generated files:"
             find "${output_dir}" -maxdepth 1 -type f -print | sort | sed 's/^/- /'

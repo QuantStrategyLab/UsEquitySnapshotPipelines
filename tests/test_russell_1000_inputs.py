@@ -4,7 +4,10 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.russell_1000_history import parse_ishares_holdings_json_snapshot
+from us_equity_snapshot_pipelines.russell_1000_history import (
+    parse_ishares_holdings_json_snapshot,
+    resolve_ishares_holdings_snapshot,
+)
 from us_equity_snapshot_pipelines import russell_1000_inputs
 from us_equity_snapshot_pipelines.russell_1000_inputs import (
     collect_download_symbols,
@@ -118,6 +121,37 @@ def test_ishares_json_parser_preserves_rank_metrics() -> None:
     assert row["market_value"] == 100.0
     assert row["shares"] == 10.0
     assert row["price"] == 10.0
+
+
+def test_ishares_json_parser_rejects_html_response() -> None:
+    try:
+        parse_ishares_holdings_json_snapshot("<!DOCTYPE html><html></html>", as_of_date="2026-05-31")
+    except ValueError as exc:
+        assert "returned HTML" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_resolve_ishares_holdings_snapshot_skips_failed_candidate() -> None:
+    calls: list[pd.Timestamp] = []
+
+    def fake_download(as_of_date, *, holdings_url_template):
+        snapshot_date = pd.Timestamp(as_of_date).normalize()
+        calls.append(snapshot_date)
+        if len(calls) == 1:
+            raise ValueError("upstream returned HTML")
+        return snapshot_date, pd.DataFrame([{"symbol": "AAPL", "sector": "Information Technology"}])
+
+    record = resolve_ishares_holdings_snapshot(
+        "2026-05-31",
+        max_lookback_days=2,
+        holdings_url_template="https://example.test/{as_of_date}.json",
+        download_fn=fake_download,
+    )
+
+    assert record["lookback_days"] == 1
+    assert record["as_of_date"] == pd.Timestamp("2026-05-30")
+    assert [f"{date:%Y-%m-%d}" for date in calls] == ["2026-05-31", "2026-05-30"]
 
 
 

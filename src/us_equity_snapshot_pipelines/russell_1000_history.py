@@ -255,7 +255,11 @@ def parse_ishares_holdings_json_snapshot(json_text: str, *, as_of_date) -> tuple
     if not str(json_text or "").strip():
         raise ValueError("json_text must not be empty")
 
-    payload = json.loads(str(json_text).lstrip("\ufeff"))
+    payload_text = str(json_text).lstrip("\ufeff").strip()
+    if payload_text.startswith("<"):
+        raise ValueError("iShares JSON endpoint returned HTML instead of JSON")
+
+    payload = json.loads(payload_text)
     rows = payload.get("aaData")
     if not isinstance(rows, list):
         raise ValueError("JSON payload missing aaData list")
@@ -347,9 +351,14 @@ def resolve_ishares_holdings_snapshot(
     download_fn=download_ishares_holdings_snapshot_for_date,
 ) -> dict[str, object]:
     requested = pd.Timestamp(requested_date).tz_localize(None).normalize()
+    errors: list[str] = []
     for lookback_days in range(max(int(max_lookback_days), 0) + 1):
         candidate_date = requested - pd.Timedelta(days=lookback_days)
-        as_of_date, snapshot = download_fn(candidate_date, holdings_url_template=holdings_url_template)
+        try:
+            as_of_date, snapshot = download_fn(candidate_date, holdings_url_template=holdings_url_template)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"{candidate_date:%Y-%m-%d}: {type(exc).__name__}: {exc}")
+            continue
         if not snapshot.empty:
             return {
                 "requested_date": requested,
@@ -361,9 +370,11 @@ def resolve_ishares_holdings_snapshot(
                 ),
                 "snapshot": snapshot,
             }
+        errors.append(f"{candidate_date:%Y-%m-%d}: empty snapshot")
+    detail = f"; attempts: {'; '.join(errors[-5:])}" if errors else ""
     raise RuntimeError(
         "Could not resolve a non-empty iShares holdings snapshot "
-        f"within {max_lookback_days} day(s) before {requested:%Y-%m-%d}"
+        f"within {max_lookback_days} day(s) before {requested:%Y-%m-%d}{detail}"
     )
 
 
