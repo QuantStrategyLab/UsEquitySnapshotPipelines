@@ -163,6 +163,9 @@ jobs:
           if [ -n "${EXISTING_PRICES:-}" ]; then
             args+=(--existing-prices "${EXISTING_PRICES}")
           fi
+          if [ -n "${EXISTING_INPUT_DIR:-}" ]; then
+            args+=(--existing-input-dir "${EXISTING_INPUT_DIR}")
+          fi
           if python scripts/update_russell_1000_input_data.py "${args[@]}"; then
             echo "SOURCE_INPUT_FALLBACK_USED=false" >> "$GITHUB_ENV"
           else

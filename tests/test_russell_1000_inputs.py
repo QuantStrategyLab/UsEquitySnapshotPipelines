@@ -12,6 +12,7 @@ from us_equity_snapshot_pipelines import russell_1000_inputs
 from us_equity_snapshot_pipelines.russell_1000_inputs import (
     collect_download_symbols,
     incremental_start_date,
+    load_symbol_alias_table,
     merge_price_history,
     normalize_price_history,
     split_symbols,
@@ -206,3 +207,93 @@ def test_prepare_russell_1000_input_data_writes_latest_weighted_snapshot(tmp_pat
     assert latest.loc[0, "symbol"] == "MSFT"
     assert float(latest.loc[0, "weight"]) == 6.0
     assert float(latest.loc[0, "market_value"]) == 120.0
+
+
+def test_load_symbol_alias_table_groups_candidates_by_priority(tmp_path) -> None:
+    path = tmp_path / "aliases.csv"
+    pd.DataFrame(
+        [
+            {"symbol": "abc", "download_candidate": "ABC", "priority": 2},
+            {"symbol": "ABC", "download_candidate": "COR", "priority": 1},
+            {"symbol": "XYZ", "download_candidate": "XYZ", "priority": 1},
+        ]
+    ).to_csv(path, index=False)
+
+    aliases = load_symbol_alias_table(path)
+
+    assert aliases["ABC"] == ["COR", "ABC"]
+    assert aliases["XYZ"] == ["XYZ"]
+
+
+def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    existing_dir = tmp_path / "current"
+    existing_dir.mkdir()
+    pd.DataFrame(
+        [
+            {"symbol": "AAPL", "sector": "Information Technology", "start_date": "2026-04-30", "end_date": ""},
+            {"symbol": "MSFT", "sector": "Information Technology", "start_date": "2026-04-30", "end_date": ""},
+        ]
+    ).to_csv(existing_dir / "r1000_universe_history.csv", index=False)
+    pd.DataFrame([{"requested_date": "2026-05-01", "as_of_date": "2026-04-29"}]).to_csv(
+        existing_dir / "r1000_universe_snapshot_metadata.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0}]).to_csv(
+        existing_dir / "r1000_latest_holdings_snapshot.csv",
+        index=False,
+    )
+    pd.DataFrame(
+        [
+            {"symbol": "AAPL", "download_candidate": "AAPL", "priority": 1},
+            {"symbol": "MSFT", "download_candidate": "MSFT", "priority": 1},
+        ]
+    ).to_csv(existing_dir / "r1000_symbol_aliases.csv", index=False)
+    existing_prices = tmp_path / "prices.csv"
+    pd.DataFrame([{"symbol": "AAPL", "as_of": "2026-04-30", "close": 100.0, "volume": 1_000}]).to_csv(
+        existing_prices,
+        index=False,
+    )
+    observed: dict[str, object] = {"starts": [], "symbol_calls": []}
+
+    def fail_download_snapshots(**_kwargs):
+        raise RuntimeError("upstream returned HTML")
+
+    def fake_download_prices(symbols, *, start, symbol_aliases, **_kwargs):
+        observed["symbol_calls"].append(tuple(symbols))
+        observed["starts"].append(start)
+        observed["symbol_aliases"] = dict(symbol_aliases)
+        return pd.DataFrame(
+            [
+                {"symbol": "AAPL", "as_of": "2026-05-30", "close": 110.0, "volume": 2_000},
+                {"symbol": "MSFT", "as_of": "2026-05-30", "close": 210.0, "volume": 3_000},
+            ]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fail_download_snapshots,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
+
+    result = russell_1000_inputs.prepare_russell_1000_input_data(
+        output_dir=tmp_path / "out",
+        universe_start="2026-05-01",
+        existing_input_dir=existing_dir,
+        existing_prices_path=existing_prices,
+        price_start="2018-01-01",
+        extra_symbols=("QQQ",),
+    )
+
+    refreshed_prices = pd.read_csv(result.price_history_path)
+
+    assert result.universe_fallback_used is True
+    assert observed["starts"][0] == "2026-04-23"
+    assert "2018-01-01" in observed["starts"]
+    assert set(observed["symbol_calls"][0]) >= {"AAPL", "MSFT", "QQQ", "BOXX"}
+    assert observed["symbol_aliases"]["AAPL"] == ["AAPL"]
+    assert refreshed_prices["as_of"].max() == "2026-05-30"
+    assert (tmp_path / "out" / "r1000_universe_history.csv").exists()
