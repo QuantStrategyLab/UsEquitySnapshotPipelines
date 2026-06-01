@@ -46,6 +46,7 @@ class Russell1000InputDataResult:
     fallback_streak: int = 0
     price_as_of: str | None = None
     universe_as_of: str | None = None
+    missing_price_backfill_warning: str | None = None
 
 
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
@@ -161,6 +162,7 @@ def _write_source_input_manifest(
         "symbol_count": int(result.symbol_count),
         "download_start": result.download_start,
         "missing_symbol_count": int(result.missing_symbol_count),
+        "missing_price_backfill_warning": result.missing_price_backfill_warning,
         "artifacts": {
             "universe_history": _file_artifact(
                 result.universe_history_path,
@@ -392,15 +394,22 @@ def prepare_russell_1000_input_data(
         symbol_aliases=symbol_aliases,
     )
     price_frames = [existing_prices, update_prices]
+    missing_price_backfill_warning = None
     if missing_symbols and update_start != pd.Timestamp(price_start).strftime("%Y-%m-%d"):
-        missing_prices = download_price_history(
-            missing_symbols,
-            start=price_start,
-            end=price_end,
-            chunk_size=chunk_size,
-            symbol_aliases=symbol_aliases,
-        )
-        price_frames.append(missing_prices)
+        try:
+            missing_prices = download_price_history(
+                missing_symbols,
+                start=price_start,
+                end=price_end,
+                chunk_size=chunk_size,
+                symbol_aliases=symbol_aliases,
+            )
+        except RuntimeError as exc:
+            if "No price history downloaded" not in str(exc):
+                raise
+            missing_price_backfill_warning = f"{type(exc).__name__}: {exc}"
+        else:
+            price_frames.append(missing_prices)
     merged_prices = merge_price_history(*price_frames)
     write_table(merged_prices, price_history_path)
 
@@ -434,6 +443,7 @@ def prepare_russell_1000_input_data(
         fallback_streak=fallback_streak,
         price_as_of=price_as_of,
         universe_as_of=universe_as_of,
+        missing_price_backfill_warning=missing_price_backfill_warning,
     )
     _write_source_input_manifest(result=result, universe_metadata=metadata)
     return result
@@ -492,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if result.universe_fallback_used:
         print("reused existing universe inputs after upstream holdings refresh failed")
+    if result.missing_price_backfill_warning:
+        print(f"warning: missing price backfill skipped: {result.missing_price_backfill_warning}")
     return 0
 
 
