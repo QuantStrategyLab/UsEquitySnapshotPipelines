@@ -306,6 +306,72 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     assert "upstream returned HTML" in manifest["fallback_reason"]
 
 
+def test_prepare_russell_1000_input_data_skips_empty_missing_price_backfill(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    snapshots = [
+        (
+            pd.Timestamp("2026-05-31"),
+            pd.DataFrame(
+                [
+                    {"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0},
+                    {"symbol": "OLD", "sector": "Health Care", "weight": 0.1},
+                ]
+            ),
+        ),
+    ]
+    existing_prices = tmp_path / "prices.csv"
+    pd.DataFrame(
+        [
+            {"symbol": "AAPL", "as_of": "2026-05-20", "close": 100.0, "volume": 1_000},
+            {"symbol": "QQQ", "as_of": "2026-05-20", "close": 490.0, "volume": 2_000},
+        ]
+    ).to_csv(existing_prices, index=False)
+    observed_starts: list[str] = []
+
+    def fake_download_snapshots(**_kwargs):
+        return snapshots, pd.DataFrame([{"snapshot_date": "2026-05-31", "status": "ok"}])
+
+    def fake_download_prices(symbols, *, start, **_kwargs):
+        observed_starts.append(start)
+        if tuple(symbols) == ("OLD",):
+            raise RuntimeError("No price history downloaded")
+        return pd.DataFrame(
+            [
+                {"symbol": "AAPL", "as_of": "2026-05-30", "close": 110.0, "volume": 2_000},
+                {"symbol": "QQQ", "as_of": "2026-05-30", "close": 500.0, "volume": 3_000},
+            ]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fake_download_snapshots,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
+
+    result = russell_1000_inputs.prepare_russell_1000_input_data(
+        output_dir=tmp_path / "out",
+        universe_start="2026-05-01",
+        existing_prices_path=existing_prices,
+        price_start="2018-01-01",
+        benchmark_symbol="QQQ",
+        safe_haven="",
+        extra_symbols=(),
+    )
+
+    refreshed_prices = pd.read_csv(result.price_history_path)
+    manifest = json.loads(result.source_manifest_output_path.read_text(encoding="utf-8"))
+
+    assert result.missing_symbol_count == 1
+    assert result.missing_price_backfill_warning == "RuntimeError: No price history downloaded"
+    assert manifest["source_input_status"] == "fresh"
+    assert manifest["missing_price_backfill_warning"] == "RuntimeError: No price history downloaded"
+    assert observed_starts == ["2026-05-13", "2018-01-01"]
+    assert set(refreshed_prices["symbol"]) == {"AAPL", "QQQ"}
+
+
 def test_prepare_russell_1000_input_data_blocks_stale_repeated_universe_fallback(
     tmp_path,
     monkeypatch,
