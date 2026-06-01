@@ -14,10 +14,12 @@ from .artifacts import sha256_file, write_json
 from .russell_1000_history import (
     backfill_universe_history_start,
     build_interval_universe_history,
+    build_monthly_snapshot_request_dates,
     build_symbol_alias_candidates,
     build_symbol_alias_table,
     collect_symbol_universe,
     download_ishares_historical_universe_snapshots,
+    resolve_ishares_holdings_snapshot,
 )
 from .yfinance_prices import download_price_history
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
@@ -47,6 +49,7 @@ class Russell1000InputDataResult:
     price_as_of: str | None = None
     universe_as_of: str | None = None
     missing_price_backfill_warning: str | None = None
+    historical_universe_refresh_warning: str | None = None
 
 
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
@@ -142,7 +145,12 @@ def _write_source_input_manifest(
     result: "Russell1000InputDataResult",
     universe_metadata: pd.DataFrame,
 ) -> Path:
-    source_input_status = "universe_fallback" if result.universe_fallback_used else "fresh"
+    if result.universe_fallback_used:
+        source_input_status = "universe_fallback"
+    elif result.historical_universe_refresh_warning:
+        source_input_status = "partial_history_refresh"
+    else:
+        source_input_status = "fresh"
     payload = {
         "manifest_type": "source_input_data",
         "contract_version": "r1000_official_monthly_v2_alias.source_input.v1",
@@ -163,6 +171,7 @@ def _write_source_input_manifest(
         "download_start": result.download_start,
         "missing_symbol_count": int(result.missing_symbol_count),
         "missing_price_backfill_warning": result.missing_price_backfill_warning,
+        "historical_universe_refresh_warning": result.historical_universe_refresh_warning,
         "artifacts": {
             "universe_history": _file_artifact(
                 result.universe_history_path,
@@ -288,6 +297,114 @@ def _load_existing_universe_inputs(existing_input_dir: str | Path):
     }
 
 
+def _advance_existing_universe_history(
+    existing_history: pd.DataFrame,
+    *,
+    snapshot_date,
+    latest_snapshot: pd.DataFrame,
+) -> pd.DataFrame:
+    history = pd.DataFrame(existing_history).copy()
+    required = {"symbol", "sector", "start_date", "end_date"}
+    missing = required - set(history.columns)
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise ValueError(f"existing universe history missing required columns: {missing_text}")
+    if history.empty:
+        raise ValueError("existing universe history is empty")
+
+    latest_date = pd.Timestamp(snapshot_date).tz_localize(None).normalize()
+    history["symbol"] = history["symbol"].astype(str).str.upper().str.strip()
+    history["sector"] = history["sector"].fillna("unknown").astype(str).str.strip().replace("", "unknown")
+    history["start_date"] = pd.to_datetime(history["start_date"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    history["end_date"] = pd.to_datetime(history["end_date"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    if history["start_date"].isna().any():
+        raise ValueError("existing universe history contains invalid start_date values")
+
+    open_mask = history["end_date"].isna()
+    latest_open_start = history.loc[open_mask, "start_date"].max() if open_mask.any() else pd.NaT
+    if pd.notna(latest_open_start) and latest_date <= pd.Timestamp(latest_open_start).normalize():
+        raise RuntimeError(
+            "latest iShares holdings snapshot did not advance existing universe: "
+            f"latest={latest_date.date()} existing={pd.Timestamp(latest_open_start).date()}"
+        )
+
+    history.loc[open_mask, "end_date"] = latest_date - pd.Timedelta(days=1)
+    latest_history = build_interval_universe_history([(latest_date, latest_snapshot)])
+    combined = pd.concat([history, latest_history], ignore_index=True)
+    return (
+        combined.loc[:, ["symbol", "sector", "start_date", "end_date"]]
+        .sort_values(["symbol", "start_date"])
+        .reset_index(drop=True)
+    )
+
+
+def _merge_symbol_alias_tables(*tables: pd.DataFrame) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for table in tables:
+        if table is None or table.empty:
+            continue
+        frame = pd.DataFrame(table).copy()
+        required = {"symbol", "download_candidate"}
+        missing = required - set(frame.columns)
+        if missing:
+            missing_text = ", ".join(sorted(missing))
+            raise ValueError(f"symbol alias table missing required columns: {missing_text}")
+        frame["symbol"] = frame["symbol"].astype(str).str.upper().str.strip()
+        frame["download_candidate"] = frame["download_candidate"].astype(str).str.upper().str.strip()
+        if "priority" in frame.columns:
+            frame["priority"] = pd.to_numeric(frame["priority"], errors="coerce").fillna(999999).astype(int)
+        else:
+            frame["priority"] = 999999
+        frames.append(frame.loc[:, ["symbol", "download_candidate", "priority"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["symbol", "download_candidate", "priority"])
+
+    merged = pd.concat(frames, ignore_index=True)
+    valid = merged["symbol"].ne("") & merged["download_candidate"].ne("") & merged["download_candidate"].ne("NAN")
+    return (
+        merged.loc[valid]
+        .sort_values(["symbol", "priority", "download_candidate"])
+        .drop_duplicates(subset=["symbol", "download_candidate"], keep="first")
+        .reset_index(drop=True)
+    )
+
+
+def _append_latest_refresh_metadata(
+    metadata: pd.DataFrame,
+    *,
+    record: Mapping[str, object],
+    history_refresh_error: str,
+) -> pd.DataFrame:
+    requested_date = pd.Timestamp(record["requested_date"]).normalize()
+    as_of_date = pd.Timestamp(record["as_of_date"]).normalize()
+    latest_row = {
+        "requested_date": requested_date.date().isoformat(),
+        "as_of_date": as_of_date.date().isoformat(),
+        "source_kind": "official_json_latest_after_history_failure",
+        "lookback_days": int(record["lookback_days"]),
+        "source_url": str(record["source_url"]),
+        "row_count": int(len(record["snapshot"])),
+        "refresh_note": "historical_refresh_failed_latest_refreshed",
+        "history_refresh_error": history_refresh_error,
+    }
+    return pd.concat([pd.DataFrame(metadata).copy(), pd.DataFrame([latest_row])], ignore_index=True)
+
+
+def _resolve_latest_holdings_snapshot(
+    *,
+    universe_start: str,
+    universe_end: str | None,
+    max_lookback_days: int,
+) -> dict[str, object]:
+    requested_dates = build_monthly_snapshot_request_dates(universe_start, universe_end)
+    requested_date = max(requested_dates)
+    return resolve_ishares_holdings_snapshot(
+        requested_date,
+        max_lookback_days=max_lookback_days,
+    )
+
+
 def prepare_russell_1000_input_data(
     *,
     output_dir: str | Path,
@@ -320,6 +437,7 @@ def prepare_russell_1000_input_data(
 
     universe_fallback_used = False
     fallback_reason = None
+    historical_universe_refresh_warning = None
     try:
         snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
             start_date=universe_start,
@@ -346,26 +464,60 @@ def prepare_russell_1000_input_data(
         if not existing_input_dir:
             raise
         existing_inputs = _load_existing_universe_inputs(existing_input_dir)
-        universe_fallback_used = True
-        fallback_reason = f"{type(exc).__name__}: {exc}"
-        fallback_streak = _source_fallback_streak(
-            existing_source_manifest_path=existing_source_manifest_path,
-            fallback_used=True,
-        )
-        if fallback_streak > int(max_universe_fallback_streak):
-            raise RuntimeError(
-                "universe_fallback_streak_exceeded:"
-                f"streak={fallback_streak} max={int(max_universe_fallback_streak)} "
-                f"reason={fallback_reason}"
-            ) from exc
-        universe_history = existing_inputs["universe_history"]
-        metadata = existing_inputs["metadata"]
-        latest_snapshot = existing_inputs["latest_snapshot"]
-        write_table(universe_history, universe_history_path)
-        write_table(metadata, metadata_output_path)
-        write_table(latest_snapshot, latest_snapshot_output_path)
-        write_table(existing_inputs["alias_table"], alias_output_path)
-        symbol_aliases = existing_inputs["symbol_aliases"]
+        history_refresh_error = f"{type(exc).__name__}: {exc}"
+        try:
+            latest_record = _resolve_latest_holdings_snapshot(
+                universe_start=universe_start,
+                universe_end=universe_end,
+                max_lookback_days=max_lookback_days,
+            )
+            latest_snapshot_date = pd.Timestamp(latest_record["as_of_date"]).normalize()
+            latest_snapshot = pd.DataFrame(latest_record["snapshot"]).copy()
+            universe_history = _advance_existing_universe_history(
+                existing_inputs["universe_history"],
+                snapshot_date=latest_snapshot_date,
+                latest_snapshot=latest_snapshot,
+            )
+            metadata = _append_latest_refresh_metadata(
+                existing_inputs["metadata"],
+                record=latest_record,
+                history_refresh_error=history_refresh_error,
+            )
+            fresh_alias_table = build_symbol_alias_table(
+                build_symbol_alias_candidates([(latest_snapshot_date, latest_snapshot)])
+            )
+            alias_table = _merge_symbol_alias_tables(existing_inputs["alias_table"], fresh_alias_table)
+
+            write_table(latest_snapshot, snapshot_dir / f"r1000_{latest_snapshot_date:%Y-%m-%d}.csv")
+            write_table(universe_history, universe_history_path)
+            write_table(metadata, metadata_output_path)
+            write_table(latest_snapshot, latest_snapshot_output_path)
+            write_table(alias_table, alias_output_path)
+            symbol_aliases = load_symbol_alias_table(alias_output_path)
+            historical_universe_refresh_warning = history_refresh_error
+        except Exception as latest_exc:
+            universe_fallback_used = True
+            fallback_reason = (
+                f"{history_refresh_error}; latest_refresh_failed={type(latest_exc).__name__}: {latest_exc}"
+            )
+            fallback_streak = _source_fallback_streak(
+                existing_source_manifest_path=existing_source_manifest_path,
+                fallback_used=True,
+            )
+            if fallback_streak > int(max_universe_fallback_streak):
+                raise RuntimeError(
+                    "universe_fallback_streak_exceeded:"
+                    f"streak={fallback_streak} max={int(max_universe_fallback_streak)} "
+                    f"reason={fallback_reason}"
+                ) from exc
+            universe_history = existing_inputs["universe_history"]
+            metadata = existing_inputs["metadata"]
+            latest_snapshot = existing_inputs["latest_snapshot"]
+            write_table(universe_history, universe_history_path)
+            write_table(metadata, metadata_output_path)
+            write_table(latest_snapshot, latest_snapshot_output_path)
+            write_table(existing_inputs["alias_table"], alias_output_path)
+            symbol_aliases = existing_inputs["symbol_aliases"]
 
     symbols = collect_download_symbols(
         universe_history,
@@ -444,6 +596,7 @@ def prepare_russell_1000_input_data(
         price_as_of=price_as_of,
         universe_as_of=universe_as_of,
         missing_price_backfill_warning=missing_price_backfill_warning,
+        historical_universe_refresh_warning=historical_universe_refresh_warning,
     )
     _write_source_input_manifest(result=result, universe_metadata=metadata)
     return result
@@ -502,6 +655,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if result.universe_fallback_used:
         print("reused existing universe inputs after upstream holdings refresh failed")
+    if result.historical_universe_refresh_warning:
+        print(f"warning: historical universe refresh incomplete: {result.historical_universe_refresh_warning}")
     if result.missing_price_backfill_warning:
         print(f"warning: missing price backfill skipped: {result.missing_price_backfill_warning}")
     return 0
