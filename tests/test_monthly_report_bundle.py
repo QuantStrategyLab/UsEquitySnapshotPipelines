@@ -13,7 +13,14 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _write_profile_artifacts(root: Path, profile: str, *, snapshot_as_of: str = "2026-04-30") -> None:
+def _write_profile_artifacts(
+    root: Path,
+    profile: str,
+    *,
+    snapshot_as_of: str = "2026-04-30",
+    selected_symbols: tuple[str, ...] = ("AAPL",),
+    include_selected_flag: bool = True,
+) -> None:
     contract = get_profile_contract(profile)
     profile_dir = root / f"us-equity-snapshot-{profile}-123"
     paths = contract.artifact_paths(profile_dir)
@@ -30,13 +37,21 @@ def _write_profile_artifacts(root: Path, profile: str, *, snapshot_as_of: str = 
                     "row_count": 3,
                     "signal_description": f"{profile} signal",
                     "status_description": "ready for monthly review",
+                    "diagnostics": {"selected_symbols": list(selected_symbols)},
                 },
             )
         elif key == "ranking":
             with path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["current_rank", "symbol", "final_score", "selected_flag"])
+                fieldnames = ["current_rank", "symbol", "final_score"]
+                if include_selected_flag:
+                    fieldnames.append("selected_flag")
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
                 writer.writeheader()
-                writer.writerow({"current_rank": "1", "symbol": "AAPL", "final_score": "0.9", "selected_flag": "true"})
+                row = {"current_rank": "1", "symbol": "AAPL", "final_score": "0.9"}
+                if include_selected_flag:
+                    row["selected_flag"] = "true"
+                writer.writerow(row)
+                writer.writerow({"current_rank": "2", "symbol": "MSFT", "final_score": "0.8"})
         elif path.suffix == ".json":
             _write_json(path, {"strategy_profile": profile, "snapshot_as_of": snapshot_as_of})
         else:
@@ -69,3 +84,21 @@ def test_build_bundle_warns_when_expected_profile_artifacts_are_missing(tmp_path
     assert bundle["status"] == "warning"
     assert bundle["missing_profile_count"] == len(list_profile_contracts()) - 1
     assert any(profile["status"] == "missing" for profile in bundle["profiles"])
+
+
+def test_build_bundle_fills_selected_preview_from_release_diagnostics(tmp_path: Path) -> None:
+    first_profile = list_profile_contracts()[0].profile
+    _write_profile_artifacts(
+        tmp_path,
+        first_profile,
+        selected_symbols=("MSFT",),
+        include_selected_flag=False,
+    )
+
+    bundle = build_bundle(tmp_path, report_month="2026-04", ranking_preview_size=2)
+    preview = next(profile for profile in bundle["profiles"] if profile["profile"] == first_profile)["ranking_preview"]
+    markdown = render_ai_review_input(bundle)
+
+    assert preview[0]["selected"] == "false"
+    assert preview[1]["selected"] == "true"
+    assert "| 2 | MSFT | 0.8 | true |" in markdown
