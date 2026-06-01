@@ -49,7 +49,35 @@ def _discover_release_summaries(artifact_root: Path) -> dict[str, Path]:
     return discovered
 
 
-def _ranking_preview(path: Path, limit: int) -> list[dict[str, Any]]:
+def _normalize_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _selected_symbols_from_summary(summary: dict[str, Any]) -> set[str] | None:
+    diagnostics = summary.get("diagnostics")
+    if not isinstance(diagnostics, dict) or "selected_symbols" not in diagnostics:
+        return None
+    raw_symbols = diagnostics.get("selected_symbols")
+    if isinstance(raw_symbols, str):
+        values = raw_symbols.split(",")
+    elif isinstance(raw_symbols, (list, tuple, set)):
+        values = raw_symbols
+    else:
+        values = ()
+    return {normalized for symbol in values if (normalized := _normalize_symbol(symbol))}
+
+
+def _selected_preview_value(row: dict[str, str], selected_symbols: set[str] | None) -> str:
+    explicit = row.get("selected_flag") or row.get("selected") or row.get("is_selected")
+    if explicit:
+        return explicit
+    if selected_symbols is None:
+        return ""
+    symbol = _normalize_symbol(row.get("symbol") or row.get("ticker"))
+    return str(symbol in selected_symbols).lower() if symbol else ""
+
+
+def _ranking_preview(path: Path, limit: int, *, selected_symbols: set[str] | None = None) -> list[dict[str, Any]]:
     if not path.exists() or limit <= 0:
         return []
     rows: list[dict[str, Any]] = []
@@ -60,7 +88,7 @@ def _ranking_preview(path: Path, limit: int) -> list[dict[str, Any]]:
                     "rank": row.get("current_rank") or row.get("rank") or "",
                     "symbol": row.get("symbol") or row.get("ticker") or "",
                     "score": row.get("final_score") or row.get("score") or "",
-                    "selected": row.get("selected_flag") or "",
+                    "selected": _selected_preview_value(row, selected_symbols),
                 }
             )
             if len(rows) >= limit:
@@ -91,7 +119,11 @@ def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | Non
     paths = contract.artifact_paths(artifact_dir)
     present_files = [path.name for path in paths.values() if path.exists()]
     missing_files = [path.name for path in paths.values() if not path.exists()]
-    ranking_preview = _ranking_preview(paths["ranking"], ranking_preview_size)
+    ranking_preview = _ranking_preview(
+        paths["ranking"],
+        ranking_preview_size,
+        selected_symbols=_selected_symbols_from_summary(summary),
+    )
     return {
         "profile": profile,
         "display_name": contract.display_name,
