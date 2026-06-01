@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from us_equity_snapshot_pipelines.russell_1000_history import (
+    parse_companies_marketcap_iwb_holdings_html,
     parse_ishares_holdings_json_snapshot,
     resolve_ishares_holdings_snapshot,
 )
@@ -155,6 +156,35 @@ def test_resolve_ishares_holdings_snapshot_skips_failed_candidate() -> None:
     assert [f"{date:%Y-%m-%d}" for date in calls] == ["2026-05-31", "2026-05-30"]
 
 
+def test_companies_marketcap_iwb_parser_builds_weighted_snapshot() -> None:
+    html = """
+    <div>Etf holdings as of <span>May 14, 2026</span></div>
+    <h2>Full holdings list</h2>
+    <table><tbody>
+      <tr>
+        <td>8.08%<div></div></td>
+        <td><div></div>NVIDIA CORP</td>
+        <td><div></div>NVDA</td>
+        <td class="td-right"><div></div>16456661.00</td>
+      </tr>
+      <tr>
+        <td>1.31%<div></div></td>
+        <td><div></div>BERKSHIRE HATHAWAY INC CLASS B</td>
+        <td><div></div>BRKB</td>
+        <td class="td-right"><div></div>1296894.00</td>
+      </tr>
+    </tbody></table>
+    """
+
+    as_of_date, snapshot = parse_companies_marketcap_iwb_holdings_html(html)
+
+    assert as_of_date == pd.Timestamp("2026-05-14")
+    assert list(snapshot["symbol"]) == ["NVDA", "BRK.B"]
+    assert list(snapshot["sector"]) == ["unknown", "unknown"]
+    assert float(snapshot.loc[snapshot["symbol"] == "NVDA", "weight"].iloc[0]) == 8.08
+    assert float(snapshot.loc[snapshot["symbol"] == "BRK.B", "shares"].iloc[0]) == 1296894.0
+
+
 def test_prepare_russell_1000_input_data_writes_latest_weighted_snapshot(tmp_path, monkeypatch) -> None:
     snapshots = [
         (
@@ -263,6 +293,9 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     def fail_latest_snapshot(*_args, **_kwargs):
         raise RuntimeError("latest endpoint also failed")
 
+    def fail_secondary_latest_snapshot(*_args, **_kwargs):
+        raise RuntimeError("secondary latest endpoint also failed")
+
     def fake_download_prices(symbols, *, start, symbol_aliases, **_kwargs):
         observed["symbol_calls"].append(tuple(symbols))
         observed["starts"].append(start)
@@ -280,6 +313,11 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
         fail_download_snapshots,
     )
     monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_companies_marketcap_iwb_holdings_snapshot",
+        fail_secondary_latest_snapshot,
+    )
     monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
 
     result = russell_1000_inputs.prepare_russell_1000_input_data(
@@ -308,6 +346,7 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
     assert manifest["universe_as_of"] == "2026-04-29"
     assert "upstream returned HTML" in manifest["fallback_reason"]
     assert "latest endpoint also failed" in manifest["fallback_reason"]
+    assert "secondary latest endpoint also failed" in manifest["fallback_reason"]
 
 
 def test_prepare_russell_1000_input_data_refreshes_latest_universe_after_history_failure(
@@ -431,6 +470,93 @@ def test_prepare_russell_1000_input_data_refreshes_latest_universe_after_history
     assert set(history.loc[history["start_date"] == "2026-05-30", "symbol"]) == {"MSFT", "NVDA"}
 
 
+def test_prepare_russell_1000_input_data_uses_secondary_latest_universe_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    existing_dir = tmp_path / "current"
+    existing_dir.mkdir()
+    pd.DataFrame(
+        [{"symbol": "AAPL", "sector": "Information Technology", "start_date": "2026-04-29", "end_date": ""}]
+    ).to_csv(existing_dir / "r1000_universe_history.csv", index=False)
+    pd.DataFrame([{"requested_date": "2026-04-30", "as_of_date": "2026-04-29"}]).to_csv(
+        existing_dir / "r1000_universe_snapshot_metadata.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "sector": "Information Technology", "weight": 5.0}]).to_csv(
+        existing_dir / "r1000_latest_holdings_snapshot.csv",
+        index=False,
+    )
+    pd.DataFrame([{"symbol": "AAPL", "download_candidate": "AAPL", "priority": 1}]).to_csv(
+        existing_dir / "r1000_symbol_aliases.csv",
+        index=False,
+    )
+    previous_manifest = tmp_path / "r1000_source_input_manifest.json"
+    previous_manifest.write_text(
+        json.dumps({"universe_fallback_used": True, "fallback_streak": 1}),
+        encoding="utf-8",
+    )
+
+    def fail_download_snapshots(**_kwargs):
+        raise RuntimeError("2018-01 returned HTML")
+
+    def fail_latest_snapshot(*_args, **_kwargs):
+        raise RuntimeError("official latest returned HTML")
+
+    def fake_secondary_latest_snapshot():
+        return pd.Timestamp("2026-05-14"), pd.DataFrame(
+            [
+                {"symbol": "NVDA", "sector": "unknown", "name": "NVIDIA CORP", "weight": 8.08, "shares": 1.0},
+                {"symbol": "BRK.B", "sector": "unknown", "name": "BERKSHIRE", "weight": 1.31, "shares": 1.0},
+            ]
+        )
+
+    def fake_download_prices(symbols, *, start, **_kwargs):
+        return pd.DataFrame(
+            [
+                {"symbol": symbol, "as_of": "2026-06-01", "close": 100.0, "volume": 1_000}
+                for symbol in symbols
+            ]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_ishares_historical_universe_snapshots",
+        fail_download_snapshots,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_companies_marketcap_iwb_holdings_snapshot",
+        fake_secondary_latest_snapshot,
+    )
+    monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
+
+    result = russell_1000_inputs.prepare_russell_1000_input_data(
+        output_dir=tmp_path / "out",
+        universe_start="2018-01-01",
+        universe_end="2026-06-01",
+        existing_input_dir=existing_dir,
+        existing_source_manifest_path=previous_manifest,
+        max_universe_fallback_streak=1,
+        price_start="2018-01-01",
+        extra_symbols=("QQQ",),
+    )
+
+    latest = pd.read_csv(result.latest_snapshot_output_path)
+    metadata = pd.read_csv(result.metadata_output_path)
+    manifest = json.loads(result.source_manifest_output_path.read_text(encoding="utf-8"))
+
+    assert result.universe_fallback_used is False
+    assert result.fallback_streak == 0
+    assert result.latest_universe_refresh_warning.startswith("official_latest_failed=RuntimeError")
+    assert manifest["source_input_status"] == "partial_history_refresh"
+    assert manifest["universe_as_of"] == "2026-05-14"
+    assert manifest["latest_universe_refresh_warning"].startswith("official_latest_failed=RuntimeError")
+    assert set(latest["symbol"]) == {"NVDA", "BRK.B"}
+    assert metadata["source_kind"].iloc[-1] == "companies_marketcap_html"
+
+
 def test_prepare_russell_1000_input_data_skips_empty_missing_price_backfill(
     tmp_path,
     monkeypatch,
@@ -530,12 +656,20 @@ def test_prepare_russell_1000_input_data_blocks_stale_repeated_universe_fallback
     def fail_latest_snapshot(*_args, **_kwargs):
         raise RuntimeError("latest endpoint also failed")
 
+    def fail_secondary_latest_snapshot(*_args, **_kwargs):
+        raise RuntimeError("secondary latest endpoint also failed")
+
     monkeypatch.setattr(
         russell_1000_inputs,
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
     monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(
+        russell_1000_inputs,
+        "download_companies_marketcap_iwb_holdings_snapshot",
+        fail_secondary_latest_snapshot,
+    )
 
     try:
         russell_1000_inputs.prepare_russell_1000_input_data(
