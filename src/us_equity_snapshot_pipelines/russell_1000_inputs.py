@@ -35,6 +35,7 @@ class Russell1000InputDataResult:
     symbol_count: int
     download_start: str
     missing_symbol_count: int
+    universe_fallback_used: bool = False
 
 
 def split_symbols(raw_symbols: str | Iterable[str] | None) -> tuple[str, ...]:
@@ -106,6 +107,60 @@ def collect_download_symbols(
     return symbols
 
 
+def load_symbol_alias_table(path: str | Path) -> dict[str, list[str]]:
+    alias_path = Path(path)
+    if not alias_path.exists():
+        return {}
+    frame = read_table(alias_path)
+    if frame.empty:
+        return {}
+    required = {"symbol", "download_candidate"}
+    missing = required - set(frame.columns)
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise ValueError(f"symbol alias table missing required columns: {missing_text}")
+    normalized = frame.copy()
+    normalized["symbol"] = normalized["symbol"].astype(str).str.upper().str.strip()
+    normalized["download_candidate"] = normalized["download_candidate"].astype(str).str.upper().str.strip()
+    if "priority" in normalized.columns:
+        normalized["priority"] = pd.to_numeric(normalized["priority"], errors="coerce").fillna(999999)
+    else:
+        normalized["priority"] = 999999
+    aliases: dict[str, list[str]] = {}
+    for symbol, group in normalized.sort_values(["symbol", "priority", "download_candidate"]).groupby("symbol"):
+        candidates = [
+            candidate
+            for candidate in group["download_candidate"].tolist()
+            if candidate and candidate.lower() != "nan"
+        ]
+        if candidates:
+            aliases[str(symbol)] = list(dict.fromkeys(candidates))
+    return aliases
+
+
+def _load_existing_universe_inputs(existing_input_dir: str | Path):
+    root = Path(existing_input_dir)
+    required_paths = {
+        "universe_history": root / "r1000_universe_history.csv",
+        "metadata": root / "r1000_universe_snapshot_metadata.csv",
+        "latest_snapshot": root / "r1000_latest_holdings_snapshot.csv",
+        "aliases": root / "r1000_symbol_aliases.csv",
+    }
+    missing = [str(path) for path in required_paths.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"missing existing Russell 1000 input files: {', '.join(missing)}")
+    universe_history = read_table(required_paths["universe_history"])
+    if universe_history.empty:
+        raise ValueError("existing universe history is empty")
+    return {
+        "universe_history": universe_history,
+        "metadata": read_table(required_paths["metadata"]),
+        "latest_snapshot": read_table(required_paths["latest_snapshot"]),
+        "alias_table": read_table(required_paths["aliases"]),
+        "symbol_aliases": load_symbol_alias_table(required_paths["aliases"]),
+    }
+
+
 def prepare_russell_1000_input_data(
     *,
     output_dir: str | Path,
@@ -115,6 +170,7 @@ def prepare_russell_1000_input_data(
     price_end: str | None = None,
     universe_backfill_start: str | None = None,
     max_lookback_days: int = 7,
+    existing_input_dir: str | Path | None = None,
     existing_prices_path: str | Path | None = None,
     price_overlap_days: int = 7,
     benchmark_symbol: str = "QQQ",
@@ -132,27 +188,40 @@ def prepare_russell_1000_input_data(
     metadata_output_path = root / "r1000_universe_snapshot_metadata.csv"
     latest_snapshot_output_path = root / "r1000_latest_holdings_snapshot.csv"
 
-    snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
-        start_date=universe_start,
-        end_date=universe_end,
-        max_lookback_days=max_lookback_days,
-    )
-    for as_of_date, snapshot in snapshot_tables:
-        write_table(snapshot, snapshot_dir / f"r1000_{pd.Timestamp(as_of_date):%Y-%m-%d}.csv")
-    write_table(metadata, metadata_output_path)
-    _latest_snapshot_date, latest_snapshot = max(
-        snapshot_tables,
-        key=lambda item: pd.Timestamp(item[0]).normalize(),
-    )
-    write_table(latest_snapshot, latest_snapshot_output_path)
+    universe_fallback_used = False
+    try:
+        snapshot_tables, metadata = download_ishares_historical_universe_snapshots(
+            start_date=universe_start,
+            end_date=universe_end,
+            max_lookback_days=max_lookback_days,
+        )
+        for as_of_date, snapshot in snapshot_tables:
+            write_table(snapshot, snapshot_dir / f"r1000_{pd.Timestamp(as_of_date):%Y-%m-%d}.csv")
+        write_table(metadata, metadata_output_path)
+        _latest_snapshot_date, latest_snapshot = max(
+            snapshot_tables,
+            key=lambda item: pd.Timestamp(item[0]).normalize(),
+        )
+        write_table(latest_snapshot, latest_snapshot_output_path)
 
-    universe_history = build_interval_universe_history(snapshot_tables)
-    if universe_backfill_start:
-        universe_history = backfill_universe_history_start(universe_history, universe_backfill_start)
-    write_table(universe_history, universe_history_path)
+        universe_history = build_interval_universe_history(snapshot_tables)
+        if universe_backfill_start:
+            universe_history = backfill_universe_history_start(universe_history, universe_backfill_start)
+        write_table(universe_history, universe_history_path)
 
-    symbol_aliases = build_symbol_alias_candidates(snapshot_tables)
-    write_table(build_symbol_alias_table(symbol_aliases), alias_output_path)
+        symbol_aliases = build_symbol_alias_candidates(snapshot_tables)
+        write_table(build_symbol_alias_table(symbol_aliases), alias_output_path)
+    except Exception:
+        if not existing_input_dir:
+            raise
+        existing_inputs = _load_existing_universe_inputs(existing_input_dir)
+        universe_fallback_used = True
+        universe_history = existing_inputs["universe_history"]
+        write_table(universe_history, universe_history_path)
+        write_table(existing_inputs["metadata"], metadata_output_path)
+        write_table(existing_inputs["latest_snapshot"], latest_snapshot_output_path)
+        write_table(existing_inputs["alias_table"], alias_output_path)
+        symbol_aliases = existing_inputs["symbol_aliases"]
 
     symbols = collect_download_symbols(
         universe_history,
@@ -206,6 +275,7 @@ def prepare_russell_1000_input_data(
         symbol_count=int(len(symbols)),
         download_start=update_start,
         missing_symbol_count=int(len(missing_symbols)),
+        universe_fallback_used=universe_fallback_used,
     )
 
 
@@ -218,6 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--price-end")
     parser.add_argument("--universe-backfill-start")
     parser.add_argument("--max-lookback-days", type=int, default=7)
+    parser.add_argument("--existing-input-dir")
     parser.add_argument("--existing-prices")
     parser.add_argument("--price-overlap-days", type=int, default=7)
     parser.add_argument("--benchmark-symbol", default="QQQ")
@@ -237,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         price_end=args.price_end,
         universe_backfill_start=args.universe_backfill_start,
         max_lookback_days=args.max_lookback_days,
+        existing_input_dir=args.existing_input_dir,
         existing_prices_path=args.existing_prices,
         price_overlap_days=args.price_overlap_days,
         benchmark_symbol=args.benchmark_symbol,
@@ -253,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         f"downloaded/updated {result.symbol_count} symbols from {result.download_start}; "
         f"missing_full_history={result.missing_symbol_count}"
     )
+    if result.universe_fallback_used:
+        print("reused existing universe inputs after upstream holdings refresh failed")
     return 0
 
 
