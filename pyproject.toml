@@ -44,6 +44,7 @@ useq-build-crisis-response-shadow-signal = "us_equity_snapshot_pipelines.crisis_
 useq-build-taco-rebound-shadow-signal = "us_equity_snapshot_pipelines.taco_rebound_shadow_plugin:main"
 useq-run-strategy-plugins = "us_equity_snapshot_pipelines.strategy_plugin_runner:main"
 useq-backtest-us-equity-strategy-candidates = "us_equity_snapshot_pipelines.us_equity_strategy_candidates:main"
+useq-backtest-leveraged-strategy-candidates = "us_equity_snapshot_pipelines.leveraged_strategy_candidates:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
 
