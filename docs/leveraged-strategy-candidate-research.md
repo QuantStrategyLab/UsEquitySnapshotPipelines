@@ -50,18 +50,18 @@ These are **not** new strategies.
 
 ### Genuinely new supplemental strategies
 
-This is the bounded new strategy set for this run after removing candidates whose long-window CAGR did not beat SPY.
+None retained in this run.
 
-| New rank | Candidate | Rule | Purpose |
-| ---: | --- | --- | --- |
-| 1 | `new_qld_qqq_trend_70_20` | QQQ MA200 + MA20-slope; risk-on QLD/QQQ/BIL 70/20/10 | 2x Nasdaq growth sleeve with less path dependency than TQQQ |
-| 2 | `new_tecl_xlk_trend_50_30` | XLK MA200 + MA20-slope; risk-on TECL/XLK/BIL 50/30/20 | 3x technology-sector supplemental sleeve |
-| 3 | `new_rom_xlk_trend_70_20` | XLK MA200 + MA20-slope; risk-on ROM/XLK/BIL 70/20/10 | 2x technology-sector supplemental sleeve |
-| 4 | `new_usd_smh_trend_50_30` | SMH MA200 + MA20-slope; risk-on USD/SMH/BIL 50/30/20 | 2x semiconductor sleeve related to SOXL domain; rejected by drawdown gate |
+A leveraged supplemental strategy must now clear both filters before it is kept in the candidate set:
+
+1. long-window CAGR must beat SPY;
+2. long-window CAGR must also beat the current TQQQ/SOXL live proxy comparison bar.
+
+All screened leveraged supplements failed at least one of those filters, so the final ranking intentionally contains only current live proxies and optimization variants.
 
 ## Research basis
 
-The external research/input layer was limited to high-level instrument and risk validation, not parameter fitting:
+The external research/input layer was limited to high-level instrument and risk validation for screened candidates, not parameter fitting:
 
 - ProShares describes QLD as seeking 2x daily Nasdaq-100 exposure and warns that longer holding-period returns can differ from the daily target.
 - ProShares describes TQQQ as seeking 3x daily Nasdaq-100 exposure, useful as the current live comparison context.
@@ -121,44 +121,45 @@ Periods:
 | 2 | `opt_tqqq_qld_tqqq_60_20` | optimization variant | 1.029 | 8.61% | 8.61% | -25.64% | pass | no replacement |
 | 3 | `live_tqqq_dual_drive_45_45_proxy` | current live proxy | 1.039 | 8.83% | 8.83% | -25.38% | pass | keep current live |
 | 4 | `opt_tqqq_dual_drive_40_40` | optimization variant | 1.047 | 6.50% | 6.50% | -22.80% | pass | no replacement |
-| 5 | `new_qld_qqq_trend_70_20` | new leveraged supplement | 0.949 | 3.06% | 3.06% | -23.87% | pass | paper review only |
-| 6 | `new_tecl_xlk_trend_50_30` | new leveraged supplement | 0.770 | 2.61% | 1.93% | -32.80% | pass | paper review only |
-| 7 | `new_rom_xlk_trend_70_20` | new leveraged supplement | 0.745 | 0.28% | 0.28% | -29.25% | pass | paper review only |
-| 8 | `opt_soxl_soxx_signal_soxx_50` | optimization variant | 0.899 | 37.86% | 14.35% | -56.84% | fail | reject / no replacement |
-| 9 | `new_usd_smh_trend_50_30` | new leveraged supplement | 0.676 | 12.26% | 0.11% | -47.20% | fail | reject / not live enable |
+| 5 | `opt_soxl_soxx_signal_soxx_50` | optimization variant | 0.899 | 37.86% | 14.35% | -56.84% | fail | reject / no replacement |
 
 
 
 ### Screened out before inclusion
 
-`new_upro_spy_trend_50_30` was screened during research but removed from the candidate set because its long-window CAGR was below SPY: 10.18% versus SPY 14.29%, with -29.05% worst drawdown. Per the current rule, new strategies that do not beat the market are not kept in the candidate list.
+The following leveraged supplements were researched but removed from the final candidate set:
+
+| Screened candidate | Long CAGR | Reason |
+| --- | ---: | --- |
+| `new_qld_qqq_trend_70_20` | 17.36% | Below current TQQQ live proxy long CAGR of 23.12%; below SOXL live proxy long CAGR of 33.27% |
+| `new_tecl_xlk_trend_50_30` | 16.22% | Below current TQQQ/SOXL live proxy comparison bar |
+| `new_rom_xlk_trend_70_20` | 14.57% | Below current TQQQ/SOXL live proxy comparison bar |
+| `new_usd_smh_trend_50_30` | 14.40% | Below current TQQQ/SOXL live proxy comparison bar and fails drawdown gate at -47.20% |
+| `new_upro_spy_trend_50_30` | 10.18% | Below SPY long CAGR of 14.29% and below current TQQQ/SOXL live proxy comparison bar |
+
+Per the current rule, leveraged supplements that do not beat the existing leveraged live sleeves are not kept in the candidate list, even if they beat SPY.
 
 ### Final promotion decision
 
 No candidate in this run reached the bar for replacing an existing live strategy or entering live enable:
 
 - `replacement_candidate=false` for all optimization variants; current TQQQ/SOXL live proxies stay in place.
-- `live_enable_candidate=false` for all new leveraged supplements.
-- Passing new supplements are limited to paper observation / supplemental review only.
+- No new leveraged supplement remains in the final candidate set.
+- `live_enable_candidate=false` for every row in the ranking output.
 
 ### New strategy ranking only
 
-| New rank | Candidate | Long CAGR | Long excess CAGR vs SPY | Worst drawdown | Decision |
-| ---: | --- | ---: | ---: | ---: | --- |
-| 1 | `new_qld_qqq_trend_70_20` | 17.36% | 3.06% | -23.87% | Best new candidate, but paper review only; not live enable |
-| 2 | `new_tecl_xlk_trend_50_30` | 16.22% | 1.93% | -32.80% | Passes research gate but high drawdown; paper review only; not live enable |
-| 3 | `new_rom_xlk_trend_70_20` | 14.57% | 0.28% | -29.25% | Marginal SPY outperformance; paper review only; not live enable |
-| 4 | `new_usd_smh_trend_50_30` | 14.40% | 0.11% | -47.20% | Reject for live; drawdown too deep |
+None. No screened leveraged supplement beat the existing TQQQ/SOXL live proxy comparison bar.
 
 ### TQQQ/SOXL optimization interpretation
 
 - TQQQ live proxy remains the default recommendation. `opt_tqqq_qld_tqqq_60_20` is close but does not improve enough to replace it. `opt_tqqq_dual_drive_40_40` reduces drawdown but gives up CAGR, so it is only a conservative-mode candidate.
 - SOXL live proxy remains the default recommendation. `opt_soxl_soxx_signal_soxx_50` has attractive returns but fails the max-drawdown gate and should not replace live.
-- The newly added supplemental candidates should not be wired into live automatically. The strongest new candidate is `new_qld_qqq_trend_70_20`; `new_tecl_xlk_trend_50_30` and `new_rom_xlk_trend_70_20` require paper observation because their long-window performance does not beat their sector benchmarks even though they beat SPY.
+- No leveraged supplemental candidate remains after the current TQQQ/SOXL comparison filter. Nothing from the screened leveraged set should be wired into live or paper by default.
 
 ## Live integration boundary
 
-Do not wire any leveraged supplemental candidate into `UsEquityStrategies` runtime manifests or broker platform defaults from this run. `research_gate_passed=true` is not a live-enable flag, and this run sets `live_enable_candidate=false` for every candidate.
+Do not wire any leveraged supplemental candidate into `UsEquityStrategies` runtime manifests or broker platform defaults from this run. No leveraged supplement remains in the final candidate set, and this run sets `live_enable_candidate=false` for every ranking row.
 
 Before enabling live, require:
 

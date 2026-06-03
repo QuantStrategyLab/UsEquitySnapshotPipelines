@@ -37,7 +37,7 @@ def _sample_prices(symbols: tuple[str, ...], *, periods: int = 900) -> pd.DataFr
     return pd.DataFrame(rows)
 
 
-def test_leveraged_candidate_research_runs_current_optimization_and_supplemental_groups() -> None:
+def test_leveraged_candidate_research_runs_current_and_optimization_groups_only() -> None:
     periods = (
         ("short", "2024-01-02", "2024-06-28"),
         ("medium", "2023-01-03", "2024-06-28"),
@@ -54,8 +54,8 @@ def test_leveraged_candidate_research_runs_current_optimization_and_supplemental
     ranking = result["ranking"]
     assert len(period_summary["Candidate"].unique()) == len(LEVERAGED_CANDIDATES)
     assert set(period_summary["Period"].unique()) == {"short", "medium", "long"}
-    assert {"current_live_proxy", "optimization_variant", "leveraged_supplement"} <= set(period_summary["Candidate Group"])
-    assert (period_summary.drop_duplicates("Candidate")["Candidate Group"] == "leveraged_supplement").sum() == 4
+    assert {"current_live_proxy", "optimization_variant"} <= set(period_summary["Candidate Group"])
+    assert "leveraged_supplement" not in set(period_summary["Candidate Group"])
     assert "new_upro_spy_trend_50_30" not in set(period_summary["Candidate"])
     assert {
         "new_strategy_rank",
@@ -67,6 +67,7 @@ def test_leveraged_candidate_research_runs_current_optimization_and_supplemental
     } <= set(ranking.columns)
     assert ranking["replacement_candidate"].eq(False).all()
     assert ranking["live_enable_candidate"].eq(False).all()
+    assert ranking["paper_review_candidate"].eq(False).all()
     assert ranking.loc[ranking["Candidate Group"].eq("optimization_variant"), "review_action"].eq("no_replacement").all()
 
 

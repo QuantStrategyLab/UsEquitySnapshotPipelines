@@ -107,58 +107,6 @@ LEVERAGED_CANDIDATES: tuple[LeveragedCandidateSpec, ...] = (
         trend_window=150,
         notes="Lower deploy SOXL/SOXX variant using the unlevered SOXX trend as signal source.",
     ),
-    LeveragedCandidateSpec(
-        candidate_id="new_qld_qqq_trend_70_20",
-        display_name="New QLD/QQQ Trend 70/20",
-        candidate_group="leveraged_supplement",
-        rule="ma200_trend",
-        signal_symbol="QQQ",
-        risk_on_weights={"QLD": 0.70, "QQQ": 0.20, DEFAULT_SAFE_SYMBOL: 0.10},
-        risk_off_weights={DEFAULT_SAFE_SYMBOL: 1.0},
-        strategy_benchmark_symbol="QQQ",
-        trend_window=200,
-        require_ma20_slope=True,
-        notes="New 2x Nasdaq trend sleeve; similar growth role to TQQQ with less 3x path dependency.",
-    ),
-    LeveragedCandidateSpec(
-        candidate_id="new_rom_xlk_trend_70_20",
-        display_name="New ROM/XLK Trend 70/20",
-        candidate_group="leveraged_supplement",
-        rule="ma200_trend",
-        signal_symbol="XLK",
-        risk_on_weights={"ROM": 0.70, "XLK": 0.20, DEFAULT_SAFE_SYMBOL: 0.10},
-        risk_off_weights={DEFAULT_SAFE_SYMBOL: 1.0},
-        strategy_benchmark_symbol="XLK",
-        trend_window=200,
-        require_ma20_slope=True,
-        notes="New 2x technology-sector trend sleeve; lower leverage than TECL and not a TQQQ parameter variant.",
-    ),
-    LeveragedCandidateSpec(
-        candidate_id="new_tecl_xlk_trend_50_30",
-        display_name="New TECL/XLK Trend 50/30",
-        candidate_group="leveraged_supplement",
-        rule="ma200_trend",
-        signal_symbol="XLK",
-        risk_on_weights={"TECL": 0.50, "XLK": 0.30, DEFAULT_SAFE_SYMBOL: 0.20},
-        risk_off_weights={DEFAULT_SAFE_SYMBOL: 1.0},
-        strategy_benchmark_symbol="XLK",
-        trend_window=200,
-        require_ma20_slope=True,
-        notes="New technology-sector 3x/1x blended trend sleeve.",
-    ),
-    LeveragedCandidateSpec(
-        candidate_id="new_usd_smh_trend_50_30",
-        display_name="New USD/SMH Trend 50/30",
-        candidate_group="leveraged_supplement",
-        rule="ma200_trend",
-        signal_symbol="SMH",
-        risk_on_weights={"USD": 0.50, "SMH": 0.30, DEFAULT_SAFE_SYMBOL: 0.20},
-        risk_off_weights={DEFAULT_SAFE_SYMBOL: 1.0},
-        strategy_benchmark_symbol="SMH",
-        trend_window=200,
-        require_ma20_slope=True,
-        notes="New 2x semiconductor/1x semiconductor blended trend sleeve; related to SOXL domain but independently gated.",
-    ),
 )
 
 
@@ -571,7 +519,7 @@ def run_candidate_research(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Backtest current TQQQ/SOXL proxies, their optimization variants, and separately ranked new leveraged supplements."
+        description="Backtest current TQQQ/SOXL proxies, their optimization variants, and any admitted new leveraged supplements."
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--prices", help="Existing long price-history CSV with symbol/as_of/close columns")
