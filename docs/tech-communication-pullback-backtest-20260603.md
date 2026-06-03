@@ -1,5 +1,7 @@
 # Tech/Communication Pullback Enhancement backtest refresh
 
+Related summary: [`live-strategy-optimization-feedback-20260603.md`](./live-strategy-optimization-feedback-20260603.md).
+
 Date: 2026-06-03
 
 This note refreshes local, reproducible evidence for the existing
