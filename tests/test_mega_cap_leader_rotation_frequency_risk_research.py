@@ -80,13 +80,17 @@ def _sample_dynamic_universe() -> pd.DataFrame:
 
 
 def test_build_rebalance_dates_supports_research_frequencies() -> None:
-    index = pd.bdate_range("2024-01-02", periods=45)
+    index = pd.bdate_range("2024-01-02", "2024-12-31")
     monthly = build_rebalance_dates(index, "monthly")
+    quarterly = build_rebalance_dates(index, "quarterly")
+    semiannual = build_rebalance_dates(index, "semiannual")
     weekly = build_rebalance_dates(index, "weekly")
     biweekly = build_rebalance_dates(index, "biweekly")
 
-    assert 1 <= len(monthly) < len(biweekly) < len(weekly)
+    assert 1 <= len(semiannual) < len(quarterly) < len(monthly) < len(biweekly) < len(weekly)
     assert pd.Timestamp("2024-02-29") in monthly
+    assert pd.Timestamp("2024-03-29") in quarterly
+    assert pd.Timestamp("2024-06-28") in semiannual
 
 
 def test_frequency_risk_research_builds_frequency_and_daily_risk_tables() -> None:

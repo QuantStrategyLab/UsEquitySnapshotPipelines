@@ -106,6 +106,13 @@ def build_rebalance_dates(index: pd.DatetimeIndex, frequency: str) -> set[pd.Tim
     normalized = str(frequency).strip().lower()
     if normalized == "monthly":
         return build_monthly_rebalance_dates(dates)
+    if normalized in {"quarterly", "quarter", "q"}:
+        grouped = pd.Series(dates, index=dates).groupby(dates.to_period("Q")).max()
+        return set(pd.to_datetime(grouped.values))
+    if normalized in {"semiannual", "semi_annually", "halfyear", "half-year", "half_year"}:
+        frame = pd.DataFrame({"as_of": dates})
+        frame["bucket"] = frame["as_of"].dt.year * 2 + ((frame["as_of"].dt.month - 1) // 6)
+        return set(pd.to_datetime(frame.groupby("bucket")["as_of"].max().values))
     if normalized == "weekly":
         grouped = pd.Series(dates, index=dates).groupby(dates.to_period("W-FRI")).max()
         return set(pd.to_datetime(grouped.values))
@@ -115,7 +122,7 @@ def build_rebalance_dates(index: pd.DatetimeIndex, frequency: str) -> set[pd.Tim
         return set(pd.to_datetime(frame.groupby("bucket")["as_of"].max().values))
     if normalized == "daily":
         return set(pd.to_datetime(dates))
-    raise ValueError("rebalance frequency must be one of monthly, biweekly, weekly, or daily")
+    raise ValueError("rebalance frequency must be one of monthly, quarterly, semiannual, biweekly, weekly, or daily")
 
 
 def daily_risk_mode_exposures(mode: str) -> tuple[float, float]:
@@ -600,7 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rebalance-frequencies",
         default=",".join(DEFAULT_REBALANCE_FREQUENCIES),
-        help="Comma-separated rebalance frequencies: monthly, biweekly, weekly, daily",
+        help="Comma-separated rebalance frequencies: monthly, quarterly, semiannual, biweekly, weekly, daily",
     )
     parser.add_argument(
         "--daily-risk-modes",
