@@ -75,7 +75,7 @@ def test_scheduled_snapshot_publish_matrix_only_includes_live_monthly_profiles()
     scheduled_matrix = matrix_line.split("|| format", maxsplit=1)[0]
     assert '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in scheduled_matrix
-    assert "tech_communication_pullback_enhancement" in workflow
+    assert "tech_communication_pullback_enhancement" not in workflow
     assert "mega_cap_leader_rotation_dynamic_top20" not in scheduled_matrix
     assert "mega_cap_leader_rotation_aggressive" not in scheduled_matrix
     assert "dynamic_mega_leveraged_pullback" not in scheduled_matrix

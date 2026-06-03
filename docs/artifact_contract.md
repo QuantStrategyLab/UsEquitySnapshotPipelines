@@ -38,14 +38,11 @@ Required baseline fields:
 
 ## Current runtime path discipline
 
-Migration starts by keeping the existing platform GCS paths unchanged. For the HK line this means the platform can keep reading:
+Current runtime-facing US equity snapshot artifacts are published under profile-specific `us_equity` prefixes:
 
 ```text
-gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/interactive_brokers/tech_communication_pullback_enhancement/tech_communication_pullback_enhancement_feature_snapshot_latest.csv
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging/
+gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging/
 ```
 
-A later cleanup can move to a neutral prefix such as:
-
-```text
-gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement/
-```
+`tech_communication_pullback_enhancement` remains as archived research-only code and is no longer exposed by scheduled publish, artifact health, or runtime switching workflows.
