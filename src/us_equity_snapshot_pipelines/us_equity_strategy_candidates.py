@@ -31,6 +31,7 @@ DEFAULT_PERIODS = (
 )
 DEFAULT_TURNOVER_COST_BPS = 5.0
 DEFAULT_MAX_LIVE_CANDIDATES = 5
+MAX_ALLOWED_DRAWDOWN = -0.30
 
 
 @dataclass(frozen=True)
@@ -74,38 +75,7 @@ class SnapshotBacktestContext:
     returns_matrix: pd.DataFrame
 
 
-ETF_CANDIDATES: tuple[EtfCandidateSpec, ...] = (
-    EtfCandidateSpec(
-        candidate_id="ordinary_dual_momentum_qqq_spy_ief",
-        display_name="Ordinary Dual Momentum QQQ/SPY/IEF",
-        rule="dual_momentum",
-        universe_symbols=("QQQ", "SPY"),
-        benchmark_symbol="SPY",
-        safe_symbol="IEF",
-        top_n=1,
-        notes="Relative 12-1 momentum between QQQ/SPY plus absolute trend gate; IEF defense.",
-    ),
-    EtfCandidateSpec(
-        candidate_id="ordinary_sector_momentum_top3",
-        display_name="Ordinary Sector Momentum Top3",
-        rule="relative_momentum",
-        universe_symbols=("XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU"),
-        benchmark_symbol="SPY",
-        safe_symbol="BIL",
-        top_n=3,
-        notes="Monthly top-3 SPDR sector rotation using 1/3/6/12 month weighted momentum and 200-day trend filter.",
-    ),
-    EtfCandidateSpec(
-        candidate_id="ordinary_factor_momentum_low_vol_top2",
-        display_name="Ordinary Factor Momentum Low-Vol Top2",
-        rule="momentum_low_vol",
-        universe_symbols=("MTUM", "QUAL", "USMV", "SPLV", "VLUE", "IWF", "IWD", "SPY"),
-        benchmark_symbol="SPY",
-        safe_symbol="BIL",
-        top_n=2,
-        notes="Monthly top-2 factor ETF blend; momentum score is penalized by realized volatility.",
-    ),
-)
+ETF_CANDIDATES: tuple[EtfCandidateSpec, ...] = ()
 
 SNAPSHOT_BASELINE_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
     SnapshotCandidateSpec(
@@ -123,64 +93,9 @@ SNAPSHOT_BASELINE_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
     ),
 )
 
-SNAPSHOT_OPTIMIZATION_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
-    SnapshotCandidateSpec(
-        candidate_id="opt_r1000_defensive_diversified_32",
-        display_name="Optimized R1000 Defensive Diversified 32",
-        rule="default_factor_stack",
-        candidate_group="optimization_variant",
-        holdings_count=32,
-        single_name_cap=0.05,
-        sector_cap=0.18,
-        hold_bonus=0.10,
-        soft_defense_exposure=0.50,
-        hard_defense_exposure=0.10,
-        notes="Parameter optimization of the current R1000 factor stack; lower single-name and sector caps.",
-    ),
-    SnapshotCandidateSpec(
-        candidate_id="opt_r1000_core_momentum_16",
-        display_name="Optimized R1000 Core Momentum 16",
-        rule="default_factor_stack",
-        candidate_group="optimization_variant",
-        holdings_count=16,
-        single_name_cap=0.08,
-        sector_cap=0.25,
-        hold_bonus=0.05,
-        soft_defense_exposure=0.60,
-        hard_defense_exposure=0.20,
-        notes="Parameter optimization of the current R1000 factor stack; fewer holdings for higher concentration.",
-    ),
-)
+SNAPSHOT_OPTIMIZATION_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
-SNAPSHOT_NEW_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
-    SnapshotCandidateSpec(
-        candidate_id="snapshot_r1000_low_vol_momentum",
-        display_name="Snapshot R1000 Low-Vol Momentum",
-        rule="low_vol_momentum",
-        candidate_group="new_snapshot_strategy",
-        holdings_count=28,
-        single_name_cap=0.05,
-        sector_cap=0.18,
-        hold_bonus=0.05,
-        soft_defense_exposure=0.50,
-        hard_defense_exposure=0.10,
-        notes="New snapshot rule: positive momentum/trend names ranked with explicit low-volatility and drawdown penalties.",
-    ),
-    SnapshotCandidateSpec(
-        candidate_id="snapshot_r1000_sector_balanced_relative_strength",
-        display_name="Snapshot R1000 Sector-Balanced Relative Strength",
-        rule="sector_balanced_relative_strength",
-        candidate_group="new_snapshot_strategy",
-        holdings_count=24,
-        single_name_cap=0.06,
-        sector_cap=0.18,
-        hold_bonus=0.05,
-        soft_defense_exposure=0.50,
-        hard_defense_exposure=0.10,
-        top_sectors=6,
-        notes="New snapshot rule: rank sectors by relative strength, then select leaders within selected sectors under sector caps.",
-    ),
-)
+SNAPSHOT_NEW_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
 SNAPSHOT_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
     *SNAPSHOT_BASELINE_CANDIDATES,
@@ -231,7 +146,7 @@ def _parse_periods(raw_periods: str | Sequence[tuple[str, str, str | None]] | No
 
 
 def collect_required_etf_symbols(candidates: Sequence[EtfCandidateSpec] = ETF_CANDIDATES) -> tuple[str, ...]:
-    symbols: list[str] = []
+    symbols: list[str] = ["SPY", "QQQ"]
     for candidate in candidates:
         for symbol in (*candidate.universe_symbols, candidate.benchmark_symbol, candidate.safe_symbol, "SPY", "QQQ"):
             normalized = str(symbol).strip().upper()
@@ -935,7 +850,7 @@ def build_ranking(period_summary: pd.DataFrame, *, max_live_candidates: int = DE
         all_periods_available = len(frame) >= 3 and numeric["Trading Days"].fillna(0).ge(60).all()
         positive_return_all_periods = numeric["CAGR"].gt(0).all()
         positive_sharpe_all_periods = numeric["Sharpe"].gt(0).all()
-        drawdown_gate = numeric["Max Drawdown"].gt(-0.45).all()
+        drawdown_gate = numeric["Max Drawdown"].ge(MAX_ALLOWED_DRAWDOWN).all()
         long_rows = frame.loc[frame["Period"].eq("long")]
         long_excess = float(long_rows["Excess CAGR vs Benchmark"].iloc[0]) if not long_rows.empty else float("nan")
         min_sharpe = float(numeric["Sharpe"].min())
@@ -989,12 +904,26 @@ def build_ranking(period_summary: pd.DataFrame, *, max_live_candidates: int = DE
         ascending=[False, False, False],
     ).reset_index(drop=True)
     ranking.insert(0, "rank", range(1, len(ranking) + 1))
+    baseline_rows = ranking.loc[ranking["Candidate Group"].eq("current_live_baseline")]
+    ranking["beats_live_baseline"] = False
+    if not baseline_rows.empty:
+        baseline = baseline_rows.iloc[0]
+        comparable = ~ranking["Candidate Group"].eq("current_live_baseline")
+        ranking.loc[comparable, "beats_live_baseline"] = (
+            pd.to_numeric(ranking.loc[comparable, "robustness_score"], errors="coerce").gt(float(baseline["robustness_score"]))
+            & pd.to_numeric(ranking.loc[comparable, "long_excess_cagr"], errors="coerce").gt(float(baseline["long_excess_cagr"]))
+            & pd.to_numeric(ranking.loc[comparable, "worst_drawdown"], errors="coerce").ge(float(baseline["worst_drawdown"]))
+            & pd.to_numeric(ranking.loc[comparable, "min_sharpe"], errors="coerce").ge(float(baseline["min_sharpe"]))
+        )
     ranking["replacement_review_candidate"] = (
-        ranking["live_gate_passed"] & ranking["Candidate Group"].eq("optimization_variant")
+        ranking["live_gate_passed"]
+        & ranking["beats_live_baseline"]
+        & ranking["Candidate Group"].eq("optimization_variant")
     )
     ranking["supplemental_review_candidate"] = False
     supplemental_selectable = ranking.index[
         ranking["live_gate_passed"]
+        & ranking["beats_live_baseline"]
         & ranking["Candidate Group"].isin({"new_ordinary_strategy", "new_snapshot_strategy"})
     ].tolist()
     for index in supplemental_selectable[: int(max_live_candidates)]:
@@ -1002,6 +931,7 @@ def build_ranking(period_summary: pd.DataFrame, *, max_live_candidates: int = DE
     ranking["live_enabled_candidate"] = ranking["replacement_review_candidate"] | ranking["supplemental_review_candidate"]
     ranking["review_action"] = "reject"
     ranking.loc[ranking["Candidate Group"].eq("current_live_baseline"), "review_action"] = "current_live_baseline"
+    ranking.loc[ranking["Candidate Group"].eq("optimization_variant"), "review_action"] = "no_replacement"
     ranking.loc[
         ranking["replacement_review_candidate"],
         "review_action",
@@ -1029,7 +959,7 @@ def _gate_reason(
     if not positive_sharpe_all_periods:
         reasons.append("non_positive_sharpe_period")
     if not drawdown_gate:
-        reasons.append("drawdown_below_minus_45pct")
+        reasons.append("drawdown_above_30pct")
     if not pd.isna(long_excess) and long_excess <= -0.03:
         reasons.append("long_excess_cagr_below_minus_3pct")
     return "pass" if not reasons else ";".join(reasons)

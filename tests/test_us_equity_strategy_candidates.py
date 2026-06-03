@@ -49,7 +49,7 @@ def _sample_r1000_universe(symbols: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_candidate_research_runs_supplemental_optimization_and_baseline_candidates_across_periods() -> None:
+def test_candidate_research_runs_baseline_and_optimization_candidates_across_periods() -> None:
     etf_prices = _sample_prices(collect_required_etf_symbols())
     stock_symbols = ("SPY", "BOXX", "AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH")
     r1000_prices = _sample_prices(stock_symbols)
@@ -71,17 +71,18 @@ def test_candidate_research_runs_supplemental_optimization_and_baseline_candidat
     ranking = result["ranking"]
     assert len(period_summary["Candidate"].unique()) == len(ETF_CANDIDATES) + len(SNAPSHOT_CANDIDATES)
     assert set(period_summary["Period"].unique()) == {"short", "medium", "long"}
-    assert {"rank", "robustness_score", "live_enabled_candidate", "gate_reason", "review_action"} <= set(ranking.columns)
+    assert {"rank", "robustness_score", "beats_live_baseline", "live_enabled_candidate", "gate_reason", "review_action"} <= set(ranking.columns)
     assert ranking["rank"].is_monotonic_increasing
-    assert len(ETF_CANDIDATES) + len(SNAPSHOT_NEW_CANDIDATES) == 5
-    assert len(SNAPSHOT_OPTIMIZATION_CANDIDATES) == 2
+    assert len(ETF_CANDIDATES) + len(SNAPSHOT_NEW_CANDIDATES) == 0
+    assert len(SNAPSHOT_OPTIMIZATION_CANDIDATES) == 0
     assert len(SNAPSHOT_BASELINE_CANDIDATES) == 1
-    assert set(period_summary["Candidate Group"]) >= {
-        "current_live_baseline",
-        "optimization_variant",
-        "new_snapshot_strategy",
-        "new_ordinary_strategy",
-    }
+    assert set(period_summary["Candidate Group"]) == {"current_live_baseline"}
+    assert ranking["supplemental_review_candidate"].eq(False).all()
+    assert (
+        ranking["live_enabled_candidate"]
+        == (ranking["replacement_review_candidate"] | ranking["supplemental_review_candidate"])
+    ).all()
+    assert ranking.loc[ranking["replacement_review_candidate"], "beats_live_baseline"].eq(True).all()
 
 
 def test_build_ranking_blocks_candidates_with_missing_periods() -> None:
@@ -106,7 +107,35 @@ def test_build_ranking_blocks_candidates_with_missing_periods() -> None:
     ranking = build_ranking(period_summary)
 
     assert not bool(ranking.loc[0, "live_gate_passed"])
+    assert not bool(ranking.loc[0, "live_enabled_candidate"])
     assert "missing_or_too_short_period" in ranking.loc[0, "gate_reason"]
+
+
+def test_build_ranking_blocks_drawdown_above_30pct() -> None:
+    period_summary = pd.DataFrame(
+        [
+            {
+                "Period": period,
+                "Candidate": "candidate_a",
+                "Display Name": "Candidate A",
+                "Candidate Type": "ordinary_etf",
+                "Candidate Group": "new_ordinary_strategy",
+                "Trading Days": 252,
+                "CAGR": 0.10,
+                "Sharpe": 1.0,
+                "Max Drawdown": -0.31 if period == "long" else -0.10,
+                "Excess CAGR vs Benchmark": 0.02,
+                "Turnover/Year": 1.0,
+            }
+            for period in ("short", "medium", "long")
+        ]
+    )
+
+    ranking = build_ranking(period_summary)
+
+    assert not bool(ranking.loc[0, "live_gate_passed"])
+    assert not bool(ranking.loc[0, "live_enabled_candidate"])
+    assert "drawdown_above_30pct" in ranking.loc[0, "gate_reason"]
 
 
 def test_cli_writes_candidate_outputs(tmp_path) -> None:
