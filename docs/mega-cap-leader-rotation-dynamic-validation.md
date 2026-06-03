@@ -430,6 +430,31 @@ Interpretation:
   liquidity crises from ordinary bear markets where sector leadership still
   works.
 
+### Monthly, Quarterly, And Semiannual Sensitivity
+
+Follow-up research on `2026-06-04` added quarterly and semiannual rebalance
+support to the frequency-risk research CLI. The strict point-in-time dynamic
+Top50 quarterly/semiannual retest could not be reconstructed from the retained
+source artifacts because the published input bundle keeps the interval universe
+history and latest holdings snapshot, but not every historical holdings snapshot
+with rank weights. Current iShares historical JSON URLs now return HTML, so the
+historical weights are not reproducible from those URLs alone.
+
+As a bounded sensitivity check, the research used the `2026-05-14` Top50
+holdings as a static universe with the refreshed Russell 1000 price history from
+`2019-01-02` to `2026-06-01`, no daily risk overlay, and `5` bps turnover cost.
+
+| Rebalance cadence | CAGR | MaxDD | Sharpe | Calmar | Turnover/Year |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Monthly | 76.71% | -46.69% | 1.66 | 1.64 | 3.02 |
+| Quarterly | 63.39% | -44.74% | 1.46 | 1.42 | 2.24 |
+| Semiannual | 45.70% | -47.65% | 1.14 | 0.96 | 1.53 |
+
+Interpretation: keep monthly as the default cadence. Quarterly reduced turnover
+and improved max drawdown by only about two percentage points while giving up
+meaningful CAGR and Calmar. Semiannual rebalancing was too slow for this
+leader-rotation profile and had the weakest rolling-window stability.
+
 ## Commands
 
 Refresh Top50 price input through yfinance. Use `YFINANCE_PROXY` only when Yahoo
