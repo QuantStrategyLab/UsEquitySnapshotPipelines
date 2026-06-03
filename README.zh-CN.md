@@ -63,6 +63,12 @@ python -m pytest -q
 - 优先提供可复现命令，并显式指定输出目录。
 - 没有完整验证证据时，不要把研究产物提升到 live 使用。
 
+## 社区和安全
+
+- 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，确认 PR 范围、本地校验和文档要求。
+- 讨论、issue 和 review 请遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 涉及密钥、自动化、券商/交易所或云资源的漏洞请按 [SECURITY.md](SECURITY.md) 私密报告；不要为 secret 或实盘风险开公开 issue。
+
 ## 许可证
 
 详见 [LICENSE](LICENSE)。
