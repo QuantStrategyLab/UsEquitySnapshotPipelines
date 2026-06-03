@@ -1,28 +1,32 @@
 # US Equity Strategy Candidate Research Gate
 
-This note documents the research-only gate for comparing current live US equity snapshot strategy variants and adding ordinary ETF / new snapshot-backed candidates.
-It is intentionally conservative: candidates can be considered for live review only after the same fixed rules pass short, medium, and long windows.
+This note documents the research-only gate for comparing the current live US equity snapshot strategy against ordinary ETF, new snapshot-backed, and parameter-optimization candidates.
 
-`live_enabled_candidate=true` means "eligible for live integration review". It does **not** modify broker runtime enablement.
+`live_enabled_candidate=true` is intentionally unused in this run. The current decision is stricter: a candidate must be clearly better than the existing live-enabled Russell 1000 snapshot strategy before it can remain in the formal candidate set or be considered for promotion. In this run every row has `live_enabled_candidate=false`.
 
-## Anti-overfitting rules
+## Current decision
+
+No non-leveraged ordinary ETF strategy, new snapshot strategy, or optimization variant reached the bar for replacing or supplementing the current live-enabled strategy.
+
+Final default ranking contains only the current live baseline. Optimization variants, ordinary ETF strategies, and new snapshot strategy candidates from the earlier pass were screened out before inclusion because they either exceeded the 30% drawdown limit or did not clearly beat the current live baseline.
+
+## Anti-overfitting and promotion rules
 
 - Use fixed, literature-backed rules; do not optimize parameters against the latest output.
 - Separate current live baseline, optimization variants, and genuinely new supplemental strategies.
-- Keep genuinely new supplemental strategy count bounded to about five per run.
-- Require three period windows before live integration review:
+- New ordinary/snapshot strategies must keep worst drawdown within 30%, beat SPY, and also beat the current live-enabled Russell 1000 snapshot baseline before they are kept in the formal candidate set.
+- Optimization variants must keep worst drawdown within 30% and strictly improve the live baseline across a conservative promotion check before replacement review:
+  - higher robustness score;
+  - higher long-window excess CAGR;
+  - no worse worst drawdown;
+  - no worse minimum Sharpe.
+- Require three period windows for comparison:
   - short: recent regime check;
   - medium: multi-year cycle check;
   - long: full available-history robustness check.
-- Apply a simple live gate across all periods:
-  - enough trading days in every window;
-  - positive CAGR in every window;
-  - positive Sharpe in every window;
-  - max drawdown above `-45%` in every window;
-  - long-window excess CAGR no worse than `-3%` versus the candidate benchmark.
-- Rank by a robustness score using minimum Sharpe, median Sharpe, median excess CAGR, worst drawdown, and turnover penalty.
+- `live_enabled_candidate=false` unless the candidate clears both the 30% drawdown gate and the live-baseline comparison gate. No candidate cleared both in this run.
 
-## Candidate groups
+## Candidate groups in final default ranking
 
 ### Current live baseline
 
@@ -30,30 +34,44 @@ It is intentionally conservative: candidates can be considered for live review o
 | --- | --- | --- |
 | `live_r1000_multi_factor_defensive` | snapshot Russell 1000 | current runtime-enabled default factor stack |
 
-### Optimization variants of the current live snapshot strategy
+### Optimization variants
 
-These are **not** new strategies. They reuse the current Russell 1000 price-only factor stack and only change portfolio construction parameters.
-
-| Candidate | Type | Rule |
-| --- | --- | --- |
-| `opt_r1000_core_momentum_16` | optimization variant | current factor stack, more concentrated 16-name construction |
-| `opt_r1000_defensive_diversified_32` | optimization variant | current factor stack, more diversified 32-name construction |
+None retained in the final default ranking.
 
 ### Genuinely new supplemental strategies
 
-These are the bounded supplemental set for this research run: three ordinary ETF strategies plus two new snapshot rules.
+None retained in the final default candidate set.
 
-| Candidate | Type | Rule |
-| --- | --- | --- |
-| `ordinary_dual_momentum_qqq_spy_ief` | ordinary ETF | QQQ/SPY relative 12-1 momentum plus absolute trend gate; IEF defense |
-| `ordinary_sector_momentum_top3` | ordinary ETF | top-3 monthly sector momentum with 200-day trend filter |
-| `ordinary_factor_momentum_low_vol_top2` | ordinary ETF | top-2 factor ETF momentum score penalized by realized volatility |
-| `snapshot_r1000_low_vol_momentum` | new snapshot Russell 1000 | positive momentum/trend names ranked with explicit low-volatility and drawdown penalties |
-| `snapshot_r1000_sector_balanced_relative_strength` | new snapshot Russell 1000 | rank sectors by relative strength, then select leaders within selected sectors under sector caps |
+## Screened out before inclusion
+
+The following strategies were researched in the prior pass but removed from the formal candidate set because they did not clearly outperform the existing live-enabled Russell 1000 snapshot baseline.
+
+Live baseline comparison row:
+
+| Candidate | Min Sharpe | Median excess CAGR vs SPY | Long excess CAGR vs SPY | Worst drawdown | Robustness score |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `live_r1000_multi_factor_defensive` | 0.855 | 18.26% | 3.18% | -27.62% | 1.843 |
+
+Screened ordinary/snapshot candidates:
+
+| Screened candidate | Type | Long excess CAGR vs SPY | Worst drawdown | Reason |
+| --- | --- | ---: | ---: | --- |
+| `snapshot_r1000_low_vol_momentum` | new snapshot | 2.26% | -23.87% | Better drawdown/min Sharpe, but lower long excess CAGR and lower robustness score than live baseline |
+| `snapshot_r1000_sector_balanced_relative_strength` | new snapshot | -0.32% | -23.85% | Long-window excess below live baseline and below SPY |
+| `ordinary_sector_momentum_top3` | ordinary ETF | -2.79% | -27.47% | Long-window excess below live baseline and below SPY |
+| `ordinary_dual_momentum_qqq_spy_ief` | ordinary ETF | -2.97% | -31.17% | Long-window excess below live baseline and worse drawdown |
+| `ordinary_factor_momentum_low_vol_top2` | ordinary ETF | -4.57% | -31.43% | Long-window excess below live baseline and below SPY; fails original long-excess gate |
+
+Screened optimization variants:
+
+| Optimization variant | Long excess CAGR vs SPY | Worst drawdown | Reason |
+| --- | ---: | ---: | --- |
+| `opt_r1000_core_momentum_16` | 5.79% | -30.71% | Exceeds the 30% drawdown limit; no replacement |
+| `opt_r1000_defensive_diversified_32` | 1.38% | -25.00% | Drawdown is within 30%, but long excess CAGR and robustness score are below live baseline; no replacement |
 
 ## Research basis
 
-The ordinary and new snapshot candidates use simple momentum/trend/low-volatility concepts with broad external support:
+The screened ordinary and new snapshot candidates use simple momentum/trend/low-volatility concepts with broad external support:
 
 - Trend following / time-series momentum: AQR's trend-following research, including *A Century of Evidence on Trend-Following Investing*.
 - Tactical asset allocation moving-average filters: Meb Faber's *A Quantitative Approach to Tactical Asset Allocation*.
@@ -106,34 +124,20 @@ Periods:
 - medium: `2023-06-01` to `2026-04-02`
 - long: `2018-01-01` to `2026-04-02`
 
-ETF data was downloaded through yfinance from `2017-01-03` to `2026-06-02`, then clipped to the configured period windows. Russell 1000 snapshot candidates used the local point-in-time source files under `../_local_runs/r1000_multifactor_defensive_20260403_official_monthly_v2_alias/`.
+### Final ranking
 
-### Ranking
-
-| Rank | Candidate | Group | Min Sharpe | Median excess CAGR | Worst drawdown | Gate | Review action |
-| ---: | --- | --- | ---: | ---: | ---: | --- | --- |
-| 1 | `opt_r1000_core_momentum_16` | optimization | 0.863 | 21.05% | -30.71% | pass | replacement review |
-| 2 | `live_r1000_multi_factor_defensive` | current live baseline | 0.855 | 18.26% | -27.62% | pass | keep baseline |
-| 3 | `snapshot_r1000_low_vol_momentum` | new snapshot | 0.875 | 16.81% | -23.87% | pass | supplemental review |
-| 4 | `opt_r1000_defensive_diversified_32` | optimization | 0.818 | 13.27% | -25.00% | pass | replacement review |
-| 5 | `ordinary_sector_momentum_top3` | new ordinary | 0.693 | -0.95% | -27.47% | pass | supplemental review |
-| 6 | `snapshot_r1000_sector_balanced_relative_strength` | new snapshot | 0.686 | 1.16% | -23.85% | pass | supplemental review |
-| 7 | `ordinary_dual_momentum_qqq_spy_ief` | new ordinary | 0.614 | -2.97% | -31.17% | pass | supplemental review |
-| 8 | `ordinary_factor_momentum_low_vol_top2` | new ordinary | 0.560 | -2.51% | -31.43% | fail: long excess CAGR below -3% | reject |
-
-### Replacement interpretation
-
-- `opt_r1000_core_momentum_16` has the best robustness score and higher CAGR than live baseline in all three periods, but it increases max drawdown in all three periods and medium-window Sharpe is lower. It should **not** automatically replace live; it is suitable for paper/replacement review only.
-- `opt_r1000_defensive_diversified_32` reduces medium/long drawdown but gives up CAGR and Sharpe in all three periods. It is **not** a growth replacement for live; it may be a lower-risk variant if drawdown reduction is prioritized.
-- `snapshot_r1000_low_vol_momentum` is not an optimization variant, but it is the strongest new supplemental snapshot candidate: lower worst drawdown than live baseline and higher Sharpe, with slightly lower medium/long CAGR. It is better suited as a supplemental/risk-balanced sleeve than a direct replacement.
+| Rank | Candidate | Group | Min Sharpe | Median excess CAGR vs SPY | Long excess CAGR vs SPY | Worst drawdown | Live enabled | Decision |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | `live_r1000_multi_factor_defensive` | current live baseline | 0.855 | 18.26% | 3.18% | -27.62% | false | keep current live |
 
 ## Live integration boundary
 
-Do not wire a candidate into `UsEquityStrategies` runtime manifests or broker platform defaults solely because `live_enabled_candidate=true`.
-That flag is only a precondition for a follow-up integration plan covering:
+Do not wire a candidate into `UsEquityStrategies` runtime manifests or broker platform defaults from this run.
 
-1. runtime strategy contract and input ownership;
-2. broker-specific schedule and rollback controls;
-3. artifact publishing path for snapshot candidates;
-4. paper-trading observation window;
-5. final manual approval.
+This run concludes:
+
+1. no ordinary ETF strategy is retained;
+2. no new snapshot strategy is retained;
+3. no optimization variant is retained in the final ranking;
+4. every row has `live_enabled_candidate=false`;
+5. future candidates must keep worst drawdown within 30%.
