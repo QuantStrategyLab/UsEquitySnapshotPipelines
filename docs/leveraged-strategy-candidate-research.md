@@ -1,5 +1,7 @@
 # Leveraged Strategy Candidate Research Gate
 
+Related summary: [`live-strategy-optimization-feedback-20260603.md`](./live-strategy-optimization-feedback-20260603.md).
+
 This note documents the research-only gate for the current TQQQ/SOXL live proxies, parameter variants of those existing strategies, and a bounded set of genuinely new leveraged supplemental strategies.
 
 `research_gate_passed=true` means the candidate passed the research-only robustness screen. It is **not** a live-enable signal. In this run every candidate has `live_enable_candidate=false` and `replacement_candidate=false`.

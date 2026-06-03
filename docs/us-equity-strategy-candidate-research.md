@@ -1,5 +1,7 @@
 # US Equity Strategy Candidate Research Gate
 
+Related summary: [`live-strategy-optimization-feedback-20260603.md`](./live-strategy-optimization-feedback-20260603.md).
+
 This note documents the research-only gate for comparing the current live US equity snapshot strategy against ordinary ETF, new snapshot-backed, and parameter-optimization candidates.
 
 `live_enabled_candidate=true` is intentionally unused in this run. The current decision is stricter: a candidate must be clearly better than the existing live-enabled Russell 1000 snapshot strategy before it can remain in the formal candidate set or be considered for promotion. In this run every row has `live_enabled_candidate=false`.
