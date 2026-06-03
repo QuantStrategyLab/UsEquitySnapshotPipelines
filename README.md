@@ -1,5 +1,37 @@
 # UsEquitySnapshotPipelines
 
+<!-- qsl-doc-overview:start -->
+
+> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
+> ⚠️ Investing involves risk. This project does not provide investment advice and is for educational and research purposes only.
+
+## Open-source overview / 开源项目入口
+
+| Item | Description |
+| --- | --- |
+| Project type | snapshot pipeline |
+| What it does | Builds monthly US equity feature snapshots, ranking artifacts, and research gates consumed by US equity strategy runtimes. |
+| 中文说明 | 美股 snapshot 上游管线，生成 feature snapshot、ranking、release summary 和研究回测证据。 |
+| Current status | Scheduled snapshot producer. Current scheduled monthly profiles are Russell 1000 defensive and Mega Cap Top50 balanced; Tech/Communication remains manual/research-only. |
+
+### Quick start
+
+- `python -m pip install -e '.[test]'`
+- `python -m pytest -q`
+- `python scripts/write_sample_input_data.py --profile mega_cap_leader_rotation_top50_balanced --output-dir data/input/sample/mega`
+
+### Deploy / operate safely
+
+Use GitHub Actions `Publish Snapshot Artifacts` for snapshot publishing and keep `execute_publish=false` for smoke tests before writing to GCS.
+
+### Strategy performance / evidence boundary
+
+See `docs/live-strategy-optimization-feedback-20260603.md`, `docs/us-equity-strategy-candidate-research.md`, and `docs/leveraged-strategy-candidate-research.md` for short/medium/long gates and rejection decisions.
+
+> Detailed runbooks, migration notes, workflow internals, and historical decisions are kept below. Start with this overview before using the lower-level operational sections.
+
+<!-- qsl-doc-overview:end -->
+
 > ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
 
 [English](#english) | [中文](#中文)
