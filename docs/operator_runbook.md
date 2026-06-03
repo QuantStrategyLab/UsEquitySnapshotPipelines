@@ -15,15 +15,14 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 
 These are artifact profiles produced here for downstream runtimes:
 
-- `tech_communication_pullback_enhancement`
 - `russell_1000_multi_factor_defensive`
 - `mega_cap_leader_rotation_top50_balanced`
 
-`mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are no longer publishable snapshot profiles. Top50 balanced is the retained mega-cap runtime path.
+`tech_communication_pullback_enhancement` is archived research-only after the runtime removal and is no longer exposed by publish or health workflows. `mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are also no longer publishable snapshot profiles. Top50 balanced is the retained mega-cap runtime path.
 
 ## Manual Local Build
 
-Tech/communication pullback:
+Archived tech/communication pullback research build:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
@@ -75,7 +74,7 @@ Optional inputs:
 - `as_of_date`
 - `artifact_dir`
 - `gcs_prefix`
-- `config_path` for `tech_communication_pullback_enhancement`
+- `config_path` for profiles that still need an external config
 - `current_holdings`
 - `portfolio_total_equity`
 - `min_adv20_usd` for Russell / mega-cap testing overrides
@@ -97,9 +96,9 @@ gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/input
 `Publish Snapshot Artifacts` runs once per month at `00:45 UTC` and builds:
 
 ```text
-profiles=tech_communication_pullback_enhancement,russell_1000_multi_factor_defensive,mega_cap_leader_rotation_top50_balanced
+profiles=russell_1000_multi_factor_defensive,mega_cap_leader_rotation_top50_balanced
 prices_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
-tech_and_russell_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+russell_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
 mega_top50_balanced_universe_path=gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
 ```
@@ -108,7 +107,6 @@ Default scheduled output prefixes:
 
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
-| `tech_communication_pullback_enhancement` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json` | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging` |
 | `russell_1000_multi_factor_defensive` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging` |
 | `mega_cap_leader_rotation_top50_balanced` | none | `gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging` |
 

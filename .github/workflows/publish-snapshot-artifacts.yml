@@ -12,7 +12,6 @@ on:
         default: mega_cap_leader_rotation_top50_balanced
         type: choice
         options:
-          - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
           - mega_cap_leader_rotation_top50_balanced
       use_sample_data:
@@ -54,7 +53,7 @@ on:
         default: false
         type: boolean
       config_path:
-        description: Optional local, gs://, or http(s) tech pullback config path. Leave blank for bundled/default lookup.
+        description: Optional local, gs://, or http(s) strategy config path. Leave blank for bundled/default lookup.
         required: false
         type: string
       current_holdings:
@@ -101,8 +100,6 @@ jobs:
       SCHEDULED_PRICES_PATH: ${{ vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_UNIVERSE_PATH: ${{ vars.SCHEDULED_US_EQUITY_UNIVERSE_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv' }}
       SCHEDULED_SOURCE_INPUT_MANIFEST_PATH: ${{ vars.SCHEDULED_US_EQUITY_SOURCE_INPUT_MANIFEST_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_source_input_manifest.json' }}
-      SCHEDULED_TECH_CONFIG_PATH: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_CONFIG_PATH || vars.SCHEDULED_US_EQUITY_CONFIG_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/tech_communication_pullback_enhancement/growth_pullback_tech_communication_pullback_enhancement.json' }}
-      SCHEDULED_TECH_GCS_PREFIX: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX || vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
       SCHEDULED_RUSSELL_CONFIG_PATH: ${{ vars.SCHEDULED_RUSSELL_1000_CONFIG_PATH || '' }}
       SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
       SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH: ${{ vars.SCHEDULED_MEGA_CAP_DYNAMIC_TOP20_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
@@ -155,10 +152,6 @@ jobs:
             universe_path="${UNIVERSE_PATH:-${SCHEDULED_UNIVERSE_PATH}}"
             source_input_manifest_path="${SOURCE_INPUT_MANIFEST_PATH:-${SCHEDULED_SOURCE_INPUT_MANIFEST_PATH}}"
             case "${profile}" in
-              tech_communication_pullback_enhancement)
-                config_path="${CONFIG_PATH:-${SCHEDULED_TECH_CONFIG_PATH}}"
-                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_TECH_GCS_PREFIX}}"
-                ;;
               russell_1000_multi_factor_defensive)
                 config_path="${CONFIG_PATH:-${SCHEDULED_RUSSELL_CONFIG_PATH}}"
                 gcs_prefix="${GCS_PREFIX:-${SCHEDULED_RUSSELL_GCS_PREFIX}}"
@@ -313,7 +306,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             case "${PROFILE}" in
-              tech_communication_pullback_enhancement|russell_1000_multi_factor_defensive|mega_cap_leader_rotation_top50_balanced)
+              russell_1000_multi_factor_defensive|mega_cap_leader_rotation_top50_balanced)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"
@@ -365,15 +358,6 @@ jobs:
           fi
 
           case "${PROFILE}" in
-            tech_communication_pullback_enhancement)
-              if [ -n "${CONFIG_PATH:-}" ]; then
-                common_args+=(--config-path "${CONFIG_PATH}")
-              fi
-              if [ -n "${PORTFOLIO_TOTAL_EQUITY:-}" ]; then
-                common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
-              fi
-              python scripts/build_tech_communication_pullback_snapshot.py "${common_args[@]}"
-              ;;
             russell_1000_multi_factor_defensive)
               if [ -n "${MIN_ADV20_USD:-}" ]; then
                 common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")

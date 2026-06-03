@@ -12,7 +12,6 @@ on:
         default: mega_cap_leader_rotation_top50_balanced
         type: choice
         options:
-          - tech_communication_pullback_enhancement
           - russell_1000_multi_factor_defensive
           - mega_cap_leader_rotation_top50_balanced
       max_month_lag:
@@ -37,7 +36,6 @@ jobs:
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
-      SCHEDULED_TECH_GCS_PREFIX: ${{ vars.SCHEDULED_TECH_COMMUNICATION_PULLBACK_GCS_PREFIX || vars.SCHEDULED_US_EQUITY_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tech_communication_pullback_enhancement_staging' }}
       SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
       SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
 
@@ -61,10 +59,6 @@ jobs:
         run: |
           set -euo pipefail
           case "${PROFILE}" in
-            tech_communication_pullback_enhancement)
-              prefix="${SCHEDULED_TECH_GCS_PREFIX}"
-              manifest_name="tech_communication_pullback_enhancement_feature_snapshot_latest.csv.manifest.json"
-              ;;
             russell_1000_multi_factor_defensive)
               prefix="${SCHEDULED_RUSSELL_GCS_PREFIX}"
               manifest_name="russell_1000_multi_factor_defensive_feature_snapshot_latest.csv.manifest.json"
