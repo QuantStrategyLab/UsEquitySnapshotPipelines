@@ -55,12 +55,22 @@ def test_leveraged_candidate_research_runs_current_optimization_and_supplemental
     assert len(period_summary["Candidate"].unique()) == len(LEVERAGED_CANDIDATES)
     assert set(period_summary["Period"].unique()) == {"short", "medium", "long"}
     assert {"current_live_proxy", "optimization_variant", "leveraged_supplement"} <= set(period_summary["Candidate Group"])
-    assert (period_summary.drop_duplicates("Candidate")["Candidate Group"] == "leveraged_supplement").sum() == 5
-    assert {"new_strategy_rank", "replacement_review_candidate", "supplemental_review_candidate", "review_action"} <= set(ranking.columns)
-    assert ranking.loc[ranking["Candidate Group"].eq("optimization_variant"), "supplemental_review_candidate"].eq(False).all()
+    assert (period_summary.drop_duplicates("Candidate")["Candidate Group"] == "leveraged_supplement").sum() == 4
+    assert "new_upro_spy_trend_50_30" not in set(period_summary["Candidate"])
+    assert {
+        "new_strategy_rank",
+        "research_gate_passed",
+        "replacement_candidate",
+        "live_enable_candidate",
+        "paper_review_candidate",
+        "review_action",
+    } <= set(ranking.columns)
+    assert ranking["replacement_candidate"].eq(False).all()
+    assert ranking["live_enable_candidate"].eq(False).all()
+    assert ranking.loc[ranking["Candidate Group"].eq("optimization_variant"), "review_action"].eq("no_replacement").all()
 
 
-def test_drawdown_near_30_must_beat_market_for_live_gate() -> None:
+def test_drawdown_near_30_must_beat_market_for_research_gate() -> None:
     period_summary = pd.DataFrame(
         [
             {
@@ -83,8 +93,10 @@ def test_drawdown_near_30_must_beat_market_for_live_gate() -> None:
 
     ranking = build_ranking(period_summary)
 
-    assert not bool(ranking.loc[0, "live_gate_passed"])
+    assert not bool(ranking.loc[0, "research_gate_passed"])
+    assert not bool(ranking.loc[0, "live_enable_candidate"])
     assert "drawdown_near_30_without_market_outperformance" in ranking.loc[0, "gate_reason"]
+    assert "new_strategy_long_cagr_not_above_market" in ranking.loc[0, "gate_reason"]
 
 
 def test_cli_writes_leveraged_candidate_outputs(tmp_path) -> None:

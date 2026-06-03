@@ -147,19 +147,6 @@ LEVERAGED_CANDIDATES: tuple[LeveragedCandidateSpec, ...] = (
         notes="New technology-sector 3x/1x blended trend sleeve.",
     ),
     LeveragedCandidateSpec(
-        candidate_id="new_upro_spy_trend_50_30",
-        display_name="New UPRO/SPY Trend 50/30",
-        candidate_group="leveraged_supplement",
-        rule="ma200_trend",
-        signal_symbol="SPY",
-        risk_on_weights={"UPRO": 0.50, "SPY": 0.30, DEFAULT_SAFE_SYMBOL: 0.20},
-        risk_off_weights={DEFAULT_SAFE_SYMBOL: 1.0},
-        strategy_benchmark_symbol="SPY",
-        trend_window=200,
-        require_ma20_slope=True,
-        notes="New S&P 500 3x/1x blended trend sleeve for broad-market leveraged exposure.",
-    ),
-    LeveragedCandidateSpec(
         candidate_id="new_usd_smh_trend_50_30",
         display_name="New USD/SMH Trend 50/30",
         candidate_group="leveraged_supplement",
@@ -469,9 +456,18 @@ def build_ranking(period_summary: pd.DataFrame) -> pd.DataFrame:
         positive_sharpe_all_periods = numeric["Sharpe"].gt(0).all()
         drawdown_gate = worst_drawdown > -0.45
         market_beat_gate = not (worst_drawdown <= DRAWDOWN_MARKET_BEAT_THRESHOLD and long_excess_market <= 0.0)
-        live_gate_passed = bool(all_periods_available and positive_return_all_periods and positive_sharpe_all_periods and drawdown_gate and market_beat_gate)
-        score = min_sharpe + 0.50 * median_sharpe + 4.0 * median_excess_market + 0.50 * worst_drawdown - 0.03 * median_turnover
         first = frame.iloc[0]
+        is_new_strategy = first.get("Candidate Group") == "leveraged_supplement"
+        long_market_outperformance_gate = (not is_new_strategy) or (not pd.isna(long_excess_market) and long_excess_market > 0.0)
+        research_gate_passed = bool(
+            all_periods_available
+            and positive_return_all_periods
+            and positive_sharpe_all_periods
+            and drawdown_gate
+            and market_beat_gate
+            and long_market_outperformance_gate
+        )
+        score = min_sharpe + 0.50 * median_sharpe + 4.0 * median_excess_market + 0.50 * worst_drawdown - 0.03 * median_turnover
         rows.append(
             {
                 "Candidate": candidate,
@@ -486,28 +482,30 @@ def build_ranking(period_summary: pd.DataFrame) -> pd.DataFrame:
                 "worst_drawdown": worst_drawdown,
                 "median_turnover_per_year": median_turnover,
                 "robustness_score": score,
-                "live_gate_passed": live_gate_passed,
+                "research_gate_passed": research_gate_passed,
                 "gate_reason": _gate_reason(
                     all_periods_available=all_periods_available,
                     positive_return_all_periods=positive_return_all_periods,
                     positive_sharpe_all_periods=positive_sharpe_all_periods,
                     drawdown_gate=drawdown_gate,
                     market_beat_gate=market_beat_gate,
+                    long_market_outperformance_gate=long_market_outperformance_gate,
                 ),
                 "Notes": first.get("Notes"),
             }
         )
-    ranking = pd.DataFrame(rows).sort_values(["live_gate_passed", "robustness_score"], ascending=[False, False]).reset_index(drop=True)
+    ranking = pd.DataFrame(rows).sort_values(["research_gate_passed", "robustness_score"], ascending=[False, False]).reset_index(drop=True)
     ranking.insert(0, "rank", range(1, len(ranking) + 1))
     ranking["new_strategy_rank"] = pd.NA
     new_strategy_mask = ranking["Candidate Group"].eq("leveraged_supplement")
     ranking.loc[new_strategy_mask, "new_strategy_rank"] = range(1, int(new_strategy_mask.sum()) + 1)
-    ranking["replacement_review_candidate"] = ranking["live_gate_passed"] & ranking["Candidate Group"].eq("optimization_variant")
-    ranking["supplemental_review_candidate"] = ranking["live_gate_passed"] & ranking["Candidate Group"].eq("leveraged_supplement")
+    ranking["replacement_candidate"] = False
+    ranking["live_enable_candidate"] = False
+    ranking["paper_review_candidate"] = ranking["research_gate_passed"] & ranking["Candidate Group"].eq("leveraged_supplement")
     ranking["review_action"] = "reject"
-    ranking.loc[ranking["Candidate Group"].eq("current_live_proxy"), "review_action"] = "current_live_proxy"
-    ranking.loc[ranking["replacement_review_candidate"], "review_action"] = "replacement_review_candidate"
-    ranking.loc[ranking["supplemental_review_candidate"], "review_action"] = "supplemental_review_candidate"
+    ranking.loc[ranking["Candidate Group"].eq("current_live_proxy"), "review_action"] = "keep_current_live"
+    ranking.loc[ranking["Candidate Group"].eq("optimization_variant"), "review_action"] = "no_replacement"
+    ranking.loc[ranking["paper_review_candidate"], "review_action"] = "paper_review_only"
     return ranking
 
 
@@ -518,6 +516,7 @@ def _gate_reason(
     positive_sharpe_all_periods: bool,
     drawdown_gate: bool,
     market_beat_gate: bool,
+    long_market_outperformance_gate: bool,
 ) -> str:
     reasons: list[str] = []
     if not all_periods_available:
@@ -530,6 +529,8 @@ def _gate_reason(
         reasons.append("drawdown_below_minus_45pct")
     if not market_beat_gate:
         reasons.append("drawdown_near_30_without_market_outperformance")
+    if not long_market_outperformance_gate:
+        reasons.append("new_strategy_long_cagr_not_above_market")
     return "pass" if not reasons else ";".join(reasons)
 
 
