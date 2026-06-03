@@ -14,7 +14,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from us_equity_snapshot_pipelines.contracts import list_profile_contracts
+from us_equity_snapshot_pipelines.contracts import list_profile_contracts, list_scheduled_profile_contracts
 
 
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "output"
@@ -150,7 +150,7 @@ def build_bundle(
     discovered = _discover_release_summaries(root)
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
-        for contract in list_profile_contracts()
+        for contract in list_scheduled_profile_contracts()
     ]
     status = "ok" if all(profile["status"] != "missing" and not profile["missing_files"] for profile in profiles) else "warning"
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})

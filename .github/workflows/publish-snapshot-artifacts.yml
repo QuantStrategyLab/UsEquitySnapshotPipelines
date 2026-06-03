@@ -9,7 +9,7 @@ on:
       profile:
         description: Snapshot profile to build
         required: true
-        default: tech_communication_pullback_enhancement
+        default: mega_cap_leader_rotation_top50_balanced
         type: choice
         options:
           - tech_communication_pullback_enhancement
@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'tech_communication_pullback_enhancement')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
     permissions:
       contents: read
       id-token: write
@@ -138,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          profile="${PROFILE:-tech_communication_pullback_enhancement}"
+          profile="${PROFILE:-mega_cap_leader_rotation_top50_balanced}"
           use_sample_data="${USE_SAMPLE_DATA:-false}"
           prices_path="${PRICES_PATH:-}"
           universe_path="${UNIVERSE_PATH:-}"

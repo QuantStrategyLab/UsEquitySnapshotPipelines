@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["tech_communication_pullback_enhancement","russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
     permissions:
       contents: read
       id-token: write
