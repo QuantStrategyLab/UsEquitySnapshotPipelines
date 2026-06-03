@@ -2,63 +2,67 @@
 
 [English README](README.md)
 
-> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
+> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
 
-## 这个项目做什么
+## 这个仓库是什么
 
-UsEquitySnapshotPipelines 是 QuantStrategyLab 体系中的**快照与研究流水线**。为美股策略生成上游特征快照、候选策略研究产物和发布证据。
+UsEquitySnapshotPipelines 是 QuantStrategyLab 的美股 snapshot 与证据流水线。为美股策略生成 feature snapshot、回测摘要、ranking 和提升证据。
 
-## 适合谁使用
+这是一个产出证据的仓库，不直接下单，也不应该被当作执行平台。
 
-- 希望阅读、复现或扩展 QuantStrategyLab 相关模块的工程师和研究人员。
-- 在阅读详细 runbook 或 workflow 前，需要先理解项目入口的运维人员。
-- 在启用自动化前，需要确认项目职责、安全边界和证据要求的 reviewer。
+## 策略和证据边界
 
-## 当前状态
+### 普通 runtime 策略
 
-研究与门禁仓库；职责是产出和提升证据，不直接交易。
+普通 runtime 策略，例如 ETF rotation、TQQQ/SOXL profile 和 Smart DCA，实现在 UsEquityStrategies；本仓库只负责需要 snapshot artifact 或候选评审的证据流水线。
+
+### 本仓库处理的 Snapshot-backed 工作
+
+- Russell 1000 Multi-Factor Defensive
+- Mega Cap Leader Rotation Top50 Balanced
+- Tech/Communication Pullback Enhancement 研究产物
+- 候选策略 ranking 和 replacement-review 研究输出
+
+### 下游如何使用
+
+UsEquityStrategies 和美股执行平台只消费已经提升的产物和 runtime-enabled profile。
+
+## 这些产物用来做什么
+
+Snapshot artifact 的作用是让策略判断可复现：包括 ranking 输入、feature snapshot、manifest、validation summary 和提升证据。它们不是宣传式收益承诺。下游仓库提升 profile 前，应在适用场景下检查最新短、中、长周期产物。
 
 ## 仓库结构
 
-- `src/`：主要库代码和运行时代码。
-- `tests/`：单元测试和契约测试。
-- `docs/`：详细设计说明、运行手册和证据文档。
-- `.github/workflows/`：CI、定时任务和部署 workflow。
+- `src/`：库代码和运行时代码。
+- `tests/`：单元测试、契约测试和回归测试。
+- `docs/`：运行手册、设计说明、证据和集成契约。
+- `.github/workflows/`：CI、定时任务、发布或部署 workflow。
 - `scripts/`：运维脚本和本地辅助工具。
 
 ## 快速开始
-
-从全新 clone 开始：
 
 ```bash
 python -m pip install -e .
 python -m pytest -q
 ```
 
-如果命令需要凭据，请先阅读相关 workflow 或 runbook，并把密钥配置在 Git 之外。
+## 延伸文档
 
-## 部署和运行
+- [`docs/artifact_contract.md`](docs/artifact_contract.md)
+- [`docs/crisis-context-research-v2.md`](docs/crisis-context-research-v2.md)
+- [`docs/crisis-response-live-promotion-spec.md`](docs/crisis-response-live-promotion-spec.md)
+- [`docs/crisis-response-research-roadmap.md`](docs/crisis-response-research-roadmap.md)
+- [`docs/crisis-response-v1.md`](docs/crisis-response-v1.md)
+- [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
+- [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
+- [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 
-通过本地或 CI 运行流水线，并显式指定输出目录。任何下游 live enable 前，都要检查 period summary、ranking 和 artifact manifest。
+## 安全和贡献说明
 
-建议先手工运行或 dry-run。只有在日志、产物、权限和回滚步骤都检查过之后，才启用定时任务或 live 执行。
-
-## 策略表现与证据边界
-
-本仓库负责产出候选策略表现证据。只有通过短/中/长周期回测、基准比较和回撤控制的候选，才应进入 live profile 讨论。
-
-README 不应该承诺固定收益或过期指标。实际使用前，请重新运行对应测试、回测或流水线任务。
-
-## 安全注意事项
-
-- 不要把 API key、券商凭据、OAuth token、Cookie 或账户标识提交到 Git。
-- 新策略或平台变更在 live 前必须先跑 dry-run 或 paper 流程。
-- 启用定时任务前，需要人工检查生成的订单、产物和日志。
-
-## 参与贡献
-
-请保持改动小、可复现，并用最小必要测试覆盖。涉及策略的改动，需要附上验证行为的证据产物或命令。
+- 除非产物明确设计为公开且已有文档说明，否则不要把生成数据、凭据或私人账户信息提交到 Git。
+- 优先提供可复现命令，并显式指定输出目录。
+- 没有完整验证证据时，不要把研究产物提升到 live 使用。
 
 ## 许可证
 
-如仓库包含 [LICENSE](LICENSE)，请以该文件为准。
+详见 [LICENSE](LICENSE)。

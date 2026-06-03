@@ -2,63 +2,67 @@
 
 [Chinese README](README.zh-CN.md)
 
-> ⚠️ Investing involves risk. This project does not provide investment advice and is for educational and research purposes only.
+> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
 
-## What this project does
+## What this repository is
 
-UsEquitySnapshotPipelines is a **Snapshot and research pipeline** in the QuantStrategyLab ecosystem. It builds upstream feature snapshots, candidate research artifacts, and release evidence for US equity strategies.
+UsEquitySnapshotPipelines is the QuantStrategyLab US equity snapshot and evidence pipeline. It builds feature snapshots, backtest summaries, rankings, and promotion evidence for US equity strategies.
 
-## Who this is for
+It is an evidence-producing repository. It does not place trades and should not be treated as an execution platform.
 
-- Engineers and researchers who want to inspect, reproduce, or extend this part of the QuantStrategyLab stack.
-- Operators who need a clear entry point before reading the deeper runbooks or workflow files.
-- Reviewers who need to understand the repository purpose, safety boundary, and evidence requirements before enabling automation.
+## Strategy and evidence boundary
 
-## Current status
+### Direct runtime strategies
 
-Research and gating repository; it should promote evidence, not directly trade.
+Direct runtime strategies such as ETF rotation, TQQQ/SOXL profiles, and Smart DCA live in UsEquityStrategies; this repository only prepares data and evidence for profiles that need snapshot artifacts or candidate review.
+
+### Snapshot-backed work handled here
+
+- Russell 1000 Multi-Factor Defensive
+- Mega Cap Leader Rotation Top50 Balanced
+- Tech/Communication Pullback Enhancement research artifacts
+- candidate ranking and replacement-review research outputs
+
+### Downstream use
+
+UsEquityStrategies and US execution platforms consume only promoted artifacts and runtime-enabled profiles.
+
+## What the artifacts are for
+
+Snapshot artifacts are used to make strategy decisions reproducible: ranking inputs, feature snapshots, manifests, validation summaries, and promotion evidence. They are not marketing claims. Before a downstream repository promotes a profile, review the latest artifacts across short, medium, and long windows where applicable.
 
 ## Repository layout
 
-- `src/`: main library and runtime code.
-- `tests/`: unit and contract tests.
-- `docs/`: detailed design notes, runbooks, and evidence docs.
-- `.github/workflows/`: CI, scheduled jobs, and deployment workflows.
+- `src/`: library and runtime code.
+- `tests/`: unit, contract, and regression tests.
+- `docs/`: runbooks, design notes, evidence, and integration contracts.
+- `.github/workflows/`: CI, scheduled jobs, release, or deployment workflows.
 - `scripts/`: operator scripts and local helpers.
 
 ## Quick start
-
-From a fresh clone:
 
 ```bash
 python -m pip install -e .
 python -m pytest -q
 ```
 
-If a command requires credentials, run it only after reading the relevant workflow or runbook and configuring secrets outside Git.
+## Useful docs
 
-## Deployment and operation
+- [`docs/artifact_contract.md`](docs/artifact_contract.md)
+- [`docs/crisis-context-research-v2.md`](docs/crisis-context-research-v2.md)
+- [`docs/crisis-response-live-promotion-spec.md`](docs/crisis-response-live-promotion-spec.md)
+- [`docs/crisis-response-research-roadmap.md`](docs/crisis-response-research-roadmap.md)
+- [`docs/crisis-response-v1.md`](docs/crisis-response-v1.md)
+- [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
+- [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
+- [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 
-Run the pipeline locally or through CI with explicit output directories. Review generated period summaries, rankings, and artifact manifests before any downstream live enablement.
+## Safety and contribution notes
 
-Prefer manual or dry-run execution first. Enable schedules or live execution only after logs, artifacts, permissions, and rollback steps are reviewed.
-
-## Strategy performance and evidence
-
-This repository is the place to produce performance evidence for candidates. Only candidates that pass short, medium, and long-window backtests, benchmark comparison, and drawdown controls should be considered for live profiles.
-
-README files are intentionally not a source of dated performance promises. Re-run the relevant tests, backtests, or pipeline jobs before relying on any result.
-
-## Safety notes
-
-- Never commit API keys, broker credentials, OAuth tokens, cookies, or account identifiers.
-- Run new strategies and platform changes in dry-run or paper mode before any live execution.
-- Review generated orders, artifacts, and logs manually before enabling schedules.
-
-## Contributing
-
-Keep changes small, reproducible, and covered by the narrowest useful tests. For strategy-facing changes, include the evidence artifact or command used to validate behavior.
+- Keep generated data, credentials, and private account details out of Git unless the artifact is intentionally public and documented.
+- Prefer reproducible commands and explicit output directories.
+- Do not promote a research artifact to live use without the documented validation evidence.
 
 ## License
 
-See [LICENSE](LICENSE) if present in this repository.
+See [LICENSE](LICENSE).
