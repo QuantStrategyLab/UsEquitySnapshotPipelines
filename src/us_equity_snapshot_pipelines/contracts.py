@@ -103,3 +103,13 @@ def get_profile_contract(profile: str) -> SnapshotProfileContract:
 
 def list_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
     return tuple(_PROFILE_CONTRACTS.values())
+
+
+def list_scheduled_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
+    return tuple(
+        _PROFILE_CONTRACTS[profile]
+        for profile in (
+            RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE,
+            MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+        )
+    )
