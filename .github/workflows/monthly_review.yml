@@ -17,7 +17,7 @@ name: Monthly Snapshot Review
 
 jobs:
   monthly-review:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'schedule')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && contains(fromJSON('["schedule","workflow_run"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     concurrency:
       group: monthly-snapshot-review-${{ github.ref_name }}
