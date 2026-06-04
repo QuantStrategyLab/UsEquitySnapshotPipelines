@@ -1,9 +1,9 @@
 name: Publish Snapshot Artifacts
 
 on:
-  schedule:
-    # Monthly publish after the source-input refresh and the regular US close.
-    - cron: '45 0 1 * *'
+  workflow_run:
+    workflows: ["Update Source Input Data"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       profile:
@@ -71,11 +71,12 @@ on:
 
 jobs:
   build-and-publish:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'schedule')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
+        profile: ${{ fromJSON(github.event_name != 'workflow_dispatch' && '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
     permissions:
       contents: read
       id-token: write
@@ -145,7 +146,7 @@ jobs:
           gcs_prefix="${GCS_PREFIX:-}"
           execute_publish="${EXECUTE_PUBLISH:-false}"
 
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
             profile="${PROFILE}"
             use_sample_data="false"
             prices_path="${PRICES_PATH:-${SCHEDULED_PRICES_PATH}}"
@@ -304,7 +305,7 @@ jobs:
           month_end_trading_day=""
           calendar_source=""
 
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
             case "${PROFILE}" in
               russell_1000_multi_factor_defensive|mega_cap_leader_rotation_top50_balanced)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"

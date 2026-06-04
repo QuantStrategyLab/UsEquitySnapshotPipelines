@@ -6,13 +6,14 @@ from pathlib import Path
 MONTHLY_REVIEW = Path(".github/workflows/monthly_review.yml")
 CODEX_FEEDBACK = Path(".github/workflows/codex_pr_feedback.yml")
 PUBLISH_SNAPSHOT_ARTIFACTS = Path(".github/workflows/publish-snapshot-artifacts.yml")
+UPDATE_SOURCE_INPUT_DATA = Path(".github/workflows/update-source-input-data.yml")
 
 
 def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> None:
     workflow = MONTHLY_REVIEW.read_text(encoding="utf-8")
 
     assert "Publish Snapshot Artifacts" in workflow
-    assert "github.event.workflow_run.event == 'schedule'" in workflow
+    assert "contains(fromJSON('[\"schedule\",\"workflow_run\"]'), github.event.workflow_run.event)" in workflow
     assert "actions: write" in workflow
     assert "gh run download" in workflow
     assert "scripts/run_monthly_report_bundle.py" in workflow
@@ -68,10 +69,17 @@ def test_codex_feedback_workflow_requeues_failed_ci_and_review_feedback() -> Non
     assert "Codex PR Review Feedback" in workflow
 
 
-def test_scheduled_snapshot_publish_matrix_only_includes_live_monthly_profiles() -> None:
+def test_automated_snapshot_publish_runs_after_source_input_refresh() -> None:
     workflow = PUBLISH_SNAPSHOT_ARTIFACTS.read_text(encoding="utf-8")
 
-    matrix_line = next(line for line in workflow.splitlines() if "fromJSON(github.event_name == 'schedule'" in line)
+    assert "workflow_run:" in workflow
+    assert 'workflows: ["Update Source Input Data"]' in workflow
+    assert "cron: '45 0 1 * *'" not in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert "github.event.workflow_run.event == 'schedule'" in workflow
+    assert '[ "${GITHUB_EVENT_NAME}" = "workflow_run" ]' in workflow
+
+    matrix_line = next(line for line in workflow.splitlines() if "fromJSON(github.event_name != 'workflow_dispatch'" in line)
     scheduled_matrix = matrix_line.split("|| format", maxsplit=1)[0]
     assert '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in scheduled_matrix
@@ -79,3 +87,18 @@ def test_scheduled_snapshot_publish_matrix_only_includes_live_monthly_profiles()
     assert "mega_cap_leader_rotation_dynamic_top20" not in scheduled_matrix
     assert "mega_cap_leader_rotation_aggressive" not in scheduled_matrix
     assert "dynamic_mega_leveraged_pullback" not in scheduled_matrix
+
+
+def test_manual_source_input_publish_dispatches_live_snapshot_profiles() -> None:
+    workflow = UPDATE_SOURCE_INPUT_DATA.read_text(encoding="utf-8")
+
+    assert "actions: write" in workflow
+    assert "Trigger snapshot artifact publish for manual refresh" in workflow
+    assert "github.event_name == 'workflow_dispatch' && env.EXECUTE_PUBLISH == 'true'" in workflow
+    assert "gh workflow run publish-snapshot-artifacts.yml" in workflow
+    assert '--field profile="russell_1000_multi_factor_defensive"' in workflow
+    assert '--field universe_path="${OUTPUT_PREFIX%/}/r1000_universe_history.csv"' in workflow
+    assert '--field profile="mega_cap_leader_rotation_top50_balanced"' in workflow
+    assert '--field universe_path="${OUTPUT_PREFIX%/}/r1000_latest_holdings_snapshot.csv"' in workflow
+    assert '--field source_input_manifest_path="${source_input_manifest_path}"' in workflow
+    assert '--field execute_publish="true"' in workflow

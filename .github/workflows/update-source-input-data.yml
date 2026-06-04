@@ -69,6 +69,7 @@ jobs:
   update-inputs:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
       id-token: write
     env:
@@ -87,6 +88,8 @@ jobs:
       SAFE_HAVEN: ${{ inputs.safe_haven || 'BOXX' }}
       EXTRA_SYMBOLS: ${{ inputs.extra_symbols || 'QQQ,SPY,BOXX' }}
       CHUNK_SIZE: ${{ inputs.chunk_size || '100' }}
+      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
+      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
 
     steps:
       - name: Checkout
@@ -214,6 +217,37 @@ jobs:
               echo "DRY-RUN gcloud storage cp ${source_path} ${target_path}"
             fi
           done
+
+      - name: Trigger snapshot artifact publish for manual refresh
+        if: github.event_name == 'workflow_dispatch' && env.EXECUTE_PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prices_path="${OUTPUT_PREFIX%/}/r1000_price_history.csv"
+          source_input_manifest_path="${OUTPUT_PREFIX%/}/r1000_source_input_manifest.json"
+
+          gh workflow run publish-snapshot-artifacts.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --field profile="russell_1000_multi_factor_defensive" \
+            --field use_sample_data="false" \
+            --field prices_path="${prices_path}" \
+            --field universe_path="${OUTPUT_PREFIX%/}/r1000_universe_history.csv" \
+            --field source_input_manifest_path="${source_input_manifest_path}" \
+            --field gcs_prefix="${SCHEDULED_RUSSELL_GCS_PREFIX}" \
+            --field execute_publish="true"
+
+          gh workflow run publish-snapshot-artifacts.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${GITHUB_REF_NAME}" \
+            --field profile="mega_cap_leader_rotation_top50_balanced" \
+            --field use_sample_data="false" \
+            --field prices_path="${prices_path}" \
+            --field universe_path="${OUTPUT_PREFIX%/}/r1000_latest_holdings_snapshot.csv" \
+            --field source_input_manifest_path="${source_input_manifest_path}" \
+            --field gcs_prefix="${SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX}" \
+            --field execute_publish="true"
 
       - name: Upload generated input artifacts
         uses: actions/upload-artifact@v7
