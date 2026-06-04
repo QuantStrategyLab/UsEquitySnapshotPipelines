@@ -591,6 +591,7 @@ def run_backtest(
     soxl_delever_overlay_atr_multiple: float | None = None,
     soxl_delever_overlay_retention_ratio: float = 0.0,
     soxl_delever_overlay_redirect_symbol: str = "BOXX",
+    soxl_delever_overlay_combine_with_core: bool = False,
     strategy_overrides: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     prices = _build_price_frame(price_history)
@@ -641,7 +642,7 @@ def run_backtest(
     if overlay_redirect_symbol not in MANAGED_SYMBOLS:
         expected = ", ".join(MANAGED_SYMBOLS)
         raise ValueError(f"unsupported SOXL delever redirect symbol {overlay_redirect_symbol!r}; expected one of {expected}")
-    if soxl_delever_enabled:
+    if soxl_delever_enabled and not bool(soxl_delever_overlay_combine_with_core):
         strategy_overrides["blend_gate_volatility_delever_enabled"] = False
 
     delever_history = (
@@ -1006,6 +1007,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="BOXX",
         help="Managed symbol receiving the removed SOXL target value",
     )
+    parser.add_argument(
+        "--soxl-delever-combine-with-core",
+        action="store_true",
+        help="Layer the research delever overlay on top of the manifest volatility delever gate.",
+    )
     parser.add_argument("--output-dir", help="Optional output directory for research artifacts")
     return parser
 
@@ -1056,6 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
         soxl_delever_overlay_atr_multiple=args.soxl_delever_atr_multiple,
         soxl_delever_overlay_retention_ratio=float(args.soxl_delever_retention_ratio),
         soxl_delever_overlay_redirect_symbol=args.soxl_delever_redirect_symbol,
+        soxl_delever_overlay_combine_with_core=bool(args.soxl_delever_combine_with_core),
     )
 
     summary_frame = _format_summary(result["summary"])
@@ -1097,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
             "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
             "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
             "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,
+            "soxl_delever_combine_with_core": bool(args.soxl_delever_combine_with_core),
         })
         print(f"wrote research backtest outputs -> {output_dir}")
     return 0
