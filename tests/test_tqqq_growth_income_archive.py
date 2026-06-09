@@ -12,10 +12,11 @@ def _sample_tqqq_prices(*, include_income: bool = False) -> pd.DataFrame:
     rows = []
     for idx, as_of in enumerate(dates):
         qqq = 40.0 + idx * 0.08
+        qqqm = qqq * 0.42
         spy = 35.0 + idx * 0.05
         tqqq = 10.0 + idx * 0.06
         boxx = 80.0 + idx * 0.005
-        symbol_prices = [("TQQQ", tqqq), ("QQQ", qqq), ("BOXX", boxx), ("SPY", spy)]
+        symbol_prices = [("TQQQ", tqqq), ("QQQM", qqqm), ("QQQ", qqq), ("BOXX", boxx), ("SPY", spy)]
         if include_income:
             symbol_prices.extend(
                 [
@@ -59,6 +60,8 @@ def test_tqqq_growth_income_run_backtest_can_open_income_layer() -> None:
     assert "income_layer_ratio" in result["signal_history"].columns
     assert "income_layer_activation_multiplier" in result["signal_history"].columns
     assert "income_layer_loss_budget_cap_ratio" in result["signal_history"].columns
+    assert "dual_drive_volatility_delever_threshold_mode" in result["signal_history"].columns
+    assert "dual_drive_volatility_delever_threshold" in result["signal_history"].columns
 
 
 def test_tqqq_growth_income_archive_writes_replayable_outputs(tmp_path) -> None:
@@ -99,7 +102,7 @@ def test_tqqq_growth_income_archive_supports_full_income_mode(tmp_path) -> None:
 
     manifest = json.loads((archive_dir / "source_manifest.json").read_text(encoding="utf-8"))
     assert manifest["backtest"]["disable_income_layer"] is False
-    assert manifest["price_source"]["requested_symbols"] == [*MANAGED_SYMBOLS, "SPY"]
+    assert manifest["price_source"]["requested_symbols"] == [*MANAGED_SYMBOLS, "QQQ", "SPY"]
 
     weights = pd.read_csv(archive_dir / "weights_history.csv")
     assert weights[["SCHD", "DGRO", "SGOV", "SPYI", "QQQI"]].sum(axis=1).max() > 0.0

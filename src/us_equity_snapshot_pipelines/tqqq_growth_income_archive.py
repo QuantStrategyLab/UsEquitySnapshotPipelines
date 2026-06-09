@@ -36,7 +36,7 @@ from .soxl_soxx_trend_income_backtest import (
 from .yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
 
 PROFILE = "tqqq_growth_income"
-MANAGED_SYMBOLS = ("TQQQ", "QQQ", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")
+MANAGED_SYMBOLS = ("TQQQ", "QQQM", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")
 DEFAULT_INITIAL_EQUITY_USD = 100_000.0
 DEFAULT_PRICE_START = "2009-01-01"
 DEFAULT_BACKTEST_START = "2010-02-11"
@@ -59,20 +59,20 @@ class ArchiveModeSpec:
 ARCHIVE_MODE_SPECS = {
     "real-core": ArchiveModeSpec(
         mode="real-core",
-        description="Real-product TQQQ/QQQ core archive with BOXX downloaded and stored through a cash proxy; income layer disabled for long-history cycle replay.",
-        symbols=("TQQQ", "QQQ", "BOXX", "SPY"),
+        description="Real-product TQQQ/QQQM core archive with QQQ as the QQQM long-history proxy and BOXX downloaded through a cash proxy; income layer disabled for long-history cycle replay.",
+        symbols=("TQQQ", "QQQM", "QQQ", "BOXX", "SPY"),
         price_start=DEFAULT_PRICE_START,
         backtest_start=DEFAULT_BACKTEST_START,
-        symbol_aliases={"BOXX": ("BIL",)},
+        symbol_aliases={"QQQM": ("QQQ",), "BOXX": ("BIL",)},
         disable_income_layer=True,
     ),
     "real-full": ArchiveModeSpec(
         mode="real-full",
-        description="Real-product TQQQ/QQQ archive with the production diversified income layer enabled.",
-        symbols=(*MANAGED_SYMBOLS, "SPY"),
+        description="Real-product TQQQ/QQQM archive with QQQ as the QQQM long-history proxy and the production diversified income layer enabled.",
+        symbols=(*MANAGED_SYMBOLS, "QQQ", "SPY"),
         price_start=DEFAULT_PRICE_START,
         backtest_start=DEFAULT_FULL_BACKTEST_START,
-        symbol_aliases={"BOXX": ("BIL",)},
+        symbol_aliases={"QQQM": ("QQQ",), "BOXX": ("BIL",)},
         disable_income_layer=False,
     ),
 }
@@ -187,7 +187,7 @@ def run_backtest(
         prices = prices.loc[prices["as_of"] <= pd.Timestamp(end_date).normalize()].copy()
     close_matrix = _build_close_matrix(prices)
     close_matrix = close_matrix.ffill()
-    required = {"TQQQ", "QQQ", "BOXX"}
+    required = {"TQQQ", "QQQM", "QQQ", "BOXX"}
     missing = sorted(symbol for symbol in required if symbol not in close_matrix.columns)
     if missing:
         raise RuntimeError(f"price history missing required symbols: {', '.join(missing)}")
@@ -197,7 +197,8 @@ def run_backtest(
     if len(index) < 2:
         raise RuntimeError("Not enough price history remains inside the selected date range")
 
-    qqq_history = prices.loc[prices["symbol"].eq("QQQ")].sort_values("as_of")
+    qqq_history = prices.loc[prices["symbol"].eq("QQQ"), ["as_of", "close"]].sort_values("as_of").reset_index(drop=True)
+    qqq_dates = pd.DatetimeIndex(qqq_history["as_of"])
     weights_history = pd.DataFrame(0.0, index=index, columns=[*MANAGED_SYMBOLS, "__cash__"])
     portfolio_returns = pd.Series(index=index, dtype=float, name="portfolio_return")
     turnover_history = pd.Series(index=index, dtype=float, name="turnover")
@@ -207,14 +208,20 @@ def run_backtest(
     current_weights["BOXX"] = 1.0
     current_weights["__cash__"] = 0.0
     current_equity = float(initial_equity)
+    strategy_kwargs = _strategy_kwargs(strategy_overrides)
+    volatility_window = max(1, int(strategy_kwargs.get("dual_drive_volatility_delever_window") or 5))
+    dynamic_lookback = max(1, int(strategy_kwargs.get("dual_drive_volatility_delever_dynamic_lookback") or 252))
+    pullback_window = max(1, int(strategy_kwargs.get("dual_drive_pullback_rebound_window") or 20))
+    strategy_history_window = max(260, dynamic_lookback + volatility_window + 10, pullback_window + 220)
 
     for as_of in index[:-1]:
         next_as_of = index[index.get_loc(as_of) + 1]
         close_row = close_matrix.loc[as_of]
         next_close_row = close_matrix.loc[next_as_of]
-        history = qqq_history.loc[qqq_history["as_of"] <= as_of, ["as_of", "close"]]
-        if len(history) < 220:
+        history_end = int(qqq_dates.searchsorted(as_of, side="right"))
+        if history_end < 220:
             continue
+        history = qqq_history.iloc[max(0, history_end - strategy_history_window):history_end]
 
         snapshot = _build_account_snapshot(
             weights=current_weights,
@@ -226,7 +233,7 @@ def run_backtest(
             snapshot,
             signal_text_fn=str,
             translator=lambda key, **kwargs: key,
-            **_strategy_kwargs(strategy_overrides),
+            **strategy_kwargs,
         )
         target_values = dict(plan["target_values"])
         next_weights, turnover, next_equity = _execute_rebalance(
@@ -272,6 +279,38 @@ def run_backtest(
             "income_layer_loss_budget_ratio": plan.get("income_layer_loss_budget_ratio"),
             "income_layer_loss_budget_cap_ratio": plan.get("income_layer_loss_budget_cap_ratio"),
             "income_layer_stress_drawdown_ratio": plan.get("income_layer_stress_drawdown_ratio"),
+            "dual_drive_volatility_delever_threshold_mode": plan.get(
+                "dual_drive_volatility_delever_threshold_mode"
+            ),
+            "dual_drive_volatility_delever_window": plan.get("dual_drive_volatility_delever_window"),
+            "dual_drive_volatility_delever_metric": plan.get("dual_drive_volatility_delever_metric"),
+            "dual_drive_volatility_delever_threshold": plan.get("dual_drive_volatility_delever_threshold"),
+            "dual_drive_volatility_delever_exit_threshold": plan.get(
+                "dual_drive_volatility_delever_exit_threshold"
+            ),
+            "dual_drive_volatility_delever_dynamic_threshold": plan.get(
+                "dual_drive_volatility_delever_dynamic_threshold"
+            ),
+            "dual_drive_volatility_delever_dynamic_sample_count": plan.get(
+                "dual_drive_volatility_delever_dynamic_sample_count"
+            ),
+            "dual_drive_volatility_delever_dynamic_lookback": plan.get(
+                "dual_drive_volatility_delever_dynamic_lookback"
+            ),
+            "dual_drive_volatility_delever_dynamic_percentile": plan.get(
+                "dual_drive_volatility_delever_dynamic_percentile"
+            ),
+            "dual_drive_volatility_delever_dynamic_floor": plan.get(
+                "dual_drive_volatility_delever_dynamic_floor"
+            ),
+            "dual_drive_volatility_delever_dynamic_cap": plan.get(
+                "dual_drive_volatility_delever_dynamic_cap"
+            ),
+            "dual_drive_volatility_delever_triggered": plan.get("dual_drive_volatility_delever_triggered"),
+            "dual_drive_volatility_delever_applied": plan.get("dual_drive_volatility_delever_applied"),
+            "dual_drive_volatility_delever_trigger_reason": plan.get(
+                "dual_drive_volatility_delever_trigger_reason"
+            ),
             "threshold": plan["threshold"],
             "total_equity": current_equity,
         }
