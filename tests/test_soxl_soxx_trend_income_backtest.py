@@ -146,12 +146,15 @@ def test_soxl_soxx_trend_income_backtest_produces_summary() -> None:
     assert "trend_bb_upper" in result["signal_history"].columns
     assert "trend_realized_volatility_10" in result["signal_history"].columns
     assert "trend_realized_volatility_20" in result["signal_history"].columns
+    assert "blend_gate_volatility_delever_threshold_mode" in result["signal_history"].columns
+    assert "blend_gate_volatility_delever_dynamic_threshold" in result["signal_history"].columns
     assert "soxl_delever_overlay_triggered" in result["signal_history"].columns
     assert "income_layer_activation_multiplier" in result["signal_history"].columns
     assert result["signal_history"]["trend_rsi14"].notna().any()
     assert result["signal_history"]["trend_bb_upper"].notna().any()
     assert result["signal_history"]["trend_realized_volatility_10"].notna().any()
     assert result["signal_history"]["trend_realized_volatility_20"].notna().any()
+    assert result["signal_history"]["blend_gate_volatility_delever_threshold_mode"].eq("rolling_percentile").all()
 
 
 def test_build_indicator_history_includes_soxx_realized_volatility() -> None:
@@ -165,8 +168,19 @@ def test_build_indicator_history_includes_soxx_realized_volatility() -> None:
     assert "ma30" in indicators["soxl"].columns
     assert "realized_volatility_10" in indicators["soxx"].columns
     assert "realized_volatility_20" in indicators["soxx"].columns
+    assert "realized_volatility_10_dynamic_threshold" in indicators["soxx"].columns
+    assert "realized_volatility_10_dynamic_sample_count" in indicators["soxx"].columns
     assert indicators["soxx"]["realized_volatility_10"].notna().any()
     assert indicators["soxx"]["realized_volatility_20"].notna().any()
+    assert (
+        indicators["soxx"]["realized_volatility_10_dynamic_threshold"]
+        .dropna()
+        .between(
+            0.50,
+            0.75,
+        )
+        .all()
+    )
 
 
 def test_soxl_soxx_live_volatility_delever_moves_soxl_to_soxx() -> None:
@@ -265,9 +279,7 @@ def test_soxl_soxx_dynamic_volatility_delever_research_overlay_records_threshold
     assert triggered["soxl_delever_overlay_dynamic_threshold"].notna().all()
     assert triggered["soxl_delever_overlay_dynamic_sample_count"].ge(20).all()
     assert triggered["soxl_delever_overlay_threshold"].le(0.50).all()
-    assert (
-        triggered["soxl_delever_overlay_metric"] >= triggered["soxl_delever_overlay_threshold"]
-    ).all()
+    assert (triggered["soxl_delever_overlay_metric"] >= triggered["soxl_delever_overlay_threshold"]).all()
 
 
 def test_soxl_soxx_dual_ma_research_overlay_keeps_partial_soxl() -> None:

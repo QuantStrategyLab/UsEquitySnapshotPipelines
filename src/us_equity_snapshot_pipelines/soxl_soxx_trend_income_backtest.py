@@ -114,11 +114,7 @@ def _build_field_matrix(price_history: pd.DataFrame, field: str) -> pd.DataFrame
     frame = frame.dropna(subset=[field])
     if frame.empty:
         return pd.DataFrame(index=_empty_matrix_index(price_history))
-    field_matrix = (
-        frame.pivot_table(index="as_of", columns="symbol", values=field, aggfunc="last")
-        .sort_index()
-        .ffill()
-    )
+    field_matrix = frame.pivot_table(index="as_of", columns="symbol", values=field, aggfunc="last").sort_index().ffill()
     return field_matrix
 
 
@@ -214,10 +210,9 @@ def _build_soxl_delever_overlay_history(
         triggered = metric <= effective_threshold
         extra_columns = {}
     elif kind == "volatility":
-        metric = (
-            close.pct_change(fill_method=None).rolling(effective_window, min_periods=effective_window).std()
-            * np.sqrt(252)
-        )
+        metric = close.pct_change(fill_method=None).rolling(
+            effective_window, min_periods=effective_window
+        ).std() * np.sqrt(252)
         fixed_threshold = float(threshold if threshold is not None else 0.45)
         mode = str(threshold_mode or "fixed").strip().lower()
         if mode not in {"fixed", "rolling_percentile"}:
@@ -322,7 +317,9 @@ def build_indicator_history(
         history = pd.DataFrame(
             {
                 "price": close,
-                "ma_trend": close.rolling(int(soxl_soxx_trend_income_manifest.default_config["trend_ma_window"])).mean(),
+                "ma_trend": close.rolling(
+                    int(soxl_soxx_trend_income_manifest.default_config["trend_ma_window"])
+                ).mean(),
             },
             index=close.index,
         )
@@ -334,11 +331,62 @@ def build_indicator_history(
             daily_returns = close.pct_change(fill_method=None)
             realized_volatility_10 = daily_returns.rolling(10).std() * np.sqrt(252)
             realized_volatility_20 = daily_returns.rolling(20).std() * np.sqrt(252)
+            volatility_window = int(
+                soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_window"]
+            )
+            volatility_lookback = int(
+                soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_dynamic_lookback"]
+            )
+            volatility_percentile = float(
+                soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_dynamic_percentile"]
+            )
+            volatility_min_periods = min(
+                volatility_lookback,
+                int(
+                    soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_dynamic_min_periods"]
+                ),
+            )
+            volatility_floor = float(
+                soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_dynamic_floor"]
+            )
+            volatility_cap = float(
+                soxl_soxx_trend_income_manifest.default_config["blend_gate_volatility_delever_dynamic_cap"]
+            )
+            realized_volatility_by_window = {
+                10: realized_volatility_10,
+                20: realized_volatility_20,
+            }
+            volatility_metric = realized_volatility_by_window.get(volatility_window)
+            if volatility_metric is None:
+                volatility_metric = daily_returns.rolling(volatility_window).std() * np.sqrt(252)
+            volatility_dynamic_threshold = (
+                volatility_metric.rolling(volatility_lookback, min_periods=volatility_min_periods)
+                .quantile(volatility_percentile)
+                .clip(lower=volatility_floor, upper=volatility_cap)
+            )
+            volatility_dynamic_sample_count = volatility_metric.rolling(
+                volatility_lookback,
+                min_periods=1,
+            ).count()
             history["ma20"] = ma20
             history["ma20_slope"] = ma20.diff()
             history["realized_volatility"] = realized_volatility_20
             history["realized_volatility_10"] = realized_volatility_10
             history["realized_volatility_20"] = realized_volatility_20
+            history[f"realized_volatility_{volatility_window}_dynamic_threshold"] = volatility_dynamic_threshold
+            history[f"realized_volatility_{volatility_window}_dynamic_sample_count"] = volatility_dynamic_sample_count
+            history[f"realized_volatility_{volatility_window}_dynamic_lookback"] = volatility_lookback
+            history[f"realized_volatility_{volatility_window}_dynamic_percentile"] = volatility_percentile
+            history[f"realized_volatility_{volatility_window}_dynamic_min_periods"] = volatility_min_periods
+            history[f"realized_volatility_{volatility_window}_dynamic_floor"] = volatility_floor
+            history[f"realized_volatility_{volatility_window}_dynamic_cap"] = volatility_cap
+            history["realized_volatility_dynamic_threshold"] = volatility_dynamic_threshold
+            history["realized_volatility_dynamic_sample_count"] = volatility_dynamic_sample_count
+            history["realized_volatility_dynamic_lookback"] = volatility_lookback
+            history["realized_volatility_dynamic_percentile"] = volatility_percentile
+            history["realized_volatility_dynamic_min_periods"] = volatility_min_periods
+            history["realized_volatility_dynamic_floor"] = volatility_floor
+            history["realized_volatility_dynamic_cap"] = volatility_cap
             rsi = _build_rsi(close, int(rsi_window))
             history["rsi14_raw"] = rsi
             history["rsi14"] = rsi
@@ -379,9 +427,7 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "income_layer_enabled": bool(config.get("income_layer_enabled", True)),
         "income_layer_start_usd": float(config["income_layer_start_usd"]),
         "income_layer_max_ratio": float(config["income_layer_max_ratio"]),
-        "income_layer_activation_band_ratio": float(
-            config.get("income_layer_activation_band_ratio", 0.0)
-        ),
+        "income_layer_activation_band_ratio": float(config.get("income_layer_activation_band_ratio", 0.0)),
         "income_layer_ratio_mode": str(config.get("income_layer_ratio_mode", "linear_cap")),
         "income_layer_log_growth_factor": float(config.get("income_layer_log_growth_factor", 0.70)),
         "income_layer_stress_drawdown_ratio": float(config.get("income_layer_stress_drawdown_ratio", 0.30)),
@@ -404,22 +450,30 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "blend_gate_defensive_soxx_weight": float(config.get("blend_gate_defensive_soxx_weight", 0.15)),
         "blend_gate_rsi_cap_enabled": bool(config.get("blend_gate_rsi_cap_enabled", False)),
         "blend_gate_rsi_threshold": float(config.get("blend_gate_rsi_threshold", 70.0)),
-        "blend_gate_dynamic_rsi_threshold_enabled": bool(
-            config.get("blend_gate_dynamic_rsi_threshold_enabled", False)
-        ),
+        "blend_gate_dynamic_rsi_threshold_enabled": bool(config.get("blend_gate_dynamic_rsi_threshold_enabled", False)),
         "blend_gate_bollinger_cap_enabled": bool(config.get("blend_gate_bollinger_cap_enabled", False)),
         "blend_gate_overlay_stack_triggers": bool(config.get("blend_gate_overlay_stack_triggers", False)),
-        "blend_gate_volatility_delever_enabled": bool(
-            config.get("blend_gate_volatility_delever_enabled", False)
+        "blend_gate_volatility_delever_enabled": bool(config.get("blend_gate_volatility_delever_enabled", False)),
+        "blend_gate_volatility_delever_symbol": str(config.get("blend_gate_volatility_delever_symbol", "SOXX")),
+        "blend_gate_volatility_delever_window": int(config.get("blend_gate_volatility_delever_window", 10)),
+        "blend_gate_volatility_delever_threshold": float(config.get("blend_gate_volatility_delever_threshold", 0.55)),
+        "blend_gate_volatility_delever_threshold_mode": str(
+            config.get("blend_gate_volatility_delever_threshold_mode", "fixed")
         ),
-        "blend_gate_volatility_delever_symbol": str(
-            config.get("blend_gate_volatility_delever_symbol", "SOXX")
+        "blend_gate_volatility_delever_dynamic_lookback": int(
+            config.get("blend_gate_volatility_delever_dynamic_lookback", 252)
         ),
-        "blend_gate_volatility_delever_window": int(
-            config.get("blend_gate_volatility_delever_window", 10)
+        "blend_gate_volatility_delever_dynamic_percentile": float(
+            config.get("blend_gate_volatility_delever_dynamic_percentile", 0.95)
         ),
-        "blend_gate_volatility_delever_threshold": float(
-            config.get("blend_gate_volatility_delever_threshold", 0.55)
+        "blend_gate_volatility_delever_dynamic_min_periods": int(
+            config.get("blend_gate_volatility_delever_dynamic_min_periods", 126)
+        ),
+        "blend_gate_volatility_delever_dynamic_floor": float(
+            config.get("blend_gate_volatility_delever_dynamic_floor", 0.50)
+        ),
+        "blend_gate_volatility_delever_dynamic_cap": float(
+            config.get("blend_gate_volatility_delever_dynamic_cap", 0.75)
         ),
         "blend_gate_volatility_delever_retention_ratio": float(
             config.get("blend_gate_volatility_delever_retention_ratio", 0.0)
@@ -498,7 +552,9 @@ def _execute_rebalance(
     current_min_trade: float,
     turnover_cost_bps: float,
 ) -> tuple[dict[str, float], float, float]:
-    current_market_values = {symbol: float(equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS}
+    current_market_values = {
+        symbol: float(equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS
+    }
     next_market_values = dict(current_market_values)
 
     income_symbols = tuple(symbol for symbol in MANAGED_SYMBOLS if symbol not in {"SOXL", "SOXX", "BOXX"})
@@ -538,10 +594,14 @@ def _execute_rebalance(
     if new_equity_before_cost <= 0:
         return dict(current_weights), 0.0, 0.0
 
-    turnover = 0.5 * sum(
-        abs(float(next_market_values.get(symbol, 0.0)) - float(current_market_values.get(symbol, 0.0)))
-        for symbol in MANAGED_SYMBOLS
-    ) / float(equity)
+    turnover = (
+        0.5
+        * sum(
+            abs(float(next_market_values.get(symbol, 0.0)) - float(current_market_values.get(symbol, 0.0)))
+            for symbol in MANAGED_SYMBOLS
+        )
+        / float(equity)
+    )
     cost = float(equity) * turnover * (float(turnover_cost_bps) / 10_000.0)
     cash = max(0.0, cash - cost)
     new_equity = cash + sum(next_market_values.values())
@@ -579,9 +639,7 @@ def _summarize_returns(
     rebalances_per_year = float((daily_turnover > 1e-12).sum() / years)
     turnover_per_year = float(daily_turnover.sum() / years)
     stock_columns = [column for column in weights_history.columns if column not in {"BOXX", "__cash__"}]
-    avg_stock_exposure = (
-        float(weights_history[stock_columns].fillna(0.0).sum(axis=1).mean()) if stock_columns else 0.0
-    )
+    avg_stock_exposure = float(weights_history[stock_columns].fillna(0.0).sum(axis=1).mean()) if stock_columns else 0.0
 
     return {
         "Start": str(returns.index[0].date()),
@@ -675,15 +733,15 @@ def run_backtest(
     overlay_fast_window = int(soxl_delever_overlay_fast_window or 10)
     overlay_slow_window = int(soxl_delever_overlay_slow_window or soxl_delever_overlay_window or 30)
     overlay_atr_multiple = float(
-        soxl_delever_overlay_atr_multiple
-        if soxl_delever_overlay_atr_multiple is not None
-        else chandelier_atr_multiple
+        soxl_delever_overlay_atr_multiple if soxl_delever_overlay_atr_multiple is not None else chandelier_atr_multiple
     )
     overlay_retention_ratio = _clamp_ratio(soxl_delever_overlay_retention_ratio)
     overlay_redirect_symbol = _normalize_symbol(soxl_delever_overlay_redirect_symbol or "BOXX")
     if overlay_redirect_symbol not in MANAGED_SYMBOLS:
         expected = ", ".join(MANAGED_SYMBOLS)
-        raise ValueError(f"unsupported SOXL delever redirect symbol {overlay_redirect_symbol!r}; expected one of {expected}")
+        raise ValueError(
+            f"unsupported SOXL delever redirect symbol {overlay_redirect_symbol!r}; expected one of {expected}"
+        )
     if soxl_delever_enabled and not bool(soxl_delever_overlay_combine_with_core):
         strategy_overrides["blend_gate_volatility_delever_enabled"] = False
 
@@ -782,8 +840,7 @@ def run_backtest(
             redirected_value = soxl_target_value - retained_value
             target_values["SOXL"] = retained_value
             target_values[overlay_redirect_symbol] = (
-                float(target_values.get(overlay_redirect_symbol, 0.0) or 0.0)
-                + redirected_value
+                float(target_values.get(overlay_redirect_symbol, 0.0) or 0.0) + redirected_value
             )
             soxl_delever_stop_count += 1
         trend_symbol = str(plan.get("trend_symbol", "SOXX")).lower()
@@ -843,15 +900,33 @@ def run_backtest(
                 "overlay_trigger_reasons": ",".join(plan.get("overlay_trigger_reasons", ())),
                 "blend_gate_rsi_threshold": plan.get("blend_gate_rsi_threshold"),
                 "blend_gate_rsi_cap_enabled": plan.get("blend_gate_rsi_cap_enabled"),
-                "blend_gate_dynamic_rsi_threshold_enabled": plan.get(
-                    "blend_gate_dynamic_rsi_threshold_enabled"
-                ),
+                "blend_gate_dynamic_rsi_threshold_enabled": plan.get("blend_gate_dynamic_rsi_threshold_enabled"),
                 "blend_gate_bollinger_cap_enabled": plan.get("blend_gate_bollinger_cap_enabled"),
                 "blend_gate_overlay_stack_triggers": plan.get("blend_gate_overlay_stack_triggers"),
                 "blend_gate_volatility_delever_enabled": plan.get("blend_gate_volatility_delever_enabled"),
                 "blend_gate_volatility_delever_symbol": plan.get("blend_gate_volatility_delever_symbol"),
                 "blend_gate_volatility_delever_window": plan.get("blend_gate_volatility_delever_window"),
                 "blend_gate_volatility_delever_threshold": plan.get("blend_gate_volatility_delever_threshold"),
+                "blend_gate_volatility_delever_threshold_mode": plan.get(
+                    "blend_gate_volatility_delever_threshold_mode"
+                ),
+                "blend_gate_volatility_delever_dynamic_threshold": plan.get(
+                    "blend_gate_volatility_delever_dynamic_threshold"
+                ),
+                "blend_gate_volatility_delever_dynamic_sample_count": plan.get(
+                    "blend_gate_volatility_delever_dynamic_sample_count"
+                ),
+                "blend_gate_volatility_delever_dynamic_lookback": plan.get(
+                    "blend_gate_volatility_delever_dynamic_lookback"
+                ),
+                "blend_gate_volatility_delever_dynamic_percentile": plan.get(
+                    "blend_gate_volatility_delever_dynamic_percentile"
+                ),
+                "blend_gate_volatility_delever_dynamic_min_periods": plan.get(
+                    "blend_gate_volatility_delever_dynamic_min_periods"
+                ),
+                "blend_gate_volatility_delever_dynamic_floor": plan.get("blend_gate_volatility_delever_dynamic_floor"),
+                "blend_gate_volatility_delever_dynamic_cap": plan.get("blend_gate_volatility_delever_dynamic_cap"),
                 "blend_gate_volatility_delever_metric": plan.get("blend_gate_volatility_delever_metric"),
                 "blend_gate_volatility_delever_triggered": core_volatility_delever_triggered,
                 "blend_gate_volatility_delever_retention_ratio": plan.get(
@@ -860,9 +935,7 @@ def run_backtest(
                 "blend_gate_volatility_delever_redirect_symbol": plan.get(
                     "blend_gate_volatility_delever_redirect_symbol"
                 ),
-                "blend_gate_volatility_delever_removed_ratio": plan.get(
-                    "blend_gate_volatility_delever_removed_ratio"
-                ),
+                "blend_gate_volatility_delever_removed_ratio": plan.get("blend_gate_volatility_delever_removed_ratio"),
                 "chandelier_stop_enabled": bool(soxl_delever_enabled and overlay_kind == "chandelier"),
                 "chandelier_stop_symbol": overlay_symbol,
                 "chandelier_window": overlay_window,
@@ -877,12 +950,8 @@ def run_backtest(
                 "soxl_delever_overlay_kind": overlay_kind,
                 "soxl_delever_overlay_symbol": overlay_symbol,
                 "soxl_delever_overlay_window": overlay_window,
-                "soxl_delever_overlay_fast_window": delever_row.get("fast_window")
-                if not delever_row.empty
-                else None,
-                "soxl_delever_overlay_slow_window": delever_row.get("slow_window")
-                if not delever_row.empty
-                else None,
+                "soxl_delever_overlay_fast_window": delever_row.get("fast_window") if not delever_row.empty else None,
+                "soxl_delever_overlay_slow_window": delever_row.get("slow_window") if not delever_row.empty else None,
                 "soxl_delever_overlay_threshold": delever_row.get("threshold") if not delever_row.empty else None,
                 "soxl_delever_overlay_threshold_mode": delever_row.get("threshold_mode")
                 if not delever_row.empty
@@ -905,9 +974,7 @@ def run_backtest(
                 "soxl_delever_overlay_dynamic_floor": delever_row.get("dynamic_floor")
                 if not delever_row.empty
                 else None,
-                "soxl_delever_overlay_dynamic_cap": delever_row.get("dynamic_cap")
-                if not delever_row.empty
-                else None,
+                "soxl_delever_overlay_dynamic_cap": delever_row.get("dynamic_cap") if not delever_row.empty else None,
                 "soxl_delever_overlay_atr_multiple": overlay_atr_multiple if overlay_kind == "chandelier" else None,
                 "soxl_delever_overlay_retention_ratio": overlay_retention_ratio,
                 "soxl_delever_overlay_redirect_symbol": overlay_redirect_symbol,
@@ -947,12 +1014,12 @@ def run_backtest(
         current_equity = float(next_equity)
 
         next_market_values = {
-            symbol: float(current_equity) * float(current_weights.get(symbol, 0.0))
-            for symbol in MANAGED_SYMBOLS
+            symbol: float(current_equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS
         }
         next_cash = float(current_equity) * float(current_weights.get("__cash__", 0.0))
         equity_after_return = next_cash + sum(
-            float(next_market_values[symbol]) * (float(next_close_row.get(symbol, np.nan)) / float(close_row.get(symbol)))
+            float(next_market_values[symbol])
+            * (float(next_close_row.get(symbol, np.nan)) / float(close_row.get(symbol)))
             if symbol in next_close_row and pd.notna(close_row.get(symbol)) and float(close_row.get(symbol)) > 0
             else float(next_market_values[symbol])
             for symbol in MANAGED_SYMBOLS
@@ -1174,41 +1241,44 @@ def main(argv: list[str] | None = None) -> int:
         result["turnover_history"].rename("turnover").to_csv(output_dir / "turnover_history.csv")
         result["trades"].to_csv(output_dir / "trades.csv", index=False)
         result["signal_history"].to_csv(output_dir / "signal_history.csv", index=False)
-        write_json(output_dir / "backtest_config.json", {
-            "profile": PROFILE,
-            "initial_equity": float(args.initial_equity),
-            "start_date": args.start_date,
-            "end_date": args.end_date,
-            "turnover_cost_bps": float(args.turnover_cost_bps),
-            "disable_rsi_cap": bool(args.disable_rsi_cap),
-            "disable_bollinger_cap": bool(args.disable_bollinger_cap),
-            "disable_overlay_stack_triggers": bool(args.disable_overlay_stack_triggers),
-            "rsi_threshold": args.rsi_threshold,
-            "dynamic_rsi_quantile_window": args.dynamic_rsi_quantile_window,
-            "dynamic_rsi_quantile": args.dynamic_rsi_quantile,
-            "dynamic_rsi_floor": args.dynamic_rsi_floor,
-            "disable_income_layer": bool(args.disable_income_layer),
-            "chandelier_stop_enabled": bool(args.enable_chandelier_stop),
-            "chandelier_stop_symbol": args.chandelier_stop_symbol,
-            "chandelier_window": int(args.chandelier_window),
-            "chandelier_atr_multiple": float(args.chandelier_atr_multiple),
-            "soxl_delever_overlay": args.soxl_delever_overlay,
-            "soxl_delever_symbol": args.soxl_delever_symbol,
-            "soxl_delever_window": args.soxl_delever_window,
-            "soxl_delever_fast_window": args.soxl_delever_fast_window,
-            "soxl_delever_slow_window": args.soxl_delever_slow_window,
-            "soxl_delever_threshold": args.soxl_delever_threshold,
-            "soxl_delever_threshold_mode": args.soxl_delever_threshold_mode,
-            "soxl_delever_threshold_lookback": args.soxl_delever_threshold_lookback,
-            "soxl_delever_threshold_percentile": args.soxl_delever_threshold_percentile,
-            "soxl_delever_threshold_min_periods": args.soxl_delever_threshold_min_periods,
-            "soxl_delever_threshold_floor": args.soxl_delever_threshold_floor,
-            "soxl_delever_threshold_cap": args.soxl_delever_threshold_cap,
-            "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
-            "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
-            "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,
-            "soxl_delever_combine_with_core": bool(args.soxl_delever_combine_with_core),
-        })
+        write_json(
+            output_dir / "backtest_config.json",
+            {
+                "profile": PROFILE,
+                "initial_equity": float(args.initial_equity),
+                "start_date": args.start_date,
+                "end_date": args.end_date,
+                "turnover_cost_bps": float(args.turnover_cost_bps),
+                "disable_rsi_cap": bool(args.disable_rsi_cap),
+                "disable_bollinger_cap": bool(args.disable_bollinger_cap),
+                "disable_overlay_stack_triggers": bool(args.disable_overlay_stack_triggers),
+                "rsi_threshold": args.rsi_threshold,
+                "dynamic_rsi_quantile_window": args.dynamic_rsi_quantile_window,
+                "dynamic_rsi_quantile": args.dynamic_rsi_quantile,
+                "dynamic_rsi_floor": args.dynamic_rsi_floor,
+                "disable_income_layer": bool(args.disable_income_layer),
+                "chandelier_stop_enabled": bool(args.enable_chandelier_stop),
+                "chandelier_stop_symbol": args.chandelier_stop_symbol,
+                "chandelier_window": int(args.chandelier_window),
+                "chandelier_atr_multiple": float(args.chandelier_atr_multiple),
+                "soxl_delever_overlay": args.soxl_delever_overlay,
+                "soxl_delever_symbol": args.soxl_delever_symbol,
+                "soxl_delever_window": args.soxl_delever_window,
+                "soxl_delever_fast_window": args.soxl_delever_fast_window,
+                "soxl_delever_slow_window": args.soxl_delever_slow_window,
+                "soxl_delever_threshold": args.soxl_delever_threshold,
+                "soxl_delever_threshold_mode": args.soxl_delever_threshold_mode,
+                "soxl_delever_threshold_lookback": args.soxl_delever_threshold_lookback,
+                "soxl_delever_threshold_percentile": args.soxl_delever_threshold_percentile,
+                "soxl_delever_threshold_min_periods": args.soxl_delever_threshold_min_periods,
+                "soxl_delever_threshold_floor": args.soxl_delever_threshold_floor,
+                "soxl_delever_threshold_cap": args.soxl_delever_threshold_cap,
+                "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
+                "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
+                "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,
+                "soxl_delever_combine_with_core": bool(args.soxl_delever_combine_with_core),
+            },
+        )
         print(f"wrote research backtest outputs -> {output_dir}")
     return 0
 

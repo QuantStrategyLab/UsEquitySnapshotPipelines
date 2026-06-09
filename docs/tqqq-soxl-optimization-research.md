@@ -2,9 +2,10 @@
 
 Research date: 2026-05-10
 
-Promotion note: the current production SOXL/SOXX volatility delever gate uses
-`SOXX 10d realized volatility >= 55%, SOXL -> SOXX`. The older synthetic
-long-history sweep below remains the historical optimization record.
+Promotion note: the current production SOXL/SOXX volatility delever gate uses a
+rolling 252-day p95 threshold on SOXX 10-day annualized realized volatility,
+bounded to 50%-75%, with fixed 55% kept as the warm-up fallback. The older
+synthetic long-history sweep below remains the historical optimization record.
 
 Latest current-default recheck: 2026-06-09. A bounded replay found a better
 TQQQ volatility-delever default than the fixed 28% gate: use a rolling 252-day
@@ -20,6 +21,10 @@ The fixed 28% value remains the fallback while the rolling percentile warms up.
   `blend_gate_volatility_delever_symbol=SOXX`,
   `blend_gate_volatility_delever_window=10`,
   `blend_gate_volatility_delever_threshold=0.55`,
+  `blend_gate_volatility_delever_threshold_mode=rolling_percentile`,
+  `blend_gate_volatility_delever_dynamic_percentile=0.95`,
+  `blend_gate_volatility_delever_dynamic_floor=0.50`,
+  `blend_gate_volatility_delever_dynamic_cap=0.75`,
   `blend_gate_volatility_delever_retention_ratio=0.0`,
   `blend_gate_volatility_delever_redirect_symbol=SOXX`.
 
@@ -140,9 +145,9 @@ Interpretation:
 - `dynamic_p95_floor50_cap75` is the cleanest live candidate: it improves CAGR
   from 72.15% to 77.12%, leaves max drawdown unchanged, reduces turnover from
   8.76/year to 8.47/year, and reduces actual SOXL delever stops from 17 to 7.
-- Do not promote SOXL automatically in this research PR. A later strategy PR
-  should add production dynamic-threshold fields to `blend_gate_volatility_*`
-  before changing the live default.
+- Promoted in the follow-up live PR by adding production dynamic-threshold
+  fields to `blend_gate_volatility_delever_*` and keeping fixed 55% as the
+  fallback.
 
 ## 2026-06-04 Current Default Recheck
 
@@ -152,9 +157,9 @@ nearby variants only:
 
 - TQQQ: current 5-day QQQ volatility delever at 28%, a more defensive 25%
   threshold, a looser 32% threshold, and no volatility delever.
-- SOXL: current dynamic RSI plus SOXX 10-day 55% volatility delever, static RSI
-  at 70 with the same volatility delever, dynamic RSI with 50% or 60%
-  volatility thresholds, and dynamic RSI with no volatility delever.
+- SOXL: then-current dynamic RSI plus SOXX 10-day 55% volatility delever,
+  static RSI at 70 with the same volatility delever, dynamic RSI with 50% or
+  60% volatility thresholds, and dynamic RSI with no volatility delever.
 
 Output directory:
 
@@ -222,11 +227,11 @@ Implementation boundary:
 
 - Production strategy defaults were not changed.
 - SOXL research backtests can now optionally layer an external SOXL delever
-  overlay on top of the manifest 55% SOXX volatility gate via
+  overlay on top of the then-current manifest 55% SOXX volatility gate via
   `soxl_delever_overlay_combine_with_core=true`.
 - TQQQ overlay guards were tested in a research script by rerouting only the
   TQQQ target sleeve into QQQ when the guard triggered.
-- SOXL overlay guards were layered on the current dynamic-RSI and 55% SOXX
+- SOXL overlay guards were layered on the then-current dynamic-RSI and 55% SOXX
   volatility-delever baseline, rerouting only the SOXL target sleeve into SOXX.
 
 Command:
@@ -360,8 +365,9 @@ failed the strict no-CAGR-regression rule in at least one window.
 Historical conclusion from this sweep: the strongest candidate in that older
 synthetic run was the 20-day SOXX realized-volatility gate at 50%, redirecting
 triggered SOXL target exposure into SOXX. Later exact-replay and income-layer
-work did not promote that older 50% threshold; the current production default is
-the 10-day 55% SOXX realized-volatility gate, redirecting SOXL into SOXX.
+work did not promote that older 50% threshold. The later June 2026 exact replay
+promoted the 10-day dynamic p95 SOXX realized-volatility gate bounded to
+50%-75%, redirecting SOXL into SOXX.
 
 ## Local Research Outputs
 

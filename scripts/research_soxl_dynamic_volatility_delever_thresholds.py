@@ -59,8 +59,14 @@ def _external_vol_overlay(
 
 
 def _variants() -> tuple[tuple[str, dict[str, object]], ...]:
+    core_fixed55_overrides = {
+        "strategy_overrides": {
+            "blend_gate_volatility_delever_threshold": 0.55,
+            "blend_gate_volatility_delever_threshold_mode": "fixed",
+        }
+    }
     return (
-        ("current_core_fixed55", {}),
+        ("current_core_fixed55", core_fixed55_overrides),
         ("overlay_fixed55_replay", _external_vol_overlay(threshold=0.55)),
         (
             "no_vol_delever",
@@ -194,27 +200,36 @@ def _variant_row(name: str, result: Mapping[str, object]) -> dict[str, object]:
     summary = dict(result["summary"])
     signal_history = pd.DataFrame(result["signal_history"])
     core_triggered = (
-        signal_history.get("blend_gate_volatility_delever_triggered", pd.Series(dtype=bool))
-        .fillna(False)
-        .astype(bool)
+        signal_history.get("blend_gate_volatility_delever_triggered", pd.Series(dtype=bool)).fillna(False).astype(bool)
     )
     overlay_triggered = (
-        signal_history.get("soxl_delever_overlay_triggered", pd.Series(dtype=bool))
-        .fillna(False)
-        .astype(bool)
+        signal_history.get("soxl_delever_overlay_triggered", pd.Series(dtype=bool)).fillna(False).astype(bool)
     )
     threshold = _first_existing_series(
         signal_history,
         "soxl_delever_overlay_threshold",
         "blend_gate_volatility_delever_threshold",
     )
-    dynamic_threshold = _first_existing_series(signal_history, "soxl_delever_overlay_dynamic_threshold")
-    dynamic_sample_count = _first_existing_series(signal_history, "soxl_delever_overlay_dynamic_sample_count")
+    dynamic_threshold = _first_existing_series(
+        signal_history,
+        "soxl_delever_overlay_dynamic_threshold",
+        "blend_gate_volatility_delever_dynamic_threshold",
+    )
+    dynamic_sample_count = _first_existing_series(
+        signal_history,
+        "soxl_delever_overlay_dynamic_sample_count",
+        "blend_gate_volatility_delever_dynamic_sample_count",
+    )
     threshold_mode = ""
     if "soxl_delever_overlay_threshold_mode" in signal_history.columns:
         modes = tuple(
+            str(item) for item in signal_history["soxl_delever_overlay_threshold_mode"].dropna().unique() if str(item)
+        )
+        threshold_mode = ",".join(modes)
+    if not threshold_mode and "blend_gate_volatility_delever_threshold_mode" in signal_history.columns:
+        modes = tuple(
             str(item)
-            for item in signal_history["soxl_delever_overlay_threshold_mode"].dropna().unique()
+            for item in signal_history["blend_gate_volatility_delever_threshold_mode"].dropna().unique()
             if str(item)
         )
         threshold_mode = ",".join(modes)
