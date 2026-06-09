@@ -87,6 +87,63 @@ Interpretation:
 - Promote `dynamic_p90_floor24_cap36` as the live default, with fixed 28 kept as
   the warm-up fallback.
 
+## 2026-06-09 Dynamic SOXL Volatility Threshold Recheck
+
+Follow-up question: can the fixed `SOXX 10d realized volatility >= 55%` SOXL
+delever gate be replaced by a dynamic threshold?
+
+Output directory:
+
+`data/output/soxl_dynamic_volatility_delever_threshold_research_20260609`
+
+Method:
+
+- Real SOXL/SOXX/BOXX price replay from 2016-06-06 through 2026-06-02.
+- Income layer disabled to isolate the SOXL/SOXX core gate.
+- Dynamic RSI stays on, matching the current SOXL live profile.
+- Turnover cost is 5 bps.
+- The research overlay was first validated by replaying fixed 55%; the
+  `overlay_fixed55_replay` output matches `current_core_fixed55` exactly.
+
+Full-sample summary:
+
+| Candidate | CAGR | Max Drawdown | Rebalances/Year | Turnover/Year | SOXL Delever Stops | Effective Threshold | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `current_core_fixed55` | 72.15% | -40.51% | 34.63 | 8.76 | 17 | fixed 55% | baseline |
+| `dynamic_p95_cap75` | 81.50% | -37.41% | 35.48 | 9.42 | 31 | p95, cap 75%, no floor | research watch; threshold can drop too low |
+| `dynamic_p95_floor50_cap75` | 77.12% | -40.51% | 34.31 | 8.47 | 7 | p95 bounded 50%-75% | best promotion candidate |
+| `dynamic_p95_floor55_cap75` | 75.11% | -40.51% | 34.52 | 8.47 | 5 | p95 bounded 55%-75% | conservative backup |
+| `dynamic_p90_floor55_cap75` | 75.05% | -40.51% | 34.52 | 8.61 | 7 | p90 bounded 55%-75% | similar to p95/floor55 |
+| `no_vol_delever` | 74.12% | -40.51% | 34.10 | 8.12 | 0 | n/a | not preferred; post-2022 drawdown worsens |
+
+Key window checks for `dynamic_p95_floor50_cap75` versus current fixed 55:
+
+| Window | CAGR Delta | Max Drawdown Delta | Interpretation |
+| --- | ---: | ---: | --- |
+| YTD through 2026-06-02 | +96.28 pp | +0.00 pp | better recent rebound |
+| Last 3 months | +690.87 pp | +0.00 pp | better recent rebound; annualized short-window number is not a stable long-term expectation |
+| Last 1 year | +10.11 pp | +0.00 pp | better, no drawdown regression |
+| Post-2022 bull | +9.62 pp | +0.00 pp | better, no drawdown regression |
+| 2022 rate bear | +0.00 pp | +0.00 pp | neutral |
+| COVID crash | +0.00 pp | +0.00 pp | neutral |
+| 2018-2019 trade war | +0.00 pp | +0.00 pp | neutral |
+| Long real-product window | +4.97 pp | +0.00 pp | better, no drawdown regression |
+
+Interpretation:
+
+- Dynamic SOXL volatility gating does help, but the useful percentile is higher
+  than TQQQ. The current fixed 55% gate is already fairly loose, so p80/p85 and
+  lower floors over-delever and reduce CAGR.
+- `dynamic_p95_cap75` has the best headline result, but the effective threshold
+  can fall to about 27.6%, increasing SOXL stop count to 31 and turnover to
+  9.42/year. Treat it as research-watch rather than a live default.
+- `dynamic_p95_floor50_cap75` is the cleanest live candidate: it improves CAGR
+  from 72.15% to 77.12%, leaves max drawdown unchanged, reduces turnover from
+  8.76/year to 8.47/year, and reduces actual SOXL delever stops from 17 to 7.
+- Do not promote SOXL automatically in this research PR. A later strategy PR
+  should add production dynamic-threshold fields to `blend_gate_volatility_*`
+  before changing the live default.
+
 ## 2026-06-04 Current Default Recheck
 
 This recheck was designed to answer whether the current live TQQQ/SOXL profiles

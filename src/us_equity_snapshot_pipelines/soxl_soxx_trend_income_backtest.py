@@ -176,6 +176,12 @@ def _build_soxl_delever_overlay_history(
     fast_window: int | None = None,
     slow_window: int | None = None,
     threshold: float | None,
+    threshold_mode: str = "fixed",
+    threshold_lookback: int | None = None,
+    threshold_percentile: float | None = None,
+    threshold_min_periods: int | None = None,
+    threshold_floor: float | None = None,
+    threshold_cap: float | None = None,
     atr_multiple: float,
 ) -> pd.DataFrame:
     kind = _normalize_overlay_kind(kind)
@@ -208,10 +214,40 @@ def _build_soxl_delever_overlay_history(
         triggered = metric <= effective_threshold
         extra_columns = {}
     elif kind == "volatility":
-        effective_threshold = float(threshold if threshold is not None else 0.45)
-        metric = close.pct_change().rolling(effective_window, min_periods=effective_window).std(ddof=0) * np.sqrt(252)
+        metric = (
+            close.pct_change(fill_method=None).rolling(effective_window, min_periods=effective_window).std()
+            * np.sqrt(252)
+        )
+        fixed_threshold = float(threshold if threshold is not None else 0.45)
+        mode = str(threshold_mode or "fixed").strip().lower()
+        if mode not in {"fixed", "rolling_percentile"}:
+            raise ValueError("unsupported SOXL volatility delever threshold mode")
+        dynamic_threshold = pd.Series(np.nan, index=metric.index, dtype=float)
+        sample_count = pd.Series(0, index=metric.index, dtype=int)
+        lookback = max(1, int(threshold_lookback or 252))
+        min_count = max(1, min(lookback, int(threshold_min_periods or min(126, lookback))))
+        percentile = max(0.0, min(1.0, float(threshold_percentile if threshold_percentile is not None else 0.90)))
+        floor_value = None if threshold_floor is None else float(threshold_floor)
+        cap_value = None if threshold_cap is None else float(threshold_cap)
+        if mode == "rolling_percentile":
+            sample_count = metric.rolling(lookback, min_periods=1).count().astype(int)
+            dynamic_threshold = metric.rolling(lookback, min_periods=min_count).quantile(percentile)
+            if floor_value is not None:
+                dynamic_threshold = dynamic_threshold.clip(lower=floor_value)
+            if cap_value is not None:
+                dynamic_threshold = dynamic_threshold.clip(upper=cap_value)
+        effective_threshold = dynamic_threshold.fillna(fixed_threshold)
         triggered = metric >= effective_threshold
-        extra_columns = {}
+        extra_columns = {
+            "threshold_mode": mode,
+            "dynamic_threshold": dynamic_threshold,
+            "dynamic_sample_count": sample_count,
+            "dynamic_lookback": lookback,
+            "dynamic_percentile": percentile,
+            "dynamic_min_periods": min_count,
+            "dynamic_floor": floor_value,
+            "dynamic_cap": cap_value,
+        }
     elif kind == "momentum":
         effective_threshold = float(threshold if threshold is not None else -0.06)
         metric = close.pct_change(effective_window)
@@ -588,6 +624,12 @@ def run_backtest(
     soxl_delever_overlay_fast_window: int | None = None,
     soxl_delever_overlay_slow_window: int | None = None,
     soxl_delever_overlay_threshold: float | None = None,
+    soxl_delever_overlay_threshold_mode: str = "fixed",
+    soxl_delever_overlay_threshold_lookback: int | None = None,
+    soxl_delever_overlay_threshold_percentile: float | None = None,
+    soxl_delever_overlay_threshold_min_periods: int | None = None,
+    soxl_delever_overlay_threshold_floor: float | None = None,
+    soxl_delever_overlay_threshold_cap: float | None = None,
     soxl_delever_overlay_atr_multiple: float | None = None,
     soxl_delever_overlay_retention_ratio: float = 0.0,
     soxl_delever_overlay_redirect_symbol: str = "BOXX",
@@ -654,6 +696,12 @@ def run_backtest(
             fast_window=overlay_fast_window,
             slow_window=overlay_slow_window,
             threshold=soxl_delever_overlay_threshold,
+            threshold_mode=soxl_delever_overlay_threshold_mode,
+            threshold_lookback=soxl_delever_overlay_threshold_lookback,
+            threshold_percentile=soxl_delever_overlay_threshold_percentile,
+            threshold_min_periods=soxl_delever_overlay_threshold_min_periods,
+            threshold_floor=soxl_delever_overlay_threshold_floor,
+            threshold_cap=soxl_delever_overlay_threshold_cap,
             atr_multiple=overlay_atr_multiple,
         )
         if soxl_delever_enabled
@@ -836,6 +884,30 @@ def run_backtest(
                 if not delever_row.empty
                 else None,
                 "soxl_delever_overlay_threshold": delever_row.get("threshold") if not delever_row.empty else None,
+                "soxl_delever_overlay_threshold_mode": delever_row.get("threshold_mode")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_threshold": delever_row.get("dynamic_threshold")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_sample_count": delever_row.get("dynamic_sample_count")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_lookback": delever_row.get("dynamic_lookback")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_percentile": delever_row.get("dynamic_percentile")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_min_periods": delever_row.get("dynamic_min_periods")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_floor": delever_row.get("dynamic_floor")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_dynamic_cap": delever_row.get("dynamic_cap")
+                if not delever_row.empty
+                else None,
                 "soxl_delever_overlay_atr_multiple": overlay_atr_multiple if overlay_kind == "chandelier" else None,
                 "soxl_delever_overlay_retention_ratio": overlay_retention_ratio,
                 "soxl_delever_overlay_redirect_symbol": overlay_redirect_symbol,
@@ -992,6 +1064,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overlay threshold: negative for drawdown/momentum, annualized ratio for volatility",
     )
     parser.add_argument(
+        "--soxl-delever-threshold-mode",
+        default="fixed",
+        choices=("fixed", "rolling_percentile"),
+        help="Threshold mode for volatility overlays",
+    )
+    parser.add_argument("--soxl-delever-threshold-lookback", type=int, help="Rolling threshold lookback")
+    parser.add_argument(
+        "--soxl-delever-threshold-percentile",
+        type=float,
+        help="Rolling threshold percentile, for example 0.90",
+    )
+    parser.add_argument(
+        "--soxl-delever-threshold-min-periods",
+        type=int,
+        help="Minimum samples required before using a rolling threshold",
+    )
+    parser.add_argument("--soxl-delever-threshold-floor", type=float, help="Lower bound for rolling threshold")
+    parser.add_argument("--soxl-delever-threshold-cap", type=float, help="Upper bound for rolling threshold")
+    parser.add_argument(
         "--soxl-delever-atr-multiple",
         type=float,
         help="ATR multiple when --soxl-delever-overlay=chandelier",
@@ -1059,6 +1150,12 @@ def main(argv: list[str] | None = None) -> int:
         soxl_delever_overlay_fast_window=args.soxl_delever_fast_window,
         soxl_delever_overlay_slow_window=args.soxl_delever_slow_window,
         soxl_delever_overlay_threshold=args.soxl_delever_threshold,
+        soxl_delever_overlay_threshold_mode=args.soxl_delever_threshold_mode,
+        soxl_delever_overlay_threshold_lookback=args.soxl_delever_threshold_lookback,
+        soxl_delever_overlay_threshold_percentile=args.soxl_delever_threshold_percentile,
+        soxl_delever_overlay_threshold_min_periods=args.soxl_delever_threshold_min_periods,
+        soxl_delever_overlay_threshold_floor=args.soxl_delever_threshold_floor,
+        soxl_delever_overlay_threshold_cap=args.soxl_delever_threshold_cap,
         soxl_delever_overlay_atr_multiple=args.soxl_delever_atr_multiple,
         soxl_delever_overlay_retention_ratio=float(args.soxl_delever_retention_ratio),
         soxl_delever_overlay_redirect_symbol=args.soxl_delever_redirect_symbol,
@@ -1101,6 +1198,12 @@ def main(argv: list[str] | None = None) -> int:
             "soxl_delever_fast_window": args.soxl_delever_fast_window,
             "soxl_delever_slow_window": args.soxl_delever_slow_window,
             "soxl_delever_threshold": args.soxl_delever_threshold,
+            "soxl_delever_threshold_mode": args.soxl_delever_threshold_mode,
+            "soxl_delever_threshold_lookback": args.soxl_delever_threshold_lookback,
+            "soxl_delever_threshold_percentile": args.soxl_delever_threshold_percentile,
+            "soxl_delever_threshold_min_periods": args.soxl_delever_threshold_min_periods,
+            "soxl_delever_threshold_floor": args.soxl_delever_threshold_floor,
+            "soxl_delever_threshold_cap": args.soxl_delever_threshold_cap,
             "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
             "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
             "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,
