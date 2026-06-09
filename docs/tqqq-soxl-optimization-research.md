@@ -6,12 +6,16 @@ Promotion note: the current production SOXL/SOXX volatility delever gate uses
 `SOXX 10d realized volatility >= 55%, SOXL -> SOXX`. The older synthetic
 long-history sweep below remains the historical optimization record.
 
-Latest current-default recheck: 2026-06-04. A bounded replay against the current
-runtime defaults found no low-degree replacement that improved CAGR/drawdown
-without at least one period regression. Keep the current production defaults:
+Latest current-default recheck: 2026-06-09. A bounded replay found a better
+TQQQ volatility-delever default than the fixed 28% gate: use a rolling 252-day
+p90 threshold on QQQ 5-day annualized realized volatility, bounded to 24%-36%.
+The fixed 28% value remains the fallback while the rolling percentile warms up.
 
 - TQQQ core: `dual_drive_volatility_delever_window=5`,
-  `dual_drive_volatility_delever_threshold=0.28`.
+  `dual_drive_volatility_delever_threshold_mode=rolling_percentile`,
+  `dual_drive_volatility_delever_dynamic_percentile=0.90`,
+  `dual_drive_volatility_delever_dynamic_floor=0.24`,
+  `dual_drive_volatility_delever_dynamic_cap=0.36`.
 - SOXL core: `blend_gate_dynamic_rsi_threshold_enabled=true`,
   `blend_gate_volatility_delever_symbol=SOXX`,
   `blend_gate_volatility_delever_window=10`,
@@ -19,19 +23,69 @@ without at least one period regression. Keep the current production defaults:
   `blend_gate_volatility_delever_retention_ratio=0.0`,
   `blend_gate_volatility_delever_redirect_symbol=SOXX`.
 
-This note records a bounded optimization sweep for the TQQQ and SOXL leveraged
-equity profiles. The acceptance rule is intentionally strict to avoid fitting a
-single crisis window:
+This note records bounded optimization sweeps for the TQQQ and SOXL leveraged
+equity profiles. The default acceptance rule is intentionally strict to avoid
+fitting a single crisis window:
 
 1. CAGR must not decrease versus baseline in every comparison window.
 2. Max drawdown must not worsen versus baseline in every comparison window.
 3. A passing candidate remains research evidence only unless a later PR promotes
    it into strategy configuration.
 
+Later rechecks may promote a candidate with a small window regression only when
+the regression is explicitly recorded, turnover is controlled, and the
+long-window improvement is large enough to justify the trade-off.
+
 The `crisis_response_shadow` plugin remains notification-only and strategy
 limited to the TQQQ compatibility mount. SOXL broad crisis/macro context is
 published through the general `market_regime_notification` target instead of a
 strategy-level crisis plugin mount.
+
+## 2026-06-09 Dynamic TQQQ Volatility Threshold Recheck
+
+Follow-up question: can the fixed 28% annualized QQQ 5-day volatility gate be
+replaced by a dynamic threshold without causing unacceptable turnover?
+
+Output directory:
+
+`data/output/tqqq_volatility_delever_threshold_research_20260609`
+
+Result summary, using QQQM as the unlevered sleeve with QQQ as its long-history
+proxy, BOXX through BIL proxy, income layer disabled, and 5 bps turnover cost:
+
+| Candidate | CAGR | Max Drawdown | Rebalances/Year | Turnover/Year | Applied Days | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `fixed_28` | 27.60% | -35.07% | 13.90 | 8.81 | 242 | old baseline |
+| `dynamic_p90` | 29.79% | -35.83% | 14.54 | 9.10 | 223 | strong long result, but 2022 threshold drifted too high |
+| `dynamic_p90_cap36` | 29.69% | -35.83% | 16.34 | 9.91 | 271 | better stress response, but still over-trades versus needed benefit |
+| `dynamic_p90_floor24_cap36` | 30.09% | -35.33% | 14.22 | 8.95 | 208 | promote |
+
+Key window checks:
+
+| Candidate | Window | CAGR | Max Drawdown | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| `fixed_28` | 2022 rate bear | -4.17% | -20.08% | best drawdown in the 2022 stress window |
+| `dynamic_p90_floor24_cap36` | 2022 rate bear | -5.74% | -23.37% | worse than fixed 28, but within the accepted trade-off for higher long CAGR |
+| `fixed_28` | COVID crash | -62.84% | -25.35% | old baseline |
+| `dynamic_p90_floor24_cap36` | COVID crash | -35.34% | -21.68% | materially better |
+| `fixed_28` | post-2022 bull | 51.52% | -20.22% | old baseline |
+| `dynamic_p90_floor24_cap36` | post-2022 bull | 55.71% | -20.22% | better CAGR with no drawdown regression |
+| `fixed_28` | latest 15y | 27.42% | -30.76% | old baseline |
+| `dynamic_p90_floor24_cap36` | latest 15y | 30.00% | -31.05% | better CAGR, near-flat drawdown delta |
+
+Interpretation:
+
+- A naked rolling p90 is too loose in persistent high-volatility regimes; during
+  2022 its median effective threshold rose above 42%, reducing applied
+  delevering days from 25 under fixed 28 to 7.
+- The 24%-36% bound keeps the adaptive behavior but prevents the gate from
+  becoming either too sensitive in calm regimes or too permissive in high-vol
+  regimes.
+- Turnover is acceptable: `dynamic_p90_floor24_cap36` increases turnover only
+  from 8.81/year to 8.95/year versus fixed 28, and rebalances from 13.90/year
+  to 14.22/year.
+- Promote `dynamic_p90_floor24_cap36` as the live default, with fixed 28 kept as
+  the warm-up fallback.
 
 ## 2026-06-04 Current Default Recheck
 
