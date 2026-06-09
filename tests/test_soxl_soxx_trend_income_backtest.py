@@ -235,6 +235,41 @@ def test_soxl_soxx_volatility_delever_research_overlay_keeps_partial_soxl() -> N
     assert triggered["soxl_delever_overlay_retention_ratio"].eq(0.50).all()
 
 
+def test_soxl_soxx_dynamic_volatility_delever_research_overlay_records_thresholds() -> None:
+    result = run_backtest(
+        _build_high_volatility_soxx_prices(),
+        initial_equity=100_000.0,
+        start_date="2023-10-02",
+        end_date="2024-03-29",
+        turnover_cost_bps=5.0,
+        soxl_delever_overlay_kind="volatility",
+        soxl_delever_overlay_symbol="SOXX",
+        soxl_delever_overlay_window=10,
+        soxl_delever_overlay_threshold=0.55,
+        soxl_delever_overlay_threshold_mode="rolling_percentile",
+        soxl_delever_overlay_threshold_lookback=60,
+        soxl_delever_overlay_threshold_percentile=0.90,
+        soxl_delever_overlay_threshold_min_periods=20,
+        soxl_delever_overlay_threshold_floor=0.20,
+        soxl_delever_overlay_threshold_cap=0.50,
+        soxl_delever_overlay_retention_ratio=0.0,
+        soxl_delever_overlay_redirect_symbol="SOXX",
+    )
+
+    signal_history = result["signal_history"]
+    triggered = signal_history.loc[signal_history["soxl_delever_overlay_triggered"].astype(bool)]
+
+    assert result["summary"]["SOXL Delever Stops"] >= 1
+    assert not triggered.empty
+    assert triggered["soxl_delever_overlay_threshold_mode"].eq("rolling_percentile").all()
+    assert triggered["soxl_delever_overlay_dynamic_threshold"].notna().all()
+    assert triggered["soxl_delever_overlay_dynamic_sample_count"].ge(20).all()
+    assert triggered["soxl_delever_overlay_threshold"].le(0.50).all()
+    assert (
+        triggered["soxl_delever_overlay_metric"] >= triggered["soxl_delever_overlay_threshold"]
+    ).all()
+
+
 def test_soxl_soxx_dual_ma_research_overlay_keeps_partial_soxl() -> None:
     result = run_backtest(
         _build_dual_ma_research_prices(),
