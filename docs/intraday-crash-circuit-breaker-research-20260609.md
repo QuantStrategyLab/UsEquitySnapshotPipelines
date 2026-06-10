@@ -364,3 +364,56 @@ The remaining validation strengthens the practical recommendation:
 - SOXL: fixed `-8%` hourly-close exit remains the best candidate. It survives data cleanup, threshold sweep, and normal cost assumptions.
 - SOXL execution: if implemented, pair the `-8%` hourly rule with first-15-minute execution monitoring. Late-day execution materially weakens the result.
 - Avoid the two-step half/full rule for production. It adds complexity and event count without enough drawdown improvement.
+
+## Extended-Hours Check
+
+An additional pass tested the same hourly rules against an IBKR extended-hours 1-hour file:
+
+- `data/output/ibkr_hourly_ext_15y_20260610/ibkr_15y_1h_ext_combined_for_research_et.csv`
+- `data/output/ibkr_intraday_scheme_ext_hourly_research_20260610/summary.csv`
+- `data/output/ibkr_intraday_scheme_ext_hourly_research_20260610/window_scorecard.csv`
+
+The extended-hours file should not be treated as equal quality to the regular-hours v2 file. Its symbol coverage is uneven: `SOXL` and `SOXX` run from 2011 to 2026, `QQQ` and `QQQM` mainly cover 2021 to 2026 in the default combined file, and `TQQQ` mainly covers 2011 to 2021. That makes the extended-hours pass useful as a stress check, not as a promotion dataset.
+
+Key full-period deltas from the extended-hours pass:
+
+| Profile | Variant | Events | CAGR Delta | MaxDD Delta | Read |
+| --- | --- | ---: | ---: | ---: | --- |
+| TQQQ core | hourly fixed -5% exit | 61 | +2.33 pp | +4.17 pp | positive, but coverage is not production-grade |
+| TQQQ core | hourly dynamic 1.5x, 5%-9%, same-day re-entry | 61 | +2.29 pp | +4.17 pp | positive, but coverage is not production-grade |
+| TQQQ core | hourly fixed -8% exit | 9 | -0.11 pp | -1.50 pp | weak |
+| SOXL core | hourly fixed -5% exit | 319 | -31.91 pp | -7.33 pp | reject |
+| SOXL core | hourly fixed -8% exit | 109 | -10.47 pp | -2.97 pp | reject for extended-hours execution |
+| SOXL core | hourly dynamic 1.5x, 5%-9%, same-day re-entry | 216 | -17.66 pp | -3.71 pp | reject |
+
+The window scorecard also turns negative for SOXL fixed `-8%` on the extended-hours file: trailing windows had `0%` CAGR win rate and `0%` max-drawdown win rate. This directly contradicts the regular-hours result, where SOXL fixed `-8%` was robust across full, regime, and trailing windows.
+
+The practical read is:
+
+- Do not include pre-market, post-market, or overnight hourly bars in the live SOXL risk trigger yet.
+- Keep the SOXL candidate defined on regular trading hours hourly closes.
+- Treat extended-hours bars as a monitoring/alert input only until a cleaner full-coverage dataset and a separate execution model exist.
+- Do not use extended-hours results to promote TQQQ, because the data coverage is not balanced enough to override the regular-hours rejection.
+
+## Final Daily/Hourly Read
+
+For the daily layer, keep the dynamic volatility gates already promoted in the daily research:
+
+- TQQQ: dynamic QQQ 5-day annualized-volatility gate, rolling `p90`, 252-day lookback, bounded `24%-36%`.
+- SOXL: dynamic SOXX 10-day annualized-volatility gate, rolling `p95`, 252-day lookback, bounded `50%-75%`.
+
+For the hourly layer:
+
+- TQQQ: keep hourly risk control in shadow/research only. The best regular-hours hourly-only rule improved the full-period result, but execution-aware validation turned it negative.
+- SOXL: regular-hours `hourly_fixed_8_exit` is the only candidate that deserves further validation, but it should not be enabled as a default production rule from this backtest alone. If added to code, keep it behind a disabled-by-default feature flag or shadow signal until forward monitoring confirms the behavior.
+- 15-minute bars are useful for execution monitoring. The research supports avoiding late-day execution by default; for SOXL, first-15-minute execution paired with the regular-hours `-8%` hourly rule is the strongest candidate, but it is still an approximation rather than a full fill simulator.
+
+The go/no-go standard for promoting the SOXL hourly rule should be stricter than "best backtest":
+
+- The rule must remain positive across a threshold plateau, not only at one exact parameter. In the v2 threshold sweep, SOXL `-8%` and `-9%` both improved CAGR and max drawdown, while `-5%` and `-6%` did not pass the drawdown test.
+- It must work across multiple window types. SOXL `-8%` passed the full window and most regime/trailing windows, but it still had losing calendar years.
+- It must survive normal cost assumptions. SOXL `-8%` remained positive at 20 bps one-way cost, but faded by 50 bps.
+- It must not depend on extended-hours triggers. The extended-hours pass rejected the same rule for SOXL, so production validation must stay limited to regular-hours hourly closes.
+- It needs forward shadow evidence before default enablement. Without live shadow records for real quotes, order timing, and slippage, this is a research candidate rather than a quant policy.
+
+Therefore, if the choice is binary between "add as live rule now" and "do not add", the recommendation is: do not add it as a live default now. Add only as a disabled/shadow observable if we want to collect forward evidence.
