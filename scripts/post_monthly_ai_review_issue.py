@@ -13,9 +13,17 @@ from typing import Any
 
 DEFAULT_API_URL = "https://api.github.com"
 DEFAULT_LABEL = "monthly-review"
+DEFAULT_TIMEOUT_SECONDS = 30
 
 
-def github_request(method: str, url: str, token: str, payload: dict[str, Any] | None = None) -> Any:
+def github_request(
+    method: str,
+    url: str,
+    token: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> Any:
     data = None
     headers = {
         "Accept": "application/vnd.github+json",
@@ -27,7 +35,7 @@ def github_request(method: str, url: str, token: str, payload: dict[str, Any] | 
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset("utf-8")
         raw = response.read().decode(charset)
         return json.loads(raw) if raw else None
