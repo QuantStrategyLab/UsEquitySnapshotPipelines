@@ -11,6 +11,7 @@ jobs:
   ci-feedback:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && startsWith(github.event.workflow_run.head_branch, 'codex/monthly-review-issue-')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       issues: write
       pull-requests: read
@@ -114,6 +115,7 @@ jobs:
   review-feedback:
     if: github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' && startsWith(github.event.pull_request.head.ref, 'codex/monthly-review-issue-')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       issues: write
 

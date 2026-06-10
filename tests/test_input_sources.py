@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from us_equity_snapshot_pipelines.input_sources import resolve_input_source, resolve_input_sources, source_needs_gcloud
+from us_equity_snapshot_pipelines.input_sources import (
+    DEFAULT_REMOTE_COPY_TIMEOUT_SECONDS,
+    _default_http_copy,
+    resolve_input_source,
+    resolve_input_sources,
+    source_needs_gcloud,
+)
 
 
 def test_resolves_local_input_without_copying(tmp_path) -> None:
@@ -59,3 +65,42 @@ def test_source_needs_gcloud_only_for_gcs() -> None:
     assert source_needs_gcloud("gs://bucket/path.csv") is True
     assert source_needs_gcloud("https://example.com/path.csv") is False
     assert source_needs_gcloud("data/prices.csv") is False
+
+
+def test_resolve_input_source_rejects_secret_like_remote_uri(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must not contain token"):
+        resolve_input_source(
+            "https://example.com/prices.csv?token=abc",
+            output_dir=tmp_path / "resolved",
+            stem="prices",
+        )
+
+
+def test_default_http_copy_uses_timeout_and_streams_response(monkeypatch, tmp_path) -> None:
+    calls: list[tuple[str, float]] = []
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self._payload = b"symbol,close\nQQQ,100\n"
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            payload, self._payload = self._payload, b""
+            return payload
+
+    def fake_urlopen(request, *, timeout: float):
+        calls.append((request.full_url, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("us_equity_snapshot_pipelines.input_sources.urlopen", fake_urlopen)
+    target = tmp_path / "prices.csv"
+
+    _default_http_copy("https://example.com/prices.csv", target)
+
+    assert target.read_text(encoding="utf-8") == "symbol,close\nQQQ,100\n"
+    assert calls == [("https://example.com/prices.csv", DEFAULT_REMOTE_COPY_TIMEOUT_SECONDS)]

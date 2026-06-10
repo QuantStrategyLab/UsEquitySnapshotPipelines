@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import shlex
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlretrieve
+from urllib.request import Request, urlopen
 
 SUPPORTED_TABLE_SUFFIXES = frozenset({".csv", ".json", ".jsonl", ".parquet"})
 SUPPORTED_CONFIG_SUFFIXES = frozenset({".json"})
+DEFAULT_REMOTE_COPY_TIMEOUT_SECONDS = 60
+SENSITIVE_REMOTE_SOURCE_QUERY_MARKERS = (
+    "access_token=",
+    "api_key=",
+    "auth=",
+    "jwt=",
+    "password=",
+    "secret=",
+    "signature=",
+    "token=",
+    "x-amz-signature=",
+    "x-goog-signature=",
+)
 
 CopyFn = Callable[[str, Path], None]
 
@@ -37,12 +51,23 @@ def source_needs_gcloud(source: str | None) -> bool:
     return is_gcs_uri(str(source or ""))
 
 
+def _reject_sensitive_remote_source(source: str) -> None:
+    normalized = str(source or "").strip().lower()
+    if not (is_gcs_uri(normalized) or is_http_uri(normalized)):
+        return
+    for marker in SENSITIVE_REMOTE_SOURCE_QUERY_MARKERS:
+        if marker in normalized:
+            raise ValueError("remote input URI must not contain token/password/signature-like query parameters")
+
+
 def _default_gcs_copy(source: str, target: Path) -> None:
     subprocess.run(["gcloud", "storage", "cp", source, str(target)], check=True)
 
 
 def _default_http_copy(source: str, target: Path) -> None:
-    urlretrieve(source, target)  # noqa: S310 - operator-supplied data source URL.
+    request = Request(source, headers={"User-Agent": "us-equity-snapshot-pipelines"})
+    with urlopen(request, timeout=DEFAULT_REMOTE_COPY_TIMEOUT_SECONDS) as response, target.open("wb") as output:  # noqa: S310 - operator-supplied data source URL.
+        shutil.copyfileobj(response, output)
 
 
 def _source_suffix(source: str, *, allowed_suffixes: frozenset[str], default_suffix: str) -> str:
@@ -68,6 +93,8 @@ def resolve_input_source(
 
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
+
+    _reject_sensitive_remote_source(source_text)
 
     if is_gcs_uri(source_text):
         target = output_root / f"{stem}{_source_suffix(source_text, allowed_suffixes=allowed_suffixes, default_suffix=default_suffix)}"
