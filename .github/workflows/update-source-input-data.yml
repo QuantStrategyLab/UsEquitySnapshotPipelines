@@ -14,7 +14,7 @@ on:
       output_prefix:
         description: GCS prefix for refreshed source inputs.
         required: false
-        default: gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias
+        default: gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias
         type: string
       universe_start:
         description: Earliest iShares monthly universe snapshot request date.
@@ -76,7 +76,7 @@ jobs:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
-      OUTPUT_PREFIX: ${{ inputs.output_prefix || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias' }}
+      OUTPUT_PREFIX: ${{ inputs.output_prefix || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias' }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       UNIVERSE_START: ${{ inputs.universe_start || '2018-01-01' }}
       UNIVERSE_END: ${{ inputs.universe_end }}
@@ -88,8 +88,8 @@ jobs:
       SAFE_HAVEN: ${{ inputs.safe_haven || 'BOXX' }}
       EXTRA_SYMBOLS: ${{ inputs.extra_symbols || 'QQQ,SPY,BOXX' }}
       CHUNK_SIZE: ${{ inputs.chunk_size || '100' }}
-      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
-      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
+      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
+      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
 
     steps:
       - name: Checkout

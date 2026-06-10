@@ -36,8 +36,8 @@ jobs:
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
-      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
-      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
+      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
+      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
 
     steps:
       - name: Checkout
