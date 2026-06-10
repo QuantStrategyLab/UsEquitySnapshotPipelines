@@ -74,8 +74,8 @@ jobs:
       PRICE_END: ${{ inputs.price_end }}
       INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}
       INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}
-      MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control' }}
-      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/market_regime_notification/plugins/market_regime_control' }}
+      MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control' }}
+      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/market_regime_notification/plugins/market_regime_control' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_TARGET_TYPE: ${{ matrix.target_type }}
@@ -379,7 +379,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       INPUT_TQQQ_GCS_PREFIX: ${{ inputs.gcs_prefix }}
-      TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
+      TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_NAME: crisis_response_shadow
@@ -583,7 +583,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       INPUT_TACO_GCS_PREFIX: ${{ inputs.taco_gcs_prefix }}
-      TACO_GCS_PREFIX: ${{ vars.TACO_REBOUND_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/tqqq_growth_income/plugins/taco_rebound_shadow' }}
+      TACO_GCS_PREFIX: ${{ vars.TACO_REBOUND_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/taco_rebound_shadow' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: tqqq_growth_income
       PLUGIN_NAME: taco_rebound_shadow

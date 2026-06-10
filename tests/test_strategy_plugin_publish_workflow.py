@@ -28,11 +28,11 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert 'notification_target = "${PLUGIN_NOTIFICATION_TARGET}"' in workflow
     assert "--notification-targets" in workflow
     assert (
-        "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
         "tqqq_growth_income/plugins/market_regime_control"
     ) in workflow
     assert (
-        "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
         "market_regime_notification/plugins/market_regime_control"
     ) in workflow
     assert "soxl_soxx_trend_income/plugins/market_regime_control" not in workflow
@@ -62,7 +62,7 @@ def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
     assert "PLUGIN_NAME: crisis_response_shadow" in workflow
     assert "PLUGIN_NAME: taco_rebound_shadow" in workflow
     assert (
-        "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
         "tqqq_growth_income/plugins/crisis_response_shadow"
     ) in workflow
     assert "INPUT_SOXL_GCS_PREFIX" not in workflow
