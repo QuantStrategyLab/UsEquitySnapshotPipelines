@@ -2,15 +2,18 @@
 
 Research date: 2026-05-10
 
-Promotion note: the current production SOXL/SOXX volatility delever gate uses a
-rolling 252-day p95 threshold on SOXX 10-day annualized realized volatility,
-bounded to 50%-75%, with fixed 55% kept as the warm-up fallback. The older
-synthetic long-history sweep below remains the historical optimization record.
+Promotion note: the current production SOXL/SOXX volatility delever gate is
+dynamic. It uses a rolling 252-day p95 threshold on SOXX 10-day annualized
+realized volatility, bounded to 50%-75%. The legacy fixed-threshold field is
+retained only as the warm-up fallback before enough rolling samples exist. The
+older synthetic long-history sweep below remains the historical optimization
+record.
 
 Latest current-default recheck: 2026-06-09. A bounded replay found a better
-TQQQ volatility-delever default than the fixed 28% gate: use a rolling 252-day
-p90 threshold on QQQ 5-day annualized realized volatility, bounded to 24%-36%.
-The fixed 28% value remains the fallback while the rolling percentile warms up.
+TQQQ volatility-delever default than the prior fixed gate: use a rolling
+252-day p90 threshold on QQQ 5-day annualized realized volatility, bounded to
+24%-36%. The legacy fixed-threshold field remains the fallback while the
+rolling percentile warms up.
 
 - TQQQ core: `dual_drive_volatility_delever_window=5`,
   `dual_drive_volatility_delever_threshold_mode=rolling_percentile`,
@@ -20,13 +23,17 @@ The fixed 28% value remains the fallback while the rolling percentile warms up.
 - SOXL core: `blend_gate_dynamic_rsi_threshold_enabled=true`,
   `blend_gate_volatility_delever_symbol=SOXX`,
   `blend_gate_volatility_delever_window=10`,
-  `blend_gate_volatility_delever_threshold=0.55`,
   `blend_gate_volatility_delever_threshold_mode=rolling_percentile`,
   `blend_gate_volatility_delever_dynamic_percentile=0.95`,
   `blend_gate_volatility_delever_dynamic_floor=0.50`,
   `blend_gate_volatility_delever_dynamic_cap=0.75`,
   `blend_gate_volatility_delever_retention_ratio=0.0`,
   `blend_gate_volatility_delever_redirect_symbol=SOXX`.
+
+Fallback-only fields retained for compatibility and early warm-up:
+`dual_drive_volatility_delever_threshold=0.28` and
+`blend_gate_volatility_delever_threshold=0.55`. They are not the normal live
+trigger once `threshold_mode=rolling_percentile` has enough history.
 
 This note records bounded optimization sweeps for the TQQQ and SOXL leveraged
 equity profiles. The default acceptance rule is intentionally strict to avoid
@@ -89,8 +96,8 @@ Interpretation:
 - Turnover is acceptable: `dynamic_p90_floor24_cap36` increases turnover only
   from 8.81/year to 8.95/year versus fixed 28, and rebalances from 13.90/year
   to 14.22/year.
-- Promote `dynamic_p90_floor24_cap36` as the live default, with fixed 28 kept as
-  the warm-up fallback.
+- Promote `dynamic_p90_floor24_cap36` as the live default. The legacy fixed
+  threshold field is kept only as the warm-up fallback.
 
 ## 2026-06-09 Dynamic SOXL Volatility Threshold Recheck
 
@@ -146,8 +153,8 @@ Interpretation:
   from 72.15% to 77.12%, leaves max drawdown unchanged, reduces turnover from
   8.76/year to 8.47/year, and reduces actual SOXL delever stops from 17 to 7.
 - Promoted in the follow-up live PR by adding production dynamic-threshold
-  fields to `blend_gate_volatility_delever_*` and keeping fixed 55% as the
-  fallback.
+  fields to `blend_gate_volatility_delever_*`. The legacy fixed-threshold
+  field is kept only as the warm-up fallback.
 
 ## 2026-06-04 Current Default Recheck
 
