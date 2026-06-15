@@ -19,19 +19,21 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "scripts/run_monthly_report_bundle.py" in workflow
     assert "scripts/post_monthly_ai_review_issue.py" in workflow
     assert "monthly-review" in workflow
-    assert "SELFHOSTED_CODEX_REVIEW_ENABLED" in workflow
+    assert "CODEX_AUDIT_ENABLED" in workflow
+    assert "CODEX_AUDIT_BRIDGE_REF" in workflow
+    assert '"ref": os.environ["CODEX_AUDIT_BRIDGE_REF"]' in workflow
     assert "CodexAuditBridge" in workflow
     assert "monthly-snapshot-review-${{ github.ref_name }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "CODEX_AUDIT_DISPATCH_TOKEN" in workflow
     assert "permission-actions: write" in workflow
-    assert "SELFHOSTED_CODEX_REVIEW_PROVIDER" in workflow
-    assert "SELFHOSTED_CODEX_REVIEW_PROVIDER || 'auto'" in workflow
+    assert "CODEX_AUDIT_PROVIDER" in workflow
+    assert "CODEX_AUDIT_PROVIDER || 'auto'" in workflow
     assert '"provider": provider' in workflow
     assert '"anthropic"' in workflow
     assert '"api"' in workflow
-    assert "selfhosted_monthly_review.yml" in workflow
-    assert "actions/workflows/selfhosted_monthly_review.yml/dispatches" in workflow
+    assert "codex_audit.yml" in workflow
+    assert "actions/workflows/codex_audit.yml/dispatches" in workflow
     assert "LEGACY_AI_REVIEW_ENABLED" not in workflow
     assert "actions/workflows/ai_review.yml/dispatches" not in workflow
     assert "/repos/{target_repository}/dispatches" not in workflow

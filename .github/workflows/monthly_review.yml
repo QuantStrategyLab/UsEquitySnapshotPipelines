@@ -35,11 +35,12 @@ jobs:
     env:
       REVIEW_LABEL: monthly-review
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      SELFHOSTED_CODEX_REVIEW_ENABLED: ${{ vars.SELFHOSTED_CODEX_REVIEW_ENABLED || 'true' }}
-      SELFHOSTED_CODEX_REVIEW_REPOSITORY: ${{ vars.SELFHOSTED_CODEX_REVIEW_REPOSITORY || 'QuantStrategyLab/CodexAuditBridge' }}
-      SELFHOSTED_CODEX_REVIEW_MODE: ${{ vars.SELFHOSTED_CODEX_REVIEW_MODE || 'review_and_fix' }}
-      SELFHOSTED_CODEX_REVIEW_PROVIDER: ${{ vars.SELFHOSTED_CODEX_REVIEW_PROVIDER || 'auto' }}
-      SELFHOSTED_CODEX_REVIEW_AUTO_MERGE: ${{ vars.SELFHOSTED_CODEX_REVIEW_AUTO_MERGE || 'false' }}
+      CODEX_AUDIT_ENABLED: ${{ vars.CODEX_AUDIT_ENABLED || 'true' }}
+      CODEX_AUDIT_BRIDGE_REPOSITORY: ${{ vars.CODEX_AUDIT_BRIDGE_REPOSITORY || 'QuantStrategyLab/CodexAuditBridge' }}
+      CODEX_AUDIT_BRIDGE_REF: ${{ vars.CODEX_AUDIT_BRIDGE_REF || 'main' }}
+      CODEX_AUDIT_MODE: ${{ vars.CODEX_AUDIT_MODE || 'review_and_fix' }}
+      CODEX_AUDIT_PROVIDER: ${{ vars.CODEX_AUDIT_PROVIDER || 'auto' }}
+      CODEX_AUDIT_AUTO_MERGE: ${{ vars.CODEX_AUDIT_AUTO_MERGE || 'false' }}
 
     steps:
       - name: Checkout
@@ -102,9 +103,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Detect Self-hosted Review GitHub App Credentials
+      - name: Detect Codex Audit GitHub App Credentials
         id: codex_review_app_credentials
-        if: success() && env.SELFHOSTED_CODEX_REVIEW_ENABLED != 'false'
+        if: success() && env.CODEX_AUDIT_ENABLED != 'false'
         env:
           APP_ID: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
@@ -116,7 +117,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub App Token For Self-hosted Review
+      - name: Create GitHub App Token For Codex Audit
         id: codex_review_app_token
         if: steps.codex_review_app_credentials.outputs.available == 'true'
         continue-on-error: true
@@ -137,11 +138,11 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           ISSUE_NUMBER: ${{ steps.review_issue.outputs.issue_number }}
-          TARGET_REPOSITORY: ${{ env.SELFHOSTED_CODEX_REVIEW_REPOSITORY }}
-          REVIEW_MODE: ${{ env.SELFHOSTED_CODEX_REVIEW_MODE }}
-          REVIEW_PROVIDER: ${{ env.SELFHOSTED_CODEX_REVIEW_PROVIDER }}
-          AUTO_MERGE: ${{ env.SELFHOSTED_CODEX_REVIEW_AUTO_MERGE }}
-          CODEX_REVIEW_ENABLED: ${{ env.SELFHOSTED_CODEX_REVIEW_ENABLED }}
+          TARGET_REPOSITORY: ${{ env.CODEX_AUDIT_BRIDGE_REPOSITORY }}
+          REVIEW_MODE: ${{ env.CODEX_AUDIT_MODE }}
+          REVIEW_PROVIDER: ${{ env.CODEX_AUDIT_PROVIDER }}
+          AUTO_MERGE: ${{ env.CODEX_AUDIT_AUTO_MERGE }}
+          CODEX_AUDIT_ENABLED_RUNTIME: ${{ env.CODEX_AUDIT_ENABLED }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -174,19 +175,19 @@ jobs:
               token = os.environ.get("APP_TOKEN", "").strip() or os.environ.get("CODEX_AUDIT_DISPATCH_TOKEN", "").strip()
               if not token:
                   raise RuntimeError(
-                      "Codex review workflow dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN"
+                      "Codex audit workflow dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN"
                   )
               target_repository = os.environ["TARGET_REPOSITORY"].strip()
               if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target_repository):
-                  raise RuntimeError(f"Invalid Codex review repository: {target_repository!r}")
+                  raise RuntimeError(f"Invalid Codex audit repository: {target_repository!r}")
               mode = os.environ["REVIEW_MODE"].strip() or "review_and_fix"
               if mode not in {"review_only", "review_and_fix"}:
-                  raise RuntimeError(f"Unsupported Codex review mode: {mode}")
+                  raise RuntimeError(f"Unsupported Codex audit mode: {mode}")
               provider = os.environ["REVIEW_PROVIDER"].strip() or "codex"
               if provider not in {"api", "anthropic", "codex", "openai", "auto"}:
-                  raise RuntimeError(f"Unsupported Codex review provider: {provider}")
+                  raise RuntimeError(f"Unsupported Codex audit provider: {provider}")
               payload = {
-                  "ref": "main",
+                  "ref": os.environ["CODEX_AUDIT_BRIDGE_REF"],
                   "inputs": {
                       "source_repo": os.environ["GITHUB_REPOSITORY"],
                       "source_ref": os.environ["GITHUB_REF_NAME"],
@@ -198,7 +199,7 @@ jobs:
               }
               status = dispatch(
                   token,
-                  f"https://api.github.com/repos/{target_repository}/actions/workflows/selfhosted_monthly_review.yml/dispatches",
+                  f"https://api.github.com/repos/{target_repository}/actions/workflows/codex_audit.yml/dispatches",
                   payload,
               )
               if status not in (201, 204):
@@ -208,11 +209,11 @@ jobs:
                   f"to {target_repository}"
               )
 
-          if enabled("CODEX_REVIEW_ENABLED"):
+          if enabled("CODEX_AUDIT_ENABLED_RUNTIME"):
               dispatch_codex()
               raise SystemExit(0)
 
-          raise RuntimeError("Monthly review bridge dispatch is disabled by SELFHOSTED_CODEX_REVIEW_ENABLED=false")
+          raise RuntimeError("Codex audit bridge dispatch is disabled by CODEX_AUDIT_ENABLED=false")
           PY
 
       - name: Upload monthly review bundle

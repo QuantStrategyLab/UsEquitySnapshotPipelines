@@ -115,16 +115,16 @@ data/output/monthly_report_bundle/ai_review_input.md
 data/output/monthly_report_bundle/job_summary.md
 ```
 
-The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/CodexAuditBridge`, which runs Codex on the self-hosted VPS runner and posts the audit result back to the issue. The review focuses on:
+The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/CodexAuditBridge`, which calls the Quant HTTPS/443 service-backed Codex path and posts the audit result back to the issue. The review focuses on:
 
 - artifact completeness for each expected snapshot profile
 - contract version, snapshot date, row count, and ranking-preview health
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
 
-The monthly review workflow dispatches `CodexAuditBridge`; the bridge owns provider selection through `SELFHOSTED_CODEX_REVIEW_PROVIDER`. `auto` is the default and runs the self-hosted Codex path first, falls back to the configured API reviewers when Codex setup or execution fails, and fails loudly when no API fallback key is configured. `codex` disables API fallback; `api` posts a combined API review; `openai` and `anthropic` post a single-provider API review only.
+The monthly review workflow dispatches `CodexAuditBridge`; the bridge owns provider selection through `CODEX_AUDIT_PROVIDER`. `auto` is the default and calls the service-backed Codex path first, falls back to the configured API reviewers when Codex service execution fails, and fails loudly when no API fallback key is configured. Set `CODEX_AUDIT_BRIDGE_REF` to pin the bridge workflow ref; the default is `main`. `codex` uses only the service-backed Codex path and disables API fallback; `api` posts a combined API review; `openai` and `anthropic` post a single-provider API review only.
 
-Direct bridge PRs are not auto-merged by default. Set `SELFHOSTED_CODEX_REVIEW_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
+Direct bridge PRs are not auto-merged by default. Set `CODEX_AUDIT_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
 
 If CI fails on a Codex remediation PR, or a reviewer requests changes, `Codex PR Feedback` comments the failure or review summary back to the source `codex-bridge` issue. That issue update lets the VPS bridge dispatch Codex again to fix the same PR branch. The workflow permits up to three automatic feedback rounds, then removes `codex-bridge` and leaves the issue for human review.
 
