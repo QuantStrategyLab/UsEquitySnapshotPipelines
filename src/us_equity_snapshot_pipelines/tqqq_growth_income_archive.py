@@ -311,6 +311,24 @@ def run_backtest(
             "dual_drive_volatility_delever_trigger_reason": plan.get(
                 "dual_drive_volatility_delever_trigger_reason"
             ),
+            "dual_drive_volatility_delever_retention_mode": plan.get(
+                "dual_drive_volatility_delever_retention_mode"
+            ),
+            "dual_drive_volatility_delever_retention_policy": plan.get(
+                "dual_drive_volatility_delever_retention_policy"
+            ),
+            "dual_drive_volatility_delever_retention_ratio": plan.get(
+                "dual_drive_volatility_delever_retention_ratio"
+            ),
+            "dual_drive_volatility_delever_retention_source": plan.get(
+                "dual_drive_volatility_delever_retention_source"
+            ),
+            "dual_drive_volatility_delever_retention_context_found": plan.get(
+                "dual_drive_volatility_delever_retention_context_found"
+            ),
+            "dual_drive_volatility_delever_retention_reason_codes": plan.get(
+                "dual_drive_volatility_delever_retention_reason_codes"
+            ),
             "threshold": plan["threshold"],
             "total_equity": current_equity,
         }

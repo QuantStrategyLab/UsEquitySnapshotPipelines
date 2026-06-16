@@ -36,6 +36,10 @@ on:
         description: Optional SOXL market regime notification GCS prefix override.
         required: false
         type: string
+      market_regime_soxl_strategy_gcs_prefix:
+        description: Optional SOXL market regime strategy GCS prefix override.
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -67,6 +71,15 @@ jobs:
             event_set: full
             start_date: '2010-01-01'
             taco_enabled: 'false'
+          - strategy_profile: soxl_soxx_trend_income
+            target_type: strategy
+            notification_target: ''
+            output_scope: soxl_soxx_trend_income
+            benchmark_symbol: SOXX
+            attack_symbol: SOXL
+            event_set: full
+            start_date: '2010-01-01'
+            taco_enabled: 'false'
     permissions:
       contents: read
       id-token: write
@@ -79,8 +92,10 @@ jobs:
       PRICE_END: ${{ inputs.price_end }}
       INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}
       INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}
+      INPUT_MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: ${{ inputs.market_regime_soxl_strategy_gcs_prefix }}
       MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control' }}
       MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/market_regime_notification/plugins/market_regime_control' }}
+      MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_STRATEGY_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/market_regime_control' }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_TARGET_TYPE: ${{ matrix.target_type }}
@@ -113,7 +128,9 @@ jobs:
       - name: Resolve publish target
         run: |
           set -euo pipefail
-          if [ "${STRATEGY_PROFILE}" = "soxl_soxx_trend_income" ]; then
+          if [ "${STRATEGY_PROFILE}" = "soxl_soxx_trend_income" ] && [ "${PLUGIN_TARGET_TYPE}" = "strategy" ]; then
+            gcs_prefix="${INPUT_MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX:-${MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX}}"
+          elif [ "${STRATEGY_PROFILE}" = "soxl_soxx_trend_income" ]; then
             gcs_prefix="${INPUT_MARKET_REGIME_SOXL_GCS_PREFIX:-${MARKET_REGIME_SOXL_GCS_PREFIX}}"
           else
             gcs_prefix="${INPUT_MARKET_REGIME_GCS_PREFIX:-${MARKET_REGIME_TQQQ_GCS_PREFIX}}"
@@ -336,7 +353,7 @@ jobs:
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: strategy-plugin-market-regime-control-${{ matrix.strategy_profile }}-${{ github.run_id }}
+          name: strategy-plugin-market-regime-control-${{ matrix.output_scope }}-${{ github.run_id }}
           path: |
             ${{ env.PRICE_INPUT_DIR }}
             ${{ env.PLUGIN_OUTPUT_DIR }}
