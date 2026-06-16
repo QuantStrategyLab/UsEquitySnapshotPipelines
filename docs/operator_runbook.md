@@ -72,6 +72,10 @@ Optional inputs:
 - `portfolio_total_equity`
 - `min_adv20_usd` for Russell / mega-cap testing overrides
 
+For the strategy-plugin publish workflow, manual GCS prefix overrides are only
+accepted when `execute_publish=true` if they remain under
+`gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`.
+
 The workflow always uploads generated files as a GitHub Actions artifact.
 
 ## Scheduled Publish

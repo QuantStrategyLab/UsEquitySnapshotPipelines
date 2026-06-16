@@ -4,7 +4,7 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
-MARKET_REGIME_PLUGIN_REF = "v0.1.6"
+MARKET_REGIME_PLUGIN_REF = "4c186d586238cc3d46b23d0e2a668af1ad44d9a3"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -57,6 +57,9 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "position_control" in workflow
     assert "notification" in workflow
     assert "write_strategy_plugin_release_manifest" in workflow
+    assert workflow.count("from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix") == 3
+    assert workflow.count("prefix = normalize_strategy_plugin_gcs_prefix") == 3
+    assert workflow.count("Validated strategy plugin GCS prefix") == 3
     assert "GITHUB_RUN_ID" in workflow
     assert "GITHUB_SHA" in workflow
     assert "release_manifest.json" in workflow
@@ -66,6 +69,7 @@ def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
     pyproject = PYPROJECT.read_text(encoding="utf-8")
 
     assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
+    assert "QuantStrategyPlugins.git@" + "v0.1.6" not in pyproject
 
 
 def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:

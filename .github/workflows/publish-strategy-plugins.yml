@@ -345,6 +345,17 @@ jobs:
             exit 0
           fi
 
+          if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+            python - <<'PY'
+          import os
+
+          from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix
+
+          prefix = normalize_strategy_plugin_gcs_prefix(os.environ["GCS_PREFIX"])
+          print(f"Validated strategy plugin GCS prefix: {prefix}")
+          PY
+          fi
+
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
             relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
@@ -560,6 +571,17 @@ jobs:
             exit 0
           fi
 
+          if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+            python - <<'PY'
+          import os
+
+          from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix
+
+          prefix = normalize_strategy_plugin_gcs_prefix(os.environ["GCS_PREFIX"])
+          print(f"Validated strategy plugin GCS prefix: {prefix}")
+          PY
+          fi
+
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
             relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
@@ -753,6 +775,17 @@ jobs:
           if [ -z "${GCS_PREFIX:-}" ]; then
             echo "GCS_PREFIX is not set; skipping GCS publish."
             exit 0
+          fi
+
+          if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+            python - <<'PY'
+          import os
+
+          from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix
+
+          prefix = normalize_strategy_plugin_gcs_prefix(os.environ["GCS_PREFIX"])
+          print(f"Validated strategy plugin GCS prefix: {prefix}")
+          PY
           fi
 
           normalized_prefix="${GCS_PREFIX%/}"
