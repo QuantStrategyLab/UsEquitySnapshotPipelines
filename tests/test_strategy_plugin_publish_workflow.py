@@ -4,7 +4,7 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
-MARKET_REGIME_PLUGIN_REF = "v0.1.5"
+MARKET_REGIME_PLUGIN_REF = "v0.1.6"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -21,6 +21,10 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "PLUGIN_NOTIFICATION_TARGET: ${{ matrix.notification_target }}" in workflow
     assert "PLUGIN_BENCHMARK_SYMBOL: ${{ matrix.benchmark_symbol }}" in workflow
     assert "PLUGIN_ATTACK_SYMBOL: ${{ matrix.attack_symbol }}" in workflow
+    assert (
+        "PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED: "
+        "${{ matrix.volatility_delever_price_rebound_enabled }}"
+    ) in workflow
     assert "INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}" in workflow
     assert "INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}" in workflow
     assert (
@@ -48,6 +52,8 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert 'realized_vol_requires_confirmation = true' in workflow
     assert 'delever_risk_asset_scalar = 0.0' in workflow
     assert 'taco_enabled = ${PLUGIN_TACO_ENABLED}' in workflow
+    assert "volatility_delever_price_rebound_enabled: 'true'" in workflow
+    assert "volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}" in workflow
     assert "position_control" in workflow
     assert "notification" in workflow
     assert "write_strategy_plugin_release_manifest" in workflow
