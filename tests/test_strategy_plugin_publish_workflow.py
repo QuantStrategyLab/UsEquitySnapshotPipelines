@@ -23,6 +23,10 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "PLUGIN_ATTACK_SYMBOL: ${{ matrix.attack_symbol }}" in workflow
     assert "INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}" in workflow
     assert "INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}" in workflow
+    assert (
+        "INPUT_MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: "
+        "${{ inputs.market_regime_soxl_strategy_gcs_prefix }}"
+    ) in workflow
     assert "PLUGIN_NAME: market_regime_control" in workflow
     assert "market_regime_control.v1" in workflow
     assert 'notification_target = "${PLUGIN_NOTIFICATION_TARGET}"' in workflow
@@ -35,7 +39,11 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
         "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
         "market_regime_notification/plugins/market_regime_control"
     ) in workflow
-    assert "soxl_soxx_trend_income/plugins/market_regime_control" not in workflow
+    assert (
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+        "soxl_soxx_trend_income/plugins/market_regime_control"
+    ) in workflow
+    assert "name: strategy-plugin-market-regime-control-${{ matrix.output_scope }}-${{ github.run_id }}" in workflow
     assert 'realized_vol_threshold = 0.30' in workflow
     assert 'realized_vol_requires_confirmation = true' in workflow
     assert 'delever_risk_asset_scalar = 0.0' in workflow
