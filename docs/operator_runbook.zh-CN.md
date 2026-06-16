@@ -74,6 +74,16 @@ python scripts/build_mega_cap_leader_rotation_top50_balanced_snapshot.py \
 `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`
 之下的手工 GCS prefix override。
 
+`Publish Strategy Plugins` 会同时构建 strategy artifact 和统一
+`notification_targets.market_regime_notification` artifact。人工复核插件 bot
+只应消费这个统一 notification target；TQQQ、SOXL 等 strategy artifact 仍供策略
+runtime 自动消费，并在实际仓位变化时由策略运行通知承载。
+
+统一通知使用 `STRATEGY_PLUGIN_ALERT_*` vars/secrets，默认中文
+`STRATEGY_PLUGIN_ALERT_LANG=zh`，并通过
+`STRATEGY_PLUGIN_ALERT_STATE_GCS_URI` 做跨 run 去重。未配置投递凭据时 workflow
+会写出 skipped 诊断，不会影响 artifact 发布。
+
 workflow 每次都会把生成文件上传为 GitHub Actions artifact。
 
 ## 定时发布
