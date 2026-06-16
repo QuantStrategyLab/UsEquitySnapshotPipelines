@@ -62,6 +62,7 @@ jobs:
             event_set: full-plus-geopolitical-deescalation
             start_date: '2018-01-01'
             taco_enabled: 'true'
+            volatility_delever_price_rebound_enabled: 'false'
           - strategy_profile: soxl_soxx_trend_income
             target_type: notification_target
             notification_target: market_regime_notification
@@ -71,6 +72,7 @@ jobs:
             event_set: full
             start_date: '2010-01-01'
             taco_enabled: 'false'
+            volatility_delever_price_rebound_enabled: 'false'
           - strategy_profile: soxl_soxx_trend_income
             target_type: strategy
             notification_target: ''
@@ -80,6 +82,7 @@ jobs:
             event_set: full
             start_date: '2010-01-01'
             taco_enabled: 'false'
+            volatility_delever_price_rebound_enabled: 'true'
     permissions:
       contents: read
       id-token: write
@@ -106,6 +109,7 @@ jobs:
       PLUGIN_EVENT_SET: ${{ matrix.event_set }}
       PLUGIN_START_DATE: ${{ matrix.start_date }}
       PLUGIN_TACO_ENABLED: ${{ matrix.taco_enabled }}
+      PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED: ${{ matrix.volatility_delever_price_rebound_enabled }}
       PRICE_INPUT_DIR: data/input/strategy_plugins/${{ matrix.strategy_profile }}/market_regime_control
       PLUGIN_OUTPUT_DIR: data/output/${{ matrix.output_scope }}/plugins/market_regime_control
       RUNNER_OUTPUT_DIR: data/output/strategy_plugins
@@ -230,6 +234,7 @@ jobs:
           crisis_enabled = true
           macro_enabled = true
           taco_enabled = ${PLUGIN_TACO_ENABLED}
+          volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}
 
           [notification_targets.outputs]
           output_dir = "${PLUGIN_OUTPUT_DIR}"
@@ -263,6 +268,7 @@ jobs:
           crisis_enabled = true
           macro_enabled = true
           taco_enabled = ${PLUGIN_TACO_ENABLED}
+          volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}
 
           [strategy_plugins.outputs]
           output_dir = "${PLUGIN_OUTPUT_DIR}"
