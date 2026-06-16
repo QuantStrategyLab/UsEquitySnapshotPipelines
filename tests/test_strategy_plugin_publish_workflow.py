@@ -4,9 +4,9 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
-QUANT_PLATFORM_KIT_REF = "5ee38a0030f84091561fc96e0b7e372a6ebbe17c"
+QUANT_PLATFORM_KIT_REF = "0e8c734142d2a949f8c84d039537864d354998da"
 MARKET_REGIME_PLUGIN_REF = "eedaa71de8472448c4665b8b7b3be679fe7db83d"
-US_EQUITY_STRATEGIES_REF = "32ea683111669e346837d8980e76abcc7e9d9a62"
+US_EQUITY_STRATEGIES_REF = "1f0e828685e7f281b566443aca895b932f2e2c4e"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
