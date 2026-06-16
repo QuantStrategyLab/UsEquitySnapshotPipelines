@@ -79,6 +79,7 @@ def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
     assert f"QuantPlatformKit.git@{QUANT_PLATFORM_KIT_REF}" in pyproject
     assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
     assert f"UsEquityStrategies.git@{US_EQUITY_STRATEGIES_REF}" in pyproject
+    assert "google-cloud-storage>=2.18" in pyproject
     assert "QuantStrategyPlugins.git@" + "v0.1.6" not in pyproject
 
 
