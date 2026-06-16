@@ -11,6 +11,8 @@ import pandas as pd
 
 from .contracts import SOURCE_PROJECT, SnapshotProfileContract
 
+STRATEGY_PLUGIN_GCS_PREFIX_ROOT = "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity"
+
 
 def sha256_file(path: str | Path) -> str:
     hasher = hashlib.sha256()
@@ -28,6 +30,32 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> Path:
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return resolved
+
+
+def normalize_strategy_plugin_gcs_prefix(
+    prefix: str | None,
+    *,
+    root: str = STRATEGY_PLUGIN_GCS_PREFIX_ROOT,
+) -> str:
+    normalized = str(prefix or "").strip().rstrip("/")
+    normalized_root = str(root or "").strip().rstrip("/")
+    if not normalized:
+        raise ValueError("strategy plugin GCS prefix must not be empty")
+    if not normalized_root.startswith("gs://"):
+        raise ValueError(f"strategy plugin GCS prefix root must be a gs:// URI: {normalized_root}")
+    if not normalized.startswith(f"{normalized_root}/"):
+        raise ValueError(f"strategy plugin GCS prefix must be under {normalized_root}: {normalized}")
+
+    relative = normalized[len(normalized_root) + 1 :]
+    parts = relative.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"strategy plugin GCS prefix contains an unsafe path segment: {normalized}")
+    if "plugins" not in parts:
+        raise ValueError(f"strategy plugin GCS prefix must include a plugins segment: {normalized}")
+    plugins_index = parts.index("plugins")
+    if plugins_index == 0 or plugins_index >= len(parts) - 1:
+        raise ValueError(f"strategy plugin GCS prefix must target <scope>/plugins/<plugin>: {normalized}")
+    return normalized
 
 
 def _safe_version_part(value: Any) -> str:

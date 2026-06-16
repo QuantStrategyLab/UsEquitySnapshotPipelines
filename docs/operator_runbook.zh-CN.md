@@ -70,6 +70,10 @@ python scripts/build_mega_cap_leader_rotation_top50_balanced_snapshot.py \
 - `portfolio_total_equity`
 - `min_adv20_usd`
 
+策略插件发布 workflow 在 `execute_publish=true` 时只接受位于
+`gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`
+之下的手工 GCS prefix override。
+
 workflow 每次都会把生成文件上传为 GitHub Actions artifact。
 
 ## 定时发布

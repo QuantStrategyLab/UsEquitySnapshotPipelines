@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from us_equity_snapshot_pipelines.artifacts import write_strategy_plugin_release_manifest
+import pytest
+
+from us_equity_snapshot_pipelines.artifacts import (
+    normalize_strategy_plugin_gcs_prefix,
+    write_strategy_plugin_release_manifest,
+)
 
 
 def test_write_strategy_plugin_release_manifest_creates_versioned_release(tmp_path) -> None:
@@ -46,3 +51,30 @@ def test_write_strategy_plugin_release_manifest_creates_versioned_release(tmp_pa
     assert (release_dir / "release_manifest.json").exists()
     assert manifest["release_artifacts"]["latest_signal.json"]["sha256"]
     assert manifest["current_artifacts"]["latest_signal.json"]["sha256"]
+
+
+def test_normalize_strategy_plugin_gcs_prefix_accepts_known_artifact_root() -> None:
+    assert (
+        normalize_strategy_plugin_gcs_prefix(
+            "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+            "soxl_soxx_trend_income/plugins/market_regime_control/"
+        )
+        == "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+        "soxl_soxx_trend_income/plugins/market_regime_control"
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "gs://other-bucket/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control",
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity",
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/market_regime_control",
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins",
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/../plugins/market_regime_control",
+    ],
+)
+def test_normalize_strategy_plugin_gcs_prefix_rejects_out_of_policy_prefix(prefix: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_strategy_plugin_gcs_prefix(prefix)
