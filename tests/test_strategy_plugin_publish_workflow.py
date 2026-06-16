@@ -4,8 +4,9 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
-MARKET_REGIME_PLUGIN_REF = "d62612fd2460322749474e4ef048f180318747d2"
-US_EQUITY_STRATEGIES_REF = "4ae7a7c63ebfa4a4acde5275e40cd35f994c912e"
+QUANT_PLATFORM_KIT_REF = "5ee38a0030f84091561fc96e0b7e372a6ebbe17c"
+MARKET_REGIME_PLUGIN_REF = "eedaa71de8472448c4665b8b7b3be679fe7db83d"
+US_EQUITY_STRATEGIES_REF = "32ea683111669e346837d8980e76abcc7e9d9a62"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -64,11 +65,18 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "GITHUB_RUN_ID" in workflow
     assert "GITHUB_SHA" in workflow
     assert "release_manifest.json" in workflow
+    assert "Publish unified notification-target alert" in workflow
+    assert "STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}" in workflow
+    assert "STRATEGY_PLUGIN_ALERT_STATE_GCS_URI" in workflow
+    assert "strategy-plugin-publish / {os.environ['PLUGIN_NOTIFICATION_TARGET']}" in workflow
+    assert "unified_alert_result.json" in workflow
+    assert "publish_strategy_plugin_alerts" in workflow
 
 
 def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
     pyproject = PYPROJECT.read_text(encoding="utf-8")
 
+    assert f"QuantPlatformKit.git@{QUANT_PLATFORM_KIT_REF}" in pyproject
     assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
     assert f"UsEquityStrategies.git@{US_EQUITY_STRATEGIES_REF}" in pyproject
     assert "QuantStrategyPlugins.git@" + "v0.1.6" not in pyproject

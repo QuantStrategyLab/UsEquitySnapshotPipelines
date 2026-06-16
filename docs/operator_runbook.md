@@ -76,6 +76,18 @@ For the strategy-plugin publish workflow, manual GCS prefix overrides are only
 accepted when `execute_publish=true` if they remain under
 `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`.
 
+`Publish Strategy Plugins` builds both strategy artifacts and the unified
+`notification_targets.market_regime_notification` artifact. The manual-review
+plugin bot should consume that notification target only; TQQQ, SOXL, and other
+strategy artifacts remain for strategy runtime consumption, with any actual
+position effect reported by the strategy run notification.
+
+Unified alert delivery uses `STRATEGY_PLUGIN_ALERT_*` vars/secrets, defaults to
+Chinese via `STRATEGY_PLUGIN_ALERT_LANG=zh`, and uses
+`STRATEGY_PLUGIN_ALERT_STATE_GCS_URI` for cross-run dedupe. If delivery
+credentials are missing, the workflow writes skipped diagnostics without
+blocking artifact publication.
+
 The workflow always uploads generated files as a GitHub Actions artifact.
 
 ## Scheduled Publish

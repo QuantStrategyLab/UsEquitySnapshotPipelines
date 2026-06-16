@@ -367,6 +367,134 @@ jobs:
             fi
           done < <(find "${PLUGIN_OUTPUT_DIR}" -type f -print0 | sort -z)
 
+      - name: Publish unified notification-target alert
+        if: env.PLUGIN_TARGET_TYPE == 'notification_target' && env.EXECUTE_PUBLISH == 'true'
+        env:
+          STRATEGY_PLUGIN_ALERT_CHANNELS: ${{ vars.STRATEGY_PLUGIN_ALERT_CHANNELS || 'telegram' }}
+          STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}
+          STRATEGY_PLUGIN_ALERT_STATE_GCS_URI: ${{ vars.STRATEGY_PLUGIN_ALERT_STATE_GCS_URI || 'gs://qsl-runtime-logs-shared/strategy-plugin-alert-state/market_regime_control' }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY }}
+          STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD: ${{ secrets.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD }}
+          STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS }}
+          STRATEGY_PLUGIN_ALERT_SMS_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_PROVIDER }}
+          STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID }}
+          STRATEGY_PLUGIN_ALERT_SMS_SENDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_SENDER }}
+          STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID }}
+          STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL }}
+          STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS }}
+          STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN }}
+          STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS }}
+          STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER }}
+          STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL }}
+          STRATEGY_PLUGIN_ALERT_PUSH_DEVICE: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_DEVICE }}
+          STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY }}
+          STRATEGY_PLUGIN_ALERT_PUSH_TAGS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_TAGS }}
+          STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS }}
+          STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN }}
+          STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS }}
+          STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          from quant_platform_kit.common.notification_localization import STRATEGY_PLUGIN_I18N
+          from quant_platform_kit.common.strategy_plugins import load_strategy_plugin_signal
+          from quant_platform_kit.notifications.strategy_plugin_alerts import (
+              StrategyPluginAlertStateSettings,
+              publish_strategy_plugin_alerts,
+          )
+
+          def _translator(lang: str):
+              normalized = str(lang or "zh").strip().lower()
+              table = STRATEGY_PLUGIN_I18N["zh" if normalized.startswith("zh") else "en"]
+
+              def translate(key: str, **kwargs):
+                  template = table.get(key, key)
+                  return template.format(**kwargs) if kwargs else template
+
+              return translate
+
+          def _setting(name: str):
+              return os.environ.get(name) or None
+
+          signal = load_strategy_plugin_signal(
+              str(Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "latest_signal.json"),
+              expected_notification_target=os.environ["PLUGIN_NOTIFICATION_TARGET"],
+              expected_plugin=os.environ["PLUGIN_NAME"],
+              expected_schema_version="market_regime_control.v1",
+          )
+          settings = SimpleNamespace(
+              strategy_plugin_alert_channels=_setting("STRATEGY_PLUGIN_ALERT_CHANNELS") or "telegram",
+              strategy_plugin_alert_email_recipients=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS"),
+              strategy_plugin_alert_email_sender_email=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL"),
+              strategy_plugin_alert_email_sender_password=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD"),
+              strategy_plugin_alert_email_smtp_host=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST"),
+              strategy_plugin_alert_email_smtp_port=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT"),
+              strategy_plugin_alert_email_smtp_security=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY"),
+              strategy_plugin_alert_sms_recipients=_setting("STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS"),
+              strategy_plugin_alert_sms_provider=_setting("STRATEGY_PLUGIN_ALERT_SMS_PROVIDER"),
+              strategy_plugin_alert_sms_account_id=_setting("STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID"),
+              strategy_plugin_alert_sms_auth_token=_setting("STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN"),
+              strategy_plugin_alert_sms_sender=_setting("STRATEGY_PLUGIN_ALERT_SMS_SENDER"),
+              strategy_plugin_alert_sms_messaging_service_id=_setting("STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID"),
+              strategy_plugin_alert_sms_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL"),
+              strategy_plugin_alert_sms_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS"),
+              strategy_plugin_alert_push_recipients=_setting("STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS"),
+              strategy_plugin_alert_push_provider=_setting("STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER"),
+              strategy_plugin_alert_push_app_token=_setting("STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN"),
+              strategy_plugin_alert_push_access_token=_setting("STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN"),
+              strategy_plugin_alert_push_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL"),
+              strategy_plugin_alert_push_device=_setting("STRATEGY_PLUGIN_ALERT_PUSH_DEVICE"),
+              strategy_plugin_alert_push_priority=_setting("STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY"),
+              strategy_plugin_alert_push_tags=_setting("STRATEGY_PLUGIN_ALERT_PUSH_TAGS"),
+              strategy_plugin_alert_push_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS"),
+              strategy_plugin_alert_telegram_chat_ids=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS"),
+              strategy_plugin_alert_telegram_bot_token=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN"),
+              strategy_plugin_alert_telegram_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL"),
+              strategy_plugin_alert_telegram_parse_mode=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE"),
+              strategy_plugin_alert_telegram_disable_web_page_preview=_setting(
+                  "STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW"
+              ),
+              strategy_plugin_alert_telegram_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS"),
+          )
+          result = publish_strategy_plugin_alerts(
+              [signal],
+              notification_settings=settings,
+              translator=_translator(os.environ.get("STRATEGY_PLUGIN_ALERT_LANG", "zh")),
+              context_label=f"strategy-plugin-publish / {os.environ['PLUGIN_NOTIFICATION_TARGET']}",
+              state_settings=StrategyPluginAlertStateSettings.from_env(
+                  gcp_project_id=os.environ.get("GCP_PROJECT_ID"),
+              ),
+              log_message=print,
+          )
+          output_path = Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "unified_alert_result.json"
+          output_path.write_text(
+              json.dumps(result.to_report_fields(), ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(f"wrote unified alert result -> {output_path}")
+          print(
+              "unified_alert_result "
+              f"attempted={result.attempted_count} sent={result.sent_count} "
+              f"skipped={result.skipped_count} failed={result.failed_count}"
+          )
+          if result.failed_count:
+              raise SystemExit("unified notification-target alert failed")
+          PY
+
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7
         with:
