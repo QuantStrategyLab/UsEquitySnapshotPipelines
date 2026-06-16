@@ -478,6 +478,18 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "blend_gate_volatility_delever_retention_ratio": float(
             config.get("blend_gate_volatility_delever_retention_ratio", 0.0)
         ),
+        "blend_gate_volatility_delever_retention_mode": str(
+            config.get("blend_gate_volatility_delever_retention_mode", "fixed")
+        ),
+        "blend_gate_volatility_delever_retention_policy": str(
+            config.get("blend_gate_volatility_delever_retention_policy", "soxl_step_rebound_0.25_0.50")
+        ),
+        "blend_gate_volatility_delever_retention_context_required": bool(
+            config.get("blend_gate_volatility_delever_retention_context_required", True)
+        ),
+        "blend_gate_volatility_delever_max_retention_ratio": float(
+            config.get("blend_gate_volatility_delever_max_retention_ratio", 0.50)
+        ),
         "blend_gate_volatility_delever_redirect_symbol": str(
             config.get("blend_gate_volatility_delever_redirect_symbol", "SOXX")
         ),
@@ -931,6 +943,24 @@ def run_backtest(
                 "blend_gate_volatility_delever_triggered": core_volatility_delever_triggered,
                 "blend_gate_volatility_delever_retention_ratio": plan.get(
                     "blend_gate_volatility_delever_retention_ratio"
+                ),
+                "blend_gate_volatility_delever_retention_mode": plan.get(
+                    "blend_gate_volatility_delever_retention_mode"
+                ),
+                "blend_gate_volatility_delever_retention_policy": plan.get(
+                    "blend_gate_volatility_delever_retention_policy"
+                ),
+                "blend_gate_volatility_delever_effective_retention_ratio": plan.get(
+                    "blend_gate_volatility_delever_effective_retention_ratio"
+                ),
+                "blend_gate_volatility_delever_retention_source": plan.get(
+                    "blend_gate_volatility_delever_retention_source"
+                ),
+                "blend_gate_volatility_delever_retention_context_found": plan.get(
+                    "blend_gate_volatility_delever_retention_context_found"
+                ),
+                "blend_gate_volatility_delever_retention_reason_codes": plan.get(
+                    "blend_gate_volatility_delever_retention_reason_codes"
                 ),
                 "blend_gate_volatility_delever_redirect_symbol": plan.get(
                     "blend_gate_volatility_delever_redirect_symbol"
