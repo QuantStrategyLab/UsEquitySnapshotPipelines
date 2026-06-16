@@ -12,7 +12,7 @@ DEFAULT_TQQQ_PRICES = ROOT / "data" / "output" / "tqqq_volatility_delever_thresh
 DEFAULT_SOXL_PRICES = ROOT / "data" / "output" / "soxl_dynamic_volatility_delever_threshold_research" / "normalized_price_history.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "output" / "volatility_delever_retention_policy_research"
 
-WINDOWS = (
+DEFAULT_WINDOWS = (
     ("full", "2011-03-10", "2026-06-15"),
     ("2020", "2020-02-18", "2020-04-30"),
     ("2022", "2022-01-03", "2022-12-30"),
@@ -34,12 +34,63 @@ def _load_prices(path: Path) -> pd.DataFrame:
     return frame
 
 
+def _synthesize_levered_symbol(
+    frame: pd.DataFrame,
+    *,
+    source_symbol: str,
+    target_symbol: str,
+    leverage: float,
+    annual_expense_ratio: float,
+) -> pd.DataFrame:
+    source = str(source_symbol or "").strip().upper()
+    target = str(target_symbol or "").strip().upper()
+    if not source or not target:
+        return frame
+    source_frame = frame.loc[frame["symbol"].eq(source), ["as_of", "close"]].sort_values("as_of").copy()
+    if source_frame.empty:
+        raise ValueError(f"cannot synthesize {target}: missing source symbol {source}")
+    source_frame["source_return"] = source_frame["close"].pct_change(fill_method=None)
+    daily_expense = float(annual_expense_ratio) / 252.0
+    synthetic_close = []
+    last_close = 100.0
+    for value in source_frame["source_return"].fillna(0.0):
+        daily_return = max(-0.99, float(leverage) * float(value) - daily_expense)
+        last_close *= 1.0 + daily_return
+        synthetic_close.append(last_close)
+    synthetic = pd.DataFrame(
+        {
+            "as_of": source_frame["as_of"].to_numpy(),
+            "symbol": target,
+            "close": synthetic_close,
+        }
+    )
+    kept = frame.loc[~frame["symbol"].eq(target), ["as_of", "symbol", "close"]].copy()
+    return (
+        pd.concat([kept, synthetic], ignore_index=True)
+        .sort_values(["as_of", "symbol"])
+        .reset_index(drop=True)
+    )
+
+
 def _close_matrix(frame: pd.DataFrame, symbols: tuple[str, ...]) -> pd.DataFrame:
     matrix = frame.pivot_table(index="as_of", columns="symbol", values="close", aggfunc="last").sort_index().ffill()
     missing = sorted(symbol for symbol in symbols if symbol not in matrix.columns)
     if missing:
         raise ValueError(f"price file missing required symbols: {', '.join(missing)}")
     return matrix.loc[:, symbols].dropna()
+
+
+def _validate_min_history_years(matrix: pd.DataFrame, *, label: str, min_years: float | None) -> None:
+    if min_years is None:
+        return
+    if matrix.empty:
+        raise ValueError(f"{label} price matrix is empty")
+    years = (matrix.index[-1] - matrix.index[0]).days / 365.25
+    if years < float(min_years):
+        raise ValueError(
+            f"{label} history covers {years:.2f} years from {matrix.index[0].date()} "
+            f"to {matrix.index[-1].date()}, below required {float(min_years):.2f} years"
+        )
 
 
 def _realized_vol(close: pd.Series, window: int) -> pd.Series:
@@ -150,6 +201,10 @@ def _retention(policy: str, env: dict[str, object]) -> float:
         return 0.50 if constructive and rebound else 0.35
     if policy == "soxl_step_rebound_0.25_0.50":
         if not rebound:
+            return 0.0
+        return 0.50 if constructive else 0.25
+    if policy == "soxl_step_softzero_rebound_0.25_0.50":
+        if soft or not rebound:
             return 0.0
         return 0.50 if constructive else 0.25
     if policy == "soxl_rebound_0.50":
@@ -308,39 +363,104 @@ def _event_row(profile: str, policy: str, as_of: pd.Timestamp, metric: float, th
     }
 
 
-def _summary_row(profile: str, policy: str, returns: pd.Series, info: dict[str, object]) -> dict[str, object]:
-    rows = {name: _summary(returns, start, end) for name, start, end in WINDOWS}
-    return {
+def _summary_row(
+    profile: str,
+    policy: str,
+    returns: pd.Series,
+    info: dict[str, object],
+    windows: tuple[tuple[str, str, str], ...],
+) -> dict[str, object]:
+    rows = {name: _summary(returns, start, end) for name, start, end in windows}
+    row = {
         "profile": profile,
         "policy": policy,
         **info,
-        "full_cagr": rows["full"]["cagr"],
-        "full_mdd": rows["full"]["mdd"],
-        "2020_mdd": rows["2020"]["mdd"],
-        "2022_return": rows["2022"]["total"],
-        "post2022_cagr": rows["post2022"]["cagr"],
-        "ytd2026_return": rows["ytd2026"]["total"],
-        "3m_return": rows["3m"]["total"],
     }
+    for name, values in rows.items():
+        for metric, value in values.items():
+            row[f"{name}_{metric}"] = value
+    if "full" in rows:
+        row["full_cagr"] = rows["full"]["cagr"]
+        row["full_mdd"] = rows["full"]["mdd"]
+    if "2020" in rows:
+        row["2020_mdd"] = rows["2020"]["mdd"]
+    if "2022" in rows:
+        row["2022_return"] = rows["2022"]["total"]
+    if "post2022" in rows:
+        row["post2022_cagr"] = rows["post2022"]["cagr"]
+    if "ytd2026" in rows:
+        row["ytd2026_return"] = rows["ytd2026"]["total"]
+    if "3m" in rows:
+        row["3m_return"] = rows["3m"]["total"]
+    return row
 
 
-def run_research(*, tqqq_prices: Path, soxl_prices: Path, output_dir: Path) -> Path:
+def run_research(
+    *,
+    tqqq_prices: Path,
+    soxl_prices: Path,
+    output_dir: Path,
+    windows: tuple[tuple[str, str, str], ...] = DEFAULT_WINDOWS,
+    min_history_years: float | None = None,
+    synthesize_tqqq_from: str | None = None,
+    synthesize_soxl_from: str | None = None,
+    synthetic_leverage: float = 3.0,
+    synthetic_annual_expense_ratio: float = 0.01,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tqqq_matrix = _close_matrix(_load_prices(tqqq_prices), ("QQQ", "TQQQ", "HYG", "IEF", "XLF", "SPY", "^VIX"))
-    soxl_matrix = _close_matrix(_load_prices(soxl_prices), ("SOXX", "SOXL", "HYG", "IEF", "XLF", "SPY", "^VIX"))
+    tqqq_frame = _load_prices(tqqq_prices)
+    soxl_frame = _load_prices(soxl_prices)
+    if synthesize_tqqq_from:
+        tqqq_frame = _synthesize_levered_symbol(
+            tqqq_frame,
+            source_symbol=synthesize_tqqq_from,
+            target_symbol="TQQQ",
+            leverage=synthetic_leverage,
+            annual_expense_ratio=synthetic_annual_expense_ratio,
+        )
+    if synthesize_soxl_from:
+        soxl_frame = _synthesize_levered_symbol(
+            soxl_frame,
+            source_symbol=synthesize_soxl_from,
+            target_symbol="SOXL",
+            leverage=synthetic_leverage,
+            annual_expense_ratio=synthetic_annual_expense_ratio,
+        )
+    tqqq_matrix = _close_matrix(tqqq_frame, ("QQQ", "TQQQ", "HYG", "IEF", "XLF", "SPY", "^VIX"))
+    soxl_matrix = _close_matrix(soxl_frame, ("SOXX", "SOXL", "HYG", "IEF", "XLF", "SPY", "^VIX"))
+    _validate_min_history_years(tqqq_matrix, label="TQQQ", min_years=min_history_years)
+    _validate_min_history_years(soxl_matrix, label="SOXL", min_years=min_history_years)
     summary_rows = []
     event_rows = []
     for policy in ("current", "tqqq_step_softzero_0.25_0.50", "tqqq_step_softzero_0.35_0.50"):
         returns, info, events = _run_tqqq(tqqq_matrix, policy)
-        summary_rows.append(_summary_row("tqqq", policy, returns, info))
+        summary_rows.append(_summary_row("tqqq", policy, returns, info, windows))
         event_rows.extend(events)
-    for policy in ("current", "soxl_step_rebound_0.25_0.50", "soxl_rebound_0.50"):
+    for policy in (
+        "current",
+        "soxl_step_rebound_0.25_0.50",
+        "soxl_step_softzero_rebound_0.25_0.50",
+        "soxl_rebound_0.50",
+    ):
         returns, info, events = _run_soxl(soxl_matrix, policy)
-        summary_rows.append(_summary_row("soxl", policy, returns, info))
+        summary_rows.append(_summary_row("soxl", policy, returns, info, windows))
         event_rows.extend(events)
     pd.DataFrame(summary_rows).to_csv(output_dir / "retention_policy_summary.csv", index=False)
     pd.DataFrame(event_rows).to_csv(output_dir / "recent_retention_events.csv", index=False)
     return output_dir
+
+
+def _parse_windows(values: list[str] | None) -> tuple[tuple[str, str, str], ...]:
+    if not values:
+        return DEFAULT_WINDOWS
+    windows = []
+    for raw_value in values:
+        name, separator, rest = str(raw_value or "").partition(":")
+        start, separator2, end = rest.partition(":")
+        if not name or not separator or not start or not separator2 or not end:
+            raise ValueError(f"invalid --window {raw_value!r}; expected name:YYYY-MM-DD:YYYY-MM-DD")
+        windows.append((name, start, end))
+    return tuple(windows)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -348,16 +468,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tqqq-prices", default=str(DEFAULT_TQQQ_PRICES))
     parser.add_argument("--soxl-prices", default=str(DEFAULT_SOXL_PRICES))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--window",
+        action="append",
+        help="Custom summary window in name:YYYY-MM-DD:YYYY-MM-DD form. May be repeated.",
+    )
+    parser.add_argument(
+        "--min-history-years",
+        type=float,
+        help="Fail if either input matrix covers fewer than this many years after alignment.",
+    )
+    parser.add_argument("--synthesize-tqqq-from", help="Replace TQQQ with a synthetic leveraged series from this symbol.")
+    parser.add_argument("--synthesize-soxl-from", help="Replace SOXL with a synthetic leveraged series from this symbol.")
+    parser.add_argument("--synthetic-leverage", type=float, default=3.0)
+    parser.add_argument("--synthetic-annual-expense-ratio", type=float, default=0.01)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    output_dir = run_research(
-        tqqq_prices=Path(args.tqqq_prices),
-        soxl_prices=Path(args.soxl_prices),
-        output_dir=Path(args.output_dir),
-    )
+    try:
+        output_dir = run_research(
+            tqqq_prices=Path(args.tqqq_prices),
+            soxl_prices=Path(args.soxl_prices),
+            output_dir=Path(args.output_dir),
+            windows=_parse_windows(args.window),
+            min_history_years=args.min_history_years,
+            synthesize_tqqq_from=args.synthesize_tqqq_from,
+            synthesize_soxl_from=args.synthesize_soxl_from,
+            synthetic_leverage=float(args.synthetic_leverage),
+            synthetic_annual_expense_ratio=float(args.synthetic_annual_expense_ratio),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     print(f"wrote volatility-delever retention policy research -> {output_dir}")
     return 0
 

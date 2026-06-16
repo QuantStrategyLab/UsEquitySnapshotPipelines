@@ -16,6 +16,105 @@ fires. The retention signal is deterministic and comes from
 `market_regime_control`'s `position_control.volatility_delever_context`; AI,
 OSINT, and localized notification text remain manual-review evidence only.
 
+## Long-History Promotion Gate
+
+Future automatic `market_regime_control` position-control expansion should
+clear a 25-30 year validation gate before promotion. Real TQQQ/SOXL products
+only cover the post-2010 live ETF window, so this gate must use a separate
+synthetic replay built from the underlying QQQ/SOXX daily series, with the
+synthetic 3x leg explicitly labeled in the output.
+
+The retention-policy runner supports that gate directly:
+
+```bash
+python scripts/research_volatility_delever_retention_policies.py \
+  --tqqq-prices path/to/long_tqqq_input.csv \
+  --soxl-prices path/to/long_soxl_input.csv \
+  --synthesize-tqqq-from QQQ \
+  --synthesize-soxl-from SOXX \
+  --min-history-years 25 \
+  --window full_1999_to_date:1999-03-10:2026-06-15 \
+  --window dotcom_2000_2002:2000-03-24:2002-10-09 \
+  --window gfc_2007_2009:2007-10-09:2009-03-09 \
+  --window covid_2020:2020-02-18:2020-04-30 \
+  --window rate_bear_2022:2022-01-03:2022-12-30 \
+  --window ytd2026:2026-01-02:2026-06-15
+```
+
+The local June 2026 cache starts in 2010, so it remains useful for
+live-product smoke checks but intentionally fails `--min-history-years 25`. A
+production promotion needs either a committed replayable long-history input
+artifact or a CI/GitHub Actions run with a reliable market-data source.
+
+2026-06-17 public-proxy long-history run:
+
+- Input artifact: `data/output/long_history_market_inputs_20260617`
+- Result artifact: `data/output/volatility_delever_retention_policy_long_20260617`
+- Window: 1999-03-10 to 2026-06-16
+- Long-history proxies: `QQQ` for TQQQ source, `^SOX` mapped to `SOXX`,
+  `VWEHX` mapped to `HYG`, `VFITX` mapped to `IEF`, plus `XLF`, `SPY`, and
+  `^VIX`.
+
+| Profile | Candidate | Full CAGR delta | Full MDD delta | Dotcom total delta | 2026 YTD delta | Recent 3m delta | Read |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| TQQQ | `tqqq_step_softzero_0.25_0.50` | +0.13 pp | +0.21 pp | +0.00 pp | +1.16 pp | +1.21 pp | passes long-history gate |
+| TQQQ | `tqqq_step_softzero_0.35_0.50` | +0.12 pp | +0.21 pp | +0.00 pp | +1.46 pp | +1.52 pp | higher recent capture, slightly weaker full CAGR |
+| SOXL | `soxl_step_rebound_0.25_0.50` | -0.25 pp | -0.19 pp | -0.38 pp | +19.78 pp | +17.66 pp | strong 2026 capture but fails strict synthetic long-history no-regression |
+| SOXL | `soxl_step_softzero_rebound_0.25_0.50` | +0.08 pp | -0.05 pp | -0.07 pp | +19.78 pp | +17.66 pp | best long-history trade-off; small drawdown regression remains |
+| SOXL | `soxl_rebound_0.50` | -0.70 pp | -0.31 pp | -0.67 pp | +19.78 pp | +17.66 pp | reject |
+
+Operational decision after the 2026-06-17 review: keep the more aggressive
+`soxl_step_rebound_0.25_0.50` as the SOXL live default. The 1999 synthetic
+regression is small, while the 2026 capture is material. Keep
+`soxl_step_softzero_rebound_0.25_0.50` as the conservative fallback candidate
+for a future drawdown-control switch, not as the current default.
+
+Implementation note: the plugin should emit both SOXL profiles from the same
+deterministic `price_rebound_context`. `soxl_step_rebound_0.25_0.50` is the
+aggressive default and may retain 25% during soft-risk price-rebound
+candidates; `soxl_step_softzero_rebound_0.25_0.50` clears retention under soft
+risk. TACO, panic reversal, AI/OSINT, and localized notification text remain
+manual-review context only and must not raise automatic retention.
+
+## Next Optimization Tracks
+
+The plugin/strategy split should remain unchanged: `market_regime_control`
+emits deterministic market-state and retention context; each strategy decides
+which fields can affect allocation. AI, OSINT, event narrative, and localized
+notification text remain manual-review inputs only.
+
+Implementation guard: only TQQQ and SOXL/SOXX should be
+`automation_approved` consumers for the current market-regime-control artifact.
+Global ETF, Russell 1000, Mega Cap, DCA, and non-US profiles should remain
+notification/evidence consumers until a separate long-history promotion package
+proves the route-specific position impact.
+
+Near-term tracks:
+
+- TQQQ: keep `tqqq_step_softzero_0.25_0.50` as the default. Continue tracking
+  `tqqq_step_softzero_0.35_0.50` as the higher-capture candidate because it
+  improves 2026 returns but gives up a little full-window CAGR.
+- SOXL: keep `soxl_step_rebound_0.25_0.50` for the live aggressive profile.
+  Do not loosen to `soxl_rebound_0.50`; the long synthetic replay rejects it.
+  Treat `soxl_step_softzero_rebound_0.25_0.50` as a conservative switch if
+  live drawdown or dotcom-like stress evidence worsens.
+- Global ETF rotation: consume only `risk_reduced` / `risk_off` first; do not
+  reuse TQQQ/SOXL volatility-retention profiles. The validation target is
+  lower drawdown without reducing long excess CAGR versus SPY.
+- Russell 1000 multi-factor: avoid double-counting its existing breadth and
+  defensive exposure controls. Test `risk_off` first, then a mild
+  `risk_reduced` scalar only if it improves factor-strategy drawdown after
+  transaction costs.
+- Mega-cap leader rotation: keep market-regime controls in shadow until a
+  long-cycle Top50 replay or proxy replay shows that `risk_reduced` does not
+  suppress leader momentum in strong markets.
+- Smart DCA: do not sell or de-risk existing holdings from this plugin. Any
+  integration should be a separate cash-deployment control: pause, halve, or
+  catch up new buys based on deterministic route fields.
+- HK or non-US strategies: do not consume the US-only `market_regime_control`
+  artifact directly. Add a separate region-specific context before enabling
+  automatic position impact.
+
 A bounded replay found a better
 TQQQ volatility-delever default than the prior fixed gate: use a rolling
 252-day p90 threshold on QQQ 5-day annualized realized volatility, bounded to
