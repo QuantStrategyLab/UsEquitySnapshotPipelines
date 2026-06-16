@@ -9,7 +9,14 @@ retained only as the warm-up fallback before enough rolling samples exist. The
 older synthetic long-history sweep below remains the historical optimization
 record.
 
-Latest current-default recheck: 2026-06-09. A bounded replay found a better
+Latest current-default recheck: 2026-06-16. The 2026-06-09 replay promoted
+dynamic volatility thresholds, and the 2026-06-16 replay promoted
+environment-driven partial retention when the local volatility-delever gate
+fires. The retention signal is deterministic and comes from
+`market_regime_control`'s `position_control.volatility_delever_context`; AI,
+OSINT, and localized notification text remain manual-review evidence only.
+
+A bounded replay found a better
 TQQQ volatility-delever default than the prior fixed gate: use a rolling
 252-day p90 threshold on QQQ 5-day annualized realized volatility, bounded to
 24%-36%. The legacy fixed-threshold field remains the fallback while the
@@ -19,7 +26,9 @@ rolling percentile warms up.
   `dual_drive_volatility_delever_threshold_mode=rolling_percentile`,
   `dual_drive_volatility_delever_dynamic_percentile=0.90`,
   `dual_drive_volatility_delever_dynamic_floor=0.24`,
-  `dual_drive_volatility_delever_dynamic_cap=0.36`.
+  `dual_drive_volatility_delever_dynamic_cap=0.36`,
+  `dual_drive_volatility_delever_retention_mode=environment`,
+  `dual_drive_volatility_delever_retention_policy=tqqq_step_softzero_0.25_0.50`.
 - SOXL core: `blend_gate_dynamic_rsi_threshold_enabled=true`,
   `blend_gate_volatility_delever_symbol=SOXX`,
   `blend_gate_volatility_delever_window=10`,
@@ -27,7 +36,8 @@ rolling percentile warms up.
   `blend_gate_volatility_delever_dynamic_percentile=0.95`,
   `blend_gate_volatility_delever_dynamic_floor=0.50`,
   `blend_gate_volatility_delever_dynamic_cap=0.75`,
-  `blend_gate_volatility_delever_retention_ratio=0.0`,
+  `blend_gate_volatility_delever_retention_mode=environment`,
+  `blend_gate_volatility_delever_retention_policy=soxl_step_rebound_0.25_0.50`,
   `blend_gate_volatility_delever_redirect_symbol=SOXX`.
 
 Fallback-only fields retained for compatibility and early warm-up:
@@ -48,10 +58,42 @@ Later rechecks may promote a candidate with a small window regression only when
 the regression is explicitly recorded, turnover is controlled, and the
 long-window improvement is large enough to justify the trade-off.
 
-The `crisis_response_shadow` plugin remains notification-only and strategy
-limited to the TQQQ compatibility mount. SOXL broad crisis/macro context is
-published through the general `market_regime_notification` target instead of a
-strategy-level crisis plugin mount.
+The legacy `crisis_response_shadow` plugin remains notification-only and
+strategy-limited to the TQQQ compatibility mount. SOXL now also receives a
+strategy-level `market_regime_control` artifact for deterministic `risk_off`
+and volatility-delever retention context, while the general
+`market_regime_notification` target remains notification-only for human review.
+
+## 2026-06-16 Volatility-Delever Retention Recheck
+
+Follow-up question: can volatility-delever triggers keep a bounded levered
+sleeve in constructive or rebound-confirmed regimes without weakening crisis
+defense?
+
+Local review output directory:
+
+`.cache/vol_delever_retention_policy_research_20260616`
+
+Result summary:
+
+| Profile | Candidate | Triggered days | Retained days | Long CAGR | Max drawdown | 2026 YTD | Recent 3m | Decision |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| TQQQ | current zero retention | 143 | 0 | 27.40% | -35.19% | 20.97% | 27.22% | old baseline |
+| TQQQ | `tqqq_step_softzero_0.25_0.50` | 143 | 52 | 27.56% | -35.19% | 22.60% | 28.94% | promote default |
+| TQQQ | `tqqq_step_softzero_0.35_0.50` | 143 | 52 | 27.52% | -35.19% | 22.87% | 29.21% | keep as candidate; slightly higher recent return but lower long CAGR |
+| SOXL | current zero retention | 19 | 0 | 44.02% | -44.26% | 221.39% | 178.99% | old baseline |
+| SOXL | `soxl_step_rebound_0.25_0.50` | 19 | 10 | 44.75% | -44.26% | 259.25% | 211.86% | promote default |
+| SOXL | `soxl_rebound_0.50` | 19 | 10 | 44.65% | -44.26% | 268.15% | 219.58% | keep as candidate; recent return is higher but 2020 drawdown is worse |
+
+Decision:
+
+- TQQQ promotes `tqqq_step_softzero_0.25_0.50`: it improves long CAGR and the
+  recent window without worsening max drawdown in this replay.
+- SOXL promotes `soxl_step_rebound_0.25_0.50`: it gives the best long CAGR
+  among the tested retention variants and sharply improves the recent rebound
+  capture while preserving the long max-drawdown headline.
+- Full 50% rebound retention remains research-only because its recent SOXL
+  return is better but the 2020 drawdown regression is larger.
 
 ## 2026-06-09 Dynamic TQQQ Volatility Threshold Recheck
 

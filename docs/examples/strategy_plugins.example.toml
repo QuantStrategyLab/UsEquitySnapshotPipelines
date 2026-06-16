@@ -6,8 +6,9 @@ strategy = "tqqq_growth_income"
 plugin = "crisis_response_shadow"
 enabled = true
 # The runner enforces plugin/strategy compatibility. This plugin is scoped to
-# the TQQQ compatibility mount; SOXL receives broad market-regime notifications
-# through notification_targets instead of this strategy-level legacy plugin.
+# the TQQQ compatibility mount. SOXL uses the unified market_regime_control
+# strategy artifact for deterministic fields; this legacy crisis plugin is not
+# mounted directly to SOXL.
 # mode is optional when it matches default_mode; only shadow notification mode is supported.
 
 [strategy_plugins.inputs]
