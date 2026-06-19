@@ -59,9 +59,9 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "position_control" in workflow
     assert "notification" in workflow
     assert "write_strategy_plugin_release_manifest" in workflow
-    assert workflow.count("from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix") == 3
-    assert workflow.count("prefix = normalize_strategy_plugin_gcs_prefix") == 3
-    assert workflow.count("Validated strategy plugin GCS prefix") == 3
+    assert workflow.count("from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix") == 4
+    assert workflow.count("prefix = normalize_strategy_plugin_gcs_prefix") == 4
+    assert workflow.count("Validated strategy plugin GCS prefix") == 4
     assert "GITHUB_RUN_ID" in workflow
     assert "GITHUB_SHA" in workflow
     assert "release_manifest.json" in workflow
@@ -101,6 +101,27 @@ def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
     assert 'default_mode = "shadow"' in workflow
     assert "python scripts/run_strategy_plugins.py" in workflow
     assert "gcloud storage cp" in workflow
+
+
+def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "ibit-zscore-exit:" in workflow
+    assert "ibit_zscore_gcs_prefix:" in workflow
+    assert "ibit_zscore_metrics_url:" in workflow
+    assert "PLUGIN_NAME: ibit_zscore_exit" in workflow
+    assert "STRATEGY_PROFILE: ibit_smart_dca" in workflow
+    assert "IBIT_ZSCORE_METRICS_BEARER_TOKEN" in workflow
+    assert "NEW_HEDGE_API_TOKEN" in workflow
+    assert "scripts/download_ibit_zscore_metrics.py" in workflow
+    assert 'zscore_metrics = "${zscore_path}"' in workflow
+    assert "ibit_zscore_exit.v1" in workflow
+    assert "automation_approved" in workflow
+    assert (
+        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+        "ibit_smart_dca/plugins/ibit_zscore_exit"
+    ) in workflow
+    assert "name: strategy-plugin-ibit-zscore-exit-${{ github.run_id }}" in workflow
 
 
 def test_strategy_plugin_publish_workflow_uses_artifact_mode_not_platform_mode() -> None:
