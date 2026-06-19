@@ -10,7 +10,7 @@ The only runtime-facing snapshot profile produced here is:
 
 - `russell_top50_leader_rotation`
 
-`russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement`, `mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are archived research-only and are no longer exposed by publish or health workflows.
+`russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement` and the retired dynamic/leveraged Russell Top50 research variants are archived research-only and are no longer exposed by publish or health workflows.
 
 ## Manual Local Build
 

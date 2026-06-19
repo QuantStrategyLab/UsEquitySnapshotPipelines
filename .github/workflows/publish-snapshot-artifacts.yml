@@ -1,6 +1,9 @@
 name: Publish Snapshot Artifacts
 
 on:
+  schedule:
+    # Weekday Global ETF snapshot refresh after the regular US close.
+    - cron: '30 22 * * 1-5'
   workflow_run:
     workflows: ["Update Source Input Data"]
     types: [completed]
@@ -13,6 +16,7 @@ on:
         type: choice
         options:
           - russell_top50_leader_rotation
+          - global_etf_rotation
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
         required: true
@@ -76,7 +80,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name != 'workflow_dispatch' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["global_etf_rotation"]' || (github.event_name != 'workflow_dispatch' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation'))) }}
     permissions:
       contents: read
       id-token: write
@@ -103,6 +107,7 @@ jobs:
       SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_PRICES_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
       SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
+      SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/global_etf_rotation' }}
 
     steps:
       - name: Checkout
@@ -144,6 +149,13 @@ jobs:
                 universe_path="${UNIVERSE_PATH:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH}}"
                 config_path=""
                 gcs_prefix="${GCS_PREFIX:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX}}"
+                ;;
+              global_etf_rotation)
+                prices_path="${PRICES_PATH:-}"
+                universe_path="${UNIVERSE_PATH:-}"
+                source_input_manifest_path="${SOURCE_INPUT_MANIFEST_PATH:-}"
+                config_path=""
+                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX}}"
                 ;;
               *)
                 echo "Unsupported scheduled profile: ${profile}" >&2
@@ -214,6 +226,8 @@ jobs:
             python scripts/write_sample_input_data.py --profile "${PROFILE}" --output-dir "${sample_input_dir}"
             PRICES_PATH="${sample_input_dir}/prices.csv"
             UNIVERSE_PATH="${sample_input_dir}/universe.csv"
+          elif [ "${PROFILE}" = "global_etf_rotation" ] && [ -z "${PRICES_PATH:-}" ]; then
+            echo "No Global ETF prices_path supplied; builder will download current Yahoo chart history."
           else
             resolved_input_dir="data/input/resolved/${PROFILE}"
             resolved_env="${RUNNER_TEMP:-/tmp}/resolved_snapshot_inputs.env"
@@ -235,12 +249,16 @@ jobs:
           fi
 
           if [ -z "${PRICES_PATH:-}" ] || [ ! -f "${PRICES_PATH}" ]; then
-            echo "prices_path is required and must resolve to a local file unless use_sample_data=true: ${PRICES_PATH:-<empty>}" >&2
-            exit 1
+            if [ "${PROFILE}" != "global_etf_rotation" ]; then
+              echo "prices_path is required and must resolve to a local file unless use_sample_data=true: ${PRICES_PATH:-<empty>}" >&2
+              exit 1
+            fi
           fi
           if [ -z "${UNIVERSE_PATH:-}" ] || [ ! -f "${UNIVERSE_PATH}" ]; then
-            echo "universe_path is required and must resolve to a local file unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
-            exit 1
+            if [ "${PROFILE}" != "global_etf_rotation" ]; then
+              echo "universe_path is required and must resolve to a local file unless use_sample_data=true: ${UNIVERSE_PATH:-<empty>}" >&2
+              exit 1
+            fi
           fi
           artifact_dir="${ARTIFACT_DIR_INPUT:-data/output/${PROFILE}}"
           mkdir -p "${artifact_dir}"
@@ -293,18 +311,20 @@ jobs:
             exit 0
           fi
 
-          common_args=(
-            --prices "${PRICES_PATH}"
-            --universe "${UNIVERSE_PATH}"
-            --output-dir "${artifact_dir}"
-          )
+          common_args=(--output-dir "${artifact_dir}")
+          if [ -n "${PRICES_PATH:-}" ]; then
+            common_args+=(--prices "${PRICES_PATH}")
+          fi
+          if [ -n "${UNIVERSE_PATH:-}" ] && [ "${PROFILE}" != "global_etf_rotation" ]; then
+            common_args+=(--universe "${UNIVERSE_PATH}")
+          fi
           if [ -n "${AS_OF_DATE:-}" ]; then
             common_args+=(--as-of "${AS_OF_DATE}")
           fi
-          if [ -n "${CURRENT_HOLDINGS:-}" ]; then
+          if [ -n "${CURRENT_HOLDINGS:-}" ] && [ "${PROFILE}" != "global_etf_rotation" ]; then
             common_args+=(--current-holdings "${CURRENT_HOLDINGS}")
           fi
-          if [ -n "${SOURCE_INPUT_MANIFEST_PATH:-}" ]; then
+          if [ -n "${SOURCE_INPUT_MANIFEST_PATH:-}" ] && [ "${PROFILE}" != "global_etf_rotation" ]; then
             common_args+=(--source-input-manifest "${SOURCE_INPUT_MANIFEST_PATH}")
           fi
 
@@ -317,6 +337,9 @@ jobs:
                 common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
               fi
               python scripts/build_russell_top50_leader_rotation_snapshot.py "${common_args[@]}"
+              ;;
+            global_etf_rotation)
+              python scripts/build_global_etf_rotation_snapshot.py "${common_args[@]}"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

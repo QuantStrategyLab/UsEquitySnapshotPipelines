@@ -8,16 +8,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from us_equity_strategies.strategies.russell_1000_multi_factor_defensive import (
-    build_target_weights as build_default_r1000_target_weights,
-)
-
-from .russell_1000_multi_factor_backtest import (
-    _build_feature_snapshot_for_backtest,
-    _compute_turnover,
+from .mega_cap_leader_rotation_backtest import (
     _normalize_price_history as _normalize_r1000_price_history,
-    _normalize_universe_snapshot,
+    _normalize_universe as _normalize_universe_snapshot,
     _precompute_symbol_feature_history,
+    build_feature_snapshot_for_backtest as _build_feature_snapshot_for_backtest,
     build_monthly_rebalance_dates,
     resolve_active_universe,
 )
@@ -77,21 +72,7 @@ class SnapshotBacktestContext:
 
 ETF_CANDIDATES: tuple[EtfCandidateSpec, ...] = ()
 
-SNAPSHOT_BASELINE_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
-    SnapshotCandidateSpec(
-        candidate_id="live_r1000_multi_factor_defensive",
-        display_name="Live Russell 1000 Multi-Factor Defensive",
-        rule="default_factor_stack",
-        candidate_group="current_live_baseline",
-        holdings_count=24,
-        single_name_cap=0.06,
-        sector_cap=0.20,
-        hold_bonus=0.15,
-        soft_defense_exposure=0.50,
-        hard_defense_exposure=0.10,
-        notes="Current runtime-enabled Russell 1000 snapshot profile; included as the replacement baseline.",
-    ),
-)
+SNAPSHOT_BASELINE_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
 SNAPSHOT_OPTIMIZATION_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
@@ -697,23 +678,10 @@ def run_snapshot_candidate_backtest(
                 benchmark_symbol=benchmark_symbol,
             )
             if spec.rule == "default_factor_stack":
-                target_weights, _signal, _metadata = build_default_r1000_target_weights(
-                    snapshot,
-                    current_holdings,
-                    benchmark_symbol=benchmark_symbol,
-                    safe_haven=safe_symbol,
-                    holdings_count=spec.holdings_count,
-                    single_name_cap=spec.single_name_cap,
-                    sector_cap=spec.sector_cap,
-                    hold_bonus=spec.hold_bonus,
-                    soft_defense_exposure=spec.soft_defense_exposure,
-                    hard_defense_exposure=spec.hard_defense_exposure,
-                    soft_breadth_threshold=spec.soft_breadth_threshold,
-                    hard_breadth_threshold=spec.hard_breadth_threshold,
+                raise ValueError(
+                    "default_factor_stack belonged to the retired Russell 1000 Multi-Factor Defensive profile"
                 )
-                scores = pd.DataFrame()
-            else:
-                target_weights, scores, _metadata = _build_new_snapshot_target_weights(snapshot, current_holdings, spec)
+            target_weights, scores, _metadata = _build_new_snapshot_target_weights(snapshot, current_holdings, spec)
             turnover = _compute_turnover(current_weights, target_weights)
             turnover_history.at[next_date] = turnover
             current_weights = target_weights

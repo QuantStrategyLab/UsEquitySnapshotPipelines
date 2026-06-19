@@ -13,6 +13,7 @@ on:
         type: choice
         options:
           - russell_top50_leader_rotation
+          - global_etf_rotation
       max_month_lag:
         description: Maximum allowed month lag between snapshot_as_of and run date.
         required: false
@@ -30,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_top50_leader_rotation","global_etf_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation')) }}
     permissions:
       contents: read
       id-token: write
@@ -41,6 +42,7 @@ jobs:
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
       SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
+      SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/global_etf_rotation' }}
 
     steps:
       - name: Checkout
@@ -65,6 +67,10 @@ jobs:
             russell_top50_leader_rotation)
               prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX}"
               manifest_name="russell_top50_leader_rotation_feature_snapshot_latest.csv.manifest.json"
+              ;;
+            global_etf_rotation)
+              prefix="${SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX}"
+              manifest_name="global_etf_rotation_feature_snapshot_latest.csv.manifest.json"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

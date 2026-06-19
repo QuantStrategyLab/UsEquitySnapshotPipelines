@@ -81,9 +81,11 @@ def test_automated_snapshot_publish_runs_after_source_input_refresh() -> None:
     assert "github.event.workflow_run.event == 'schedule'" in workflow
     assert '[ "${GITHUB_EVENT_NAME}" = "workflow_run" ]' in workflow
 
-    matrix_line = next(line for line in workflow.splitlines() if "fromJSON(github.event_name != 'workflow_dispatch'" in line)
-    scheduled_matrix = matrix_line.split("|| format", maxsplit=1)[0]
-    assert '["russell_top50_leader_rotation"]' in scheduled_matrix
+    matrix_line = next(line for line in workflow.splitlines() if "fromJSON(github.event_name == 'schedule'" in line)
+    workflow_run_matrix = matrix_line.split("github.event_name != 'workflow_dispatch'", maxsplit=1)[1]
+    assert '["global_etf_rotation"]' in matrix_line
+    assert '["russell_top50_leader_rotation"]' in workflow_run_matrix
+    scheduled_matrix = matrix_line
     assert "russell_1000_multi_factor_defensive" not in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in workflow
