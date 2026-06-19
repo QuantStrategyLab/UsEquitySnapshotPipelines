@@ -1,4 +1,4 @@
-# Mega-Cap Leader Rotation Dynamic Universe Validation
+# Russell Top50 Leader Rotation Dynamic Universe Validation
 
 This note records the point-in-time validation added for the dynamic Russell
 Top50 leader-rotation research. It is research-only and must not be used to

@@ -7,6 +7,7 @@ from pathlib import Path
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
+GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,19 @@ _PROFILE_CONTRACTS = {
         neutral_gcs_prefix_hint=(
             "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
             "russell_top50_leader_rotation_staging"
+        ),
+        manifest_required_by_runtime=True,
+    ),
+    GLOBAL_ETF_ROTATION_PROFILE: SnapshotProfileContract(
+        profile=GLOBAL_ETF_ROTATION_PROFILE,
+        display_name="Global ETF Rotation",
+        contract_version="global_etf_rotation.feature_snapshot.v1",
+        snapshot_filename="global_etf_rotation_feature_snapshot_latest.csv",
+        manifest_filename="global_etf_rotation_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="global_etf_rotation_ranking_latest.csv",
+        neutral_gcs_prefix_hint=(
+            "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+            "global_etf_rotation"
         ),
         manifest_required_by_runtime=True,
     ),

@@ -14,12 +14,12 @@ It is an evidence-producing repository. It does not place trades and should not 
 
 ### Direct runtime strategies
 
-Direct runtime strategies such as ETF rotation, TQQQ/SOXL profiles, and Smart DCA live in UsEquityStrategies; this repository only prepares data and evidence for profiles that need snapshot artifacts or candidate review.
+Direct runtime strategy code such as TQQQ/SOXL profiles and Smart DCA lives in UsEquityStrategies; this repository owns snapshot artifacts, universe audits, and candidate-review evidence for strategies that need controlled upstream data. Global ETF Rotation is now feature-snapshot backed at runtime, and its ranking-pool governance is snapshot-managed here.
 
 ### Snapshot-backed work handled here
 
-- Russell 1000 Multi-Factor Defensive
-- Mega Cap Leader Rotation Top50 Balanced
+- Russell Top50 Leader Rotation
+- Global ETF Rotation feature snapshot and universe audit artifacts
 - Tech/Communication Pullback Enhancement research artifacts
 - candidate ranking and replacement-review research outputs
 
@@ -53,6 +53,7 @@ python -m pytest -q
 - [`docs/crisis-response-live-promotion-spec.md`](docs/crisis-response-live-promotion-spec.md)
 - [`docs/crisis-response-research-roadmap.md`](docs/crisis-response-research-roadmap.md)
 - [`docs/crisis-response-v1.md`](docs/crisis-response-v1.md)
+- [`docs/global-etf-rotation-snapshot-management.md`](docs/global-etf-rotation-snapshot-management.md)
 - [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
 - [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)

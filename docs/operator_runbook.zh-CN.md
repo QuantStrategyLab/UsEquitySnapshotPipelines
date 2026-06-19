@@ -10,11 +10,11 @@
 
 - `russell_top50_leader_rotation`
 
-`russell_1000_multi_factor_defensive` 因长期只小幅跑赢 SPY、回撤优势不足，已从本仓库运行时契约中退役。`tech_communication_pullback_enhancement`、`mega_cap_leader_rotation_dynamic_top20`、`mega_cap_leader_rotation_aggressive`、`dynamic_mega_leveraged_pullback` 均保留为归档研究，不再出现在 publish 或 health workflow。
+`russell_1000_multi_factor_defensive` 因长期只小幅跑赢 SPY、回撤优势不足，已从本仓库运行时契约中退役。`tech_communication_pullback_enhancement` 以及已退役的 Russell Top50 dynamic/leveraged 研究变体均保留为归档研究，不再出现在 publish 或 health workflow。
 
 ## 本地手动构建
 
-Russell Top50 激进 leader rotation：
+Russell Top50 leader rotation：
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \

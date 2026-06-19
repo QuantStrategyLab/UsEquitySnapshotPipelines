@@ -8,6 +8,7 @@ import pandas as pd
 
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
+GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
 
 
 def _price_rows(symbols: dict[str, tuple[float, float]], *, periods: int = 320) -> list[dict[str, object]]:
@@ -81,6 +82,30 @@ def _mega_universe() -> pd.DataFrame:
     )
 
 
+def _global_etf_prices() -> pd.DataFrame:
+    symbols = {
+        "SMH": (120.0, 0.0018),
+        "GLD": (180.0, 0.0011),
+        "VOO": (400.0, 0.0008),
+        "SPY": (500.0, 0.0008),
+        "EFA": (80.0, 0.0006),
+        "EEM": (45.0, 0.0004),
+        "AGG": (100.0, 0.0001),
+        "BIL": (91.0, 0.0001),
+    }
+    return pd.DataFrame(_price_rows(symbols))
+
+
+def _global_etf_universe() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"symbol": "SMH", "sector": "Semiconductors"},
+            {"symbol": "GLD", "sector": "Gold"},
+            {"symbol": "VOO", "sector": "US Large Cap"},
+        ]
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Write synthetic input data for snapshot workflow smoke tests.")
     parser.add_argument("--profile", required=True)
@@ -100,6 +125,9 @@ def main(argv: list[str] | None = None) -> int:
     elif profile == RUSSELL_TOP50_LEADER_ROTATION_PROFILE:
         prices = _mega_prices()
         universe = _mega_universe()
+    elif profile == GLOBAL_ETF_ROTATION_PROFILE:
+        prices = _global_etf_prices()
+        universe = _global_etf_universe()
     else:
         raise SystemExit(f"Unsupported profile: {args.profile}")
 
