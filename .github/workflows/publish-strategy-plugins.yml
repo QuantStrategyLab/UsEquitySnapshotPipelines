@@ -556,15 +556,15 @@ jobs:
       INPUT_IBIT_ZSCORE_METRICS_URLS: ${{ inputs.ibit_zscore_metrics_urls }}
       IBIT_ZSCORE_GCS_PREFIX: ${{ vars.IBIT_ZSCORE_EXIT_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit' }}
       IBIT_ZSCORE_METRICS_URLS: ${{ vars.IBIT_ZSCORE_METRICS_URLS }}
-      IBIT_ZSCORE_METRICS_URL: ${{ vars.IBIT_ZSCORE_METRICS_URL || 'https://newhedge.io/api/v2/metrics/mvrv-z-score/mvrv_z' }}
-      NEW_HEDGE_API_TOKEN: ${{ secrets.NEW_HEDGE_API_TOKEN }}
+      IBIT_ZSCORE_METRICS_URL: ${{ vars.IBIT_ZSCORE_METRICS_URL || 'https://api.bitcoin-data.com/v1/mvrv-zscore' }}
       BGEOMETRICS_API_TOKEN: ${{ secrets.BGEOMETRICS_API_TOKEN }}
-      IBIT_ZSCORE_METRICS_NEW_HEDGE_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_NEW_HEDGE_TOKEN }}
       IBIT_ZSCORE_METRICS_BGEOMETRICS_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_BGEOMETRICS_TOKEN }}
       IBIT_ZSCORE_METRICS_QUERY_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_QUERY_TOKEN }}
       IBIT_ZSCORE_METRICS_BEARER_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_BEARER_TOKEN }}
       IBIT_ZSCORE_METRICS_API_KEY: ${{ secrets.IBIT_ZSCORE_METRICS_API_KEY }}
       IBIT_ZSCORE_METRICS_PROXY: ${{ secrets.IBIT_ZSCORE_METRICS_PROXY }}
+      IBIT_ZSCORE_METRICS_PUBLIC_PROXIES: ${{ secrets.IBIT_ZSCORE_METRICS_PUBLIC_PROXIES || vars.IBIT_ZSCORE_METRICS_PUBLIC_PROXIES }}
+      IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY: ${{ vars.IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY || 'false' }}
       STRATEGY_PROFILE: ibit_smart_dca
       PLUGIN_NAME: ibit_zscore_exit
       PRICE_INPUT_DIR: data/input/strategy_plugins/ibit_smart_dca/ibit_zscore_exit

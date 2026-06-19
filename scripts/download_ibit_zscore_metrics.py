@@ -18,6 +18,7 @@ DATE_ALIASES = ("as_of", "date", "timestamp", "time", "day", "d")
 ZSCORE_ALIASES = ("mvrv_zscore", "mvrv_z_score", "mvrv_z", "mvrvzscore", "zscore", "z_score")
 RECORD_CONTAINER_KEYS = ("data", "records", "result", "results", "values", "rows")
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+SENSITIVE_QUERY_PARAMS = frozenset({"access_token", "api_key", "api_token", "apikey", "key", "token"})
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,20 @@ def _url_with_query_param(url: str, *, name: str, value: str | None) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def _url_without_sensitive_query_params(url: str) -> str:
+    parsed = urlparse(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.strip().lower() not in SENSITIVE_QUERY_PARAMS
+    ]
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _public_proxy_auth(auth: MetricsAuth) -> MetricsAuth:
+    return MetricsAuth(generic_query_token_param=auth.generic_query_token_param)
+
+
 def _request_url_and_headers(url: str, auth: MetricsAuth) -> tuple[str, dict[str, str]]:
     headers = {"Accept": "application/json,text/csv;q=0.9,*/*;q=0.1"}
     request_url = url
@@ -189,6 +204,10 @@ def _proxies_from_url(proxy_url: str | None) -> dict[str, str] | None:
     if not proxy_url:
         return None
     return {"http": proxy_url, "https": proxy_url}
+
+
+def _truthy_env_value(value: str | None) -> bool:
+    return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def _retry_wait_seconds(response: requests.Response | None, *, retry_wait_seconds: float, attempt_index: int) -> float:
@@ -216,6 +235,8 @@ def download_ibit_zscore_metrics_from_sources(
     end: object | None = None,
     auth: MetricsAuth | None = None,
     proxy_url: str | None = None,
+    public_proxy_urls: Sequence[str] | None = None,
+    allow_public_proxy: bool = False,
     attempts: int = 3,
     retry_wait_seconds: float = 2.0,
 ) -> MetricsDownloadResult:
@@ -224,39 +245,52 @@ def download_ibit_zscore_metrics_from_sources(
 
     attempts = max(attempts, 1)
     auth = auth or MetricsAuth()
-    proxies = _proxies_from_url(proxy_url)
+    public_proxy_urls = public_proxy_urls or []
     errors: list[str] = []
 
     for url in urls:
         host = _source_host(url)
-        for attempt in range(1, attempts + 1):
-            response: requests.Response | None = None
-            try:
-                request_url, headers = _request_url_and_headers(url, auth)
-                response = requests.get(request_url, headers=headers, timeout=60, proxies=proxies)
-                if response.status_code in RETRYABLE_STATUS_CODES:
-                    if attempt < attempts:
+        routes: list[tuple[str, str, MetricsAuth, str | None]] = [("direct", url, auth, proxy_url)]
+        if allow_public_proxy:
+            public_url = _url_without_sensitive_query_params(url)
+            public_auth = _public_proxy_auth(auth)
+            routes.extend(
+                (f"public-proxy-{idx}", public_url, public_auth, public_proxy_url)
+                for idx, public_proxy_url in enumerate(public_proxy_urls, start=1)
+            )
+
+        for route_label, route_url, route_auth, route_proxy_url in routes:
+            proxies = _proxies_from_url(route_proxy_url)
+            for attempt in range(1, attempts + 1):
+                response: requests.Response | None = None
+                try:
+                    request_url, headers = _request_url_and_headers(route_url, route_auth)
+                    response = requests.get(request_url, headers=headers, timeout=60, proxies=proxies)
+                    if response.status_code in RETRYABLE_STATUS_CODES:
+                        if attempt < attempts:
+                            time.sleep(
+                                _retry_wait_seconds(
+                                    response, retry_wait_seconds=retry_wait_seconds, attempt_index=attempt
+                                )
+                            )
+                            continue
+                    response.raise_for_status()
+                    metrics = normalize_ibit_zscore_metrics(_frame_from_response(response), start=start, end=end)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    metrics.to_csv(output_path, index=False)
+                    return MetricsDownloadResult(output_path=output_path, source_url=url, row_count=len(metrics))
+                except requests.RequestException as exc:
+                    should_retry = response is None or response.status_code in RETRYABLE_STATUS_CODES
+                    if should_retry and attempt < attempts:
                         time.sleep(
                             _retry_wait_seconds(response, retry_wait_seconds=retry_wait_seconds, attempt_index=attempt)
                         )
                         continue
-                response.raise_for_status()
-                metrics = normalize_ibit_zscore_metrics(_frame_from_response(response), start=start, end=end)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                metrics.to_csv(output_path, index=False)
-                return MetricsDownloadResult(output_path=output_path, source_url=url, row_count=len(metrics))
-            except requests.RequestException as exc:
-                should_retry = response is None or response.status_code in RETRYABLE_STATUS_CODES
-                if should_retry and attempt < attempts:
-                    time.sleep(
-                        _retry_wait_seconds(response, retry_wait_seconds=retry_wait_seconds, attempt_index=attempt)
-                    )
-                    continue
-                errors.append(f"{host}: {_safe_error(exc)}")
-                break
-            except (ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
-                errors.append(f"{host}: {exc.__class__.__name__}")
-                break
+                    errors.append(f"{host} via {route_label}: {_safe_error(exc)}")
+                    break
+                except (ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+                    errors.append(f"{host} via {route_label}: {exc.__class__.__name__}")
+                    break
 
     raise RuntimeError("failed to download IBIT zscore metrics from configured sources: " + "; ".join(errors))
 
@@ -295,6 +329,10 @@ def _first_env_value(names: Iterable[str]) -> str | None:
 
 def _env_values(names: Iterable[str]) -> list[str]:
     return [value for name in names if (value := _env_value(name))]
+
+
+def _env_flag(names: Iterable[str]) -> bool:
+    return _truthy_env_value(_first_env_value(names))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -362,6 +400,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=["IBIT_ZSCORE_METRICS_PROXY"],
         help="Environment variable containing a trusted HTTP(S) proxy URL. Can be passed multiple times.",
     )
+    parser.add_argument(
+        "--public-proxies-env",
+        action="append",
+        default=["IBIT_ZSCORE_METRICS_PUBLIC_PROXIES"],
+        help="Environment variable containing comma/newline-separated public proxy URLs.",
+    )
+    parser.add_argument(
+        "--allow-public-proxy-env",
+        action="append",
+        default=["IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY"],
+        help="Environment variable enabling public proxy fallback when set to true/1/yes/on.",
+    )
     args = parser.parse_args(argv)
 
     urls = _split_url_values(args.url) or _split_url_values(_env_values(args.urls_env))
@@ -384,6 +434,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         end=args.end,
         auth=auth,
         proxy_url=_first_env_value(args.proxy_env),
+        public_proxy_urls=_split_url_values(_env_values(args.public_proxies_env)),
+        allow_public_proxy=_env_flag(args.allow_public_proxy_env),
         attempts=args.attempts,
         retry_wait_seconds=args.retry_wait_seconds,
     )
