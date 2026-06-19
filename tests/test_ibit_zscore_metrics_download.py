@@ -193,7 +193,47 @@ def test_download_metrics_retries_rate_limited_source(monkeypatch, tmp_path) -> 
     assert sleeps == [0.0]
 
 
-def test_public_proxy_fallback_strips_credentials(monkeypatch, tmp_path) -> None:
+def test_public_proxy_fallback_skips_credentialed_requests(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    calls = []
+    sleeps = []
+
+    def fake_get(url, *, headers, timeout, proxies):
+        calls.append({"url": url, "headers": headers, "timeout": timeout, "proxies": proxies})
+        response = _json_response({"error": "rate limited"}, status_code=429, url=url)
+        response.headers["Retry-After"] = "0"
+        return response
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    try:
+        module.download_ibit_zscore_metrics_from_sources(
+            urls=["https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01&token=embedded-token"],
+            output_path=tmp_path / "metrics.csv",
+            auth=module.MetricsAuth(
+                bgeometrics_query_token="provider-token",
+                bearer_token="bearer-token",
+                api_key="api-key",
+            ),
+            public_proxy_urls=["http://public-proxy.example:8080"],
+            allow_public_proxy=True,
+            attempts=1,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("credentialed public proxy fallback should not succeed")
+
+    assert len(calls) == 1
+    assert calls[0]["url"].endswith("token=embedded-token")
+    assert calls[0]["headers"]["Authorization"] == "Bearer bearer-token"
+    assert calls[0]["headers"]["X-API-Key"] == "api-key"
+    assert calls[0]["proxies"] is None
+    assert sleeps == []
+
+
+def test_public_proxy_fallback_allows_non_credentialed_requests(monkeypatch, tmp_path) -> None:
     module = _load_script_module()
     calls = []
     sleeps = []
@@ -210,22 +250,17 @@ def test_public_proxy_fallback_strips_credentials(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
 
     result = module.download_ibit_zscore_metrics_from_sources(
-        urls=["https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01&token=embedded-token"],
+        urls=["https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01"],
         output_path=tmp_path / "metrics.csv",
-        auth=module.MetricsAuth(
-            bgeometrics_query_token="provider-token",
-            bearer_token="bearer-token",
-            api_key="api-key",
-        ),
         public_proxy_urls=["http://public-proxy.example:8080"],
         allow_public_proxy=True,
         attempts=1,
     )
 
     assert result.row_count == 1
-    assert calls[0]["url"].endswith("token=embedded-token")
-    assert calls[0]["headers"]["Authorization"] == "Bearer bearer-token"
-    assert calls[0]["headers"]["X-API-Key"] == "api-key"
+    assert calls[0]["url"] == "https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01"
+    assert "Authorization" not in calls[0]["headers"]
+    assert "X-API-Key" not in calls[0]["headers"]
     assert calls[0]["proxies"] is None
     assert calls[1]["url"] == "https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01"
     assert "Authorization" not in calls[1]["headers"]

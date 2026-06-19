@@ -182,6 +182,13 @@ def _public_proxy_auth(auth: MetricsAuth) -> MetricsAuth:
     return MetricsAuth(generic_query_token_param=auth.generic_query_token_param)
 
 
+def _query_contains_sensitive_params(url: str) -> bool:
+    return any(
+        key.strip().lower() in SENSITIVE_QUERY_PARAMS
+        for key, _ in parse_qsl(urlparse(url).query, keep_blank_values=True)
+    )
+
+
 def _request_url_and_headers(url: str, auth: MetricsAuth) -> tuple[str, dict[str, str]]:
     headers = {"Accept": "application/json,text/csv;q=0.9,*/*;q=0.1"}
     request_url = url
@@ -198,6 +205,13 @@ def _request_url_and_headers(url: str, auth: MetricsAuth) -> tuple[str, dict[str
     if auth.api_key:
         headers["X-API-Key"] = auth.api_key
     return request_url, headers
+
+
+def _request_has_credentials(url: str, auth: MetricsAuth) -> bool:
+    request_url, headers = _request_url_and_headers(url, auth)
+    if _query_contains_sensitive_params(request_url):
+        return True
+    return "Authorization" in headers or "X-API-Key" in headers
 
 
 def _proxies_from_url(proxy_url: str | None) -> dict[str, str] | None:
@@ -251,7 +265,7 @@ def download_ibit_zscore_metrics_from_sources(
     for url in urls:
         host = _source_host(url)
         routes: list[tuple[str, str, MetricsAuth, str | None]] = [("direct", url, auth, proxy_url)]
-        if allow_public_proxy:
+        if allow_public_proxy and not _request_has_credentials(url, auth):
             public_url = _url_without_sensitive_query_params(url)
             public_auth = _public_proxy_auth(auth)
             routes.extend(
