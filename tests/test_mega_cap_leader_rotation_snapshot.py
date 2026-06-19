@@ -7,7 +7,7 @@ import pandas as pd
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_snapshot import build_artifacts
 
 
-PROFILE = "russell_top50_leader_rotation_aggressive"
+PROFILE = "russell_top50_leader_rotation"
 
 
 def _sample_prices() -> pd.DataFrame:
@@ -79,7 +79,7 @@ def test_builds_mega_cap_top50_balanced_artifact_contract_by_default(tmp_path) -
     assert not ranking.empty
     assert "SPY" not in set(ranking["symbol"])
     assert manifest["strategy_profile"] == PROFILE
-    assert manifest["contract_version"] == "russell_top50_leader_rotation_aggressive.feature_snapshot.v1"
+    assert manifest["contract_version"] == "russell_top50_leader_rotation.feature_snapshot.v1"
     assert manifest["config_path"] == "strategy_manifest_default"
     assert manifest["config_sha256"]
     assert manifest["row_count"] == len(snapshot)
@@ -110,9 +110,9 @@ def test_builds_mega_cap_top50_balanced_artifact_contract(tmp_path) -> None:
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(result.release_summary_path.read_text(encoding="utf-8"))
 
-    assert result.snapshot_path.name == "russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv"
+    assert result.snapshot_path.name == "russell_top50_leader_rotation_feature_snapshot_latest.csv"
     assert manifest["strategy_profile"] == PROFILE
-    assert manifest["contract_version"] == "russell_top50_leader_rotation_aggressive.feature_snapshot.v1"
+    assert manifest["contract_version"] == "russell_top50_leader_rotation.feature_snapshot.v1"
     assert manifest["config_path"] == "strategy_manifest_default"
     assert manifest["config_sha256"]
     assert summary["strategy_profile"] == PROFILE

@@ -93,7 +93,7 @@ jobs:
       SAFE_HAVEN: ${{ inputs.safe_haven || 'BOXX' }}
       EXTRA_SYMBOLS: ${{ inputs.extra_symbols || 'QQQ,SPY,BOXX' }}
       CHUNK_SIZE: ${{ inputs.chunk_size || '100' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
 
     steps:
       - name: Checkout
@@ -234,12 +234,12 @@ jobs:
           gh workflow run publish-snapshot-artifacts.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref "${GITHUB_REF_NAME}" \
-            --field profile="russell_top50_leader_rotation_aggressive" \
+            --field profile="russell_top50_leader_rotation" \
             --field use_sample_data="false" \
             --field prices_path="${prices_path}" \
             --field universe_path="${OUTPUT_PREFIX%/}/r1000_latest_holdings_snapshot.csv" \
             --field source_input_manifest_path="${source_input_manifest_path}" \
-            --field gcs_prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX}" \
+            --field gcs_prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX}" \
             --field execute_publish="true"
 
       - name: Upload generated input artifacts

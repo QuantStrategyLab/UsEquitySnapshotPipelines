@@ -8,22 +8,22 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 
 The only runtime-facing snapshot profile produced here is:
 
-- `russell_top50_leader_rotation_aggressive`
+- `russell_top50_leader_rotation`
 
 `russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement`, `mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are archived research-only and are no longer exposed by publish or health workflows.
 
 ## Manual Local Build
 
-Russell Top50 aggressive leader rotation:
+Russell Top50 leader rotation:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_russell_top50_leader_rotation_aggressive_snapshot.py \
+python scripts/build_russell_top50_leader_rotation_snapshot.py \
   --prices /path/to/r1000_price_history.csv \
   --universe /path/to/r1000_latest_holdings_snapshot.csv \
   --as-of 2026-04-01 \
   --dynamic-universe-size 50 \
-  --output-dir data/output/russell_top50_leader_rotation_aggressive
+  --output-dir data/output/russell_top50_leader_rotation
 ```
 
 ## Manual GitHub Actions Build
@@ -32,7 +32,7 @@ Use the `Publish Snapshot Artifacts` workflow.
 
 Required input:
 
-- `profile`, currently only `russell_top50_leader_rotation_aggressive`
+- `profile`, currently only `russell_top50_leader_rotation`
 
 For production data, set both:
 
@@ -81,7 +81,7 @@ gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_
 `Publish Snapshot Artifacts` runs after source-input refresh and builds:
 
 ```text
-profiles=russell_top50_leader_rotation_aggressive
+profiles=russell_top50_leader_rotation
 prices_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
@@ -91,7 +91,7 @@ Default scheduled output prefix:
 
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
-| `russell_top50_leader_rotation_aggressive` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging` |
+| `russell_top50_leader_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
 
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 

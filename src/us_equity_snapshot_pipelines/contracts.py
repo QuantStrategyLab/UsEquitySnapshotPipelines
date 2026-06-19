@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
-RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE = "russell_top50_leader_rotation_aggressive"
+RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 
 
 @dataclass(frozen=True)
@@ -52,16 +52,16 @@ _PROFILE_CONTRACTS = {
         ),
         manifest_required_by_runtime=True,
     ),
-    RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE: SnapshotProfileContract(
-        profile=RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
-        display_name="Russell Top50 Leader Rotation Aggressive",
-        contract_version="russell_top50_leader_rotation_aggressive.feature_snapshot.v1",
-        snapshot_filename="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv",
-        manifest_filename="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv.manifest.json",
-        ranking_filename="russell_top50_leader_rotation_aggressive_ranking_latest.csv",
+    RUSSELL_TOP50_LEADER_ROTATION_PROFILE: SnapshotProfileContract(
+        profile=RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
+        display_name="Russell Top50 Leader Rotation",
+        contract_version="russell_top50_leader_rotation.feature_snapshot.v1",
+        snapshot_filename="russell_top50_leader_rotation_feature_snapshot_latest.csv",
+        manifest_filename="russell_top50_leader_rotation_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="russell_top50_leader_rotation_ranking_latest.csv",
         neutral_gcs_prefix_hint=(
             "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-            "russell_top50_leader_rotation_aggressive_staging"
+            "russell_top50_leader_rotation_staging"
         ),
         manifest_required_by_runtime=True,
     ),
@@ -90,5 +90,5 @@ def list_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
 def list_scheduled_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
     return tuple(
         _PROFILE_CONTRACTS[profile]
-        for profile in (RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,)
+        for profile in (RUSSELL_TOP50_LEADER_ROTATION_PROFILE,)
     )

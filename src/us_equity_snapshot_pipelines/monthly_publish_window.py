@@ -9,13 +9,13 @@ from pathlib import Path
 import pandas as pd
 
 from .contracts import (
-    RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+    RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
 )
 
 
 MONTHLY_SNAPSHOT_PROFILES = frozenset(
     {
-        RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+        RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
     }
 )
 

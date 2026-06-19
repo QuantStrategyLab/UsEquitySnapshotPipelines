@@ -7,7 +7,7 @@ import pandas as pd
 
 
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
-RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE = "russell_top50_leader_rotation_aggressive"
+RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 
 
 def _price_rows(symbols: dict[str, tuple[float, float]], *, periods: int = 320) -> list[dict[str, object]]:
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if profile == TECH_COMMUNICATION_PULLBACK_PROFILE:
         prices = _tech_prices()
         universe = _tech_universe()
-    elif profile == RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE:
+    elif profile == RUSSELL_TOP50_LEADER_ROTATION_PROFILE:
         prices = _mega_prices()
         universe = _mega_universe()
     else:

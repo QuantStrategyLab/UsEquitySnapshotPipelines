@@ -19,7 +19,7 @@ from us_equity_snapshot_pipelines.strategy_plugin_runner import (
 
 STRATEGY_NAME = "tqqq_growth_income"
 SOXL_STRATEGY_NAME = "soxl_soxx_trend_income"
-LEFT_SIDE_STRATEGY_NAME = "russell_top50_leader_rotation_aggressive"
+LEFT_SIDE_STRATEGY_NAME = "russell_top50_leader_rotation"
 
 
 def _quiet_prices() -> pd.DataFrame:
