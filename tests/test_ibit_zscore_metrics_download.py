@@ -115,6 +115,17 @@ def test_url_with_query_param_preserves_existing_query() -> None:
     )
 
 
+def test_url_without_sensitive_query_params_strips_tokens() -> None:
+    module = _load_script_module()
+
+    assert (
+        module._url_without_sensitive_query_params(
+            "https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01&token=secret&api_key=secret2"
+        )
+        == "https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01"
+    )
+
+
 def _json_response(payload: object, *, status_code: int, url: str) -> requests.Response:
     response = requests.Response()
     response.status_code = status_code
@@ -180,3 +191,47 @@ def test_download_metrics_retries_rate_limited_source(monkeypatch, tmp_path) -> 
     assert result.row_count == 1
     assert len(calls) == 2
     assert sleeps == [0.0]
+
+
+def test_public_proxy_fallback_strips_credentials(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    calls = []
+    sleeps = []
+
+    def fake_get(url, *, headers, timeout, proxies):
+        calls.append({"url": url, "headers": headers, "timeout": timeout, "proxies": proxies})
+        if len(calls) == 1:
+            response = _json_response({"error": "rate limited"}, status_code=429, url=url)
+            response.headers["Retry-After"] = "0"
+            return response
+        return _json_response([{"d": "2026-01-01", "mvrvZscore": 1.1064}], status_code=200, url=url)
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    result = module.download_ibit_zscore_metrics_from_sources(
+        urls=["https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01&token=embedded-token"],
+        output_path=tmp_path / "metrics.csv",
+        auth=module.MetricsAuth(
+            bgeometrics_query_token="provider-token",
+            bearer_token="bearer-token",
+            api_key="api-key",
+        ),
+        public_proxy_urls=["http://public-proxy.example:8080"],
+        allow_public_proxy=True,
+        attempts=1,
+    )
+
+    assert result.row_count == 1
+    assert calls[0]["url"].endswith("token=embedded-token")
+    assert calls[0]["headers"]["Authorization"] == "Bearer bearer-token"
+    assert calls[0]["headers"]["X-API-Key"] == "api-key"
+    assert calls[0]["proxies"] is None
+    assert calls[1]["url"] == "https://api.bitcoin-data.com/v1/mvrv-zscore?startday=2026-01-01"
+    assert "Authorization" not in calls[1]["headers"]
+    assert "X-API-Key" not in calls[1]["headers"]
+    assert calls[1]["proxies"] == {
+        "http": "http://public-proxy.example:8080",
+        "https": "http://public-proxy.example:8080",
+    }
+    assert sleeps == []

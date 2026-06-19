@@ -114,8 +114,11 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert "IBIT_ZSCORE_METRICS_QUERY_TOKEN" in workflow
     assert "IBIT_ZSCORE_METRICS_BEARER_TOKEN" in workflow
     assert "BGEOMETRICS_API_TOKEN" in workflow
-    assert "NEW_HEDGE_API_TOKEN" in workflow
     assert "IBIT_ZSCORE_METRICS_PROXY" in workflow
+    assert "IBIT_ZSCORE_METRICS_PUBLIC_PROXIES" in workflow
+    assert "IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY" in workflow
+    assert "https://api.bitcoin-data.com/v1/mvrv-zscore" in workflow
+    assert "newhedge.io" not in workflow
     assert "scripts/download_ibit_zscore_metrics.py" in workflow
     assert 'zscore_metrics = "${zscore_path}"' in workflow
     assert "ibit_zscore_exit.v1" in workflow
