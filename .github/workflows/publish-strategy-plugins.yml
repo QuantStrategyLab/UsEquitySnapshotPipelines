@@ -565,6 +565,12 @@ jobs:
       IBIT_ZSCORE_METRICS_PROXY: ${{ secrets.IBIT_ZSCORE_METRICS_PROXY }}
       IBIT_ZSCORE_METRICS_PUBLIC_PROXIES: ${{ secrets.IBIT_ZSCORE_METRICS_PUBLIC_PROXIES || vars.IBIT_ZSCORE_METRICS_PUBLIC_PROXIES }}
       IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY: ${{ vars.IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY || 'false' }}
+      IBIT_ZSCORE_METRICS_MIN_ROWS: ${{ vars.IBIT_ZSCORE_METRICS_MIN_ROWS || '365' }}
+      IBIT_ZSCORE_METRICS_MAX_AGE_DAYS: ${{ vars.IBIT_ZSCORE_METRICS_MAX_AGE_DAYS || '10' }}
+      IBIT_ZSCORE_METRICS_MAX_FALLBACK_AGE_DAYS: ${{ vars.IBIT_ZSCORE_METRICS_MAX_FALLBACK_AGE_DAYS || '5' }}
+      IBIT_ZSCORE_METRICS_MAX_GAP_DAYS: ${{ vars.IBIT_ZSCORE_METRICS_MAX_GAP_DAYS || '14' }}
+      IBIT_ZSCORE_METRICS_MAX_ABS_ZSCORE: ${{ vars.IBIT_ZSCORE_METRICS_MAX_ABS_ZSCORE || '100' }}
+      IBIT_ZSCORE_METRICS_MAX_DAILY_ZSCORE_CHANGE: ${{ vars.IBIT_ZSCORE_METRICS_MAX_DAILY_ZSCORE_CHANGE || '25' }}
       STRATEGY_PROFILE: ibit_smart_dca
       PLUGIN_NAME: ibit_zscore_exit
       PRICE_INPUT_DIR: data/input/strategy_plugins/ibit_smart_dca/ibit_zscore_exit
@@ -642,17 +648,50 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
           version: '>= 416.0.0'
 
+      - name: Restore last-good IBIT zscore metrics cache
+        if: steps.ibit-zscore-gcp-auth-check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${PRICE_INPUT_DIR}"
+          cache_uri="${GCS_PREFIX%/}/inputs/ibit_zscore_metrics.csv"
+          fallback_path="${PRICE_INPUT_DIR}/last_good_ibit_zscore_metrics.csv"
+          if gcloud storage cp "${cache_uri}" "${fallback_path}"; then
+            echo "IBIT_ZSCORE_METRICS_FALLBACK_CSV=${fallback_path}" >> "$GITHUB_ENV"
+            echo "Restored last-good IBIT zscore metrics cache from ${cache_uri}"
+          else
+            echo "No last-good IBIT zscore metrics cache found at ${cache_uri}; source download must succeed."
+          fi
+
       - name: Download IBIT zscore metrics
         run: |
           set -euo pipefail
           mkdir -p "${PRICE_INPUT_DIR}"
           output_path="${PRICE_INPUT_DIR}/ibit_zscore_metrics.csv"
-          args=(--output "${output_path}" --start "${PRICE_START}")
+          metadata_path="${PRICE_INPUT_DIR}/ibit_zscore_metrics_download.json"
+          args=(--output "${output_path}" --metadata-output "${metadata_path}" --start "${PRICE_START}")
           if [ -n "${PRICE_END:-}" ]; then
             args+=(--end "${PRICE_END}")
           fi
           python scripts/download_ibit_zscore_metrics.py "${args[@]}"
           test -f "${output_path}"
+          test -f "${metadata_path}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metadata_path = Path(os.environ["PRICE_INPUT_DIR"]) / "ibit_zscore_metrics_download.json"
+          payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+          source_type = payload.get("source_type")
+          if source_type == "fallback":
+              print("::warning::IBIT zscore metrics used last-good fallback cache")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("## IBIT zscore metrics input\\n\\n")
+              summary.write(f"- source_type: `{source_type}`\\n")
+              summary.write(f"- row_count: `{payload.get('row_count')}`\\n")
+              summary.write(f"- latest_as_of: `{payload.get('latest_as_of')}`\\n")
+              summary.write(f"- source_errors: `{len(payload.get('source_errors') or [])}`\\n\\n")
+          PY
 
       - name: Build strategy plugin artifact
         run: |
@@ -765,6 +804,16 @@ jobs:
               echo "DRY-RUN gcloud storage cp ${source_path} ${destination}"
             fi
           done < <(find "${PLUGIN_OUTPUT_DIR}" -type f -print0 | sort -z)
+
+          metrics_cache_source="${PRICE_INPUT_DIR}/ibit_zscore_metrics.csv"
+          metrics_cache_destination="${normalized_prefix}/inputs/ibit_zscore_metrics.csv"
+          if [ -f "${metrics_cache_source}" ]; then
+            if [ "${EXECUTE_PUBLISH}" = "true" ]; then
+              gcloud storage cp "${metrics_cache_source}" "${metrics_cache_destination}"
+            else
+              echo "DRY-RUN gcloud storage cp ${metrics_cache_source} ${metrics_cache_destination}"
+            fi
+          fi
 
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7

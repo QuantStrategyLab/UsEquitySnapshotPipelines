@@ -58,6 +58,21 @@ def test_normalize_ibit_zscore_metrics_accepts_bgeometrics_aliases() -> None:
     ]
 
 
+def test_normalize_ibit_zscore_metrics_accepts_coinmetrics_alias() -> None:
+    module = _load_script_module()
+
+    normalized = module.normalize_ibit_zscore_metrics(
+        pd.DataFrame(
+            {
+                "time": ["2026-01-01T00:00:00Z"],
+                "CapMVRVZ": [1.1064],
+            }
+        )
+    )
+
+    assert normalized.to_dict("records") == [{"as_of": "2026-01-01", "mvrv_zscore": 1.1064}]
+
+
 def test_frame_from_payload_accepts_nested_records_and_filters_dates() -> None:
     module = _load_script_module()
 
@@ -133,6 +148,39 @@ def _json_response(payload: object, *, status_code: int, url: str) -> requests.R
     response._content = json.dumps(payload).encode("utf-8")
     response.headers["content-type"] = "application/json"
     return response
+
+
+def test_validate_metrics_rejects_stale_sparse_or_extreme_data() -> None:
+    module = _load_script_module()
+    quality = module.MetricsQualityConfig(
+        min_rows=3,
+        max_age_days=2,
+        max_gap_days=2,
+        max_abs_zscore=10.0,
+        max_daily_zscore_change=5.0,
+    )
+
+    valid = pd.DataFrame(
+        {
+            "as_of": ["2026-01-01", "2026-01-02", "2026-01-03"],
+            "mvrv_zscore": [1.0, 1.5, 2.0],
+        }
+    )
+    module.validate_ibit_zscore_metrics(valid, quality=quality, today="2026-01-04")
+
+    for frame in [
+        valid.head(2),
+        pd.DataFrame({"as_of": ["2025-12-01", "2025-12-02", "2025-12-03"], "mvrv_zscore": [1.0, 1.5, 2.0]}),
+        pd.DataFrame({"as_of": ["2026-01-01", "2026-01-05", "2026-01-06"], "mvrv_zscore": [1.0, 1.5, 2.0]}),
+        pd.DataFrame({"as_of": ["2026-01-01", "2026-01-02", "2026-01-03"], "mvrv_zscore": [1.0, 11.0, 2.0]}),
+        pd.DataFrame({"as_of": ["2026-01-01", "2026-01-02", "2026-01-03"], "mvrv_zscore": [1.0, 7.0, 2.0]}),
+    ]:
+        try:
+            module.validate_ibit_zscore_metrics(frame, quality=quality, today="2026-01-04")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected quality validation failure for {frame!r}")
 
 
 def test_download_metrics_falls_back_across_sources_without_leaking_newhedge_token(monkeypatch, tmp_path) -> None:
@@ -270,3 +318,94 @@ def test_public_proxy_fallback_allows_non_credentialed_requests(monkeypatch, tmp
         "https": "http://public-proxy.example:8080",
     }
     assert sleeps == []
+
+
+def test_download_metrics_uses_fresh_last_good_fallback_after_source_failures(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+
+    def fake_get(url, *, headers, timeout, proxies):
+        return _json_response({"error": "rate limited"}, status_code=429, url=url)
+
+    fallback_path = tmp_path / "last_good.csv"
+    pd.DataFrame(
+        {
+            "as_of": ["2026-01-01", "2026-01-02", "2026-01-03"],
+            "mvrv_zscore": [1.0, 1.5, 2.0],
+        }
+    ).to_csv(fallback_path, index=False)
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    monkeypatch.setattr(module, "_today_timestamp", lambda today=None: pd.Timestamp("2026-01-04"))
+
+    result = module.download_ibit_zscore_metrics_from_sources(
+        urls=["https://api.bitcoin-data.com/v1/mvrv-zscore"],
+        output_path=tmp_path / "metrics.csv",
+        fallback_csv_path=fallback_path,
+        quality=module.MetricsQualityConfig(min_rows=3, max_fallback_age_days=5),
+        attempts=1,
+    )
+
+    assert result.source_type == "fallback"
+    assert result.source_url == str(fallback_path)
+    assert result.latest_as_of == "2026-01-03"
+    assert result.row_count == 3
+    assert result.source_errors == ("api.bitcoin-data.com via direct: HTTP 429",)
+
+
+def test_download_metrics_rejects_stale_last_good_fallback(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+
+    def fake_get(url, *, headers, timeout, proxies):
+        return _json_response({"error": "rate limited"}, status_code=429, url=url)
+
+    fallback_path = tmp_path / "last_good.csv"
+    pd.DataFrame(
+        {
+            "as_of": ["2025-12-01", "2025-12-02", "2025-12-03"],
+            "mvrv_zscore": [1.0, 1.5, 2.0],
+        }
+    ).to_csv(fallback_path, index=False)
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    monkeypatch.setattr(module, "_today_timestamp", lambda today=None: pd.Timestamp("2026-01-04"))
+
+    try:
+        module.download_ibit_zscore_metrics_from_sources(
+            urls=["https://api.bitcoin-data.com/v1/mvrv-zscore"],
+            output_path=tmp_path / "metrics.csv",
+            fallback_csv_path=fallback_path,
+            quality=module.MetricsQualityConfig(min_rows=3, max_fallback_age_days=5),
+            attempts=1,
+        )
+    except RuntimeError as exc:
+        assert "fallback <local>: ValueError" in str(exc)
+    else:
+        raise AssertionError("stale fallback should fail")
+
+
+def test_main_writes_download_metadata(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+
+    def fake_get(url, *, headers, timeout, proxies):
+        return _json_response([{"d": "2026-01-01", "mvrvZscore": 1.1064}], status_code=200, url=url)
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    output_path = tmp_path / "metrics.csv"
+    metadata_path = tmp_path / "metadata.json"
+
+    assert (
+        module.main(
+            [
+                "--url",
+                "https://api.bitcoin-data.com/v1/mvrv-zscore",
+                "--output",
+                str(output_path),
+                "--metadata-output",
+                str(metadata_path),
+            ]
+        )
+        == 0
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["source_type"] == "source"
+    assert metadata["row_count"] == 1
+    assert metadata["latest_as_of"] == "2026-01-01"
