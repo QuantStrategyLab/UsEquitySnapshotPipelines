@@ -117,6 +117,17 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert "IBIT_ZSCORE_METRICS_PROXY" in workflow
     assert "IBIT_ZSCORE_METRICS_PUBLIC_PROXIES" in workflow
     assert "IBIT_ZSCORE_METRICS_ALLOW_PUBLIC_PROXY" in workflow
+    assert "IBIT_ZSCORE_METRICS_MIN_ROWS" in workflow
+    assert "IBIT_ZSCORE_METRICS_MAX_AGE_DAYS" in workflow
+    assert "IBIT_ZSCORE_METRICS_MAX_FALLBACK_AGE_DAYS" in workflow
+    assert "IBIT_ZSCORE_METRICS_MAX_GAP_DAYS" in workflow
+    assert "IBIT_ZSCORE_METRICS_MAX_ABS_ZSCORE" in workflow
+    assert "IBIT_ZSCORE_METRICS_MAX_DAILY_ZSCORE_CHANGE" in workflow
+    assert "Restore last-good IBIT zscore metrics cache" in workflow
+    assert "IBIT_ZSCORE_METRICS_FALLBACK_CSV" in workflow
+    assert "ibit_zscore_metrics_download.json" in workflow
+    assert "IBIT zscore metrics used last-good fallback cache" in workflow
+    assert "/inputs/ibit_zscore_metrics.csv" in workflow
     assert "https://api.bitcoin-data.com/v1/mvrv-zscore" in workflow
     assert "newhedge.io" not in workflow
     assert "scripts/download_ibit_zscore_metrics.py" in workflow

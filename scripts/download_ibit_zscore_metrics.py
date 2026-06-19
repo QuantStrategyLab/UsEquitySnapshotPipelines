@@ -15,7 +15,7 @@ import requests
 
 
 DATE_ALIASES = ("as_of", "date", "timestamp", "time", "day", "d")
-ZSCORE_ALIASES = ("mvrv_zscore", "mvrv_z_score", "mvrv_z", "mvrvzscore", "zscore", "z_score")
+ZSCORE_ALIASES = ("mvrv_zscore", "mvrv_z_score", "mvrv_z", "mvrvzscore", "capmvrvz", "zscore", "z_score")
 RECORD_CONTAINER_KEYS = ("data", "records", "result", "results", "values", "rows")
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 SENSITIVE_QUERY_PARAMS = frozenset({"access_token", "api_key", "api_token", "apikey", "key", "token"})
@@ -36,6 +36,19 @@ class MetricsDownloadResult:
     output_path: Path
     source_url: str
     row_count: int
+    source_type: str = "source"
+    latest_as_of: str | None = None
+    source_errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MetricsQualityConfig:
+    min_rows: int = 1
+    max_age_days: int | None = None
+    max_fallback_age_days: int | None = None
+    max_gap_days: int | None = None
+    max_abs_zscore: float | None = None
+    max_daily_zscore_change: float | None = None
 
 
 def _normalized_key_map(frame: pd.DataFrame) -> dict[str, str]:
@@ -69,6 +82,51 @@ def normalize_ibit_zscore_metrics(
         raise ValueError("IBIT zscore metrics produced no valid rows")
     normalized["as_of"] = normalized["as_of"].dt.date.astype(str)
     return normalized.reset_index(drop=True)
+
+
+def validate_ibit_zscore_metrics(
+    metrics: pd.DataFrame,
+    *,
+    quality: MetricsQualityConfig | None = None,
+    today: object | None = None,
+    label: str = "IBIT zscore metrics",
+) -> None:
+    quality = quality or MetricsQualityConfig()
+    if len(metrics) < quality.min_rows:
+        raise ValueError(f"{label} require at least {quality.min_rows} rows, got {len(metrics)}")
+
+    as_of = pd.to_datetime(metrics["as_of"], errors="coerce")
+    if as_of.isna().any():
+        raise ValueError(f"{label} contain invalid as_of values")
+    zscore = pd.to_numeric(metrics["mvrv_zscore"], errors="coerce")
+    if zscore.isna().any():
+        raise ValueError(f"{label} contain invalid mvrv_zscore values")
+
+    ordered = pd.DataFrame({"as_of": as_of, "mvrv_zscore": zscore}).sort_values("as_of")
+    if quality.max_gap_days is not None and len(as_of) > 1:
+        max_gap = int(ordered["as_of"].diff().dt.days.max())
+        if max_gap > quality.max_gap_days:
+            raise ValueError(f"{label} max date gap {max_gap}d exceeds {quality.max_gap_days}d")
+
+    latest = ordered["as_of"].max().normalize()
+    if quality.max_age_days is not None:
+        current_day = _today_timestamp(today)
+        age_days = int((current_day - latest).days)
+        if age_days > quality.max_age_days:
+            raise ValueError(f"{label} latest row is {age_days}d old, exceeds {quality.max_age_days}d")
+
+    if quality.max_abs_zscore is not None and float(ordered["mvrv_zscore"].abs().max()) > quality.max_abs_zscore:
+        raise ValueError(f"{label} zscore magnitude exceeds {quality.max_abs_zscore}")
+    if quality.max_daily_zscore_change is not None and len(ordered) > 1:
+        max_change = float(ordered["mvrv_zscore"].diff().abs().max())
+        if max_change > quality.max_daily_zscore_change:
+            raise ValueError(f"{label} daily zscore change {max_change:.4f} exceeds {quality.max_daily_zscore_change}")
+
+
+def _today_timestamp(today: object | None = None) -> pd.Timestamp:
+    if today is not None:
+        return pd.Timestamp(today).normalize()
+    return pd.Timestamp.now(tz="UTC").tz_localize(None).normalize()
 
 
 def _parse_dates(values: pd.Series) -> pd.Series:
@@ -127,6 +185,24 @@ def _frame_from_response(response: requests.Response) -> pd.DataFrame:
     if "json" in content_type or text.lstrip().startswith(("{", "[")):
         return frame_from_payload(json.loads(text))
     return pd.read_csv(StringIO(text))
+
+
+def _latest_as_of(metrics: pd.DataFrame) -> str:
+    return str(pd.to_datetime(metrics["as_of"], errors="coerce").max().date())
+
+
+def _fallback_quality_config(quality: MetricsQualityConfig) -> MetricsQualityConfig:
+    max_age_days = quality.max_fallback_age_days
+    if max_age_days is None:
+        max_age_days = quality.max_age_days
+    return MetricsQualityConfig(
+        min_rows=quality.min_rows,
+        max_age_days=max_age_days,
+        max_fallback_age_days=quality.max_fallback_age_days,
+        max_gap_days=quality.max_gap_days,
+        max_abs_zscore=quality.max_abs_zscore,
+        max_daily_zscore_change=quality.max_daily_zscore_change,
+    )
 
 
 def _split_url_values(values: Iterable[str | None]) -> list[str]:
@@ -251,6 +327,8 @@ def download_ibit_zscore_metrics_from_sources(
     proxy_url: str | None = None,
     public_proxy_urls: Sequence[str] | None = None,
     allow_public_proxy: bool = False,
+    fallback_csv_path: Path | None = None,
+    quality: MetricsQualityConfig | None = None,
     attempts: int = 3,
     retry_wait_seconds: float = 2.0,
 ) -> MetricsDownloadResult:
@@ -259,6 +337,7 @@ def download_ibit_zscore_metrics_from_sources(
 
     attempts = max(attempts, 1)
     auth = auth or MetricsAuth()
+    quality = quality or MetricsQualityConfig()
     public_proxy_urls = public_proxy_urls or []
     errors: list[str] = []
 
@@ -290,9 +369,17 @@ def download_ibit_zscore_metrics_from_sources(
                             continue
                     response.raise_for_status()
                     metrics = normalize_ibit_zscore_metrics(_frame_from_response(response), start=start, end=end)
+                    validate_ibit_zscore_metrics(metrics, quality=quality)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     metrics.to_csv(output_path, index=False)
-                    return MetricsDownloadResult(output_path=output_path, source_url=url, row_count=len(metrics))
+                    return MetricsDownloadResult(
+                        output_path=output_path,
+                        source_url=url,
+                        row_count=len(metrics),
+                        source_type="source",
+                        latest_as_of=_latest_as_of(metrics),
+                        source_errors=tuple(errors),
+                    )
                 except requests.RequestException as exc:
                     should_retry = response is None or response.status_code in RETRYABLE_STATUS_CODES
                     if should_retry and attempt < attempts:
@@ -305,6 +392,25 @@ def download_ibit_zscore_metrics_from_sources(
                 except (ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
                     errors.append(f"{host} via {route_label}: {exc.__class__.__name__}")
                     break
+
+    if fallback_csv_path:
+        try:
+            metrics = normalize_ibit_zscore_metrics(pd.read_csv(fallback_csv_path), start=start, end=end)
+            validate_ibit_zscore_metrics(
+                metrics, quality=_fallback_quality_config(quality), label="fallback IBIT zscore metrics"
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            metrics.to_csv(output_path, index=False)
+            return MetricsDownloadResult(
+                output_path=output_path,
+                source_url=str(fallback_csv_path),
+                row_count=len(metrics),
+                source_type="fallback",
+                latest_as_of=_latest_as_of(metrics),
+                source_errors=tuple(errors),
+            )
+        except (OSError, ValueError, pd.errors.ParserError) as exc:
+            errors.append(f"fallback {_source_host(str(fallback_csv_path))}: {exc.__class__.__name__}")
 
     raise RuntimeError("failed to download IBIT zscore metrics from configured sources: " + "; ".join(errors))
 
@@ -349,6 +455,27 @@ def _env_flag(names: Iterable[str]) -> bool:
     return _truthy_env_value(_first_env_value(names))
 
 
+def _env_int(name: str, default: int | None = None) -> int | None:
+    value = _env_value(name)
+    return int(value) if value is not None else default
+
+
+def _env_float(name: str, default: float | None = None) -> float | None:
+    value = _env_value(name)
+    return float(value) if value is not None else default
+
+
+def _result_metadata(result: MetricsDownloadResult) -> dict[str, object]:
+    return {
+        "source_type": result.source_type,
+        "source": result.source_url,
+        "row_count": result.row_count,
+        "latest_as_of": result.latest_as_of,
+        "output_path": str(result.output_path),
+        "source_errors": list(result.source_errors),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Download and normalize IBIT MVRV Z-Score metrics.")
     parser.add_argument(
@@ -364,8 +491,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Environment variable containing one or more metrics URLs. Can be passed multiple times.",
     )
     parser.add_argument("--output", required=True, help="Output CSV path with as_of,mvrv_zscore columns.")
+    parser.add_argument("--metadata-output", default=None, help="Optional JSON metadata output path.")
+    parser.add_argument(
+        "--fallback-csv",
+        default=_first_env_value(["IBIT_ZSCORE_METRICS_FALLBACK_CSV"]),
+        help="Optional last-good fallback CSV path used only after all sources fail.",
+    )
     parser.add_argument("--start", default=None, help="Optional inclusive start date.")
     parser.add_argument("--end", default=None, help="Optional inclusive end date.")
+    parser.add_argument("--min-rows", type=int, default=None, help="Minimum valid normalized rows.")
+    parser.add_argument("--max-age-days", type=int, default=None, help="Maximum age of the latest source row.")
+    parser.add_argument(
+        "--max-fallback-age-days",
+        type=int,
+        default=None,
+        help="Maximum age of the latest fallback row. Defaults to --max-age-days when unset.",
+    )
+    parser.add_argument("--max-gap-days", type=int, default=None, help="Maximum gap between consecutive rows.")
+    parser.add_argument("--max-abs-zscore", type=float, default=None, help="Maximum absolute zscore value.")
+    parser.add_argument(
+        "--max-daily-zscore-change",
+        type=float,
+        default=None,
+        help="Maximum absolute change between consecutive zscore rows.",
+    )
     parser.add_argument("--attempts", type=int, default=3, help="Attempts per source for transient HTTP errors.")
     parser.add_argument(
         "--retry-wait-seconds",
@@ -441,6 +590,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         bearer_token=_first_env_value(args.bearer_token_env),
         api_key=_first_env_value(args.api_key_env),
     )
+    quality = MetricsQualityConfig(
+        min_rows=args.min_rows if args.min_rows is not None else (_env_int("IBIT_ZSCORE_METRICS_MIN_ROWS", 1) or 1),
+        max_age_days=args.max_age_days
+        if args.max_age_days is not None
+        else _env_int("IBIT_ZSCORE_METRICS_MAX_AGE_DAYS"),
+        max_fallback_age_days=(
+            args.max_fallback_age_days
+            if args.max_fallback_age_days is not None
+            else _env_int("IBIT_ZSCORE_METRICS_MAX_FALLBACK_AGE_DAYS")
+        ),
+        max_gap_days=args.max_gap_days
+        if args.max_gap_days is not None
+        else _env_int("IBIT_ZSCORE_METRICS_MAX_GAP_DAYS"),
+        max_abs_zscore=(
+            args.max_abs_zscore if args.max_abs_zscore is not None else _env_float("IBIT_ZSCORE_METRICS_MAX_ABS_ZSCORE")
+        ),
+        max_daily_zscore_change=(
+            args.max_daily_zscore_change
+            if args.max_daily_zscore_change is not None
+            else _env_float("IBIT_ZSCORE_METRICS_MAX_DAILY_ZSCORE_CHANGE")
+        ),
+    )
     result = download_ibit_zscore_metrics_from_sources(
         urls=urls,
         output_path=output_path,
@@ -450,11 +621,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         proxy_url=_first_env_value(args.proxy_env),
         public_proxy_urls=_split_url_values(_env_values(args.public_proxies_env)),
         allow_public_proxy=_env_flag(args.allow_public_proxy_env),
+        fallback_csv_path=Path(args.fallback_csv) if args.fallback_csv else None,
+        quality=quality,
         attempts=args.attempts,
         retry_wait_seconds=args.retry_wait_seconds,
     )
+    if args.metadata_output:
+        metadata_path = Path(args.metadata_output)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(
+            json.dumps(_result_metadata(result), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     print(
-        f"downloaded {result.row_count} IBIT zscore metric rows from {_source_host(result.source_url)} -> {result.output_path}"
+        f"downloaded {result.row_count} IBIT zscore metric rows from {result.source_type} "
+        f"{_source_host(result.source_url)} latest_as_of={result.latest_as_of} -> {result.output_path}"
     )
     return 0
 
