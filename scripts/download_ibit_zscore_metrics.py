@@ -3,18 +3,38 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pandas as pd
 import requests
 
 
-DATE_ALIASES = ("as_of", "date", "timestamp", "time")
-ZSCORE_ALIASES = ("mvrv_zscore", "mvrv_z_score", "mvrv_z", "zscore", "z_score")
+DATE_ALIASES = ("as_of", "date", "timestamp", "time", "day", "d")
+ZSCORE_ALIASES = ("mvrv_zscore", "mvrv_z_score", "mvrv_z", "mvrvzscore", "zscore", "z_score")
 RECORD_CONTAINER_KEYS = ("data", "records", "result", "results", "values", "rows")
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+@dataclass(frozen=True)
+class MetricsAuth:
+    newhedge_query_token: str | None = None
+    bgeometrics_query_token: str | None = None
+    generic_query_token: str | None = None
+    generic_query_token_param: str = "api_token"
+    bearer_token: str | None = None
+    api_key: str | None = None
+
+
+@dataclass(frozen=True)
+class MetricsDownloadResult:
+    output_path: Path
+    source_url: str
+    row_count: int
 
 
 def _normalized_key_map(frame: pd.DataFrame) -> dict[str, str]:
@@ -37,7 +57,7 @@ def normalize_ibit_zscore_metrics(
     zscore_column = _find_column(frame, ZSCORE_ALIASES, label="mvrv_zscore")
     normalized = frame[[date_column, zscore_column]].copy()
     normalized.columns = ["as_of", "mvrv_zscore"]
-    normalized["as_of"] = pd.to_datetime(normalized["as_of"], errors="coerce")
+    normalized["as_of"] = _parse_dates(normalized["as_of"])
     normalized["mvrv_zscore"] = pd.to_numeric(normalized["mvrv_zscore"], errors="coerce")
     normalized = normalized.dropna(subset=["as_of", "mvrv_zscore"]).sort_values("as_of")
     if start:
@@ -48,6 +68,17 @@ def normalize_ibit_zscore_metrics(
         raise ValueError("IBIT zscore metrics produced no valid rows")
     normalized["as_of"] = normalized["as_of"].dt.date.astype(str)
     return normalized.reset_index(drop=True)
+
+
+def _parse_dates(values: pd.Series) -> pd.Series:
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    if numeric_values.notna().all() and not numeric_values.empty:
+        median_abs = numeric_values.abs().median()
+        if median_abs >= 100_000_000_000:
+            return pd.to_datetime(numeric_values, unit="ms", errors="coerce")
+        if median_abs >= 1_000_000_000:
+            return pd.to_datetime(numeric_values, unit="s", errors="coerce")
+    return pd.to_datetime(values, errors="coerce")
 
 
 def _records_from_tabular_payload(payload: object) -> list[object]:
@@ -97,6 +128,139 @@ def _frame_from_response(response: requests.Response) -> pd.DataFrame:
     return pd.read_csv(StringIO(text))
 
 
+def _split_url_values(values: Iterable[str | None]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        for raw_url in value.replace(",", "\n").splitlines():
+            url = raw_url.strip()
+            if not url or url in seen:
+                continue
+            urls.append(url)
+            seen.add(url)
+    return urls
+
+
+def _source_host(url: str) -> str:
+    return urlparse(url).netloc or "<local>"
+
+
+def _is_newhedge_url(url: str) -> bool:
+    return _source_host(url).lower().endswith("newhedge.io")
+
+
+def _is_bgeometrics_url(url: str) -> bool:
+    host = _source_host(url).lower()
+    return host.endswith("bitcoin-data.com") or host.endswith("bgeometrics.com")
+
+
+def _url_with_query_param(url: str, *, name: str, value: str | None) -> str:
+    if not value:
+        return url
+    parsed = urlparse(url)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key == name for key, _ in query):
+        return url
+    query.append((name, value))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _request_url_and_headers(url: str, auth: MetricsAuth) -> tuple[str, dict[str, str]]:
+    headers = {"Accept": "application/json,text/csv;q=0.9,*/*;q=0.1"}
+    request_url = url
+    if _is_newhedge_url(url):
+        request_url = _url_with_query_param(request_url, name="api_token", value=auth.newhedge_query_token)
+    elif _is_bgeometrics_url(url):
+        request_url = _url_with_query_param(request_url, name="token", value=auth.bgeometrics_query_token)
+    else:
+        request_url = _url_with_query_param(
+            request_url, name=auth.generic_query_token_param, value=auth.generic_query_token
+        )
+    if auth.bearer_token:
+        headers["Authorization"] = f"Bearer {auth.bearer_token}"
+    if auth.api_key:
+        headers["X-API-Key"] = auth.api_key
+    return request_url, headers
+
+
+def _proxies_from_url(proxy_url: str | None) -> dict[str, str] | None:
+    if not proxy_url:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
+
+
+def _retry_wait_seconds(response: requests.Response | None, *, retry_wait_seconds: float, attempt_index: int) -> float:
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(float(retry_after), 0.0)
+            except ValueError:
+                pass
+    return max(retry_wait_seconds, 0.0) * (2 ** max(attempt_index - 1, 0))
+
+
+def _safe_error(exc: BaseException) -> str:
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"HTTP {exc.response.status_code}"
+    return exc.__class__.__name__
+
+
+def download_ibit_zscore_metrics_from_sources(
+    *,
+    urls: Sequence[str],
+    output_path: Path,
+    start: object | None = None,
+    end: object | None = None,
+    auth: MetricsAuth | None = None,
+    proxy_url: str | None = None,
+    attempts: int = 3,
+    retry_wait_seconds: float = 2.0,
+) -> MetricsDownloadResult:
+    if not urls:
+        raise ValueError("at least one IBIT zscore metrics URL is required")
+
+    attempts = max(attempts, 1)
+    auth = auth or MetricsAuth()
+    proxies = _proxies_from_url(proxy_url)
+    errors: list[str] = []
+
+    for url in urls:
+        host = _source_host(url)
+        for attempt in range(1, attempts + 1):
+            response: requests.Response | None = None
+            try:
+                request_url, headers = _request_url_and_headers(url, auth)
+                response = requests.get(request_url, headers=headers, timeout=60, proxies=proxies)
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    if attempt < attempts:
+                        time.sleep(
+                            _retry_wait_seconds(response, retry_wait_seconds=retry_wait_seconds, attempt_index=attempt)
+                        )
+                        continue
+                response.raise_for_status()
+                metrics = normalize_ibit_zscore_metrics(_frame_from_response(response), start=start, end=end)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                metrics.to_csv(output_path, index=False)
+                return MetricsDownloadResult(output_path=output_path, source_url=url, row_count=len(metrics))
+            except requests.RequestException as exc:
+                should_retry = response is None or response.status_code in RETRYABLE_STATUS_CODES
+                if should_retry and attempt < attempts:
+                    time.sleep(
+                        _retry_wait_seconds(response, retry_wait_seconds=retry_wait_seconds, attempt_index=attempt)
+                    )
+                    continue
+                errors.append(f"{host}: {_safe_error(exc)}")
+                break
+            except (ValueError, json.JSONDecodeError, pd.errors.ParserError) as exc:
+                errors.append(f"{host}: {exc.__class__.__name__}")
+                break
+
+    raise RuntimeError("failed to download IBIT zscore metrics from configured sources: " + "; ".join(errors))
+
+
 def download_ibit_zscore_metrics(
     *,
     url: str,
@@ -106,18 +270,14 @@ def download_ibit_zscore_metrics(
     bearer_token: str | None = None,
     api_key: str | None = None,
 ) -> Path:
-    headers = {"Accept": "application/json,text/csv;q=0.9,*/*;q=0.1"}
-    if bearer_token:
-        headers["Authorization"] = f"Bearer {bearer_token}"
-    if api_key:
-        headers["X-API-Key"] = api_key
-    response = requests.get(url, headers=headers, timeout=60)
-    response.raise_for_status()
-
-    metrics = normalize_ibit_zscore_metrics(_frame_from_response(response), start=start, end=end)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics.to_csv(output_path, index=False)
-    return output_path
+    result = download_ibit_zscore_metrics_from_sources(
+        urls=[url],
+        output_path=output_path,
+        start=start,
+        end=end,
+        auth=MetricsAuth(bearer_token=bearer_token, api_key=api_key),
+    )
+    return result.output_path
 
 
 def _env_value(name: str) -> str | None:
@@ -133,16 +293,61 @@ def _first_env_value(names: Iterable[str]) -> str | None:
     return None
 
 
+def _env_values(names: Iterable[str]) -> list[str]:
+    return [value for name in names if (value := _env_value(name))]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Download and normalize IBIT MVRV Z-Score metrics.")
-    parser.add_argument("--url", required=True, help="HTTP(S) endpoint returning CSV or JSON zscore history.")
+    parser.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        help="HTTP(S) endpoint returning CSV or JSON zscore history. Can be passed multiple times or comma-separated.",
+    )
+    parser.add_argument(
+        "--urls-env",
+        action="append",
+        default=["IBIT_ZSCORE_METRICS_URLS", "IBIT_ZSCORE_METRICS_URL"],
+        help="Environment variable containing one or more metrics URLs. Can be passed multiple times.",
+    )
     parser.add_argument("--output", required=True, help="Output CSV path with as_of,mvrv_zscore columns.")
     parser.add_argument("--start", default=None, help="Optional inclusive start date.")
     parser.add_argument("--end", default=None, help="Optional inclusive end date.")
+    parser.add_argument("--attempts", type=int, default=3, help="Attempts per source for transient HTTP errors.")
+    parser.add_argument(
+        "--retry-wait-seconds",
+        type=float,
+        default=2.0,
+        help="Initial wait before retrying a transient source failure.",
+    )
+    parser.add_argument(
+        "--newhedge-token-env",
+        action="append",
+        default=["NEW_HEDGE_API_TOKEN", "IBIT_ZSCORE_METRICS_NEW_HEDGE_TOKEN"],
+        help="Environment variable containing a Newhedge query token. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--bgeometrics-token-env",
+        action="append",
+        default=["BGEOMETRICS_API_TOKEN", "IBIT_ZSCORE_METRICS_BGEOMETRICS_TOKEN"],
+        help="Environment variable containing a BGeometrics query token. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--query-token-env",
+        action="append",
+        default=["IBIT_ZSCORE_METRICS_QUERY_TOKEN"],
+        help="Environment variable containing a generic query token for non-provider-specific URLs.",
+    )
+    parser.add_argument(
+        "--query-token-param",
+        default="api_token",
+        help="Query parameter name for the generic query token.",
+    )
     parser.add_argument(
         "--bearer-token-env",
         action="append",
-        default=["IBIT_ZSCORE_METRICS_BEARER_TOKEN", "NEW_HEDGE_API_TOKEN"],
+        default=["IBIT_ZSCORE_METRICS_BEARER_TOKEN"],
         help="Environment variable containing a bearer token. Can be passed multiple times.",
     )
     parser.add_argument(
@@ -151,22 +356,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=["IBIT_ZSCORE_METRICS_API_KEY"],
         help="Environment variable containing an API key for the X-API-Key header. Can be passed multiple times.",
     )
+    parser.add_argument(
+        "--proxy-env",
+        action="append",
+        default=["IBIT_ZSCORE_METRICS_PROXY"],
+        help="Environment variable containing a trusted HTTP(S) proxy URL. Can be passed multiple times.",
+    )
     args = parser.parse_args(argv)
 
+    urls = _split_url_values(args.url) or _split_url_values(_env_values(args.urls_env))
+    if not urls:
+        parser.error("at least one --url or configured URLs env value is required")
+
     output_path = Path(args.output)
-    bearer_token = _first_env_value(args.bearer_token_env)
-    api_key = _first_env_value(args.api_key_env)
-    result_path = download_ibit_zscore_metrics(
-        url=args.url,
+    auth = MetricsAuth(
+        newhedge_query_token=_first_env_value(args.newhedge_token_env),
+        bgeometrics_query_token=_first_env_value(args.bgeometrics_token_env),
+        generic_query_token=_first_env_value(args.query_token_env),
+        generic_query_token_param=args.query_token_param,
+        bearer_token=_first_env_value(args.bearer_token_env),
+        api_key=_first_env_value(args.api_key_env),
+    )
+    result = download_ibit_zscore_metrics_from_sources(
+        urls=urls,
         output_path=output_path,
         start=args.start,
         end=args.end,
-        bearer_token=bearer_token,
-        api_key=api_key,
+        auth=auth,
+        proxy_url=_first_env_value(args.proxy_env),
+        attempts=args.attempts,
+        retry_wait_seconds=args.retry_wait_seconds,
     )
-    host = urlparse(args.url).netloc or "<local>"
-    row_count = len(pd.read_csv(result_path))
-    print(f"downloaded {row_count} IBIT zscore metric rows from {host} -> {result_path}")
+    print(
+        f"downloaded {result.row_count} IBIT zscore metric rows from {_source_host(result.source_url)} -> {result.output_path}"
+    )
     return 0
 
 

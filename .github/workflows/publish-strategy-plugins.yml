@@ -48,6 +48,10 @@ on:
         description: Optional CSV/JSON endpoint for IBIT MVRV Z-Score history.
         required: false
         type: string
+      ibit_zscore_metrics_urls:
+        description: Optional comma/newline-separated CSV/JSON endpoints for IBIT MVRV Z-Score history.
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -549,10 +553,18 @@ jobs:
       PRICE_END: ${{ inputs.price_end }}
       INPUT_IBIT_ZSCORE_GCS_PREFIX: ${{ inputs.ibit_zscore_gcs_prefix }}
       INPUT_IBIT_ZSCORE_METRICS_URL: ${{ inputs.ibit_zscore_metrics_url }}
+      INPUT_IBIT_ZSCORE_METRICS_URLS: ${{ inputs.ibit_zscore_metrics_urls }}
       IBIT_ZSCORE_GCS_PREFIX: ${{ vars.IBIT_ZSCORE_EXIT_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit' }}
+      IBIT_ZSCORE_METRICS_URLS: ${{ vars.IBIT_ZSCORE_METRICS_URLS }}
       IBIT_ZSCORE_METRICS_URL: ${{ vars.IBIT_ZSCORE_METRICS_URL || 'https://newhedge.io/api/v2/metrics/mvrv-z-score/mvrv_z' }}
-      IBIT_ZSCORE_METRICS_BEARER_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_BEARER_TOKEN || secrets.NEW_HEDGE_API_TOKEN }}
+      NEW_HEDGE_API_TOKEN: ${{ secrets.NEW_HEDGE_API_TOKEN }}
+      BGEOMETRICS_API_TOKEN: ${{ secrets.BGEOMETRICS_API_TOKEN }}
+      IBIT_ZSCORE_METRICS_NEW_HEDGE_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_NEW_HEDGE_TOKEN }}
+      IBIT_ZSCORE_METRICS_BGEOMETRICS_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_BGEOMETRICS_TOKEN }}
+      IBIT_ZSCORE_METRICS_QUERY_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_QUERY_TOKEN }}
+      IBIT_ZSCORE_METRICS_BEARER_TOKEN: ${{ secrets.IBIT_ZSCORE_METRICS_BEARER_TOKEN }}
       IBIT_ZSCORE_METRICS_API_KEY: ${{ secrets.IBIT_ZSCORE_METRICS_API_KEY }}
+      IBIT_ZSCORE_METRICS_PROXY: ${{ secrets.IBIT_ZSCORE_METRICS_PROXY }}
       STRATEGY_PROFILE: ibit_smart_dca
       PLUGIN_NAME: ibit_zscore_exit
       PRICE_INPUT_DIR: data/input/strategy_plugins/ibit_smart_dca/ibit_zscore_exit
@@ -578,20 +590,32 @@ jobs:
         run: |
           set -euo pipefail
           gcs_prefix="${INPUT_IBIT_ZSCORE_GCS_PREFIX:-${IBIT_ZSCORE_GCS_PREFIX}}"
-          metrics_url="${INPUT_IBIT_ZSCORE_METRICS_URL:-${IBIT_ZSCORE_METRICS_URL}}"
-          if [ -z "${metrics_url:-}" ]; then
-            echo "IBIT zscore metrics URL is required; set vars.IBIT_ZSCORE_METRICS_URL or workflow input."
+          metrics_urls="${INPUT_IBIT_ZSCORE_METRICS_URLS:-${IBIT_ZSCORE_METRICS_URLS:-}}"
+          if [ -z "${metrics_urls:-}" ]; then
+            metrics_urls="${INPUT_IBIT_ZSCORE_METRICS_URL:-${IBIT_ZSCORE_METRICS_URL:-}}"
+          fi
+          if [ -z "${metrics_urls:-}" ]; then
+            echo "IBIT zscore metrics URL is required; set vars.IBIT_ZSCORE_METRICS_URLS, vars.IBIT_ZSCORE_METRICS_URL, or workflow input."
             exit 1
           fi
-          echo "GCS_PREFIX=${gcs_prefix}" >> "$GITHUB_ENV"
-          echo "ZSCORE_METRICS_URL=${metrics_url}" >> "$GITHUB_ENV"
+          {
+            echo "GCS_PREFIX=${gcs_prefix}"
+            echo "ZSCORE_METRICS_URLS<<EOF"
+            printf '%s\n' "${metrics_urls}"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
           echo "Resolved ${STRATEGY_PROFILE} ${PLUGIN_NAME} publish prefix: ${gcs_prefix}"
           python - <<'PY'
           import os
           from urllib.parse import urlparse
 
-          host = urlparse(os.environ["ZSCORE_METRICS_URL"]).netloc or "<local>"
-          print(f"Resolved IBIT zscore metrics host: {host}")
+          urls = []
+          for value in os.environ["ZSCORE_METRICS_URLS"].replace(",", "\n").splitlines():
+              value = value.strip()
+              if value:
+                  urls.append(value)
+          hosts = [urlparse(url).netloc or "<local>" for url in urls]
+          print("Resolved IBIT zscore metrics hosts: " + ", ".join(dict.fromkeys(hosts)))
           PY
 
       - name: Check whether Google Cloud auth is needed
@@ -623,7 +647,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${PRICE_INPUT_DIR}"
           output_path="${PRICE_INPUT_DIR}/ibit_zscore_metrics.csv"
-          args=(--url "${ZSCORE_METRICS_URL}" --output "${output_path}" --start "${PRICE_START}")
+          args=(--output "${output_path}" --start "${PRICE_START}")
           if [ -n "${PRICE_END:-}" ]; then
             args+=(--end "${PRICE_END}")
           fi
