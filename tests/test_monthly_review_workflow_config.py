@@ -83,7 +83,7 @@ def test_automated_snapshot_publish_runs_after_source_input_refresh() -> None:
 
     matrix_line = next(line for line in workflow.splitlines() if "fromJSON(github.event_name != 'workflow_dispatch'" in line)
     scheduled_matrix = matrix_line.split("|| format", maxsplit=1)[0]
-    assert '["russell_top50_leader_rotation_aggressive"]' in scheduled_matrix
+    assert '["russell_top50_leader_rotation"]' in scheduled_matrix
     assert "russell_1000_multi_factor_defensive" not in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in scheduled_matrix
     assert "tech_communication_pullback_enhancement" not in workflow
@@ -101,7 +101,7 @@ def test_manual_source_input_publish_dispatches_live_snapshot_profiles() -> None
     assert "gh workflow run publish-snapshot-artifacts.yml" in workflow
     assert '--field profile="russell_1000_multi_factor_defensive"' not in workflow
     assert '--field universe_path="${OUTPUT_PREFIX%/}/r1000_universe_history.csv"' not in workflow
-    assert '--field profile="russell_top50_leader_rotation_aggressive"' in workflow
+    assert '--field profile="russell_top50_leader_rotation"' in workflow
     assert '--field universe_path="${OUTPUT_PREFIX%/}/r1000_latest_holdings_snapshot.csv"' in workflow
     assert '--field source_input_manifest_path="${source_input_manifest_path}"' in workflow
     assert '--field execute_publish="true"' in workflow

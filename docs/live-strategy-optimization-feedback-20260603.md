@@ -14,7 +14,7 @@ Current runtime-enabled profiles reviewed from `UsEquityStrategies/main`:
 | Profile | Role | Decision |
 | --- | --- | --- |
 | `global_etf_rotation` | defensive ETF rotation | Keep current default |
-| `russell_top50_leader_rotation_aggressive` | aggressive Russell Top50 leader rotation | Keep current default |
+| `russell_top50_leader_rotation` | Russell Top50 leader rotation | Keep current default |
 | `nasdaq_sp500_smart_dca` | buy-only cash deployment | Keep current default; operational tuning only |
 | `russell_1000_multi_factor_defensive` | retired defensive Russell 1000 snapshot baseline | Retired after later review |
 | `soxl_soxx_trend_income` | offensive semiconductor leveraged sleeve | Keep current default |
@@ -158,9 +158,9 @@ Feedback:
 - Use SPY/VOO-style broad-market exposure as the conservative benchmark instead
   of maintaining this strategy as a separate live sleeve.
 
-### `russell_top50_leader_rotation_aggressive`
+### `russell_top50_leader_rotation`
 
-Decision: keep the renamed Russell Top50 aggressive leader-rotation live profile.
+Decision: keep the renamed Russell Top50 leader-rotation live profile.
 
 Reference evidence from older mega-cap research:
 

@@ -9,10 +9,10 @@ on:
       profile:
         description: Snapshot profile to check
         required: true
-        default: russell_top50_leader_rotation_aggressive
+        default: russell_top50_leader_rotation
         type: choice
         options:
-          - russell_top50_leader_rotation_aggressive
+          - russell_top50_leader_rotation
       max_month_lag:
         description: Maximum allowed month lag between snapshot_as_of and run date.
         required: false
@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_top50_leader_rotation_aggressive"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation_aggressive')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation')) }}
     permissions:
       contents: read
       id-token: write
@@ -40,7 +40,7 @@ jobs:
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
 
     steps:
       - name: Checkout
@@ -62,9 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           case "${PROFILE}" in
-            russell_top50_leader_rotation_aggressive)
-              prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX}"
-              manifest_name="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv.manifest.json"
+            russell_top50_leader_rotation)
+              prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX}"
+              manifest_name="russell_top50_leader_rotation_feature_snapshot_latest.csv.manifest.json"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

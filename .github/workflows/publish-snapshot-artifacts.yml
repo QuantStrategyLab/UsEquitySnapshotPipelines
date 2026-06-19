@@ -9,10 +9,10 @@ on:
       profile:
         description: Snapshot profile to build
         required: true
-        default: russell_top50_leader_rotation_aggressive
+        default: russell_top50_leader_rotation
         type: choice
         options:
-          - russell_top50_leader_rotation_aggressive
+          - russell_top50_leader_rotation
       use_sample_data:
         description: Generate synthetic input data for a workflow smoke test
         required: true
@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name != 'workflow_dispatch' && '["russell_top50_leader_rotation_aggressive"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation_aggressive')) }}
+        profile: ${{ fromJSON(github.event_name != 'workflow_dispatch' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation')) }}
     permissions:
       contents: read
       id-token: write
@@ -100,9 +100,9 @@ jobs:
       SCHEDULED_PRICES_PATH: ${{ vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
       SCHEDULED_UNIVERSE_PATH: ${{ vars.SCHEDULED_US_EQUITY_UNIVERSE_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv' }}
       SCHEDULED_SOURCE_INPUT_MANIFEST_PATH: ${{ vars.SCHEDULED_US_EQUITY_SOURCE_INPUT_MANIFEST_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_source_input_manifest.json' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PRICES_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_UNIVERSE_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_UNIVERSE_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_PRICES_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_PRICES_PATH || vars.SCHEDULED_US_EQUITY_PRICES_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
 
     steps:
       - name: Checkout
@@ -123,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          profile="${PROFILE:-russell_top50_leader_rotation_aggressive}"
+          profile="${PROFILE:-russell_top50_leader_rotation}"
           use_sample_data="${USE_SAMPLE_DATA:-false}"
           prices_path="${PRICES_PATH:-}"
           universe_path="${UNIVERSE_PATH:-}"
@@ -139,11 +139,11 @@ jobs:
             universe_path="${UNIVERSE_PATH:-${SCHEDULED_UNIVERSE_PATH}}"
             source_input_manifest_path="${SOURCE_INPUT_MANIFEST_PATH:-${SCHEDULED_SOURCE_INPUT_MANIFEST_PATH}}"
             case "${profile}" in
-              russell_top50_leader_rotation_aggressive)
-                prices_path="${PRICES_PATH:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PRICES_PATH}}"
-                universe_path="${UNIVERSE_PATH:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_UNIVERSE_PATH}}"
+              russell_top50_leader_rotation)
+                prices_path="${PRICES_PATH:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_PRICES_PATH}}"
+                universe_path="${UNIVERSE_PATH:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_UNIVERSE_PATH}}"
                 config_path=""
-                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX}}"
+                gcs_prefix="${GCS_PREFIX:-${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX}}"
                 ;;
               *)
                 echo "Unsupported scheduled profile: ${profile}" >&2
@@ -257,7 +257,7 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ] || [ "${GITHUB_EVENT_NAME}" = "workflow_run" ]; then
             case "${PROFILE}" in
-              russell_top50_leader_rotation_aggressive)
+              russell_top50_leader_rotation)
                 monthly_publish_env="${RUNNER_TEMP:-/tmp}/monthly_snapshot_publish_window.env"
                 monthly_args=(
                   --prices "${PRICES_PATH}"
@@ -309,14 +309,14 @@ jobs:
           fi
 
           case "${PROFILE}" in
-            russell_top50_leader_rotation_aggressive)
+            russell_top50_leader_rotation)
               if [ -n "${MIN_ADV20_USD:-}" ]; then
                 common_args+=(--min-adv20-usd "${MIN_ADV20_USD}")
               fi
               if [ -n "${PORTFOLIO_TOTAL_EQUITY:-}" ]; then
                 common_args+=(--portfolio-total-equity "${PORTFOLIO_TOTAL_EQUITY}")
               fi
-              python scripts/build_russell_top50_leader_rotation_aggressive_snapshot.py "${common_args[@]}"
+              python scripts/build_russell_top50_leader_rotation_snapshot.py "${common_args[@]}"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

@@ -4,7 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.contracts import RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE
+from us_equity_snapshot_pipelines.contracts import RUSSELL_TOP50_LEADER_ROTATION_PROFILE
 from us_equity_snapshot_pipelines.monthly_publish_window import (
     MONTHLY_SNAPSHOT_PROFILES,
     evaluate_monthly_publish_decision,
@@ -47,7 +47,7 @@ def test_uses_nyse_holiday_fallback_for_good_friday_month_end() -> None:
 
 
 def test_mega_cap_profile_is_monthly_snapshot_profile() -> None:
-    assert RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE in MONTHLY_SNAPSHOT_PROFILES
+    assert RUSSELL_TOP50_LEADER_ROTATION_PROFILE in MONTHLY_SNAPSHOT_PROFILES
     assert "mega_cap_leader_rotation_dynamic_top20" not in MONTHLY_SNAPSHOT_PROFILES
     assert "mega_cap_leader_rotation_aggressive" not in MONTHLY_SNAPSHOT_PROFILES
     assert "dynamic_mega_leveraged_pullback" not in MONTHLY_SNAPSHOT_PROFILES

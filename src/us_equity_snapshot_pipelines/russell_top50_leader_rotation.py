@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from .contracts import RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE
+from .contracts import RUSSELL_TOP50_LEADER_ROTATION_PROFILE
 from .mega_cap_leader_rotation_snapshot import main as _main
 
 
 def main(argv: list[str] | None = None) -> int:
     return _main(
         argv,
-        profile=RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+        profile=RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
         dynamic_universe_size_default=50,
         holdings_count_default=4,
         single_name_cap_default=0.25,

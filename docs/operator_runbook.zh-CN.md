@@ -8,7 +8,7 @@
 
 当前唯一面向运行时发布的 snapshot profile 是：
 
-- `russell_top50_leader_rotation_aggressive`
+- `russell_top50_leader_rotation`
 
 `russell_1000_multi_factor_defensive` 因长期只小幅跑赢 SPY、回撤优势不足，已从本仓库运行时契约中退役。`tech_communication_pullback_enhancement`、`mega_cap_leader_rotation_dynamic_top20`、`mega_cap_leader_rotation_aggressive`、`dynamic_mega_leveraged_pullback` 均保留为归档研究，不再出现在 publish 或 health workflow。
 
@@ -18,12 +18,12 @@ Russell Top50 激进 leader rotation：
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_russell_top50_leader_rotation_aggressive_snapshot.py \
+python scripts/build_russell_top50_leader_rotation_snapshot.py \
   --prices /path/to/r1000_price_history.csv \
   --universe /path/to/r1000_latest_holdings_snapshot.csv \
   --as-of 2026-04-01 \
   --dynamic-universe-size 50 \
-  --output-dir data/output/russell_top50_leader_rotation_aggressive
+  --output-dir data/output/russell_top50_leader_rotation
 ```
 
 ## 手动 GitHub Actions 发布
@@ -32,7 +32,7 @@ python scripts/build_russell_top50_leader_rotation_aggressive_snapshot.py \
 
 必填输入：
 
-- `profile`，当前只支持 `russell_top50_leader_rotation_aggressive`
+- `profile`，当前只支持 `russell_top50_leader_rotation`
 
 生产数据路径需要同时设置：
 
@@ -79,7 +79,7 @@ gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_
 `Publish Snapshot Artifacts` 会在 source-input refresh 后构建：
 
 ```text
-profiles=russell_top50_leader_rotation_aggressive
+profiles=russell_top50_leader_rotation
 prices_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
 universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
@@ -89,7 +89,7 @@ execute_publish=true
 
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
-| `russell_top50_leader_rotation_aggressive` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging` |
+| `russell_top50_leader_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
 
 workflow 仍保留月末交易日 guard：如果解析得到的 `snapshot_as_of` 不是该月份最后一个 NYSE 交易日，会写出 skip artifact，并且不会发布到 GCS。
 

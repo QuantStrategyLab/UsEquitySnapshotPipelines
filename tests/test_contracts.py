@@ -13,7 +13,7 @@ def test_resolves_legacy_qqq_tech_alias_to_canonical_profile() -> None:
 def test_lists_snapshot_profile_contracts() -> None:
     profiles = {contract.profile for contract in list_profile_contracts()}
     assert "tech_communication_pullback_enhancement" in profiles
-    assert "russell_top50_leader_rotation_aggressive" in profiles
+    assert "russell_top50_leader_rotation" in profiles
     assert "russell_1000_multi_factor_defensive" not in profiles
     assert "mega_cap_leader_rotation_dynamic_top20" not in profiles
     assert "mega_cap_leader_rotation_aggressive" not in profiles
@@ -22,4 +22,4 @@ def test_lists_snapshot_profile_contracts() -> None:
 
 def test_lists_scheduled_snapshot_profile_contracts_without_research_only_tech() -> None:
     profiles = {contract.profile for contract in list_scheduled_profile_contracts()}
-    assert profiles == {"russell_top50_leader_rotation_aggressive"}
+    assert profiles == {"russell_top50_leader_rotation"}
