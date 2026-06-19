@@ -7,7 +7,7 @@ import pandas as pd
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_snapshot import build_artifacts
 
 
-BALANCED_PROFILE = "mega_cap_leader_rotation_top50_balanced"
+PROFILE = "russell_top50_leader_rotation_aggressive"
 
 
 def _sample_prices() -> pd.DataFrame:
@@ -78,8 +78,8 @@ def test_builds_mega_cap_top50_balanced_artifact_contract_by_default(tmp_path) -
     assert {"QQQ", "SPY", "BOXX", "NVDA", "MSFT", "AAPL", "META"} <= set(snapshot["symbol"])
     assert not ranking.empty
     assert "SPY" not in set(ranking["symbol"])
-    assert manifest["strategy_profile"] == BALANCED_PROFILE
-    assert manifest["contract_version"] == "mega_cap_leader_rotation_top50_balanced.feature_snapshot.v1"
+    assert manifest["strategy_profile"] == PROFILE
+    assert manifest["contract_version"] == "russell_top50_leader_rotation_aggressive.feature_snapshot.v1"
     assert manifest["config_path"] == "strategy_manifest_default"
     assert manifest["config_sha256"]
     assert manifest["row_count"] == len(snapshot)
@@ -94,7 +94,7 @@ def test_builds_mega_cap_top50_balanced_artifact_contract(tmp_path) -> None:
     _sample_ranked_universe().to_csv(universe_path, index=False)
 
     result = build_artifacts(
-        profile=BALANCED_PROFILE,
+        profile=PROFILE,
         prices_path=prices_path,
         universe_path=universe_path,
         output_dir=output_dir,
@@ -110,12 +110,12 @@ def test_builds_mega_cap_top50_balanced_artifact_contract(tmp_path) -> None:
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     summary = json.loads(result.release_summary_path.read_text(encoding="utf-8"))
 
-    assert result.snapshot_path.name == "mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv"
-    assert manifest["strategy_profile"] == BALANCED_PROFILE
-    assert manifest["contract_version"] == "mega_cap_leader_rotation_top50_balanced.feature_snapshot.v1"
+    assert result.snapshot_path.name == "russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv"
+    assert manifest["strategy_profile"] == PROFILE
+    assert manifest["contract_version"] == "russell_top50_leader_rotation_aggressive.feature_snapshot.v1"
     assert manifest["config_path"] == "strategy_manifest_default"
     assert manifest["config_sha256"]
-    assert summary["strategy_profile"] == BALANCED_PROFILE
+    assert summary["strategy_profile"] == PROFILE
     assert summary["release_status"] == "ready"
 
 

@@ -30,11 +30,10 @@ Required baseline fields:
 
 ## Current runtime path discipline
 
-Current runtime-facing US equity snapshot artifacts are published under profile-specific `us_equity` prefixes:
+Current runtime-facing US equity snapshot artifacts are published under the single profile-specific `us_equity` prefix:
 
 ```text
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging/
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging/
+gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging/
 ```
 
-`tech_communication_pullback_enhancement` remains as archived research-only code and is no longer exposed by scheduled publish, artifact health, or runtime switching workflows.
+`russell_1000_multi_factor_defensive` is retired from the runtime artifact contract. `tech_communication_pullback_enhancement` remains archived research-only and is no longer exposed by scheduled publish, artifact health, or runtime switching workflows.

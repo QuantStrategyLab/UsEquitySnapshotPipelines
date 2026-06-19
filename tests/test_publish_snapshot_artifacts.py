@@ -9,7 +9,7 @@ from us_equity_snapshot_pipelines.contracts import get_profile_contract
 from us_equity_snapshot_pipelines.publish import build_candidate_publish_plan, build_publish_plan, validate_publish_artifacts
 
 
-PROFILE = "mega_cap_leader_rotation_top50_balanced"
+PROFILE = "russell_top50_leader_rotation_aggressive"
 
 
 def _write_artifacts(tmp_path, *, fallback_streak: int = 0) -> None:
