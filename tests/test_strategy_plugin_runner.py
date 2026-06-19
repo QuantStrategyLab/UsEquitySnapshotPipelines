@@ -10,6 +10,7 @@ from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRI
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     GENERAL_MARKET_REGIME_NOTIFICATION_TARGET,
     PLUGIN_CRISIS_RESPONSE_SHADOW,
+    PLUGIN_IBIT_ZSCORE_EXIT,
     PLUGIN_MARKET_REGIME_CONTROL,
     PLUGIN_TACO_REBOUND_SHADOW,
     load_plugin_config,
@@ -20,6 +21,7 @@ from us_equity_snapshot_pipelines.strategy_plugin_runner import (
 STRATEGY_NAME = "tqqq_growth_income"
 SOXL_STRATEGY_NAME = "soxl_soxx_trend_income"
 LEFT_SIDE_STRATEGY_NAME = "russell_top50_leader_rotation"
+IBIT_STRATEGY_NAME = "ibit_smart_dca"
 
 
 def _quiet_prices() -> pd.DataFrame:
@@ -128,6 +130,26 @@ def _taco_rebound_prices() -> pd.DataFrame:
         tqqq_close = tqqq_path[idx] if idx < len(tqqq_path) else 110.0 + idx * 2.0
         rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_close, "volume": 1_000_000})
         rows.append({"symbol": "TQQQ", "as_of": as_of, "close": tqqq_close, "volume": 1_000_000})
+    return pd.DataFrame(rows)
+
+
+def _ibit_zscore_history(*, latest_zscore: float = 8.5) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=220, freq="D")
+    rows = [
+        {
+            "as_of": as_of,
+            "mvrv_zscore": 2.0 + (idx % 20) * 0.05,
+            "btc_close": 40_000.0 + idx * 10.0,
+        }
+        for idx, as_of in enumerate(dates[:-1])
+    ]
+    rows.append(
+        {
+            "as_of": dates[-1],
+            "mvrv_zscore": latest_zscore,
+            "btc_close": 65_000.0,
+        }
+    )
     return pd.DataFrame(rows)
 
 
@@ -377,6 +399,82 @@ def test_strategy_plugin_runner_runs_taco_rebound_notification_mount_for_tqqq(tm
     assert latest["rebound_confirmation"]["confirmed"] is True
     assert latest["would_trade_if_enabled"] is False
     assert "sleeve_suggestion" not in latest
+
+
+def test_strategy_plugin_runner_runs_ibit_zscore_exit_position_control(tmp_path) -> None:
+    zscore_path = tmp_path / "ibit_zscore.csv"
+    output_dir = tmp_path / IBIT_STRATEGY_NAME / "plugins" / PLUGIN_IBIT_ZSCORE_EXIT
+    _ibit_zscore_history(latest_zscore=8.5).to_csv(zscore_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": IBIT_STRATEGY_NAME,
+                "plugin": PLUGIN_IBIT_ZSCORE_EXIT,
+                "enabled": True,
+                "inputs": {
+                    "zscore_metrics": str(zscore_path),
+                    "as_of": "2024-08-07",
+                    "dynamic_lookback_days": 180,
+                    "dynamic_min_periods": 60,
+                    "soft_exit_zscore_floor": 4.0,
+                    "hard_exit_zscore_floor": 7.0,
+                    "parking_symbol": "BOXX",
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    result = summary["strategy_plugins"][0]
+    assert result["strategy"] == IBIT_STRATEGY_NAME
+    assert result["plugin"] == PLUGIN_IBIT_ZSCORE_EXIT
+    assert result["status"] == "ok"
+    assert result["message"] == "route=risk_off action=defend"
+    latest = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert latest["schema_version"] == "ibit_zscore_exit.v1"
+    assert latest["canonical_route"] == "risk_off"
+    assert latest["suggested_action"] == "defend"
+    assert latest["position_control"]["target_allocations"] == {"IBIT": 0.25, "BOXX": 0.75}
+    assert latest["thresholds"]["threshold_mode"] == "rolling_percentile_hybrid"
+    assert latest["execution_controls"]["position_control_allowed"] is True
+    assert latest["execution_controls"]["consumption_evidence_status"] == "automation_approved"
+
+
+def test_strategy_plugin_runner_builds_dynamic_ibit_zscore_risk_reduced_route(tmp_path) -> None:
+    zscore_path = tmp_path / "ibit_zscore.csv"
+    output_dir = tmp_path / IBIT_STRATEGY_NAME / "plugins" / PLUGIN_IBIT_ZSCORE_EXIT
+    _ibit_zscore_history(latest_zscore=5.5).to_csv(zscore_path, index=False)
+    config = {
+        "output_dir": str(tmp_path / "runner"),
+        "default_mode": "shadow",
+        "strategy_plugins": [
+            {
+                "strategy": IBIT_STRATEGY_NAME,
+                "plugin": PLUGIN_IBIT_ZSCORE_EXIT,
+                "enabled": True,
+                "inputs": {
+                    "zscore_metrics": str(zscore_path),
+                    "as_of": "2024-08-07",
+                    "dynamic_min_periods": 60,
+                    "soft_exit_zscore_floor": 5.0,
+                    "hard_exit_zscore_floor": 7.0,
+                    "parking_symbol": "SGOV",
+                },
+                "outputs": {"output_dir": str(output_dir)},
+            }
+        ],
+    }
+
+    summary = run_configured_plugins(config)
+
+    assert summary["strategy_plugins"][0]["message"] == "route=risk_reduced action=delever"
+    latest = json.loads((output_dir / "latest_signal.json").read_text(encoding="utf-8"))
+    assert latest["canonical_route"] == "risk_reduced"
+    assert latest["position_control"]["target_allocations"] == {"IBIT": 0.5, "SGOV": 0.5}
 
 
 def test_strategy_plugin_runner_rejects_taco_rebound_for_non_tqqq_strategy(tmp_path) -> None:
