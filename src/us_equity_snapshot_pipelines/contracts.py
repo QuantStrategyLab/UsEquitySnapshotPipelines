@@ -6,8 +6,7 @@ from pathlib import Path
 
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
-RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
-MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE = "mega_cap_leader_rotation_top50_balanced"
+RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE = "russell_top50_leader_rotation_aggressive"
 
 
 @dataclass(frozen=True)
@@ -53,33 +52,16 @@ _PROFILE_CONTRACTS = {
         ),
         manifest_required_by_runtime=True,
     ),
-    RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE: SnapshotProfileContract(
-        profile=RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE,
-        display_name="Russell 1000 Multi-Factor Defensive",
-        contract_version="russell_1000_multi_factor_defensive.feature_snapshot.v1",
-        snapshot_filename="russell_1000_multi_factor_defensive_feature_snapshot_latest.csv",
-        manifest_filename="russell_1000_multi_factor_defensive_feature_snapshot_latest.csv.manifest.json",
-        ranking_filename="russell_1000_multi_factor_defensive_ranking_latest.csv",
-        current_gcs_prefix_hint=(
-            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/interactive_brokers/"
-            "russell_1000_multi_factor_defensive"
-        ),
+    RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE: SnapshotProfileContract(
+        profile=RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
+        display_name="Russell Top50 Leader Rotation Aggressive",
+        contract_version="russell_top50_leader_rotation_aggressive.feature_snapshot.v1",
+        snapshot_filename="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv",
+        manifest_filename="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="russell_top50_leader_rotation_aggressive_ranking_latest.csv",
         neutral_gcs_prefix_hint=(
             "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-            "russell_1000_multi_factor_defensive"
-        ),
-        manifest_required_by_runtime=False,
-    ),
-    MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE: SnapshotProfileContract(
-        profile=MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
-        display_name="Mega Cap Leader Rotation Top50 Balanced",
-        contract_version="mega_cap_leader_rotation_top50_balanced.feature_snapshot.v1",
-        snapshot_filename="mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv",
-        manifest_filename="mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv.manifest.json",
-        ranking_filename="mega_cap_leader_rotation_top50_balanced_ranking_latest.csv",
-        neutral_gcs_prefix_hint=(
-            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-            "mega_cap_leader_rotation_top50_balanced_staging"
+            "russell_top50_leader_rotation_aggressive_staging"
         ),
         manifest_required_by_runtime=True,
     ),
@@ -108,8 +90,5 @@ def list_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
 def list_scheduled_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
     return tuple(
         _PROFILE_CONTRACTS[profile]
-        for profile in (
-            RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE,
-            MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
-        )
+        for profile in (RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,)
     )

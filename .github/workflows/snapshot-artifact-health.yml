@@ -9,11 +9,10 @@ on:
       profile:
         description: Snapshot profile to check
         required: true
-        default: mega_cap_leader_rotation_top50_balanced
+        default: russell_top50_leader_rotation_aggressive
         type: choice
         options:
-          - russell_1000_multi_factor_defensive
-          - mega_cap_leader_rotation_top50_balanced
+          - russell_top50_leader_rotation_aggressive
       max_month_lag:
         description: Maximum allowed month lag between snapshot_as_of and run date.
         required: false
@@ -31,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_1000_multi_factor_defensive","mega_cap_leader_rotation_top50_balanced"]' || format('["{0}"]', inputs.profile || 'mega_cap_leader_rotation_top50_balanced')) }}
+        profile: ${{ fromJSON(github.event_name == 'schedule' && '["russell_top50_leader_rotation_aggressive"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation_aggressive')) }}
     permissions:
       contents: read
       id-token: write
@@ -41,8 +40,7 @@ jobs:
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
-      SCHEDULED_RUSSELL_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_1000_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging' }}
-      SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX: ${{ vars.SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging' }}
 
     steps:
       - name: Checkout
@@ -64,13 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           case "${PROFILE}" in
-            russell_1000_multi_factor_defensive)
-              prefix="${SCHEDULED_RUSSELL_GCS_PREFIX}"
-              manifest_name="russell_1000_multi_factor_defensive_feature_snapshot_latest.csv.manifest.json"
-              ;;
-            mega_cap_leader_rotation_top50_balanced)
-              prefix="${SCHEDULED_MEGA_CAP_TOP50_BALANCED_GCS_PREFIX}"
-              manifest_name="mega_cap_leader_rotation_top50_balanced_feature_snapshot_latest.csv.manifest.json"
+            russell_top50_leader_rotation_aggressive)
+              prefix="${SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_GCS_PREFIX}"
+              manifest_name="russell_top50_leader_rotation_aggressive_feature_snapshot_latest.csv.manifest.json"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

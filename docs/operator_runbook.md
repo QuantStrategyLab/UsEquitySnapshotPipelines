@@ -6,47 +6,24 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 
 ## Snapshot Profiles
 
-These are artifact profiles produced here for downstream runtimes:
+The only runtime-facing snapshot profile produced here is:
 
-- `russell_1000_multi_factor_defensive`
-- `mega_cap_leader_rotation_top50_balanced`
+- `russell_top50_leader_rotation_aggressive`
 
-`tech_communication_pullback_enhancement` is archived research-only after the runtime removal and is no longer exposed by publish or health workflows. `mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are also no longer publishable snapshot profiles. Top50 balanced is the retained mega-cap runtime path.
+`russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement`, `mega_cap_leader_rotation_dynamic_top20`, `mega_cap_leader_rotation_aggressive`, and `dynamic_mega_leveraged_pullback` are archived research-only and are no longer exposed by publish or health workflows.
 
 ## Manual Local Build
 
-Archived tech/communication pullback research build:
+Russell Top50 aggressive leader rotation:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_tech_communication_pullback_snapshot.py \
-  --prices /path/to/price_history.csv \
-  --universe /path/to/universe.csv \
-  --as-of 2026-04-01 \
-  --output-dir data/output/tech_communication_pullback_enhancement
-```
-
-Russell 1000:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_russell_1000_feature_snapshot.py \
-  --prices /path/to/r1000_price_history.csv \
-  --universe /path/to/r1000_universe_history.csv \
-  --as-of 2026-04-01 \
-  --output-dir data/output/russell_1000_multi_factor_defensive
-```
-
-Mega-cap Top50 balanced:
-
-```bash
-PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
-python scripts/build_mega_cap_leader_rotation_top50_balanced_snapshot.py \
+python scripts/build_russell_top50_leader_rotation_aggressive_snapshot.py \
   --prices /path/to/r1000_price_history.csv \
   --universe /path/to/r1000_latest_holdings_snapshot.csv \
   --as-of 2026-04-01 \
   --dynamic-universe-size 50 \
-  --output-dir data/output/mega_cap_leader_rotation_top50_balanced
+  --output-dir data/output/russell_top50_leader_rotation_aggressive
 ```
 
 ## Manual GitHub Actions Build
@@ -55,7 +32,7 @@ Use the `Publish Snapshot Artifacts` workflow.
 
 Required input:
 
-- `profile`
+- `profile`, currently only `russell_top50_leader_rotation_aggressive`
 
 For production data, set both:
 
@@ -67,10 +44,9 @@ Optional inputs:
 - `as_of_date`
 - `artifact_dir`
 - `gcs_prefix`
-- `config_path` for profiles that still need an external config
 - `current_holdings`
 - `portfolio_total_equity`
-- `min_adv20_usd` for Russell / mega-cap testing overrides
+- `min_adv20_usd` for Russell Top50 testing overrides
 
 For the strategy-plugin publish workflow, manual GCS prefix overrides are only
 accepted when `execute_publish=true` if they remain under
@@ -92,7 +68,7 @@ The workflow always uploads generated files as a GitHub Actions artifact.
 
 ## Scheduled Publish
 
-`Update Source Input Data` runs once per month at `00:15 UTC` on the 1st day of the month. It refreshes the shared Russell 1000 inputs used by monthly snapshot profiles:
+`Update Source Input Data` runs once per month at `00:15 UTC` on the 1st day of the month. It refreshes the shared Russell 1000 inputs used by the monthly snapshot profile:
 
 ```text
 gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
@@ -102,22 +78,20 @@ gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_
 gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 ```
 
-`Publish Snapshot Artifacts` runs once per month at `00:45 UTC` and builds:
+`Publish Snapshot Artifacts` runs after source-input refresh and builds:
 
 ```text
-profiles=russell_1000_multi_factor_defensive,mega_cap_leader_rotation_top50_balanced
+profiles=russell_top50_leader_rotation_aggressive
 prices_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
-russell_universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
-mega_top50_balanced_universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
+universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
 ```
 
-Default scheduled output prefixes:
+Default scheduled output prefix:
 
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
-| `russell_1000_multi_factor_defensive` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_1000_multi_factor_defensive_staging` |
-| `mega_cap_leader_rotation_top50_balanced` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/mega_cap_leader_rotation_top50_balanced_staging` |
+| `russell_top50_leader_rotation_aggressive` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_aggressive_staging` |
 
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 
@@ -133,7 +107,7 @@ data/output/monthly_report_bundle/job_summary.md
 
 The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/CodexAuditBridge`, which calls the Quant HTTPS/443 service-backed Codex path and posts the audit result back to the issue. The review focuses on:
 
-- artifact completeness for each expected snapshot profile
+- artifact completeness for the expected snapshot profile
 - contract version, snapshot date, row count, and ranking-preview health
 - missing or stale evidence that should block downstream confidence
 - downstream impact for broker/runtime repositories
@@ -143,9 +117,3 @@ The monthly review workflow dispatches `CodexAuditBridge`; the bridge owns provi
 Direct bridge PRs are not auto-merged by default. Set `CODEX_AUDIT_AUTO_MERGE=true` only after branch protection and CI gates are confirmed. The legacy ccbot-style remediation path should still open a draft PR first and add `auto-merge-ok` only after targeted tests pass and the change stays inside low-risk docs/tests/monthly-review surfaces.
 
 If CI fails on a Codex remediation PR, or a reviewer requests changes, `Codex PR Feedback` comments the failure or review summary back to the source `codex-bridge` issue. That issue update lets the VPS bridge dispatch Codex again to fix the same PR branch. The workflow permits up to three automatic feedback rounds, then removes `codex-bridge` and leaves the issue for human review.
-
-## Troubleshooting
-
-- If source-input refresh fails, snapshot publish may still run against the last successful source inputs.
-- If a snapshot-backed profile fails to load, check the artifact manifest, schema, and `as_of` freshness window first.
-- If scheduled publish skips, inspect the skip artifact for the resolved trading day and month-end guard result.

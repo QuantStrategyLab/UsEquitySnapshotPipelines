@@ -8,7 +8,7 @@ from typing import Iterable, Mapping
 import pandas as pd
 
 from .artifacts import build_snapshot_input_metadata, write_release_status_summary, write_snapshot_manifest
-from .contracts import MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE, SnapshotProfileContract, get_profile_contract
+from .contracts import RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE, SnapshotProfileContract, get_profile_contract
 from .dynamic_mega_universe import (
     normalize_price_history,
     ranked_active_dynamic_universe,
@@ -131,7 +131,7 @@ def _build_signal_description(metadata: Mapping[str, object], ranking: pd.DataFr
 
 def build_artifacts(
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+    profile: str = RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
     prices_path: str | Path,
     universe_path: str | Path,
     output_dir: str | Path,
@@ -270,7 +270,7 @@ def build_artifacts(
 
 def build_parser(
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+    profile: str = RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
     dynamic_universe_size_default: int = DEFAULT_PUBLISH_UNIVERSE_SIZE,
     holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
     single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,
@@ -312,7 +312,7 @@ def build_parser(
 def main(
     argv: list[str] | None = None,
     *,
-    profile: str = MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE,
+    profile: str = RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE,
     dynamic_universe_size_default: int = DEFAULT_PUBLISH_UNIVERSE_SIZE,
     holdings_count_default: int = DEFAULT_HOLDINGS_COUNT,
     single_name_cap_default: float = DEFAULT_SINGLE_NAME_CAP,

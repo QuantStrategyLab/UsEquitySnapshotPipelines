@@ -7,8 +7,7 @@ import pandas as pd
 
 
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
-RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE = "russell_1000_multi_factor_defensive"
-MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE = "mega_cap_leader_rotation_top50_balanced"
+RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE = "russell_top50_leader_rotation_aggressive"
 
 
 def _price_rows(symbols: dict[str, tuple[float, float]], *, periods: int = 320) -> list[dict[str, object]]:
@@ -50,31 +49,6 @@ def _tech_universe() -> pd.DataFrame:
             {"symbol": "META", "sector": "Communication Services"},
             {"symbol": "NVDA", "sector": "Information Technology"},
             {"symbol": "JPM", "sector": "Financials"},
-        ]
-    )
-
-
-def _russell_prices() -> pd.DataFrame:
-    symbols = {
-        "SPY": (100.0, 0.0007),
-        "BOXX": (100.0, 0.0002),
-        "AAPL": (120.0, 0.0012),
-        "MSFT": (110.0, 0.0011),
-        "JPM": (80.0, 0.0003),
-        "XOM": (75.0, 0.00025),
-        "NVDA": (80.0, 0.0014),
-    }
-    return pd.DataFrame(_price_rows(symbols))
-
-
-def _russell_universe() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"symbol": "AAPL", "sector": "Information Technology"},
-            {"symbol": "MSFT", "sector": "Information Technology"},
-            {"symbol": "JPM", "sector": "Financials"},
-            {"symbol": "XOM", "sector": "Energy"},
-            {"symbol": "NVDA", "sector": "Information Technology"},
         ]
     )
 
@@ -123,10 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if profile == TECH_COMMUNICATION_PULLBACK_PROFILE:
         prices = _tech_prices()
         universe = _tech_universe()
-    elif profile == RUSSELL_1000_MULTI_FACTOR_DEFENSIVE_PROFILE:
-        prices = _russell_prices()
-        universe = _russell_universe()
-    elif profile == MEGA_CAP_LEADER_ROTATION_TOP50_BALANCED_PROFILE:
+    elif profile == RUSSELL_TOP50_LEADER_ROTATION_AGGRESSIVE_PROFILE:
         prices = _mega_prices()
         universe = _mega_universe()
     else:

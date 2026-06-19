@@ -24,8 +24,7 @@ test = ["pytest>=8"]
 [project.scripts]
 useq-build-tech-communication-pullback-snapshot = "us_equity_snapshot_pipelines.tech_communication_pullback:main"
 useq-backtest-tech-communication-pullback = "us_equity_snapshot_pipelines.tech_communication_pullback_backtest:main"
-useq-build-russell-1000-snapshot = "us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive:main"
-useq-build-mega-cap-leader-rotation-top50-balanced-snapshot = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_top50_balanced:main"
+useq-build-russell-top50-leader-rotation-aggressive-snapshot = "us_equity_snapshot_pipelines.russell_top50_leader_rotation_aggressive:main"
 useq-backtest-mega-cap-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
 useq-backtest-mega-cap-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
 useq-validate-mega-cap-leader-rotation-dynamic-universe = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_validation:main"

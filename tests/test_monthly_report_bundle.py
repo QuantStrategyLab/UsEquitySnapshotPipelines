@@ -76,13 +76,10 @@ def test_build_bundle_collects_profile_summaries_from_downloaded_artifacts(tmp_p
 
 
 def test_build_bundle_warns_when_expected_profile_artifacts_are_missing(tmp_path: Path) -> None:
-    first_profile = list_scheduled_profile_contracts()[0].profile
-    _write_profile_artifacts(tmp_path, first_profile)
-
     bundle = build_bundle(tmp_path, report_month="2026-04")
 
     assert bundle["status"] == "warning"
-    assert bundle["missing_profile_count"] == len(list_scheduled_profile_contracts()) - 1
+    assert bundle["missing_profile_count"] == len(list_scheduled_profile_contracts())
     assert any(profile["status"] == "missing" for profile in bundle["profiles"])
 
 

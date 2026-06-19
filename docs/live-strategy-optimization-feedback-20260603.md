@@ -14,9 +14,9 @@ Current runtime-enabled profiles reviewed from `UsEquityStrategies/main`:
 | Profile | Role | Decision |
 | --- | --- | --- |
 | `global_etf_rotation` | defensive ETF rotation | Keep current default |
-| `mega_cap_leader_rotation_top50_balanced` | balanced mega-cap snapshot rotation | Keep current default |
+| `russell_top50_leader_rotation_aggressive` | aggressive Russell Top50 leader rotation | Keep current default |
 | `nasdaq_sp500_smart_dca` | buy-only cash deployment | Keep current default; operational tuning only |
-| `russell_1000_multi_factor_defensive` | defensive Russell 1000 snapshot baseline | Keep current default |
+| `russell_1000_multi_factor_defensive` | retired defensive Russell 1000 snapshot baseline | Retired after later review |
 | `soxl_soxx_trend_income` | offensive semiconductor leveraged sleeve | Keep current default |
 | `tech_communication_pullback_enhancement` | tech/communication snapshot pullback sleeve | Keep current default |
 | `tqqq_growth_income` | offensive Nasdaq dual-drive leveraged sleeve | Keep current default; optional conservative override only |
@@ -141,7 +141,10 @@ Feedback:
 
 ### `russell_1000_multi_factor_defensive`
 
-Decision: keep the current defensive baseline.
+Decision update: retired from this repository's runtime snapshot contract after
+later review. The long-window edge was only modest versus SPY while drawdown was
+not materially better than direct broad-market exposure, so the strategy no
+longer justifies live artifact/workflow complexity.
 
 Evidence from the US equity snapshot candidate gate:
 
@@ -151,15 +154,13 @@ Evidence from the US equity snapshot candidate gate:
 
 Feedback:
 
-- No ordinary ETF, new snapshot, or optimization candidate cleared the stricter
-  replacement/supplemental bar in the current gate output.
-- If an account needs lower drawdown, a future research-only pass can test one
-  simple exposure knob such as lower soft-defense stock exposure. Do not change
-  factor weights without a fresh gate.
+- Do not publish or health-check this profile as a live snapshot artifact.
+- Use SPY/VOO-style broad-market exposure as the conservative benchmark instead
+  of maintaining this strategy as a separate live sleeve.
 
-### `mega_cap_leader_rotation_top50_balanced`
+### `russell_top50_leader_rotation_aggressive`
 
-Decision: keep the current Top50 balanced live profile.
+Decision: keep the renamed Russell Top50 aggressive leader-rotation live profile.
 
 Reference evidence from older mega-cap research:
 
