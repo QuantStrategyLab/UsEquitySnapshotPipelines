@@ -60,6 +60,7 @@ DRAWNDOWN_ADVANTAGE_VS_QQQ = 0.05
 DEFAULT_ROBUSTNESS_CANDIDATES = (
     "offensive_growth_fast_top2_monthly",
     "liveable_blend_baseline90_fast10",
+    "liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
     "liveable_blend_baseline85_fast15",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor0",
@@ -74,6 +75,7 @@ DEFAULT_ROLLING_ROBUSTNESS_YEARS = (3, 5)
 DEFAULT_LIVE_BASELINE_CANDIDATE = "live_global_etf_rotation_defensive_baseline"
 DEFAULT_WALK_FORWARD_CANDIDATES = (
     "liveable_blend_baseline90_fast10",
+    "liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
     "liveable_blend_baseline85_fast15",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor0",
@@ -157,6 +159,10 @@ class GlobalEtfLiveableCompositeSpec:
     drawdown_window: int = 63
     drawdown_threshold: float = -0.08
     min_overlay_weight: float = 0.0
+    relative_decay_fast_window: int = 63
+    relative_decay_slow_window: int = 126
+    relative_decay_fast_threshold: float = -0.03
+    relative_decay_slow_threshold: float = 0.0
     notes: str = ""
 
 
@@ -321,6 +327,25 @@ GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
         notes=(
             "Research-only sleeve-sensitivity candidate: keep 90% in current defensive baseline and allocate "
             "10% to the fast offensive sleeve."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
+        display_name="Liveable Baseline-Relative Decay Brake Baseline 90 / Fast 10 Floor 0",
+        rule="baseline_relative_decay_brake_baseline90_fast10_floor0",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.10,
+        min_overlay_weight=0.0,
+        relative_decay_fast_window=63,
+        relative_decay_slow_window=126,
+        relative_decay_fast_threshold=-0.03,
+        relative_decay_slow_threshold=0.0,
+        notes=(
+            "Research-only pre-registered narrow candidate: normally keep a 10% fast offensive sleeve, "
+            "but reduce it to 0% on the next monthly rebalance when the fast sleeve's trailing 63-day "
+            "gross return lags the defensive baseline by more than 3% and its trailing 126-day gross "
+            "return also lags the baseline. This tests strategy-relative decay, not QQQ-only timing."
         ),
     ),
     GlobalEtfLiveableCompositeSpec(
@@ -500,6 +525,28 @@ def _normalize_candidate_ids(values: Sequence[str] | str | None) -> tuple[str, .
         if candidate_id and candidate_id not in cleaned:
             cleaned.append(candidate_id)
     return tuple(cleaned)
+
+
+def _filter_variants(candidate_ids: Sequence[str]) -> tuple[GlobalEtfOffensiveVariantSpec, ...]:
+    ids = tuple(candidate_ids)
+    if not ids:
+        return GLOBAL_ETF_OFFENSIVE_VARIANTS
+    by_id = {spec.candidate_id: spec for spec in GLOBAL_ETF_OFFENSIVE_VARIANTS}
+    missing = [candidate_id for candidate_id in ids if candidate_id not in by_id]
+    if missing:
+        raise ValueError(f"unknown variant candidate IDs: {missing}")
+    return tuple(by_id[candidate_id] for candidate_id in ids)
+
+
+def _filter_liveable_composites(candidate_ids: Sequence[str]) -> tuple[GlobalEtfLiveableCompositeSpec, ...]:
+    ids = tuple(candidate_ids)
+    if not ids:
+        return GLOBAL_ETF_LIVEABLE_COMPOSITES
+    by_id = {spec.candidate_id: spec for spec in GLOBAL_ETF_LIVEABLE_COMPOSITES}
+    missing = [candidate_id for candidate_id in ids if candidate_id not in by_id]
+    if missing:
+        raise ValueError(f"unknown liveable composite IDs: {missing}")
+    return tuple(by_id[candidate_id] for candidate_id in ids)
 
 
 def _parse_float_list(values: Sequence[float] | str | None) -> tuple[float, ...]:
@@ -1159,6 +1206,29 @@ def _monthly_applied_overlay_weight(
     return applied.clip(lower=0.0, upper=1.0)
 
 
+def _gross_returns_from_weights(
+    context: IndicatorContext,
+    weights: pd.DataFrame,
+    *,
+    target_index: pd.DatetimeIndex,
+) -> pd.Series:
+    weight_frame = _weight_frame_for_index(weights, target_index)
+    asset_returns = context.returns.reindex(target_index).fillna(0.0)
+    tradable_columns = [column for column in weight_frame.columns if column in asset_returns.columns]
+    if not tradable_columns:
+        return pd.Series(0.0, index=target_index, dtype=float)
+    return (
+        weight_frame.reindex(columns=tradable_columns, fill_value=0.0)
+        .mul(asset_returns.reindex(columns=tradable_columns), axis=0)
+        .sum(axis=1)
+    )
+
+
+def _rolling_total_return(returns: pd.Series, window: int) -> pd.Series:
+    series = pd.to_numeric(pd.Series(returns), errors="coerce").fillna(0.0)
+    return (1.0 + series).rolling(int(window), min_periods=int(window)).apply(np.prod, raw=True).sub(1.0)
+
+
 def _composite_trend_gate(context: IndicatorContext, spec: GlobalEtfLiveableCompositeSpec) -> pd.Series:
     symbol = str(spec.regime_symbol).strip().upper()
     if symbol not in context.close.columns:
@@ -1176,6 +1246,8 @@ def _build_composite_overlay_weight(
     spec: GlobalEtfLiveableCompositeSpec,
     *,
     target_index: pd.DatetimeIndex,
+    base_weights: pd.DataFrame | None = None,
+    overlay_weights: pd.DataFrame | None = None,
 ) -> pd.Series:
     max_weight = max(0.0, min(1.0, float(spec.overlay_weight)))
     rule = str(spec.rule).strip().lower()
@@ -1198,6 +1270,27 @@ def _build_composite_overlay_weight(
         drawdown_ok = drawdown.ge(float(spec.drawdown_threshold)).fillna(False)
         risk_on = trend_gate & drawdown_ok
         raw_weight.loc[risk_on] = max_weight
+        return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
+
+    if rule.startswith("baseline_relative_decay_brake"):
+        if base_weights is None or overlay_weights is None:
+            raise ValueError("baseline-relative decay brake requires base and overlay weights")
+        min_weight = max(0.0, min(max_weight, float(spec.min_overlay_weight)))
+        base_returns = _gross_returns_from_weights(context, base_weights, target_index=target_index)
+        overlay_returns = _gross_returns_from_weights(context, overlay_weights, target_index=target_index)
+        fast_window = int(spec.relative_decay_fast_window)
+        slow_window = int(spec.relative_decay_slow_window)
+        fast_excess = _rolling_total_return(overlay_returns, fast_window).sub(
+            _rolling_total_return(base_returns, fast_window)
+        )
+        slow_excess = _rolling_total_return(overlay_returns, slow_window).sub(
+            _rolling_total_return(base_returns, slow_window)
+        )
+        brake = fast_excess.lt(float(spec.relative_decay_fast_threshold)) & slow_excess.lt(
+            float(spec.relative_decay_slow_threshold)
+        )
+        raw_weight = pd.Series(max_weight, index=target_index, dtype=float)
+        raw_weight.loc[brake.fillna(False)] = min_weight
         return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
 
     if rule.startswith("volatility_managed_overlay"):
@@ -1285,7 +1378,13 @@ def run_liveable_composite_backtest(
     if len(target_index) < 2:
         raise ValueError(f"not enough child weight history for {spec.candidate_id}")
 
-    overlay_weight = _build_composite_overlay_weight(context, spec, target_index=target_index)
+    overlay_weight = _build_composite_overlay_weight(
+        context,
+        spec,
+        target_index=target_index,
+        base_weights=base_weights,
+        overlay_weights=overlay_weights,
+    )
     combined_weights = _combine_composite_weights(
         base_weights=base_weights,
         overlay_weights=overlay_weights,
@@ -2789,6 +2888,24 @@ def run_offensive_research(
     }
 
 
+def build_portfolio_returns_with_benchmarks(
+    *,
+    price_history: pd.DataFrame,
+    portfolio_returns: pd.DataFrame,
+    benchmarks: Sequence[str] = (DEFAULT_SECONDARY_BENCHMARK, DEFAULT_PRIMARY_BENCHMARK),
+) -> pd.DataFrame:
+    portfolio = pd.DataFrame(portfolio_returns).copy()
+    if portfolio.empty:
+        return portfolio
+    close = _normalize_price_history(price_history)
+    benchmark_columns = tuple(dict.fromkeys(str(symbol).upper() for symbol in benchmarks if str(symbol).strip()))
+    missing = [symbol for symbol in benchmark_columns if symbol not in close.columns]
+    if missing:
+        raise ValueError(f"price history missing benchmark symbols: {missing}")
+    benchmark_returns = close.loc[:, list(benchmark_columns)].pct_change().reindex(portfolio.index)
+    return pd.concat([portfolio, benchmark_returns], axis=1)
+
+
 def write_recommendation(
     output_dir: Path,
     *,
@@ -3020,6 +3137,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--turnover-cost-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
     parser.add_argument("--symbols", help="Optional comma-separated override for downloaded symbols")
     parser.add_argument(
+        "--variants",
+        help=(
+            "Optional comma-separated base variant IDs to evaluate. "
+            "When omitted, all default base variants are evaluated."
+        ),
+    )
+    parser.add_argument(
+        "--liveable-composites",
+        help=(
+            "Optional comma-separated liveable composite IDs to evaluate. "
+            "When omitted, all default liveable composites are evaluated."
+        ),
+    )
+    parser.add_argument(
         "--robustness-candidates",
         default=",".join(DEFAULT_ROBUSTNESS_CANDIDATES),
         help="Comma-separated candidate IDs for calendar-year and rolling robustness diagnostics.",
@@ -3081,11 +3212,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     periods = _parse_periods(args.periods)
+    variants = _filter_variants(_normalize_candidate_ids(args.variants))
+    liveable_composites = _filter_liveable_composites(_normalize_candidate_ids(args.liveable_composites))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.download:
-        symbols = _normalize_symbols(args.symbols) or collect_required_symbols()
+        symbols = _normalize_symbols(args.symbols) or collect_required_symbols(variants=variants)
         prices = download_price_history(list(symbols), start=args.price_start, end=args.price_end)
         prices.to_csv(output_dir / "downloaded_price_history.csv", index=False)
     else:
@@ -3094,11 +3227,17 @@ def main(argv: list[str] | None = None) -> int:
     result = run_offensive_research(
         price_history=prices,
         periods=periods,
+        variants=variants,
+        liveable_composites=liveable_composites,
         turnover_cost_bps=float(args.turnover_cost_bps),
     )
     result["period_summary"].to_csv(output_dir / "period_summary.csv", index=False)
     result["ranking"].to_csv(output_dir / "ranking.csv", index=False)
     result["portfolio_returns"].to_csv(output_dir / "portfolio_returns.csv")
+    build_portfolio_returns_with_benchmarks(
+        price_history=prices,
+        portfolio_returns=result["portfolio_returns"],
+    ).to_csv(output_dir / "portfolio_returns_with_benchmarks.csv")
     result["signal_history"].to_csv(output_dir / "rebalance_events.csv", index=False)
     weights_by_candidate = _weights_by_candidate_from_result(result)
     robustness_candidates = _normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES
@@ -3142,6 +3281,8 @@ def main(argv: list[str] | None = None) -> int:
             price_history=prices,
             periods=periods,
             cost_bps_values=cost_stress_bps,
+            variants=variants,
+            liveable_composites=liveable_composites,
             robustness_candidates=robustness_candidates,
         )
         cost_stress.to_csv(output_dir / "cost_stress_live_readiness_summary.csv", index=False)
@@ -3169,6 +3310,8 @@ def main(argv: list[str] | None = None) -> int:
                 price_history=prices,
                 periods=periods,
                 config=dynamic_config,
+                variants=variants,
+                liveable_composites=liveable_composites,
                 robustness_candidates=robustness_candidates,
             )
             if detailed_dynamic_cost is None:
@@ -3243,6 +3386,8 @@ def main(argv: list[str] | None = None) -> int:
         "dynamic_cost_navs": list(dynamic_cost_navs),
         "walk_forward_train_years": int(args.walk_forward_train_years),
         "walk_forward_min_train_excess_cagr": float(args.walk_forward_min_train_excess_cagr),
+        "variant_candidates": [variant.candidate_id for variant in variants],
+        "liveable_composite_candidates": [spec.candidate_id for spec in liveable_composites],
         "walk_forward_candidates": list(walk_forward_candidates),
         "variants": [asdict(variant) for variant in GLOBAL_ETF_OFFENSIVE_VARIANTS],
         "liveable_composites": [asdict(spec) for spec in GLOBAL_ETF_LIVEABLE_COMPOSITES],

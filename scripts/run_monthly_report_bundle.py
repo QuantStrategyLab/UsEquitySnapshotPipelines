@@ -57,6 +57,15 @@ def parse_args() -> argparse.Namespace:
             "Can be supplied multiple times. When omitted, artifact-root is scanned."
         ),
     )
+    parser.add_argument(
+        "--live-decay-monitor-manifest",
+        action="append",
+        default=None,
+        help=(
+            "Optional live_decay_monitor_manifest.json path to include in the monthly review bundle. "
+            "Can be supplied multiple times. When omitted, artifact-root is scanned."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -93,6 +102,12 @@ def _discover_capacity_stress_manifests(artifact_root: Path, explicit_paths: lis
     if explicit_paths:
         return [Path(path) for path in explicit_paths if str(path).strip()]
     return sorted(artifact_root.rglob("capacity_stress_manifest.json"))
+
+
+def _discover_live_decay_monitor_manifests(artifact_root: Path, explicit_paths: list[str] | None) -> list[Path]:
+    if explicit_paths:
+        return [Path(path) for path in explicit_paths if str(path).strip()]
+    return sorted(artifact_root.rglob("live_decay_monitor_manifest.json"))
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -387,6 +402,60 @@ def _collect_capacity_stress_manifest(path: Path) -> dict[str, Any]:
     }
 
 
+def _collect_live_decay_monitor_manifest(path: Path) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "generated_at": "",
+        "input_format": "",
+        "strategies": [],
+        "primary_benchmark": "",
+        "secondary_benchmark": "",
+        "windows": [],
+        "policy": {},
+        "expected_excess_cagr_by_strategy": {},
+        "row_counts": {},
+        "artifact_count": 0,
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == "live_decay_monitor" else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "generated_at": str(payload.get("generated_at", "") or ""),
+        "input_format": str(payload.get("input_format", "") or ""),
+        "strategies": _string_list(payload.get("strategies")),
+        "primary_benchmark": str(payload.get("primary_benchmark", "") or ""),
+        "secondary_benchmark": str(payload.get("secondary_benchmark", "") or ""),
+        "windows": _string_list(payload.get("windows")),
+        "policy": dict(_safe_mapping(payload.get("policy"))),
+        "expected_excess_cagr_by_strategy": dict(_safe_mapping(payload.get("expected_excess_cagr_by_strategy"))),
+        "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
+        "artifact_count": len(artifacts),
+    }
+
+
 def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int) -> dict[str, Any]:
     contract = next(item for item in list_profile_contracts() if item.profile == profile)
     if summary_path is None:
@@ -439,6 +508,7 @@ def build_bundle(
     promotion_bundle_manifest_paths: list[str] | None = None,
     shadow_live_ledger_manifest_paths: list[str] | None = None,
     capacity_stress_manifest_paths: list[str] | None = None,
+    live_decay_monitor_manifest_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     root = Path(artifact_root)
     discovered = _discover_release_summaries(root)
@@ -456,9 +526,14 @@ def build_bundle(
         _collect_capacity_stress_manifest(path)
         for path in _discover_capacity_stress_manifests(root, capacity_stress_manifest_paths)
     ]
+    live_decay_monitors = [
+        _collect_live_decay_monitor_manifest(path)
+        for path in _discover_live_decay_monitor_manifests(root, live_decay_monitor_manifest_paths)
+    ]
     promotion_bundle_problem_count = sum(1 for bundle in promotion_bundles if bundle["status"] != "ok")
     shadow_live_ledger_problem_count = sum(1 for ledger in shadow_live_ledgers if ledger["status"] != "ok")
     capacity_stress_problem_count = sum(1 for stress in capacity_stresses if stress["status"] != "ok")
+    live_decay_monitor_problem_count = sum(1 for monitor in live_decay_monitors if monitor["status"] != "ok")
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
         for contract in list_scheduled_profile_contracts()
@@ -471,6 +546,7 @@ def build_bundle(
         and promotion_bundle_problem_count == 0
         and shadow_live_ledger_problem_count == 0
         and capacity_stress_problem_count == 0
+        and live_decay_monitor_problem_count == 0
         else "warning"
     )
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})
@@ -499,6 +575,9 @@ def build_bundle(
         "capacity_stress_count": len(capacity_stresses),
         "capacity_stress_problem_count": capacity_stress_problem_count,
         "capacity_stresses": capacity_stresses,
+        "live_decay_monitor_count": len(live_decay_monitors),
+        "live_decay_monitor_problem_count": live_decay_monitor_problem_count,
+        "live_decay_monitors": live_decay_monitors,
     }
 
 
@@ -523,6 +602,8 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
         f"- Shadow-live ledger issues: `{bundle.get('shadow_live_ledger_problem_count', 0)}`",
         f"- Capacity stress reports: `{bundle.get('capacity_stress_count', 0)}`",
         f"- Capacity stress issues: `{bundle.get('capacity_stress_problem_count', 0)}`",
+        f"- Live decay monitors: `{bundle.get('live_decay_monitor_count', 0)}`",
+        f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
         "",
         "## Profiles",
         "",
@@ -622,6 +703,23 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
                 f"{row_counts.get('capacity_stress_detail', 0)} | "
                 f"{row_counts.get('capacity_stress_summary', 0)} |"
             )
+    if bundle.get("live_decay_monitors"):
+        lines.extend(
+            [
+                "",
+                "## Live Decay Monitors",
+                "",
+                "| Manifest | Status | Schema | Generated at | Strategies | Windows |",
+                "| --- | --- | --- | --- | ---: | --- |",
+            ]
+        )
+        for monitor in bundle["live_decay_monitors"]:
+            lines.append(
+                f"| `{_md(monitor['manifest_path'])}` | `{_md(monitor['status'])}` | "
+                f"`{_md(monitor['artifact_schema_version'])}` | "
+                f"{_md(monitor['generated_at']) or 'n/a'} | "
+                f"{len(monitor['strategies'])} | {', '.join(monitor['windows']) or 'n/a'} |"
+            )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -650,6 +748,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         f"- Non-ready profiles: `{bundle.get('non_ready_profile_count', 0)}`",
         f"- Strategy health reports: `{len(bundle.get('strategy_health_reports', []))}`",
         f"- Strategy health errors: `{bundle.get('strategy_health_error_count', 0)}`",
+        f"- Live decay monitors: `{bundle.get('live_decay_monitor_count', 0)}`",
+        f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
         "",
         "## Profile Summaries",
     ]
@@ -849,6 +949,42 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Live Decay Monitors",
+            "",
+            "These monitors compare recent realized strategy returns against QQQ/SPY-style benchmarks and optional "
+            "backtest-implied expectations. They are review signals only and must not trigger automated live "
+            "allocation changes by themselves.",
+        ]
+    )
+    if not bundle.get("live_decay_monitors"):
+        lines.append("")
+        lines.append("_No live decay monitor manifest found under the artifact root._")
+    for monitor in bundle.get("live_decay_monitors", []):
+        row_counts = monitor.get("row_counts") or {}
+        status_note = monitor.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### Live decay monitor `{_md(monitor['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(monitor['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Manifest type: `{_md(monitor['manifest_type'])}`",
+                f"- Artifact schema: `{_md(monitor['artifact_schema_version'])}`",
+                f"- Generated at: `{_md(monitor['generated_at']) or 'n/a'}`",
+                f"- Input format: `{_md(monitor['input_format']) or 'n/a'}`",
+                f"- Strategies: `{', '.join(monitor['strategies']) or 'n/a'}`",
+                f"- Primary benchmark: `{_md(monitor['primary_benchmark']) or 'n/a'}`",
+                f"- Secondary benchmark: `{_md(monitor['secondary_benchmark']) or 'n/a'}`",
+                f"- Windows: `{', '.join(monitor['windows']) or 'n/a'}`",
+                f"- Policy: `{_md(monitor.get('policy') or 'n/a')}`",
+                f"- Window rows: `{row_counts.get('live_decay_window_summary', 0)}`",
+                f"- Strategy summary rows: `{row_counts.get('live_decay_strategy_summary', 0)}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
             "## Review Questions",
             "",
             "1. Are all expected monthly snapshot profiles present and internally complete?",
@@ -858,7 +994,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
             "5. If promotion manifests are present, do their review rows and statistical/context diagnostics support the intended research-only conclusion?",
             "6. If shadow-live ledgers are present, do the trade deltas, slippage estimates, and forward returns support continuing toward paper/live promotion?",
             "7. If capacity stress reports are present, which NAV/slippage/split-day assumptions remain implementable?",
-            "8. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
+            "8. If live decay monitors are present, do recent QQQ/SPY or expected-edge gaps require human review without changing runtime automatically?",
+            "9. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
         ]
     )
     return "\n".join(lines).strip() + "\n"
@@ -885,6 +1022,7 @@ def main() -> int:
         promotion_bundle_manifest_paths=args.promotion_bundle_manifest,
         shadow_live_ledger_manifest_paths=args.shadow_live_ledger_manifest,
         capacity_stress_manifest_paths=args.capacity_stress_manifest,
+        live_decay_monitor_manifest_paths=args.live_decay_monitor_manifest,
     )
     outputs = write_bundle(bundle, args.output_dir)
     print(f"status={bundle['status']}")

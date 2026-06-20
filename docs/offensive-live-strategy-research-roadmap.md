@@ -399,6 +399,19 @@ Web-expanded source scan, 2026-06-20:
   Sharpe ratios by reducing exposure when volatility is high. Source: https://www.nber.org/papers/w22208
 - Harvey, Liu, and Zhu warn that factor discovery needs much stricter evidence
   after multiple testing. Source: https://www.nber.org/system/files/working_papers/w20592/w20592.pdf
+- McLean and Pontiff show that published return predictors suffer material
+  out-of-sample and post-publication return declines, which supports adding
+  explicit live-decay monitors before promotion. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2156623
+- Chordia, Subrahmanyam, and Tong document attenuation in prominent anomalies
+  during high-liquidity/high-trading-activity regimes, which is consistent with
+  requiring recent rolling edge checks rather than relying only on long
+  backtests. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2029057
+- Hsu, Kalesnik, and Viswanathan propose a framework for separating robust
+  factors from data-mined factors, reinforcing the requirement that new
+  offensive sleeves remain narrow and pre-registered. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2913304
 
 Pre-registered candidate families:
 
@@ -407,7 +420,7 @@ Pre-registered candidate families:
 | Sector-aware Russell concentration | Keep the existing Top2/Top4 formulas, but cap selected names per sector at `1` for research-only Top2, Top4, and fixed blends. | Existing Russell dynamic universe `sector` field; no new vendor. | Research-only until it beats fixed 25/75 and 50/50 blends after cost, source-lag, ADV, and rolling gates. |
 | Residual / beta-adjusted Russell momentum | Rank by price momentum residualized versus QQQ/SPY or sector ETF proxy, with a frozen lookback. | Existing price history is enough for a first proxy; sector ETF data only if needed. | Not a live candidate until it beats raw-score blends and survives overfitting gates. |
 | Fundamental / earnings momentum | Add earnings-surprise or analyst-revision confirmation only if a reliable point-in-time source is available. | Needs PIT earnings/revision data; free Yahoo-like snapshots are not enough for live promotion. | Do not implement live by default without auditable PIT data. |
-| Global ETF safe offensive sleeve | Keep current defensive baseline live; only revisit 85/15 or 90/10 if real execution data or a stricter train-edge rule clears walk-forward failure. | Existing ETF price/volume data plus future execution logs. | Current conclusion stays no default live change. |
+| Global ETF baseline-relative decay brake | Tested only `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0`: 90/10 sleeve, but cut fast sleeve to 0% on the next monthly rebalance when its trailing 63D and 126D gross returns both lag the live defensive baseline. | Existing ETF price/volume data plus future execution logs; no new vendor. | Failed live-readiness and dynamic-cost gates; Global ETF offensive sleeve remains not live-ready. |
 
 Implemented research hook:
 
@@ -1875,8 +1888,9 @@ Recommended next deliverables:
    `useq-research-russell-top50-leader-rotation-capacity-stress`, consuming
    `shadow_live_rebalance_summary.csv` and optionally `liquidity_summary.csv`.
 4. Add live-decay monitors over rolling 3/6/12-month windows versus QQQ/SPY and
-   versus the backtest-implied expectation. These should be review signals, not
-   automatic strategy switches.
+   versus the backtest-implied expectation. This is now available through
+   `useq-build-live-decay-monitor`. These are review signals, not automatic
+   strategy switches.
 5. Keep anomaly/factor expansion as a lower-priority research track. Any new
    factor must enter through pre-registered candidates and the promotion bundle,
    not ad-hoc ranking tweaks.
@@ -1940,6 +1954,69 @@ Monthly review integration:
 - Missing capacity stress reports do not block monthly snapshot review. Invalid
   manifests are surfaced as warnings because they indicate an evidence archival
   problem.
+
+Live-decay monitor command templates:
+
+```bash
+uv run useq-build-live-decay-monitor \
+  --returns data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_daily_returns.csv \
+  --input-format russell_daily \
+  --candidate-runs blend_top2_50_top4_50,blend_top2_25_top4_75,base_top4_cap25 \
+  --primary-benchmark QQQ \
+  --secondary-benchmark SPY \
+  --windows 63,126,252 \
+  --expected-excess-cagr-csv data/output/russell_top50_live_expectations_YYYYMMDD.csv \
+  --output-dir data/output/russell_top50_live_decay_YYYYMMDD
+```
+
+```bash
+uv run useq-build-live-decay-monitor \
+  --returns data/output/global_etf_offensive_rotation_research_YYYYMMDD/portfolio_returns_with_benchmarks.csv \
+  --input-format wide \
+  --strategies liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline \
+  --primary-benchmark QQQ \
+  --secondary-benchmark SPY \
+  --windows 63,126,252 \
+  --output-dir data/output/global_etf_live_decay_YYYYMMDD
+```
+
+Live-decay monitor outputs:
+
+- `live_decay_window_summary.csv`;
+- `live_decay_strategy_summary.csv`;
+- `live_decay_report.md`;
+- `live_decay_monitor_manifest.json`.
+
+Monthly review integration:
+
+- `scripts/build_monthly_live_decay_monitors.py` scans the artifact root for
+  Russell `concentration_variant_daily_returns.csv` and Global ETF
+  `portfolio_returns_with_benchmarks.csv`, then writes
+  `live_decay_monitor_manifest.json` artifacts into the output root:
+
+```bash
+python scripts/build_monthly_live_decay_monitors.py \
+  --artifact-root data/output \
+  --output-root data/output \
+  --windows 63,126,252 \
+  --russell-candidate-runs blend_top2_50_top4_50,blend_top2_25_top4_75,base_top4_cap25 \
+  --global-etf-strategies liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline
+```
+
+- `scripts/run_monthly_report_bundle.py` auto-discovers
+  `live_decay_monitor_manifest.json` under the artifact root, or accepts
+  explicit `--live-decay-monitor-manifest` paths.
+- Missing live-decay monitors do not block monthly snapshot review. Invalid
+  manifests are surfaced as warnings because they indicate an evidence archival
+  problem.
+- A `review` decay state is a human follow-up signal only. It must not change
+  runtime allocation, disable a strategy, or switch variants automatically.
+
+Current evidence gap: this worktree does not contain the previously generated
+Russell `concentration_variant_daily_returns.csv` artifact, so Russell
+live-decay has not been recomputed in this pass. The builder above is now in
+place to generate the monitor automatically when the Russell promotion artifact
+directory is present in monthly output.
 
 ## Architecture recommendation
 

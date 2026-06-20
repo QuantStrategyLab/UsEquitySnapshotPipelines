@@ -26,6 +26,17 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
 
         self.assertEqual(candidate_ids, ("offensive_growth_fast_top2_monthly", "Live_Baseline"))
 
+    def test_candidate_filters_reject_unknown_ids(self) -> None:
+        variants = research._filter_variants(("live_global_etf_rotation_defensive_baseline",))
+        composites = research._filter_liveable_composites(("liveable_blend_baseline90_fast10",))
+
+        self.assertEqual(variants[0].candidate_id, "live_global_etf_rotation_defensive_baseline")
+        self.assertEqual(composites[0].candidate_id, "liveable_blend_baseline90_fast10")
+        with self.assertRaisesRegex(ValueError, "unknown variant"):
+            research._filter_variants(("missing",))
+        with self.assertRaisesRegex(ValueError, "unknown liveable"):
+            research._filter_liveable_composites(("missing",))
+
     def test_parse_float_list_accepts_comma_separated_bps_values(self) -> None:
         values = research._parse_float_list("5,10, 25")
 
@@ -85,6 +96,40 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertIn("weights_offensive_test_top1", result)
         self.assertFalse(result["portfolio_returns"].empty)
         self.assertFalse(result["signal_history"].empty)
+
+    def test_portfolio_returns_with_benchmarks_adds_qqq_and_spy_returns(self) -> None:
+        prices = _price_history()
+        result = research.run_offensive_research(
+            price_history=prices,
+            periods=(("long", "2024-01-02", None),),
+            variants=(
+                research.GlobalEtfOffensiveVariantSpec(
+                    candidate_id="offensive_test_top1",
+                    display_name="Offensive Test Top1",
+                    candidate_group="offensive_candidate",
+                    rule="monthly_top1",
+                    ranking_pool=("AAA",),
+                    primary_benchmark_symbol="SPY",
+                    secondary_benchmark_symbol="QQQ",
+                    safe_haven="BIL",
+                    canary_assets=("SPY",),
+                    top_n=1,
+                    canary_bad_threshold=99,
+                ),
+            ),
+            liveable_composites=(),
+            turnover_cost_bps=0.0,
+        )
+
+        combined = research.build_portfolio_returns_with_benchmarks(
+            price_history=prices,
+            portfolio_returns=result["portfolio_returns"],
+        )
+
+        self.assertIn("offensive_test_top1", combined.columns)
+        self.assertIn("QQQ", combined.columns)
+        self.assertIn("SPY", combined.columns)
+        self.assertFalse(combined[["QQQ", "SPY"]].dropna().empty)
 
     def test_build_ranking_marks_spy_beating_qqq_drawdown_advantaged_candidate_for_review(self) -> None:
         rows = []
@@ -227,6 +272,56 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertAlmostEqual(float(active.max()), 0.15)
         self.assertAlmostEqual(float(active.min()), 0.10)
 
+    def test_baseline_relative_decay_brake_cuts_overlay_after_child_underperforms_baseline(self) -> None:
+        dates = pd.bdate_range(start="2024-01-02", periods=220)
+        rows: list[dict[str, object]] = []
+        aaa_price = 100.0
+        qqq_price = 100.0
+        for pos, as_of in enumerate(dates):
+            aaa_price *= 1.0004
+            qqq_price *= 1.0015 if pos < 120 else 0.9970
+            rows.append({"symbol": "AAA", "as_of": as_of, "close": aaa_price, "volume": 1_000_000})
+            rows.append({"symbol": "QQQ", "as_of": as_of, "close": qqq_price, "volume": 1_000_000})
+        close = research._normalize_price_history(pd.DataFrame(rows))
+        context = research._build_indicator_context(
+            close,
+            variants=(
+                research.GlobalEtfOffensiveVariantSpec(
+                    candidate_id="context",
+                    display_name="Context",
+                    candidate_group="offensive_candidate",
+                    rule="context",
+                    ranking_pool=("AAA", "QQQ"),
+                ),
+            ),
+        )
+        base_weights = pd.DataFrame({"AAA": 1.0}, index=context.returns.index)
+        overlay_weights = pd.DataFrame({"QQQ": 1.0}, index=context.returns.index)
+        spec = research.GlobalEtfLiveableCompositeSpec(
+            candidate_id="liveable_relative_decay_test",
+            display_name="Liveable Relative Decay Test",
+            rule="baseline_relative_decay_brake_test",
+            base_candidate_id="base",
+            overlay_candidate_id="overlay",
+            overlay_weight=0.10,
+            min_overlay_weight=0.0,
+            relative_decay_fast_window=20,
+            relative_decay_slow_window=40,
+            relative_decay_fast_threshold=-0.03,
+            relative_decay_slow_threshold=0.0,
+        )
+
+        weight = research._build_composite_overlay_weight(
+            context,
+            spec,
+            target_index=context.returns.index,
+            base_weights=base_weights,
+            overlay_weights=overlay_weights,
+        )
+
+        self.assertAlmostEqual(float(weight.max()), 0.10)
+        self.assertEqual(float(weight.tail(30).max()), 0.0)
+
     def test_run_offensive_research_adds_liveable_composites_when_children_exist(self) -> None:
         baseline = research.GlobalEtfOffensiveVariantSpec(
             candidate_id="live_global_etf_rotation_defensive_baseline",
@@ -268,6 +363,10 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertIn("liveable_blend_baseline80_fast20", result["portfolio_returns"].columns)
         self.assertIn("liveable_trend_drawdown_brake_baseline85_fast15_floor10", set(result["ranking"]["Candidate"]))
         self.assertIn("liveable_trend_drawdown_brake_baseline85_fast15_floor0", set(result["ranking"]["Candidate"]))
+        self.assertIn(
+            "liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
+            set(result["ranking"]["Candidate"]),
+        )
 
     def test_default_liveable_composites_include_static_sleeve_sensitivity_ladder(self) -> None:
         weights_by_id = {

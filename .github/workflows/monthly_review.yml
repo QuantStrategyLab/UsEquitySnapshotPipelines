@@ -92,6 +92,17 @@ jobs:
             --artifact-root "${artifact_root}" \
             --output-root "${artifact_root}"
 
+      - name: Build live decay monitors
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_live_decay_monitors.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
       - name: Build monthly review bundle
         id: bundle
         run: |

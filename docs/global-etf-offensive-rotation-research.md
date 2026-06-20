@@ -28,12 +28,13 @@ The runner compares:
 Liveable composite candidates are generated only when both child strategies exist in the run:
 
 10. `liveable_blend_baseline90_fast10` — 90% current defensive baseline + 10% fast offensive sleeve.
-11. `liveable_blend_baseline85_fast15` — 85% current defensive baseline + 15% fast offensive sleeve.
-12. `liveable_blend_baseline80_fast20` — 80% current defensive baseline + 20% fast offensive sleeve.
-13. `liveable_blend_baseline75_fast25` — 75% current defensive baseline + 25% fast offensive sleeve.
-14. `liveable_blend_baseline70_fast30` — 70% current defensive baseline + 30% fast offensive sleeve.
-15. `liveable_regime_qqqtrend_baseline70_fast30` — 30% fast offensive sleeve only when QQQ is above its 200-day trend and fast momentum is positive; otherwise 100% defensive baseline.
-16. `liveable_volmanaged_baseline70_fast30` — same QQQ trend gate, but scales the fast sleeve down when 63-day realized QQQ volatility is above 18%.
+11. `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` — 90/10 sleeve that cuts the fast sleeve to 0% on the next monthly rebalance only when the fast sleeve underperforms the defensive baseline over both trailing 63 and 126 trading-day windows.
+12. `liveable_blend_baseline85_fast15` — 85% current defensive baseline + 15% fast offensive sleeve.
+13. `liveable_blend_baseline80_fast20` — 80% current defensive baseline + 20% fast offensive sleeve.
+14. `liveable_blend_baseline75_fast25` — 75% current defensive baseline + 25% fast offensive sleeve.
+15. `liveable_blend_baseline70_fast30` — 70% current defensive baseline + 30% fast offensive sleeve.
+16. `liveable_regime_qqqtrend_baseline70_fast30` — 30% fast offensive sleeve only when QQQ is above its 200-day trend and fast momentum is positive; otherwise 100% defensive baseline.
+17. `liveable_volmanaged_baseline70_fast30` — same QQQ trend gate, but scales the fast sleeve down when 63-day realized QQQ volatility is above 18%.
 
 Composite returns are recomputed from combined daily weights and the raw asset return matrix, then transaction costs are applied to combined-weight turnover. This keeps the composite layer deterministic and avoids treating the child strategy returns as black boxes.
 
@@ -104,6 +105,7 @@ Outputs:
 - `period_summary.csv`
 - `ranking.csv`
 - `portfolio_returns.csv`
+- `portfolio_returns_with_benchmarks.csv`
 - `rebalance_events.csv`
 - `candidate_robustness_windows.csv`
 - `candidate_robustness_summary.csv`
@@ -642,3 +644,145 @@ Minimum-train-edge conclusion:
 - A 0.75% threshold promotes too rarely and still includes the 2025 failure.
 - A 1.00% threshold keeps the baseline every year; this is safe but provides no evidence that an offensive sleeve is live-ready.
 - Current recommendation remains unchanged: no Global ETF offensive sleeve should be default live. The only live-safe action is to keep the existing defensive baseline.
+
+## 2026-06-20 baseline-relative decay brake candidate
+
+A single pre-registered Global ETF follow-up candidate has been added to avoid
+continuing an unconstrained parameter grid:
+
+- `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` normally
+  holds the 90/10 defensive-baseline/fast-offensive blend.
+- On the next monthly rebalance it cuts the fast sleeve to 0% only when the fast
+  sleeve's trailing 63-day gross return lags the defensive baseline by more than
+  3 percentage points **and** its trailing 126-day gross return also lags the
+  baseline.
+- The brake is strategy-relative rather than QQQ-only, so it tests whether the
+  offensive sleeve is currently adding value over the already-live defensive
+  profile.
+- This is still research-only. It does not change the current live
+  `global_etf_rotation` defensive baseline, runtime manifest, or broker
+  behavior.
+
+Actual narrow gate run:
+
+```bash
+PYTHONPATH=src uv run python -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_baseline_relative_decay_brake_20260620/downloaded_price_history.csv \
+  --variants live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly \
+  --liveable-composites liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10 \
+  --robustness-candidates liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly \
+  --walk-forward-candidates liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10 \
+  --walk-forward-min-train-excess-cagr 0.005 \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --output-dir data/output/global_etf_baseline_relative_decay_brake_narrow_20260620
+```
+
+Result summary:
+
+| Evidence | `liveable_blend_baseline90_fast10` | `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` |
+| --- | ---: | ---: |
+| Research gate | pass | pass |
+| Live-readiness long excess vs baseline | +0.33% | +0.11% |
+| Calendar baseline CAGR win rate | 54.55% | 45.45% |
+| Rolling 5Y baseline CAGR win rate | 66.67% | 55.56% |
+| Live-readiness gate | pass | fail |
+| Dynamic-cost NAV stress live gate, $100k/$250k/$1M | pass/pass/pass | fail/fail/fail |
+| Walk-forward gate after dynamic costs | fail | not selected |
+| Worst OOS excess vs baseline after dynamic costs | about -4.86% to -4.87% | n/a |
+
+Conclusion:
+
+- The baseline-relative decay brake does **not** improve the live case. It is
+  too defensive/late: long excess falls to about +0.11%, calendar baseline win
+  rate drops below 50%, rolling 5Y baseline win rate is below 60%, and the
+  live-readiness gate fails under static and dynamic-cost assumptions.
+- The static `90/10` sleeve still looks better than the brake in live-readiness
+  and dynamic-cost summaries, but it fails the walk-forward gate because the
+  2025 OOS window is about -4.9 percentage points below the current defensive
+  baseline.
+- Therefore the Global ETF conclusion remains unchanged: no offensive sleeve
+  should be default live. Keep the current defensive baseline live.
+
+
+## 2026-06-20 live-decay monitor hook
+
+A generic evidence-only live-decay monitor is now available as
+`useq-build-live-decay-monitor`. For Global ETF offensive research, use it after a
+candidate has already passed the existing backtest, dynamic-cost, and
+walk-forward gates; do not use it to rescue a failed candidate.
+
+Intended command pattern:
+
+```bash
+uv run useq-build-live-decay-monitor \
+  --returns data/output/global_etf_offensive_rotation_research_YYYYMMDD/portfolio_returns_with_benchmarks.csv \
+  --input-format wide \
+  --strategies liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline \
+  --primary-benchmark QQQ \
+  --secondary-benchmark SPY \
+  --windows 63,126,252 \
+  --output-dir data/output/global_etf_live_decay_YYYYMMDD
+```
+
+Outputs:
+
+- `live_decay_window_summary.csv`
+- `live_decay_strategy_summary.csv`
+- `live_decay_report.md`
+- `live_decay_monitor_manifest.json`
+
+Design notes:
+
+- A `review` state is a human follow-up signal only. It does not switch the
+  live strategy, sell holdings, or change the runtime manifest.
+- The monitor supports optional `expected_excess_cagr_vs_primary` inputs so the
+  same trailing 3/6/12-month evidence can be compared against a frozen
+  backtest-implied edge.
+- For Global ETF, the live conclusion is still unchanged: keep the current
+  defensive baseline unless a pre-registered offensive sleeve passes the OOS and
+  cost gates first.
+
+Actual monitor run on the narrow baseline-relative decay output:
+
+```bash
+PYTHONPATH=src uv run python -m us_equity_snapshot_pipelines.live_decay_monitor \
+  --returns data/output/global_etf_baseline_relative_decay_brake_narrow_20260620/portfolio_returns_with_benchmarks.csv \
+  --input-format wide \
+  --strategies liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline \
+  --primary-benchmark QQQ \
+  --secondary-benchmark SPY \
+  --windows 63,126,252 \
+  --min-observations 60 \
+  --output-dir data/output/global_etf_baseline_relative_decay_live_decay_20260620
+```
+
+Recent-decay result:
+
+| Strategy | Overall decay state | Triggered window | Worst excess vs QQQ | Worst excess vs SPY |
+| --- | --- | --- | ---: | ---: |
+| `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` | review | trailing 63D | -128.25% | -49.39% |
+| `liveable_blend_baseline90_fast10` | review | trailing 63D | -128.25% | -49.39% |
+| `live_global_etf_rotation_defensive_baseline` | review | trailing 63D | -143.95% | -65.09% |
+
+This monitor result is not a trading instruction; it is additional evidence
+that the current high-beta rebound regime is unfavorable for promoting a Global
+ETF offensive sleeve by default.
+
+Research context:
+
+- Bailey and López de Prado's Deflated Sharpe Ratio work supports discounting
+  performance evidence after multiple trials and short/non-normal samples:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551
+- Bailey et al.'s PBO/CSCV work reinforces that apparently strong in-sample
+  strategy choices can fail out of sample:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253
+- Daniel and Moskowitz's momentum-crash work supports monitoring momentum-like
+  sleeves for high-volatility rebound failure modes:
+  https://www.nber.org/papers/w20439
+- Moreira and Muir's volatility-management evidence supports treating realized
+  volatility/decay as a risk-control input, but not as proof that this Global ETF
+  offensive sleeve is live-ready:
+  https://www.nber.org/papers/w22208
