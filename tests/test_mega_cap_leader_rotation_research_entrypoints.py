@@ -5,12 +5,15 @@ from pathlib import Path
 
 
 EXPECTED_RUSSELL_PROMOTION_ENTRYPOINTS = {
+    "useq-build-russell-top50-shadow-live-ledger": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_live_ledger:main",
+    "useq-research-russell-top50-leader-rotation-capacity-stress": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_capacity_stress:main",
     "useq-research-russell-top50-leader-rotation-overfit-diagnostics": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_overfit_diagnostics:main",
     "useq-research-russell-top50-leader-rotation-reality-check": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_reality_check:main",
     "useq-research-russell-top50-leader-rotation-liquidity-diagnostics": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_liquidity_diagnostics:main",
     "useq-research-russell-top50-leader-rotation-spa-check": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_spa_check:main",
     "useq-research-russell-top50-leader-rotation-era-split": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_era_split_diagnostics:main",
     "useq-research-russell-top50-leader-rotation-mcs-diagnostics": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_mcs_diagnostics:main",
+    "useq-research-russell-top50-leader-rotation-dsr-pbo": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dsr_pbo_diagnostics:main",
     "useq-research-russell-top50-leader-rotation-promotion-review": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_promotion_review:main",
     "useq-research-russell-top50-leader-rotation-promotion-bundle": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_promotion_bundle:main",
 }

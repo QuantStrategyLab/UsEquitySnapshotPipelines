@@ -10,7 +10,7 @@ import sys
 import pandas as pd
 
 from scripts.run_monthly_report_bundle import build_bundle, render_ai_review_input, render_job_summary
-from us_equity_snapshot_pipelines.contracts import get_profile_contract, list_profile_contracts, list_scheduled_profile_contracts
+from us_equity_snapshot_pipelines.contracts import get_profile_contract, list_scheduled_profile_contracts
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -287,3 +287,130 @@ def test_monthly_review_scripts_e2e_include_health_reports_and_errors(tmp_path: 
     assert "bad_returns_research" in ai_review_input
     assert "Strategy health reports: `1`" in job_summary
     assert "Strategy health errors: `1`" in job_summary
+
+
+def test_build_bundle_collects_russell_promotion_manifest(tmp_path: Path) -> None:
+    for contract in list_scheduled_profile_contracts():
+        _write_profile_artifacts(tmp_path, contract.profile)
+    manifest_path = tmp_path / "russell_top50_promotion_bundle" / "promotion_bundle_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "manifest_type": "russell_top50_promotion_bundle",
+            "artifact_schema_version": "russell_top50_promotion_bundle.v1",
+            "generated_at": "2026-06-20T10:00:00+00:00",
+            "candidate_runs": [
+                "base_top4_cap25",
+                "blend_top2_25_top4_75",
+                "blend_top2_50_top4_50",
+            ],
+            "portfolio_nav": 5000000,
+            "dsr_pbo": {"cscv_groups": 8, "effective_trials": 3},
+            "inputs": {
+                "summary": {"path": "concentration_variant_summary.csv"},
+                "daily_returns": {"path": "concentration_variant_daily_returns.csv"},
+            },
+            "artifacts": {
+                "live_promotion_review": {"path": "live_promotion_review.csv"},
+                "spa_qqq_global": {"path": "spa_qqq/spa_global_summary.csv"},
+            },
+            "review_rows": [
+                {
+                    "run": "blend_top2_50_top4_50",
+                    "required_gates_passed": True,
+                    "statistical_support_level": "qqq_and_spy_reality_check_and_spa",
+                    "promotion_decision": "live_design_candidate",
+                    "recommended_action": "preferred_aggressive_live_design_review",
+                }
+            ],
+        },
+    )
+
+    bundle = build_bundle(tmp_path, report_month="2026-06")
+    markdown = render_ai_review_input(bundle)
+    summary = render_job_summary(bundle)
+
+    assert bundle["promotion_bundle_count"] == 1
+    assert bundle["promotion_bundle_problem_count"] == 0
+    assert bundle["promotion_bundles"][0]["artifact_schema_version"] == "russell_top50_promotion_bundle.v1"
+    assert bundle["promotion_bundles"][0]["review_rows"][0]["run"] == "blend_top2_50_top4_50"
+    assert "Research Promotion Bundles" in markdown
+    assert "preferred_aggressive_live_design_review" in markdown
+    assert "DSR/PBO config" in markdown
+    assert "Promotion bundles: `1`" in summary
+
+
+def test_build_bundle_collects_shadow_live_ledger_manifest(tmp_path: Path) -> None:
+    for contract in list_scheduled_profile_contracts():
+        _write_profile_artifacts(tmp_path, contract.profile)
+    manifest_path = tmp_path / "russell_top50_shadow_live" / "shadow_live_ledger_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "manifest_type": "russell_top50_shadow_live_ledger",
+            "artifact_schema_version": "russell_top50_shadow_live_ledger.v1",
+            "generated_at": "2026-06-20T11:00:00+00:00",
+            "portfolio_nav": 1000000,
+            "slippage_bps": 5,
+            "forward_window_days": 21,
+            "safe_haven": "SGOV",
+            "artifacts": {
+                "shadow_live_trade_ledger": {"path": "shadow_live_trade_ledger.csv"},
+                "shadow_live_holdings_ledger": {"path": "shadow_live_holdings_ledger.csv"},
+                "shadow_live_rebalance_summary": {"path": "shadow_live_rebalance_summary.csv"},
+            },
+            "row_counts": {
+                "shadow_live_trade_ledger": 12,
+                "shadow_live_holdings_ledger": 18,
+                "shadow_live_rebalance_summary": 3,
+            },
+        },
+    )
+
+    bundle = build_bundle(tmp_path, report_month="2026-06")
+    markdown = render_ai_review_input(bundle)
+    summary = render_job_summary(bundle)
+
+    assert bundle["shadow_live_ledger_count"] == 1
+    assert bundle["shadow_live_ledger_problem_count"] == 0
+    assert bundle["shadow_live_ledgers"][0]["row_counts"]["shadow_live_rebalance_summary"] == 3
+    assert "Shadow-live Ledgers" in markdown
+    assert "Trade ledger rows: `12`" in markdown
+    assert "Shadow-live ledgers: `1`" in summary
+
+
+def test_build_bundle_collects_capacity_stress_manifest(tmp_path: Path) -> None:
+    for contract in list_scheduled_profile_contracts():
+        _write_profile_artifacts(tmp_path, contract.profile)
+    manifest_path = tmp_path / "russell_top50_capacity" / "capacity_stress_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "manifest_type": "russell_top50_capacity_stress",
+            "artifact_schema_version": "russell_top50_capacity_stress.v1",
+            "generated_at": "2026-06-20T12:00:00+00:00",
+            "portfolio_nav_values": [1000000, 5000000, 10000000],
+            "slippage_bps_values": [5, 25, 50],
+            "split_trade_days_values": [1, 2, 3],
+            "min_median_net_excess_vs_qqq": 0,
+            "artifacts": {
+                "capacity_stress_detail": {"path": "capacity_stress_detail.csv"},
+                "capacity_stress_summary": {"path": "capacity_stress_summary.csv"},
+            },
+            "row_counts": {
+                "capacity_stress_detail": 54,
+                "capacity_stress_summary": 27,
+            },
+        },
+    )
+
+    bundle = build_bundle(tmp_path, report_month="2026-06")
+    markdown = render_ai_review_input(bundle)
+    summary = render_job_summary(bundle)
+
+    assert bundle["capacity_stress_count"] == 1
+    assert bundle["capacity_stress_problem_count"] == 0
+    assert bundle["capacity_stresses"][0]["row_counts"]["capacity_stress_summary"] == 27
+    assert "Capacity Stress Reports" in markdown
+    assert "Summary rows: `27`" in markdown
+    assert "Capacity stress reports: `1`" in summary

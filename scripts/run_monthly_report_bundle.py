@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from us_equity_snapshot_pipelines.contracts import list_profile_contracts, list_scheduled_profile_contracts
+from us_equity_snapshot_pipelines.contracts import list_profile_contracts, list_scheduled_profile_contracts  # noqa: E402
 
 
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "output"
@@ -29,6 +30,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--report-month", default="")
     parser.add_argument("--ranking-preview-size", type=int, default=5)
+    parser.add_argument(
+        "--promotion-bundle-manifest",
+        action="append",
+        default=None,
+        help=(
+            "Optional Russell promotion_bundle_manifest.json path to include in the monthly review bundle. "
+            "Can be supplied multiple times. When omitted, artifact-root is scanned."
+        ),
+    )
+    parser.add_argument(
+        "--shadow-live-ledger-manifest",
+        action="append",
+        default=None,
+        help=(
+            "Optional Russell shadow_live_ledger_manifest.json path to include in the monthly review bundle. "
+            "Can be supplied multiple times. When omitted, artifact-root is scanned."
+        ),
+    )
+    parser.add_argument(
+        "--capacity-stress-manifest",
+        action="append",
+        default=None,
+        help=(
+            "Optional Russell capacity_stress_manifest.json path to include in the monthly review bundle. "
+            "Can be supplied multiple times. When omitted, artifact-root is scanned."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -47,6 +75,24 @@ def _discover_release_summaries(artifact_root: Path) -> dict[str, Path]:
         if profile and profile not in discovered:
             discovered[profile] = summary_path
     return discovered
+
+
+def _discover_promotion_bundle_manifests(artifact_root: Path, explicit_paths: list[str] | None) -> list[Path]:
+    if explicit_paths:
+        return [Path(path) for path in explicit_paths if str(path).strip()]
+    return sorted(artifact_root.rglob("promotion_bundle_manifest.json"))
+
+
+def _discover_shadow_live_ledger_manifests(artifact_root: Path, explicit_paths: list[str] | None) -> list[Path]:
+    if explicit_paths:
+        return [Path(path) for path in explicit_paths if str(path).strip()]
+    return sorted(artifact_root.rglob("shadow_live_ledger_manifest.json"))
+
+
+def _discover_capacity_stress_manifests(artifact_root: Path, explicit_paths: list[str] | None) -> list[Path]:
+    if explicit_paths:
+        return [Path(path) for path in explicit_paths if str(path).strip()]
+    return sorted(artifact_root.rglob("capacity_stress_manifest.json"))
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -163,6 +209,184 @@ def _discover_strategy_health_errors(artifact_root: Path) -> list[dict[str, Any]
     return errors
 
 
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _safe_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _promotion_review_rows(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        rows.append(
+            {
+                "run": str(item.get("run", "") or ""),
+                "required_gates_passed": bool(item.get("required_gates_passed", False)),
+                "statistical_support_level": str(item.get("statistical_support_level", "") or ""),
+                "promotion_decision": str(item.get("promotion_decision", "") or ""),
+                "recommended_action": str(item.get("recommended_action", "") or ""),
+            }
+        )
+    return rows
+
+
+def _collect_promotion_bundle_manifest(path: Path) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "generated_at": "",
+        "candidate_runs": [],
+        "portfolio_nav": None,
+        "bootstrap": {},
+        "dsr_pbo": {},
+        "input_count": 0,
+        "artifact_count": 0,
+        "review_rows": [],
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == "russell_top50_promotion_bundle" else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    inputs = _safe_mapping(payload.get("inputs"))
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "generated_at": str(payload.get("generated_at", "") or ""),
+        "candidate_runs": _string_list(payload.get("candidate_runs")),
+        "portfolio_nav": payload.get("portfolio_nav"),
+        "bootstrap": dict(_safe_mapping(payload.get("bootstrap"))),
+        "dsr_pbo": dict(_safe_mapping(payload.get("dsr_pbo"))),
+        "input_count": len(inputs),
+        "artifact_count": len(artifacts),
+        "review_rows": _promotion_review_rows(payload.get("review_rows")),
+    }
+
+
+def _collect_shadow_live_ledger_manifest(path: Path) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "generated_at": "",
+        "portfolio_nav": None,
+        "slippage_bps": None,
+        "forward_window_days": None,
+        "safe_haven": "",
+        "row_counts": {},
+        "artifact_count": 0,
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == "russell_top50_shadow_live_ledger" else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "generated_at": str(payload.get("generated_at", "") or ""),
+        "portfolio_nav": payload.get("portfolio_nav"),
+        "slippage_bps": payload.get("slippage_bps"),
+        "forward_window_days": payload.get("forward_window_days"),
+        "safe_haven": str(payload.get("safe_haven", "") or ""),
+        "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
+        "artifact_count": len(artifacts),
+    }
+
+
+def _collect_capacity_stress_manifest(path: Path) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "generated_at": "",
+        "portfolio_nav_values": [],
+        "slippage_bps_values": [],
+        "split_trade_days_values": [],
+        "min_median_net_excess_vs_qqq": None,
+        "row_counts": {},
+        "artifact_count": 0,
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == "russell_top50_capacity_stress" else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "generated_at": str(payload.get("generated_at", "") or ""),
+        "portfolio_nav_values": _string_list(payload.get("portfolio_nav_values")),
+        "slippage_bps_values": _string_list(payload.get("slippage_bps_values")),
+        "split_trade_days_values": _string_list(payload.get("split_trade_days_values")),
+        "min_median_net_excess_vs_qqq": payload.get("min_median_net_excess_vs_qqq"),
+        "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
+        "artifact_count": len(artifacts),
+    }
+
+
 def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int) -> dict[str, Any]:
     contract = next(item for item in list_profile_contracts() if item.profile == profile)
     if summary_path is None:
@@ -212,11 +436,29 @@ def build_bundle(
     *,
     report_month: str = "",
     ranking_preview_size: int = 5,
+    promotion_bundle_manifest_paths: list[str] | None = None,
+    shadow_live_ledger_manifest_paths: list[str] | None = None,
+    capacity_stress_manifest_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     root = Path(artifact_root)
     discovered = _discover_release_summaries(root)
     strategy_health_reports = _discover_strategy_health_reports(root)
     strategy_health_errors = _discover_strategy_health_errors(root)
+    promotion_bundles = [
+        _collect_promotion_bundle_manifest(path)
+        for path in _discover_promotion_bundle_manifests(root, promotion_bundle_manifest_paths)
+    ]
+    shadow_live_ledgers = [
+        _collect_shadow_live_ledger_manifest(path)
+        for path in _discover_shadow_live_ledger_manifests(root, shadow_live_ledger_manifest_paths)
+    ]
+    capacity_stresses = [
+        _collect_capacity_stress_manifest(path)
+        for path in _discover_capacity_stress_manifests(root, capacity_stress_manifest_paths)
+    ]
+    promotion_bundle_problem_count = sum(1 for bundle in promotion_bundles if bundle["status"] != "ok")
+    shadow_live_ledger_problem_count = sum(1 for ledger in shadow_live_ledgers if ledger["status"] != "ok")
+    capacity_stress_problem_count = sum(1 for stress in capacity_stresses if stress["status"] != "ok")
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
         for contract in list_scheduled_profile_contracts()
@@ -226,6 +468,9 @@ def build_bundle(
         if all(profile["status"] == "ready" and not profile["missing_files"] for profile in profiles)
         and not any(report["review_for_retirement_count"] for report in strategy_health_reports)
         and not strategy_health_errors
+        and promotion_bundle_problem_count == 0
+        and shadow_live_ledger_problem_count == 0
+        and capacity_stress_problem_count == 0
         else "warning"
     )
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})
@@ -245,7 +490,20 @@ def build_bundle(
         "strategy_health_reports": strategy_health_reports,
         "strategy_health_error_count": len(strategy_health_errors),
         "strategy_health_errors": strategy_health_errors,
+        "promotion_bundle_count": len(promotion_bundles),
+        "promotion_bundle_problem_count": promotion_bundle_problem_count,
+        "promotion_bundles": promotion_bundles,
+        "shadow_live_ledger_count": len(shadow_live_ledgers),
+        "shadow_live_ledger_problem_count": shadow_live_ledger_problem_count,
+        "shadow_live_ledgers": shadow_live_ledgers,
+        "capacity_stress_count": len(capacity_stresses),
+        "capacity_stress_problem_count": capacity_stress_problem_count,
+        "capacity_stresses": capacity_stresses,
     }
+
+
+def _md(value: Any) -> str:
+    return str(value if value is not None else "").replace("\n", " ").replace("|", "\\|")
 
 
 def render_job_summary(bundle: dict[str, Any]) -> str:
@@ -259,6 +517,12 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
         f"- Non-ready profiles: `{bundle.get('non_ready_profile_count', 0)}`",
         f"- Strategy health reports: `{len(bundle.get('strategy_health_reports', []))}`",
         f"- Strategy health errors: `{bundle.get('strategy_health_error_count', 0)}`",
+        f"- Promotion bundles: `{bundle.get('promotion_bundle_count', 0)}`",
+        f"- Promotion bundle issues: `{bundle.get('promotion_bundle_problem_count', 0)}`",
+        f"- Shadow-live ledgers: `{bundle.get('shadow_live_ledger_count', 0)}`",
+        f"- Shadow-live ledger issues: `{bundle.get('shadow_live_ledger_problem_count', 0)}`",
+        f"- Capacity stress reports: `{bundle.get('capacity_stress_count', 0)}`",
+        f"- Capacity stress issues: `{bundle.get('capacity_stress_problem_count', 0)}`",
         "",
         "## Profiles",
         "",
@@ -302,6 +566,61 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
             lines.append(
                 f"| `{error['artifact_dir']}` | `{error['source_returns'] or 'n/a'}` | "
                 f"{error['error_type'] or 'Error'}: {error['error_message'] or 'n/a'} |"
+            )
+    if bundle.get("promotion_bundles"):
+        lines.extend(
+            [
+                "",
+                "## Promotion Research Bundles",
+                "",
+                "| Manifest | Status | Schema | Generated at | Candidates | Review rows |",
+                "| --- | --- | --- | --- | ---: | ---: |",
+            ]
+        )
+        for promotion_bundle in bundle["promotion_bundles"]:
+            lines.append(
+                f"| `{_md(promotion_bundle['manifest_path'])}` | `{_md(promotion_bundle['status'])}` | "
+                f"`{_md(promotion_bundle['artifact_schema_version'])}` | "
+                f"{_md(promotion_bundle['generated_at']) or 'n/a'} | "
+                f"{len(promotion_bundle['candidate_runs'])} | {len(promotion_bundle['review_rows'])} |"
+            )
+    if bundle.get("shadow_live_ledgers"):
+        lines.extend(
+            [
+                "",
+                "## Shadow-live Ledgers",
+                "",
+                "| Manifest | Status | Schema | Generated at | Trade rows | Rebalance rows |",
+                "| --- | --- | --- | --- | ---: | ---: |",
+            ]
+        )
+        for ledger in bundle["shadow_live_ledgers"]:
+            row_counts = ledger.get("row_counts") or {}
+            lines.append(
+                f"| `{_md(ledger['manifest_path'])}` | `{_md(ledger['status'])}` | "
+                f"`{_md(ledger['artifact_schema_version'])}` | "
+                f"{_md(ledger['generated_at']) or 'n/a'} | "
+                f"{row_counts.get('shadow_live_trade_ledger', 0)} | "
+                f"{row_counts.get('shadow_live_rebalance_summary', 0)} |"
+            )
+    if bundle.get("capacity_stresses"):
+        lines.extend(
+            [
+                "",
+                "## Capacity Stress Reports",
+                "",
+                "| Manifest | Status | Schema | Generated at | Detail rows | Summary rows |",
+                "| --- | --- | --- | --- | ---: | ---: |",
+            ]
+        )
+        for stress in bundle["capacity_stresses"]:
+            row_counts = stress.get("row_counts") or {}
+            lines.append(
+                f"| `{_md(stress['manifest_path'])}` | `{_md(stress['status'])}` | "
+                f"`{_md(stress['artifact_schema_version'])}` | "
+                f"{_md(stress['generated_at']) or 'n/a'} | "
+                f"{row_counts.get('capacity_stress_detail', 0)} | "
+                f"{row_counts.get('capacity_stress_summary', 0)} |"
             )
     return "\n".join(lines).strip() + "\n"
 
@@ -416,13 +735,130 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Research Promotion Bundles",
+            "",
+            "These manifests are research-only evidence packs. They support monthly review and auditability, "
+            "but they do not enable live runtime behavior by themselves.",
+        ]
+    )
+    if not bundle.get("promotion_bundles"):
+        lines.append("")
+        lines.append("_No Russell promotion bundle manifest found under the artifact root._")
+    for promotion_bundle in bundle.get("promotion_bundles", []):
+        status_note = promotion_bundle.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### Promotion bundle `{_md(promotion_bundle['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(promotion_bundle['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Manifest type: `{_md(promotion_bundle['manifest_type'])}`",
+                f"- Artifact schema: `{_md(promotion_bundle['artifact_schema_version'])}`",
+                f"- Generated at: `{_md(promotion_bundle['generated_at']) or 'n/a'}`",
+                f"- Candidate runs: `{', '.join(promotion_bundle['candidate_runs']) or 'n/a'}`",
+                f"- Portfolio NAV: `{_md(promotion_bundle['portfolio_nav']) or 'n/a'}`",
+                f"- DSR/PBO config: `{_md(promotion_bundle.get('dsr_pbo') or 'n/a')}`",
+                f"- Declared inputs: `{promotion_bundle['input_count']}`",
+                f"- Declared output artifacts: `{promotion_bundle['artifact_count']}`",
+                "",
+                "Promotion review rows:",
+            ]
+        )
+        if promotion_bundle["review_rows"]:
+            lines.append("")
+            lines.append("| Run | Gates | Statistical support | Promotion decision | Recommended action |")
+            lines.append("| --- | --- | --- | --- | --- |")
+            for row in promotion_bundle["review_rows"]:
+                gates = "pass" if row["required_gates_passed"] else "fail"
+                lines.append(
+                    f"| `{_md(row['run']) or 'n/a'}` | `{gates}` | "
+                    f"{_md(row['statistical_support_level']) or 'n/a'} | "
+                    f"{_md(row['promotion_decision']) or 'n/a'} | "
+                    f"{_md(row['recommended_action']) or 'n/a'} |"
+                )
+        else:
+            lines.append("")
+            lines.append("_No compact review rows found in this manifest._")
+    lines.extend(
+        [
+            "",
+            "## Shadow-live Ledgers",
+            "",
+            "These ledgers are research-only observability artifacts. They record hypothetical target weights, "
+            "trade deltas, estimated slippage, and forward benchmark-relative outcomes before broker execution.",
+        ]
+    )
+    if not bundle.get("shadow_live_ledgers"):
+        lines.append("")
+        lines.append("_No Russell shadow-live ledger manifest found under the artifact root._")
+    for ledger in bundle.get("shadow_live_ledgers", []):
+        row_counts = ledger.get("row_counts") or {}
+        status_note = ledger.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### Shadow-live ledger `{_md(ledger['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(ledger['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Manifest type: `{_md(ledger['manifest_type'])}`",
+                f"- Artifact schema: `{_md(ledger['artifact_schema_version'])}`",
+                f"- Generated at: `{_md(ledger['generated_at']) or 'n/a'}`",
+                f"- Portfolio NAV: `{_md(ledger['portfolio_nav']) or 'n/a'}`",
+                f"- Slippage bps: `{_md(ledger['slippage_bps']) or 'n/a'}`",
+                f"- Forward window days: `{_md(ledger['forward_window_days']) or 'n/a'}`",
+                f"- Safe haven: `{_md(ledger['safe_haven']) or 'n/a'}`",
+                f"- Trade ledger rows: `{row_counts.get('shadow_live_trade_ledger', 0)}`",
+                f"- Holdings ledger rows: `{row_counts.get('shadow_live_holdings_ledger', 0)}`",
+                f"- Rebalance summary rows: `{row_counts.get('shadow_live_rebalance_summary', 0)}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Capacity Stress Reports",
+            "",
+            "These reports are research-only implementation-shortfall stress artifacts. They vary NAV, slippage, "
+            "and split-trade-day assumptions before broker execution.",
+        ]
+    )
+    if not bundle.get("capacity_stresses"):
+        lines.append("")
+        lines.append("_No Russell capacity stress manifest found under the artifact root._")
+    for stress in bundle.get("capacity_stresses", []):
+        row_counts = stress.get("row_counts") or {}
+        status_note = stress.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### Capacity stress `{_md(stress['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(stress['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Manifest type: `{_md(stress['manifest_type'])}`",
+                f"- Artifact schema: `{_md(stress['artifact_schema_version'])}`",
+                f"- Generated at: `{_md(stress['generated_at']) or 'n/a'}`",
+                f"- Portfolio NAV values: `{', '.join(stress['portfolio_nav_values']) or 'n/a'}`",
+                f"- Slippage bps values: `{', '.join(stress['slippage_bps_values']) or 'n/a'}`",
+                f"- Split trade days values: `{', '.join(stress['split_trade_days_values']) or 'n/a'}`",
+                f"- Detail rows: `{row_counts.get('capacity_stress_detail', 0)}`",
+                f"- Summary rows: `{row_counts.get('capacity_stress_summary', 0)}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
             "## Review Questions",
             "",
             "1. Are all expected monthly snapshot profiles present and internally complete?",
             "2. Do snapshot dates, row counts, and contract versions look suitable for downstream runtimes?",
             "3. Are any missing artifacts, stale snapshots, or ranking previews review blockers?",
             "4. Do live strategy health reports suggest watch or retirement-review follow-up without overfitting?",
-            "5. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
+            "5. If promotion manifests are present, do their review rows and statistical/context diagnostics support the intended research-only conclusion?",
+            "6. If shadow-live ledgers are present, do the trade deltas, slippage estimates, and forward returns support continuing toward paper/live promotion?",
+            "7. If capacity stress reports are present, which NAV/slippage/split-day assumptions remain implementable?",
+            "8. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
         ]
     )
     return "\n".join(lines).strip() + "\n"
@@ -446,6 +882,9 @@ def main() -> int:
         args.artifact_root,
         report_month=args.report_month,
         ranking_preview_size=args.ranking_preview_size,
+        promotion_bundle_manifest_paths=args.promotion_bundle_manifest,
+        shadow_live_ledger_manifest_paths=args.shadow_live_ledger_manifest,
+        capacity_stress_manifest_paths=args.capacity_stress_manifest,
     )
     outputs = write_bundle(bundle, args.output_dir)
     print(f"status={bundle['status']}")
