@@ -1719,6 +1719,12 @@ Implementation:
   - `mcs_style/mcs_style_candidate_summary.csv`;
   - `mcs_style/mcs_style_pairwise_summary.csv`;
   - `mcs_style/mcs_style_global_summary.csv`;
+  - `dsr_pbo_qqq/dsr_pbo_candidate_summary.csv`;
+  - `dsr_pbo_qqq/dsr_pbo_cscv_splits.csv`;
+  - `dsr_pbo_qqq/dsr_pbo_global_summary.csv`;
+  - `dsr_pbo_spy/dsr_pbo_candidate_summary.csv`;
+  - `dsr_pbo_spy/dsr_pbo_cscv_splits.csv`;
+  - `dsr_pbo_spy/dsr_pbo_global_summary.csv`;
   - `live_promotion_review.csv`;
   - `promotion_bundle_manifest.json`.
 
@@ -1738,6 +1744,7 @@ uv run useq-research-russell-top50-leader-rotation-promotion-bundle \
   --block-size 21 \
   --random-seed 42 \
   --alpha 0.10 \
+  --cscv-groups 8 \
   --output-dir data/output/russell_top50_promotion_bundle_20260620_rerun
 ```
 
@@ -1767,6 +1774,18 @@ Recommended monthly research flow after this phase:
    the nested statistical/context outputs as the operator/research evidence
    pack.
 
+Monthly review integration:
+
+- `scripts/run_monthly_report_bundle.py` now auto-discovers
+  `promotion_bundle_manifest.json` under the configured artifact root, or
+  accepts explicit `--promotion-bundle-manifest` paths.
+- The monthly AI review input includes a research-only promotion-bundle section
+  with manifest schema, candidate runs, declared artifact counts, and compact
+  promotion review rows.
+- Missing promotion manifests do not block the monthly snapshot review. Invalid
+  manifests are surfaced as review warnings because they indicate an evidence
+  archival problem.
+
 Manifest:
 
 - `promotion_bundle_manifest.json` has
@@ -1777,12 +1796,150 @@ Manifest:
   - candidate runs;
   - portfolio NAV;
   - bootstrap configuration;
+  - DSR/PBO-style CSCV configuration;
   - output artifact paths and SHA256 hashes;
   - compact review rows with required-gate pass/fail, statistical support,
     promotion decision, and recommended action.
 
 This bundle is still research-only. It does not enable or change any live
 runtime profile.
+
+### Phase 18: Shadow-live and anti-overfitting research backlog
+
+Goal: turn the current gate-passing Russell candidate into a liveable research
+package without widening the strategy search space. This phase should prioritize
+auditability, decay detection, and implementation realism over finding another
+higher-CAGR backtest.
+
+Web-expanded source scan, 2026-06-20:
+
+- Bailey and López de Prado's Deflated Sharpe Ratio work supports correcting
+  Sharpe evidence for selection bias, multiple testing, sample length, and
+  non-normal returns. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551
+- Bailey, Borwein, López de Prado, and Zhu's PBO work supports estimating
+  backtest overfitting risk through combinatorially symmetric cross-validation
+  before relying on a selected backtest winner. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253
+- Andrew Lo's Sharpe-ratio statistics work supports treating Sharpe estimates
+  as noisy, autocorrelation-sensitive quantities rather than precise rankings.
+  Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=377260
+- Harvey, Liu, and Zhu's multiple-testing work supports using stricter evidence
+  bars after many factor or strategy trials. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2249314
+- McLean and Pontiff's post-publication decay evidence supports adding live
+  decay monitors even when historical factor evidence is strong. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2156623
+- Hou, Xue, and Zhang's anomaly replication evidence supports treating broad
+  anomaly mining as a high-risk expansion path. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2961979
+- Almgren and Chriss' execution-cost framing supports a separate capacity and
+  implementation-shortfall layer before runtime promotion. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=53501
+- Perold's implementation shortfall framing supports explicitly comparing a
+  paper decision portfolio with the actually implementable portfolio before live
+  promotion. Source:
+  https://www.hbs.edu/faculty/Pages/item.aspx?num=2083
+- CFA Institute's trade-strategy material supports using implementation
+  shortfall as the standard total-cost lens for trade execution review. Source:
+  https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/trade-strategy-execution
+- SEC Marketing Rule language treats performance not actually achieved by a
+  portfolio as hypothetical performance, which supports keeping shadow-live
+  ledger outputs clearly labelled as research-only evidence. Source:
+  https://www.law.cornell.edu/cfr/text/17/275.206%284%29-1
+- Daniel and Moskowitz's momentum-crash work and Moreira/Muir volatility
+  management remain useful context for crash-state diagnostics, but the current
+  project-specific panic/volatility overlays failed the live gate and should not
+  be resurrected without new pre-registered evidence. Sources:
+  https://www.nber.org/papers/w20439 and
+  https://www.nber.org/papers/w22208
+
+Recommended next deliverables:
+
+1. Add a shadow-live ledger that records monthly selected names, target weights,
+   expected trades, realized next-session prices, estimated slippage, and
+   benchmark-relative forward returns. This is now available through
+   `useq-build-russell-top50-shadow-live-ledger`, which consumes
+   `concentration_variant_rebalance_trades.csv` and
+   `concentration_variant_daily_returns.csv`, with optional long-form
+   Date/Symbol/Close price history for signal-to-next-session price checks.
+2. Add DSR/PBO-style reporting for the frozen Top4 / 25-75 / 50-50 matrix, using
+   the already archived promotion bundle as input evidence. This is now wired
+   into `useq-research-russell-top50-leader-rotation-promotion-bundle` as
+   `dsr_pbo_qqq/*` and `dsr_pbo_spy/*` research artifacts. Do not apply it to a
+   newly expanded candidate grid unless the grid is pre-registered first.
+3. Add a capacity/implementation-shortfall stress table that varies portfolio
+   NAV, participation cap, split-trade days, and slippage assumptions. Promotion
+   should fail closed if the preferred candidate only works at unrealistic
+   execution assumptions. This is now available through
+   `useq-research-russell-top50-leader-rotation-capacity-stress`, consuming
+   `shadow_live_rebalance_summary.csv` and optionally `liquidity_summary.csv`.
+4. Add live-decay monitors over rolling 3/6/12-month windows versus QQQ/SPY and
+   versus the backtest-implied expectation. These should be review signals, not
+   automatic strategy switches.
+5. Keep anomaly/factor expansion as a lower-priority research track. Any new
+   factor must enter through pre-registered candidates and the promotion bundle,
+   not ad-hoc ranking tweaks.
+
+This phase should still avoid changing live manifests. The safest next runtime
+step is shadow-live observability, not automatic trading.
+
+Shadow-live ledger command template:
+
+```bash
+uv run useq-build-russell-top50-shadow-live-ledger \
+  --rebalance-trades data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_rebalance_trades.csv \
+  --daily-returns data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_daily_returns.csv \
+  --candidate-runs blend_top2_50_top4_50 \
+  --portfolio-nav 5000000 \
+  --slippage-bps 5 \
+  --forward-window-days 21 \
+  --output-dir data/output/russell_top50_shadow_live_YYYYMMDD
+```
+
+Shadow-live ledger outputs:
+
+- `shadow_live_trade_ledger.csv`;
+- `shadow_live_holdings_ledger.csv`;
+- `shadow_live_rebalance_summary.csv`;
+- `shadow_live_ledger_manifest.json`.
+
+Monthly review integration:
+
+- `scripts/run_monthly_report_bundle.py` auto-discovers
+  `shadow_live_ledger_manifest.json` under the artifact root, or accepts
+  explicit `--shadow-live-ledger-manifest` paths.
+- Missing shadow-live ledgers do not block monthly snapshot review. Invalid
+  manifests are surfaced as warnings because they indicate an evidence archival
+  problem.
+
+Capacity stress command template:
+
+```bash
+uv run useq-research-russell-top50-leader-rotation-capacity-stress \
+  --shadow-live-summary data/output/russell_top50_shadow_live_YYYYMMDD/shadow_live_rebalance_summary.csv \
+  --liquidity-summary data/output/russell_top50_fixed_liquidity_spa_20260620_rerun/liquidity_summary.csv \
+  --portfolio-nav-values 1000000,5000000,10000000,25000000 \
+  --slippage-bps-values 5,10,25,50 \
+  --split-trade-days-values 1,2,3 \
+  --min-median-net-excess-vs-qqq 0 \
+  --output-dir data/output/russell_top50_capacity_stress_YYYYMMDD
+```
+
+Capacity stress outputs:
+
+- `capacity_stress_detail.csv`;
+- `capacity_stress_summary.csv`;
+- `capacity_stress_manifest.json`.
+
+Monthly review integration:
+
+- `scripts/run_monthly_report_bundle.py` auto-discovers
+  `capacity_stress_manifest.json` under the artifact root, or accepts explicit
+  `--capacity-stress-manifest` paths.
+- Missing capacity stress reports do not block monthly snapshot review. Invalid
+  manifests are surfaced as warnings because they indicate an evidence archival
+  problem.
 
 ## Architecture recommendation
 

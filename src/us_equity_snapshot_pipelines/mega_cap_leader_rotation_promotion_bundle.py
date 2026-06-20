@@ -8,6 +8,7 @@ from typing import Iterable, Mapping
 import pandas as pd
 
 from .artifacts import sha256_file, write_json
+from .mega_cap_leader_rotation_dsr_pbo_diagnostics import DEFAULT_CSCV_GROUPS, build_dsr_pbo_diagnostics
 from .mega_cap_leader_rotation_era_split_diagnostics import build_era_split_diagnostics, parse_era_specs
 from .mega_cap_leader_rotation_mcs_diagnostics import build_mcs_style_diagnostics
 from .mega_cap_leader_rotation_promotion_review import build_promotion_review
@@ -49,6 +50,8 @@ def _manifest_payload(
     block_size: int,
     random_seed: int,
     alpha: float,
+    cscv_groups: int,
+    effective_trials: float | None,
     review: pd.DataFrame,
 ) -> dict[str, object]:
     artifacts = {
@@ -70,6 +73,12 @@ def _manifest_payload(
         "mcs_style_candidate": _artifact_entry(output_dir / "mcs_style" / "mcs_style_candidate_summary.csv"),
         "mcs_style_pairwise": _artifact_entry(output_dir / "mcs_style" / "mcs_style_pairwise_summary.csv"),
         "mcs_style_global": _artifact_entry(output_dir / "mcs_style" / "mcs_style_global_summary.csv"),
+        "dsr_pbo_qqq_candidate": _artifact_entry(output_dir / "dsr_pbo_qqq" / "dsr_pbo_candidate_summary.csv"),
+        "dsr_pbo_qqq_splits": _artifact_entry(output_dir / "dsr_pbo_qqq" / "dsr_pbo_cscv_splits.csv"),
+        "dsr_pbo_qqq_global": _artifact_entry(output_dir / "dsr_pbo_qqq" / "dsr_pbo_global_summary.csv"),
+        "dsr_pbo_spy_candidate": _artifact_entry(output_dir / "dsr_pbo_spy" / "dsr_pbo_candidate_summary.csv"),
+        "dsr_pbo_spy_splits": _artifact_entry(output_dir / "dsr_pbo_spy" / "dsr_pbo_cscv_splits.csv"),
+        "dsr_pbo_spy_global": _artifact_entry(output_dir / "dsr_pbo_spy" / "dsr_pbo_global_summary.csv"),
     }
     review_rows = []
     for row in review.to_dict(orient="records"):
@@ -94,6 +103,12 @@ def _manifest_payload(
             "block_size": int(block_size),
             "random_seed": int(random_seed),
             "alpha": float(alpha),
+        },
+        "dsr_pbo": {
+            "cscv_groups": int(cscv_groups),
+            "effective_trials": effective_trials,
+            "alpha": float(alpha),
+            "scope": "deflated_sharpe_and_cscv_pbo_style_not_live_gate",
         },
         "inputs": {name: _input_entry(path) for name, path in (input_paths or {}).items()},
         "artifacts": artifacts,
@@ -148,6 +163,35 @@ def _run_reality_and_spa(
     return outputs
 
 
+def _run_dsr_pbo(
+    daily_returns: pd.DataFrame,
+    *,
+    candidate_runs: Iterable[str],
+    output_dir: Path,
+    cscv_groups: int,
+    effective_trials: float | None,
+    alpha: float,
+) -> dict[str, pd.DataFrame]:
+    outputs: dict[str, pd.DataFrame] = {}
+    for label, benchmark_column in (("qqq", "QQQ Return"), ("spy", "SPY Return")):
+        result = build_dsr_pbo_diagnostics(
+            daily_returns,
+            benchmark_column=benchmark_column,
+            candidate_runs=candidate_runs,
+            cscv_groups=int(cscv_groups),
+            effective_trials=effective_trials,
+            alpha=float(alpha),
+        )
+        dsr_dir = output_dir / f"dsr_pbo_{label}"
+        _write_frame(result["dsr_pbo_candidate_summary"], dsr_dir / "dsr_pbo_candidate_summary.csv")
+        _write_frame(result["dsr_pbo_cscv_splits"], dsr_dir / "dsr_pbo_cscv_splits.csv")
+        _write_frame(result["dsr_pbo_global_summary"], dsr_dir / "dsr_pbo_global_summary.csv")
+        outputs[f"dsr_pbo_{label}_candidate_summary"] = result["dsr_pbo_candidate_summary"]
+        outputs[f"dsr_pbo_{label}_cscv_splits"] = result["dsr_pbo_cscv_splits"]
+        outputs[f"dsr_pbo_{label}_global_summary"] = result["dsr_pbo_global_summary"]
+    return outputs
+
+
 def build_promotion_bundle(
     *,
     concentration_summary: pd.DataFrame,
@@ -164,6 +208,8 @@ def build_promotion_bundle(
     block_size: int = DEFAULT_BLOCK_SIZE,
     random_seed: int = DEFAULT_RANDOM_SEED,
     alpha: float = DEFAULT_ALPHA,
+    cscv_groups: int = DEFAULT_CSCV_GROUPS,
+    effective_trials: float | None = None,
     input_paths: Mapping[str, str | Path] | None = None,
 ) -> dict[str, pd.DataFrame]:
     runs = tuple(str(run) for run in candidate_runs)
@@ -188,6 +234,14 @@ def build_promotion_bundle(
         bootstrap_iterations=int(bootstrap_iterations),
         block_size=int(block_size),
         random_seed=int(random_seed),
+        alpha=float(alpha),
+    )
+    dsr_pbo = _run_dsr_pbo(
+        daily_returns,
+        candidate_runs=runs,
+        output_dir=output_dir,
+        cscv_groups=int(cscv_groups),
+        effective_trials=effective_trials,
         alpha=float(alpha),
     )
     era_dir = output_dir / "era_split"
@@ -225,11 +279,14 @@ def build_promotion_bundle(
             block_size=int(block_size),
             random_seed=int(random_seed),
             alpha=float(alpha),
+            cscv_groups=int(cscv_groups),
+            effective_trials=effective_trials,
             review=review,
         ),
     )
     return {
         **statistical,
+        **dsr_pbo,
         "era_split_candidate_summary": era["era_split_candidate_summary"],
         "era_split_promotion_summary": era["era_split_promotion_summary"],
         "mcs_style_candidate_summary": mcs["mcs_style_candidate_summary"],
@@ -254,6 +311,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-size", type=int, default=DEFAULT_BLOCK_SIZE)
     parser.add_argument("--random-seed", type=int, default=DEFAULT_RANDOM_SEED)
     parser.add_argument("--alpha", type=float, default=DEFAULT_ALPHA)
+    parser.add_argument("--cscv-groups", type=int, default=DEFAULT_CSCV_GROUPS)
+    parser.add_argument("--effective-trials", type=float)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--print-top", type=int, default=20)
     return parser
@@ -276,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         block_size=int(args.block_size),
         random_seed=int(args.random_seed),
         alpha=float(args.alpha),
+        cscv_groups=int(args.cscv_groups),
+        effective_trials=args.effective_trials,
         input_paths={
             "summary": args.summary,
             "daily_returns": args.daily_returns,

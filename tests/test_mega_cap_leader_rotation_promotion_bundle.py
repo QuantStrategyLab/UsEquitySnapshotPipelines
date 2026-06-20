@@ -100,6 +100,8 @@ def test_build_promotion_bundle_writes_expected_frames(tmp_path) -> None:
     assert (tmp_path / "spa_spy" / "spa_candidate_summary.csv").exists()
     assert (tmp_path / "era_split" / "era_split_promotion_summary.csv").exists()
     assert (tmp_path / "mcs_style" / "mcs_style_candidate_summary.csv").exists()
+    assert (tmp_path / "dsr_pbo_qqq" / "dsr_pbo_candidate_summary.csv").exists()
+    assert (tmp_path / "dsr_pbo_spy" / "dsr_pbo_global_summary.csv").exists()
     assert (tmp_path / "live_promotion_review.csv").exists()
     manifest = json.loads((tmp_path / "promotion_bundle_manifest.json").read_text())
     assert manifest["manifest_type"] == "russell_top50_promotion_bundle"
@@ -109,6 +111,8 @@ def test_build_promotion_bundle_writes_expected_frames(tmp_path) -> None:
         "blend_top2_50_top4_50",
     ]
     assert "sha256" in manifest["artifacts"]["live_promotion_review"]
+    assert "sha256" in manifest["artifacts"]["dsr_pbo_qqq_candidate"]
+    assert manifest["dsr_pbo"]["cscv_groups"] == 8
     review_rows = {row["run"]: row for row in manifest["review_rows"]}
     assert review_rows["blend_top2_50_top4_50"]["required_gates_passed"] is True
 
@@ -161,3 +165,4 @@ def test_promotion_bundle_cli_writes_outputs(tmp_path) -> None:
     assert exit_code == 0
     assert (output_dir / "live_promotion_review.csv").exists()
     assert (output_dir / "promotion_bundle_manifest.json").exists()
+    assert (output_dir / "dsr_pbo_qqq" / "dsr_pbo_cscv_splits.csv").exists()
