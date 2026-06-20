@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest import (
@@ -43,6 +45,40 @@ def _sample_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _sample_prices_with_return_variation() -> pd.DataFrame:
+    dates = pd.bdate_range("2021-01-04", periods=760)
+    profiles = {
+        "QQQ": (0.0005, 1.00, 0.0000),
+        "SPY": (0.0003, 0.70, 0.0000),
+        "BOXX": (0.0001, 0.00, 0.0000),
+        "AAPL": (0.0004, 0.95, 0.0004),
+        "MSFT": (0.0005, 0.90, 0.0005),
+        "NVDA": (0.0010, 1.55, 0.0012),
+        "AMZN": (0.0003, 1.10, 0.0006),
+        "GOOGL": (0.0002, 1.05, 0.0005),
+        "META": (0.0007, 1.20, 0.0008),
+        "TSLA": (0.0001, 1.80, 0.0015),
+    }
+    closes = {symbol: 80.0 + offset * 5.0 for offset, symbol in enumerate(profiles)}
+    rows = []
+    for idx, as_of in enumerate(dates):
+        market_return = 0.0004 + 0.0030 * math.sin(idx / 17.0)
+        for offset, (symbol, (alpha, beta, idio_scale)) in enumerate(profiles.items()):
+            if idx > 0:
+                idiosyncratic = idio_scale * math.sin(idx / (7.0 + offset))
+                daily_return = alpha + beta * market_return + idiosyncratic
+                closes[symbol] *= 1.0 + daily_return
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "as_of": as_of.date().isoformat(),
+                    "close": closes[symbol],
+                    "volume": 1_000_000,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_run_backtest_builds_research_outputs() -> None:
     result = run_backtest(
         _sample_prices(),
@@ -64,6 +100,35 @@ def test_run_backtest_builds_research_outputs() -> None:
     assert not result["trades"].empty
     assert {"QQQ", "SPY", "equal_weight_mag7"} <= set(result["reference_returns"].columns)
     assert result["exposure_history"]["selected_symbols"].astype(str).str.contains("NVDA").any()
+
+
+def test_run_backtest_can_rank_with_residual_momentum_and_beta_penalty() -> None:
+    result = run_backtest(
+        _sample_prices_with_return_variation(),
+        build_static_universe("mag7"),
+        start_date="2023-06-01",
+        end_date="2023-12-29",
+        pool_name="mag7",
+        min_adv20_usd=1_000_000.0,
+        turnover_cost_bps=0.0,
+        residual_momentum_weight=0.50,
+        beta_penalty_weight=0.25,
+    )
+
+    scores = result["candidate_scores"]
+    exposure = result["exposure_history"]
+    assert not scores.empty
+    assert {
+        "beta_126_vs_benchmark",
+        "resid_mom_6m_vs_benchmark",
+        "residual_momentum_weight",
+        "beta_penalty_weight",
+        "score_without_residual_beta",
+    }.issubset(scores.columns)
+    assert set(scores["residual_momentum_weight"].dropna().astype(float)) == {0.50}
+    assert set(scores["beta_penalty_weight"].dropna().astype(float)) == {0.25}
+    assert set(exposure["residual_momentum_weight"].dropna().astype(float)) == {0.50}
+    assert set(exposure["beta_penalty_weight"].dropna().astype(float)) == {0.25}
 
 
 def test_build_target_weights_lowers_top_n_for_small_accounts() -> None:

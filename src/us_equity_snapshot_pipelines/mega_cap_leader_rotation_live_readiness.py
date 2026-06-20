@@ -72,6 +72,12 @@ def _candidate_role(row: pd.Series) -> tuple[str, str, float]:
         return "sector_capped_research", "research_only", DEFAULT_CONSERVATIVE_MAX_DRAWDOWN
     if run.startswith("sector_penalty") or variant_type.startswith("sector_soft_penalty_"):
         return "sector_soft_penalty_research", "research_only", DEFAULT_CONSERVATIVE_MAX_DRAWDOWN
+    if run.startswith(("resid", "beta")) or variant_type.startswith("residual_beta_"):
+        return "residual_beta_research", "research_only", DEFAULT_BALANCED_MAX_DRAWDOWN
+    if run.startswith("voltarget") or variant_type.startswith("volatility_managed_"):
+        return "volatility_managed_research", "research_only", DEFAULT_BALANCED_MAX_DRAWDOWN
+    if run.startswith("panic") or variant_type.startswith("panic_rebound_guard_"):
+        return "panic_rebound_guard_research", "research_only", DEFAULT_BALANCED_MAX_DRAWDOWN
     if (
         variant_type == "dynamic_top2_drawdown_to_top4"
         or run.startswith("dynamic_")

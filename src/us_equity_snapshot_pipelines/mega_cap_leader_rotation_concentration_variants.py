@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 from .mega_cap_leader_rotation_backtest import (
@@ -30,12 +31,30 @@ DEFAULT_BLEND_TOP2_WEIGHTS = (0.25, 0.50, 0.75)
 DEFAULT_DYNAMIC_DRAWDOWN_THRESHOLDS = (0.08, 0.10, 0.12)
 DEFAULT_SECTOR_CAP_VALUES = (1,)
 DEFAULT_SECTOR_SCORE_PENALTY_VALUES = (0.25, 0.50)
+DEFAULT_RESIDUAL_MOMENTUM_WEIGHTS = (0.25, 0.50)
+DEFAULT_BETA_PENALTY_WEIGHTS = (0.25,)
+DEFAULT_VOL_TARGET_VALUES = (0.18, 0.22)
+DEFAULT_VOL_TARGET_WINDOW = 63
+DEFAULT_VOL_TARGET_MIN_STOCK_EXPOSURE = 0.50
+DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD = 0.10
+DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD = 0.03
+DEFAULT_PANIC_GUARD_VOL_THRESHOLD = 0.25
+DEFAULT_PANIC_GUARD_STOCK_EXPOSURE = 0.50
 SUMMARY_COLUMNS = (
     "Run",
     "Variant Type",
     "Universe Lag Trading Days",
     "Max Names Per Sector",
     "Sector Score Penalty",
+    "Residual Momentum Weight",
+    "Beta Penalty Weight",
+    "Vol Target",
+    "Vol Target Window",
+    "Min Stock Exposure",
+    "Panic Drawdown Threshold",
+    "Panic Rebound Threshold",
+    "Panic Vol Threshold",
+    "Panic Stock Exposure",
     "Top2 Blend Weight",
     "Top4 Blend Weight",
     "Dynamic Drawdown Threshold",
@@ -142,6 +161,39 @@ def _sector_variant_name(base_name: str, max_names_per_sector: int) -> str:
 def _penalty_variant_name(base_name: str, sector_score_penalty: float) -> str:
     label = f"{float(sector_score_penalty):.2f}".rstrip("0").rstrip(".").replace(".", "p")
     return f"sector_penalty{label}_{base_name}"
+
+
+def _residual_beta_variant_name(base_name: str, *, residual_momentum_weight: float, beta_penalty_weight: float) -> str:
+    parts: list[str] = []
+    if float(residual_momentum_weight) > 0.0:
+        residual_label = f"{float(residual_momentum_weight):.2f}".rstrip("0").rstrip(".").replace(".", "p")
+        parts.append(f"resid{residual_label}")
+    if float(beta_penalty_weight) > 0.0:
+        beta_label = f"{float(beta_penalty_weight):.2f}".rstrip("0").rstrip(".").replace(".", "p")
+        parts.append(f"beta{beta_label}")
+    prefix = "_".join(parts) if parts else "raw"
+    return f"{prefix}_{base_name}"
+
+
+def _vol_target_variant_name(base_name: str, *, vol_target: float, min_stock_exposure: float) -> str:
+    target_label = int(round(float(vol_target) * 100))
+    min_label = int(round(float(min_stock_exposure) * 100))
+    return f"voltarget{target_label}_min{min_label}_{base_name}"
+
+
+def _panic_guard_variant_name(
+    base_name: str,
+    *,
+    drawdown_threshold: float,
+    rebound_threshold: float,
+    vol_threshold: float,
+    stock_exposure: float,
+) -> str:
+    drawdown_label = int(round(float(drawdown_threshold) * 100))
+    rebound_label = int(round(float(rebound_threshold) * 100))
+    vol_label = int(round(float(vol_threshold) * 100))
+    exposure_label = int(round(float(stock_exposure) * 100))
+    return f"panicdd{drawdown_label}_ret{rebound_label}_vol{vol_label}_stock{exposure_label}_{base_name}"
 
 
 def _variant_name_for_drawdown(threshold: float) -> str:
@@ -312,6 +364,92 @@ def _build_dynamic_weights(
     return top2_weights.where(mode.eq("top2"), top4_weights), mode_rows, top4_share
 
 
+def _apply_volatility_target_exposure(
+    weights_history: pd.DataFrame,
+    benchmark_returns: pd.Series,
+    *,
+    safe_haven: str,
+    vol_target: float,
+    min_stock_exposure: float,
+    vol_window: int,
+) -> pd.DataFrame:
+    weights = weights_history.fillna(0.0).copy()
+    safe_symbol = str(safe_haven).strip().upper()
+    if safe_symbol not in weights.columns:
+        weights[safe_symbol] = 0.0
+
+    stock_columns = [column for column in weights.columns if str(column) != safe_symbol]
+    if not stock_columns:
+        weights[safe_symbol] = 1.0
+        return weights
+
+    realized_vol = (
+        pd.to_numeric(benchmark_returns.reindex(weights.index), errors="coerce")
+        .rolling(int(vol_window))
+        .std(ddof=0)
+        * np.sqrt(252)
+    )
+    scaler = (float(vol_target) / realized_vol).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    scaler = scaler.clip(lower=float(min_stock_exposure), upper=1.0)
+    rebalance_dates = weights.loc[:, stock_columns].diff().abs().sum(axis=1).gt(1e-12)
+    if not rebalance_dates.empty:
+        rebalance_dates.iloc[0] = True
+    scaler = scaler.where(rebalance_dates).ffill().fillna(1.0)
+
+    output = weights.copy()
+    output.loc[:, stock_columns] = output.loc[:, stock_columns].mul(scaler, axis=0)
+    stock_weight = output.loc[:, stock_columns].sum(axis=1).clip(lower=0.0, upper=1.0)
+    output[safe_symbol] = 1.0 - stock_weight
+    return output.reindex(columns=weights_history.columns.union([safe_symbol], sort=False), fill_value=0.0)
+
+
+def _apply_panic_rebound_guard(
+    weights_history: pd.DataFrame,
+    benchmark_returns: pd.Series,
+    *,
+    safe_haven: str,
+    drawdown_threshold: float,
+    rebound_threshold: float,
+    vol_threshold: float,
+    stock_exposure: float,
+    drawdown_window: int = 126,
+    rebound_window: int = 21,
+    vol_window: int = 63,
+) -> pd.DataFrame:
+    weights = weights_history.fillna(0.0).copy()
+    safe_symbol = str(safe_haven).strip().upper()
+    if safe_symbol not in weights.columns:
+        weights[safe_symbol] = 0.0
+
+    stock_columns = [column for column in weights.columns if str(column) != safe_symbol]
+    if not stock_columns:
+        weights[safe_symbol] = 1.0
+        return weights
+
+    returns = pd.to_numeric(benchmark_returns.reindex(weights.index), errors="coerce").fillna(0.0)
+    equity = (1.0 + returns).cumprod()
+    drawdown = equity / equity.rolling(int(drawdown_window), min_periods=20).max() - 1.0
+    rebound = equity / equity.shift(int(rebound_window)) - 1.0
+    realized_vol = returns.rolling(int(vol_window)).std(ddof=0) * np.sqrt(252)
+    panic_rebound = (
+        drawdown.le(-float(drawdown_threshold))
+        & rebound.ge(float(rebound_threshold))
+        & realized_vol.ge(float(vol_threshold))
+    )
+    rebalance_dates = weights.loc[:, stock_columns].diff().abs().sum(axis=1).gt(1e-12)
+    if not rebalance_dates.empty:
+        rebalance_dates.iloc[0] = True
+    scaler = pd.Series(1.0, index=weights.index)
+    scaler.loc[panic_rebound] = float(stock_exposure)
+    scaler = scaler.where(rebalance_dates).ffill().fillna(1.0)
+
+    output = weights.copy()
+    output.loc[:, stock_columns] = output.loc[:, stock_columns].mul(scaler, axis=0)
+    stock_weight = output.loc[:, stock_columns].sum(axis=1).clip(lower=0.0, upper=1.0)
+    output[safe_symbol] = 1.0 - stock_weight
+    return output.reindex(columns=weights_history.columns.union([safe_symbol], sort=False), fill_value=0.0)
+
+
 def _summary_for_variant(
     *,
     run_name: str,
@@ -325,6 +463,15 @@ def _summary_for_variant(
     universe_lag_trading_days: int,
     max_names_per_sector: int | None = None,
     sector_score_penalty: float | None = None,
+    residual_momentum_weight: float | None = None,
+    beta_penalty_weight: float | None = None,
+    vol_target: float | None = None,
+    vol_target_window: int | None = None,
+    min_stock_exposure: float | None = None,
+    panic_drawdown_threshold: float | None = None,
+    panic_rebound_threshold: float | None = None,
+    panic_vol_threshold: float | None = None,
+    panic_stock_exposure: float | None = None,
     top2_blend_weight: float | None = None,
     dynamic_drawdown_threshold: float | None = None,
     top4_mode_share: float | None = None,
@@ -361,6 +508,15 @@ def _summary_for_variant(
             "Universe Lag Trading Days": int(universe_lag_trading_days),
             "Max Names Per Sector": max_names_per_sector,
             "Sector Score Penalty": sector_score_penalty,
+            "Residual Momentum Weight": residual_momentum_weight,
+            "Beta Penalty Weight": beta_penalty_weight,
+            "Vol Target": vol_target,
+            "Vol Target Window": vol_target_window,
+            "Min Stock Exposure": min_stock_exposure,
+            "Panic Drawdown Threshold": panic_drawdown_threshold,
+            "Panic Rebound Threshold": panic_rebound_threshold,
+            "Panic Vol Threshold": panic_vol_threshold,
+            "Panic Stock Exposure": panic_stock_exposure,
             "Top2 Blend Weight": top2_blend_weight,
             "Top4 Blend Weight": (1.0 - top2_blend_weight) if top2_blend_weight is not None else None,
             "Dynamic Drawdown Threshold": dynamic_drawdown_threshold,
@@ -391,6 +547,18 @@ def run_concentration_variant_research(
     sector_cap_values: Iterable[int] = DEFAULT_SECTOR_CAP_VALUES,
     include_sector_soft_penalty_variants: bool = False,
     sector_score_penalty_values: Iterable[float] = DEFAULT_SECTOR_SCORE_PENALTY_VALUES,
+    include_residual_momentum_variants: bool = False,
+    residual_momentum_weights: Iterable[float] = DEFAULT_RESIDUAL_MOMENTUM_WEIGHTS,
+    beta_penalty_weights: Iterable[float] = DEFAULT_BETA_PENALTY_WEIGHTS,
+    include_volatility_managed_variants: bool = False,
+    vol_target_values: Iterable[float] = DEFAULT_VOL_TARGET_VALUES,
+    vol_target_window: int = DEFAULT_VOL_TARGET_WINDOW,
+    vol_target_min_stock_exposure: float = DEFAULT_VOL_TARGET_MIN_STOCK_EXPOSURE,
+    include_panic_rebound_guard_variants: bool = False,
+    panic_guard_drawdown_threshold: float = DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD,
+    panic_guard_rebound_threshold: float = DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD,
+    panic_guard_vol_threshold: float = DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
+    panic_guard_stock_exposure: float = DEFAULT_PANIC_GUARD_STOCK_EXPOSURE,
 ) -> dict[str, pd.DataFrame]:
     prices = _normalize_price_history(price_history)
     if end_date is not None:
@@ -457,6 +625,30 @@ def run_concentration_variant_research(
         "base_top2_cap50": None,
         "base_top4_cap25": None,
     }
+    variant_residual_weights: dict[str, float | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_beta_penalty_weights: dict[str, float | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_vol_targets: dict[str, float | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_vol_target_windows: dict[str, int | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_min_stock_exposures: dict[str, float | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_panic_drawdown_thresholds: dict[str, float | None] = {}
+    variant_panic_rebound_thresholds: dict[str, float | None] = {}
+    variant_panic_vol_thresholds: dict[str, float | None] = {}
+    variant_panic_stock_exposures: dict[str, float | None] = {}
     for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
         if not 0.0 < top2_weight < 1.0:
             continue
@@ -465,6 +657,106 @@ def run_concentration_variant_research(
         variants.append((run_name, "fixed_blend", weights, float(top2_weight), None, 1.0 - float(top2_weight)))
         variant_sector_caps[run_name] = None
         variant_sector_penalties[run_name] = None
+        variant_residual_weights[run_name] = None
+        variant_beta_penalty_weights[run_name] = None
+        variant_vol_targets[run_name] = None
+        variant_vol_target_windows[run_name] = None
+        variant_min_stock_exposures[run_name] = None
+
+    if include_volatility_managed_variants:
+        benchmark_returns = reference_returns[benchmark_symbol] if benchmark_symbol in reference_returns.columns else pd.Series(index=index, dtype=float)
+        base_weight_specs = [
+            ("top2_cap50", "volatility_managed_base_top2", top2_weights, 1.0, 0.0),
+            ("top4_cap25", "volatility_managed_base_top4", top4_weights, 0.0, 1.0),
+        ]
+        for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
+            if not 0.0 < top2_weight < 1.0:
+                continue
+            blend_name = _variant_name_for_blend(top2_weight)
+            blend_weights = float(top2_weight) * top2_weights + (1.0 - float(top2_weight)) * top4_weights
+            base_weight_specs.append(
+                (blend_name, "volatility_managed_fixed_blend", blend_weights, float(top2_weight), 1.0 - float(top2_weight))
+            )
+        for vol_target in parse_csv_floats(tuple(vol_target_values), default=DEFAULT_VOL_TARGET_VALUES):
+            target = float(vol_target)
+            if target <= 0.0:
+                continue
+            for base_name, variant_type, base_weights, blend_weight, top4_share in base_weight_specs:
+                run_name = _vol_target_variant_name(
+                    base_name,
+                    vol_target=target,
+                    min_stock_exposure=float(vol_target_min_stock_exposure),
+                )
+                weights = _apply_volatility_target_exposure(
+                    base_weights,
+                    benchmark_returns,
+                    safe_haven=safe_haven,
+                    vol_target=target,
+                    min_stock_exposure=float(vol_target_min_stock_exposure),
+                    vol_window=int(vol_target_window),
+                )
+                variants.append((run_name, variant_type, weights, blend_weight, None, top4_share))
+                variant_sector_caps[run_name] = None
+                variant_sector_penalties[run_name] = None
+                variant_residual_weights[run_name] = None
+                variant_beta_penalty_weights[run_name] = None
+                variant_vol_targets[run_name] = target
+                variant_vol_target_windows[run_name] = int(vol_target_window)
+                variant_min_stock_exposures[run_name] = float(vol_target_min_stock_exposure)
+
+    if include_panic_rebound_guard_variants:
+        benchmark_returns = (
+            reference_returns[benchmark_symbol]
+            if benchmark_symbol in reference_returns.columns
+            else pd.Series(index=index, dtype=float)
+        )
+        base_weight_specs = [
+            ("top2_cap50", "panic_rebound_guard_base_top2", top2_weights, 1.0, 0.0),
+            ("top4_cap25", "panic_rebound_guard_base_top4", top4_weights, 0.0, 1.0),
+        ]
+        for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
+            if not 0.0 < top2_weight < 1.0:
+                continue
+            blend_name = _variant_name_for_blend(top2_weight)
+            blend_weights = float(top2_weight) * top2_weights + (1.0 - float(top2_weight)) * top4_weights
+            base_weight_specs.append(
+                (
+                    blend_name,
+                    "panic_rebound_guard_fixed_blend",
+                    blend_weights,
+                    float(top2_weight),
+                    1.0 - float(top2_weight),
+                )
+            )
+        for base_name, variant_type, base_weights, blend_weight, top4_share in base_weight_specs:
+            run_name = _panic_guard_variant_name(
+                base_name,
+                drawdown_threshold=float(panic_guard_drawdown_threshold),
+                rebound_threshold=float(panic_guard_rebound_threshold),
+                vol_threshold=float(panic_guard_vol_threshold),
+                stock_exposure=float(panic_guard_stock_exposure),
+            )
+            weights = _apply_panic_rebound_guard(
+                base_weights,
+                benchmark_returns,
+                safe_haven=safe_haven,
+                drawdown_threshold=float(panic_guard_drawdown_threshold),
+                rebound_threshold=float(panic_guard_rebound_threshold),
+                vol_threshold=float(panic_guard_vol_threshold),
+                stock_exposure=float(panic_guard_stock_exposure),
+            )
+            variants.append((run_name, variant_type, weights, blend_weight, None, top4_share))
+            variant_sector_caps[run_name] = None
+            variant_sector_penalties[run_name] = None
+            variant_residual_weights[run_name] = None
+            variant_beta_penalty_weights[run_name] = None
+            variant_vol_targets[run_name] = None
+            variant_vol_target_windows[run_name] = None
+            variant_min_stock_exposures[run_name] = None
+            variant_panic_drawdown_thresholds[run_name] = float(panic_guard_drawdown_threshold)
+            variant_panic_rebound_thresholds[run_name] = float(panic_guard_rebound_threshold)
+            variant_panic_vol_thresholds[run_name] = float(panic_guard_vol_threshold)
+            variant_panic_stock_exposures[run_name] = float(panic_guard_stock_exposure)
 
     if include_sector_capped_variants:
         for sector_cap in parse_csv_ints(tuple(sector_cap_values), default=DEFAULT_SECTOR_CAP_VALUES):
@@ -497,6 +789,16 @@ def run_concentration_variant_research(
             variant_sector_caps[top4_name] = max_sector_count
             variant_sector_penalties[top2_name] = None
             variant_sector_penalties[top4_name] = None
+            variant_residual_weights[top2_name] = None
+            variant_residual_weights[top4_name] = None
+            variant_beta_penalty_weights[top2_name] = None
+            variant_beta_penalty_weights[top4_name] = None
+            variant_vol_targets[top2_name] = None
+            variant_vol_targets[top4_name] = None
+            variant_vol_target_windows[top2_name] = None
+            variant_vol_target_windows[top4_name] = None
+            variant_min_stock_exposures[top2_name] = None
+            variant_min_stock_exposures[top4_name] = None
             for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
                 if not 0.0 < top2_weight < 1.0:
                     continue
@@ -515,6 +817,11 @@ def run_concentration_variant_research(
                 )
                 variant_sector_caps[run_name] = max_sector_count
                 variant_sector_penalties[run_name] = None
+                variant_residual_weights[run_name] = None
+                variant_beta_penalty_weights[run_name] = None
+                variant_vol_targets[run_name] = None
+                variant_vol_target_windows[run_name] = None
+                variant_min_stock_exposures[run_name] = None
 
     if include_sector_soft_penalty_variants:
         for penalty in parse_csv_floats(
@@ -552,6 +859,16 @@ def run_concentration_variant_research(
             variant_sector_caps[top4_name] = None
             variant_sector_penalties[top2_name] = sector_score_penalty
             variant_sector_penalties[top4_name] = sector_score_penalty
+            variant_residual_weights[top2_name] = None
+            variant_residual_weights[top4_name] = None
+            variant_beta_penalty_weights[top2_name] = None
+            variant_beta_penalty_weights[top4_name] = None
+            variant_vol_targets[top2_name] = None
+            variant_vol_targets[top4_name] = None
+            variant_vol_target_windows[top2_name] = None
+            variant_vol_target_windows[top4_name] = None
+            variant_min_stock_exposures[top2_name] = None
+            variant_min_stock_exposures[top4_name] = None
             for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
                 if not 0.0 < top2_weight < 1.0:
                     continue
@@ -570,6 +887,91 @@ def run_concentration_variant_research(
                 )
                 variant_sector_caps[run_name] = None
                 variant_sector_penalties[run_name] = sector_score_penalty
+                variant_residual_weights[run_name] = None
+                variant_beta_penalty_weights[run_name] = None
+                variant_vol_targets[run_name] = None
+                variant_vol_target_windows[run_name] = None
+                variant_min_stock_exposures[run_name] = None
+
+    residual_beta_specs: list[tuple[float, float]] = []
+    if include_residual_momentum_variants:
+        for residual_weight in parse_csv_floats(
+            tuple(residual_momentum_weights),
+            default=DEFAULT_RESIDUAL_MOMENTUM_WEIGHTS,
+        ):
+            if float(residual_weight) > 0.0:
+                residual_beta_specs.append((float(residual_weight), 0.0))
+        for beta_weight in parse_csv_floats(tuple(beta_penalty_weights), default=DEFAULT_BETA_PENALTY_WEIGHTS):
+            if float(beta_weight) > 0.0:
+                residual_beta_specs.append((0.0, float(beta_weight)))
+
+    for residual_weight, beta_weight in residual_beta_specs:
+        residual_top2 = run_backtest(
+            prices,
+            lagged_universe,
+            top_n=2,
+            single_name_cap=0.50,
+            max_names_per_sector=0,
+            residual_momentum_weight=residual_weight,
+            beta_penalty_weight=beta_weight,
+            **base_kwargs,
+        )
+        residual_top4 = run_backtest(
+            prices,
+            lagged_universe,
+            top_n=4,
+            single_name_cap=0.25,
+            max_names_per_sector=0,
+            residual_momentum_weight=residual_weight,
+            beta_penalty_weight=beta_weight,
+            **base_kwargs,
+        )
+        residual_top2_weights = _align_weights(residual_top2["weights_history"], index=index, columns=weight_columns)
+        residual_top4_weights = _align_weights(residual_top4["weights_history"], index=index, columns=weight_columns)
+        top2_name = _residual_beta_variant_name(
+            "top2_cap50",
+            residual_momentum_weight=residual_weight,
+            beta_penalty_weight=beta_weight,
+        )
+        top4_name = _residual_beta_variant_name(
+            "top4_cap25",
+            residual_momentum_weight=residual_weight,
+            beta_penalty_weight=beta_weight,
+        )
+        variants.append((top2_name, "residual_beta_base_top2", residual_top2_weights, 1.0, None, 0.0))
+        variants.append((top4_name, "residual_beta_base_top4", residual_top4_weights, 0.0, None, 1.0))
+        variant_sector_caps[top2_name] = None
+        variant_sector_caps[top4_name] = None
+        variant_sector_penalties[top2_name] = None
+        variant_sector_penalties[top4_name] = None
+        variant_residual_weights[top2_name] = residual_weight
+        variant_residual_weights[top4_name] = residual_weight
+        variant_beta_penalty_weights[top2_name] = beta_weight
+        variant_beta_penalty_weights[top4_name] = beta_weight
+        variant_vol_targets[top2_name] = None
+        variant_vol_targets[top4_name] = None
+        variant_vol_target_windows[top2_name] = None
+        variant_vol_target_windows[top4_name] = None
+        variant_min_stock_exposures[top2_name] = None
+        variant_min_stock_exposures[top4_name] = None
+        for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
+            if not 0.0 < top2_weight < 1.0:
+                continue
+            base_blend_name = _variant_name_for_blend(top2_weight)
+            run_name = _residual_beta_variant_name(
+                base_blend_name,
+                residual_momentum_weight=residual_weight,
+                beta_penalty_weight=beta_weight,
+            )
+            weights = float(top2_weight) * residual_top2_weights + (1.0 - float(top2_weight)) * residual_top4_weights
+            variants.append((run_name, "residual_beta_fixed_blend", weights, float(top2_weight), None, 1.0 - float(top2_weight)))
+            variant_sector_caps[run_name] = None
+            variant_sector_penalties[run_name] = None
+            variant_residual_weights[run_name] = residual_weight
+            variant_beta_penalty_weights[run_name] = beta_weight
+            variant_vol_targets[run_name] = None
+            variant_vol_target_windows[run_name] = None
+            variant_min_stock_exposures[run_name] = None
 
     mode_rows: list[dict[str, object]] = []
     for threshold in parse_csv_floats(
@@ -619,6 +1021,15 @@ def run_concentration_variant_research(
                 universe_lag_trading_days=int(universe_lag_trading_days),
                 max_names_per_sector=variant_sector_caps.get(run_name),
                 sector_score_penalty=variant_sector_penalties.get(run_name),
+                residual_momentum_weight=variant_residual_weights.get(run_name),
+                beta_penalty_weight=variant_beta_penalty_weights.get(run_name),
+                vol_target=variant_vol_targets.get(run_name),
+                vol_target_window=variant_vol_target_windows.get(run_name),
+                min_stock_exposure=variant_min_stock_exposures.get(run_name),
+                panic_drawdown_threshold=variant_panic_drawdown_thresholds.get(run_name),
+                panic_rebound_threshold=variant_panic_rebound_thresholds.get(run_name),
+                panic_vol_threshold=variant_panic_vol_thresholds.get(run_name),
+                panic_stock_exposure=variant_panic_stock_exposures.get(run_name),
                 top2_blend_weight=blend_weight,
                 dynamic_drawdown_threshold=threshold,
                 top4_mode_share=top4_share,
@@ -710,6 +1121,75 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(str(value) for value in DEFAULT_SECTOR_SCORE_PENALTY_VALUES),
         help="Comma-separated soft score penalties used when sector soft-penalty variants are enabled.",
     )
+    parser.add_argument(
+        "--include-residual-momentum-variants",
+        action="store_true",
+        help="Also test research-only variants using QQQ beta-adjusted residual momentum or beta penalties.",
+    )
+    parser.add_argument(
+        "--residual-momentum-weights",
+        default=",".join(str(value) for value in DEFAULT_RESIDUAL_MOMENTUM_WEIGHTS),
+        help="Comma-separated residual momentum score weights used when residual variants are enabled.",
+    )
+    parser.add_argument(
+        "--beta-penalty-weights",
+        default=",".join(str(value) for value in DEFAULT_BETA_PENALTY_WEIGHTS),
+        help="Comma-separated beta penalty score weights used when residual variants are enabled.",
+    )
+    parser.add_argument(
+        "--include-volatility-managed-variants",
+        action="store_true",
+        help=(
+            "Also test research-only variants that scale stock exposure down on base-strategy rebalance dates "
+            "when benchmark volatility is high."
+        ),
+    )
+    parser.add_argument(
+        "--vol-target-values",
+        default=",".join(str(value) for value in DEFAULT_VOL_TARGET_VALUES),
+        help="Comma-separated annualized benchmark volatility targets used when volatility variants are enabled.",
+    )
+    parser.add_argument(
+        "--vol-target-window",
+        type=int,
+        default=DEFAULT_VOL_TARGET_WINDOW,
+        help="Rolling trading-day window used to estimate benchmark volatility.",
+    )
+    parser.add_argument(
+        "--vol-target-min-stock-exposure",
+        type=float,
+        default=DEFAULT_VOL_TARGET_MIN_STOCK_EXPOSURE,
+        help="Minimum stock exposure multiplier for volatility-managed variants.",
+    )
+    parser.add_argument(
+        "--include-panic-rebound-guard-variants",
+        action="store_true",
+        help="Also test research-only variants that cut stock exposure in high-volatility rebound states.",
+    )
+    parser.add_argument(
+        "--panic-guard-drawdown-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD,
+        help="QQQ rolling drawdown threshold used by panic-rebound guard variants.",
+    )
+    parser.add_argument(
+        "--panic-guard-rebound-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD,
+        help="QQQ 21-trading-day rebound threshold used by panic-rebound guard variants.",
+    )
+    parser.add_argument(
+        "--panic-guard-vol-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
+        help="QQQ 63-trading-day annualized volatility threshold used by panic-rebound guard variants.",
+    )
+    parser.add_argument(
+        "--panic-guard-stock-exposure",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_STOCK_EXPOSURE,
+        help="Stock exposure multiplier applied while the panic-rebound guard is active.",
+    )
     parser.add_argument("--print-top", type=int, default=20)
     return parser
 
@@ -744,6 +1224,21 @@ def main(argv: list[str] | None = None) -> int:
             args.sector_score_penalty_values,
             default=DEFAULT_SECTOR_SCORE_PENALTY_VALUES,
         ),
+        include_residual_momentum_variants=bool(args.include_residual_momentum_variants),
+        residual_momentum_weights=parse_csv_floats(
+            args.residual_momentum_weights,
+            default=DEFAULT_RESIDUAL_MOMENTUM_WEIGHTS,
+        ),
+        beta_penalty_weights=parse_csv_floats(args.beta_penalty_weights, default=DEFAULT_BETA_PENALTY_WEIGHTS),
+        include_volatility_managed_variants=bool(args.include_volatility_managed_variants),
+        vol_target_values=parse_csv_floats(args.vol_target_values, default=DEFAULT_VOL_TARGET_VALUES),
+        vol_target_window=int(args.vol_target_window),
+        vol_target_min_stock_exposure=float(args.vol_target_min_stock_exposure),
+        include_panic_rebound_guard_variants=bool(args.include_panic_rebound_guard_variants),
+        panic_guard_drawdown_threshold=float(args.panic_guard_drawdown_threshold),
+        panic_guard_rebound_threshold=float(args.panic_guard_rebound_threshold),
+        panic_guard_vol_threshold=float(args.panic_guard_vol_threshold),
+        panic_guard_stock_exposure=float(args.panic_guard_stock_exposure),
     )
     summary_path = output_dir / "concentration_variant_summary.csv"
     yearly_path = output_dir / "concentration_variant_yearly_summary.csv"

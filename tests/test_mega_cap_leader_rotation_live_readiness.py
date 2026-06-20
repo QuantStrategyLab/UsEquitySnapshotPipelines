@@ -103,6 +103,54 @@ def _summary_rows() -> pd.DataFrame:
                 "Broad Benchmark Total Return": 2.0,
                 "Turnover/Year": 3.5,
             },
+            {
+                "Run": "resid0p5_blend_top2_25_top4_75",
+                "Variant Type": "residual_beta_fixed_blend",
+                "Universe Lag Trading Days": 21,
+                "Top2 Blend Weight": 0.25,
+                "Start": "2017-10-02",
+                "End": "2026-06-18",
+                "CAGR": 0.45,
+                "Max Drawdown": -0.28,
+                "Sharpe": 1.27,
+                "Calmar": 1.47,
+                "Total Return": 24.0,
+                "Benchmark Total Return": 4.0,
+                "Broad Benchmark Total Return": 2.0,
+                "Turnover/Year": 3.5,
+            },
+            {
+                "Run": "voltarget18_min50_blend_top2_25_top4_75",
+                "Variant Type": "volatility_managed_fixed_blend",
+                "Universe Lag Trading Days": 21,
+                "Top2 Blend Weight": 0.25,
+                "Start": "2017-10-02",
+                "End": "2026-06-18",
+                "CAGR": 0.45,
+                "Max Drawdown": -0.28,
+                "Sharpe": 1.27,
+                "Calmar": 1.47,
+                "Total Return": 24.0,
+                "Benchmark Total Return": 4.0,
+                "Broad Benchmark Total Return": 2.0,
+                "Turnover/Year": 3.5,
+            },
+            {
+                "Run": "panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75",
+                "Variant Type": "panic_rebound_guard_fixed_blend",
+                "Universe Lag Trading Days": 21,
+                "Top2 Blend Weight": 0.25,
+                "Start": "2017-10-02",
+                "End": "2026-06-18",
+                "CAGR": 0.45,
+                "Max Drawdown": -0.28,
+                "Sharpe": 1.27,
+                "Calmar": 1.47,
+                "Total Return": 24.0,
+                "Benchmark Total Return": 4.0,
+                "Broad Benchmark Total Return": 2.0,
+                "Turnover/Year": 3.5,
+            },
         ]
     )
 
@@ -116,6 +164,9 @@ def _rolling_rows() -> pd.DataFrame:
         "dynamic_top2_dd10_to_top4": -0.05,
         "sector_cap1_blend_top2_25_top4_75": -0.04,
         "sector_penalty0p5_blend_top2_25_top4_75": -0.04,
+        "resid0p5_blend_top2_25_top4_75": -0.04,
+        "voltarget18_min50_blend_top2_25_top4_75": -0.04,
+        "panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75": -0.04,
     }.items():
         rows.extend(
             [
@@ -164,6 +215,22 @@ def test_evaluate_live_readiness_promotes_fixed_blends_and_rejects_research_only
         "sector_soft_penalty_research"
     )
     assert "research_only_role" in by_run.loc["sector_penalty0p5_blend_top2_25_top4_75", "live_gate_reason"]
+    assert bool(by_run.loc["resid0p5_blend_top2_25_top4_75", "live_gate_passed"]) is False
+    assert by_run.loc["resid0p5_blend_top2_25_top4_75", "Candidate Role"] == "residual_beta_research"
+    assert "research_only_role" in by_run.loc["resid0p5_blend_top2_25_top4_75", "live_gate_reason"]
+    assert bool(by_run.loc["voltarget18_min50_blend_top2_25_top4_75", "live_gate_passed"]) is False
+    assert by_run.loc["voltarget18_min50_blend_top2_25_top4_75", "Candidate Role"] == (
+        "volatility_managed_research"
+    )
+    assert "research_only_role" in by_run.loc["voltarget18_min50_blend_top2_25_top4_75", "live_gate_reason"]
+    assert bool(by_run.loc["panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75", "live_gate_passed"]) is False
+    assert by_run.loc["panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75", "Candidate Role"] == (
+        "panic_rebound_guard_research"
+    )
+    assert "research_only_role" in by_run.loc[
+        "panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75",
+        "live_gate_reason",
+    ]
 
 
 def test_evaluate_live_readiness_fails_when_five_year_qqq_excess_is_negative() -> None:

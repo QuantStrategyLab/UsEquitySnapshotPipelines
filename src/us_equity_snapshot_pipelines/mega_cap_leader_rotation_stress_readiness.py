@@ -20,6 +20,10 @@ DEFAULT_FIXED_LIVE_CANDIDATE_RUNS = (
     "blend_top2_25_top4_75",
     "blend_top2_50_top4_50",
 )
+DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD = 0.10
+DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD = 0.03
+DEFAULT_PANIC_GUARD_VOL_THRESHOLD = 0.25
+DEFAULT_PANIC_GUARD_STOCK_EXPOSURE = 0.50
 STRESS_DETAIL_COLUMNS = (
     "Stress Scenario",
     "Stress Turnover Cost Bps",
@@ -45,6 +49,8 @@ STRESS_DETAIL_COLUMNS = (
     "Worst Rolling Max Drawdown",
     "live_gate_passed",
     "live_gate_reason",
+    "metric_gate_passed_excluding_research_role",
+    "metric_gate_reason_excluding_research_role",
     "recommended_action",
 )
 STRESS_SUMMARY_COLUMNS = (
@@ -55,6 +61,9 @@ STRESS_SUMMARY_COLUMNS = (
     "Passed Scenarios",
     "all_stress_gates_passed",
     "stress_gate_reason",
+    "Metric Passed Scenarios",
+    "all_metric_gates_passed_excluding_research_role",
+    "metric_stress_gate_reason",
     "Worst Max Drawdown",
     "Worst Rolling Max Drawdown",
     "Min 3Y QQQ Excess CAGR",
@@ -122,6 +131,15 @@ def _numeric_max(frame: pd.DataFrame, column: str) -> float:
     return float(values.max()) if values.notna().any() else float("nan")
 
 
+def _metric_reason_excluding_research_role(reason: object) -> str:
+    parts = [
+        part
+        for part in str(reason or "").split(";")
+        if part and part not in {"pass", "research_only_role"}
+    ]
+    return ";".join(parts) if parts else "pass"
+
+
 def summarize_stress_live_readiness(detail: pd.DataFrame) -> pd.DataFrame:
     frame = pd.DataFrame(detail).copy()
     if frame.empty:
@@ -138,6 +156,23 @@ def summarize_stress_live_readiness(detail: pd.DataFrame) -> pd.DataFrame:
             )
         )
         all_passed = bool(len(group) > 0 and passed.all())
+        metric_passed = (
+            group["metric_gate_passed_excluding_research_role"].astype(bool)
+            if "metric_gate_passed_excluding_research_role" in group.columns
+            else passed
+        )
+        metric_failed = group.loc[~metric_passed.reindex(group.index, fill_value=False)].copy()
+        metric_reasons = tuple(
+            dict.fromkeys(
+                str(reason)
+                for reason in metric_failed.get(
+                    "metric_gate_reason_excluding_research_role",
+                    pd.Series(dtype=object),
+                ).tolist()
+                if str(reason).strip() and str(reason).strip().lower() not in {"nan", "pass"}
+            )
+        )
+        all_metric_passed = bool(len(group) > 0 and metric_passed.all())
         first = group.iloc[0]
         rows.append(
             {
@@ -148,6 +183,11 @@ def summarize_stress_live_readiness(detail: pd.DataFrame) -> pd.DataFrame:
                 "Passed Scenarios": int(passed.sum()),
                 "all_stress_gates_passed": all_passed,
                 "stress_gate_reason": "pass" if all_passed else ";".join(reasons) or "failed_stress_scenario",
+                "Metric Passed Scenarios": int(metric_passed.sum()),
+                "all_metric_gates_passed_excluding_research_role": all_metric_passed,
+                "metric_stress_gate_reason": (
+                    "pass" if all_metric_passed else ";".join(metric_reasons) or "failed_metric_stress_scenario"
+                ),
                 "Worst Max Drawdown": _numeric_min(group, "Max Drawdown"),
                 "Worst Rolling Max Drawdown": _numeric_min(group, "Worst Rolling Max Drawdown"),
                 "Min 3Y QQQ Excess CAGR": _numeric_min(group, "Min 3Y QQQ Excess CAGR"),
@@ -181,6 +221,11 @@ def build_stress_live_readiness(
     min_5y_excess_cagr_vs_qqq: float = 0.0,
     min_5y_excess_cagr_vs_spy: float = 0.0,
     min_3y_excess_cagr_vs_spy: float = 0.0,
+    include_panic_rebound_guard_variants: bool = False,
+    panic_guard_drawdown_threshold: float = DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD,
+    panic_guard_rebound_threshold: float = DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD,
+    panic_guard_vol_threshold: float = DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
+    panic_guard_stock_exposure: float = DEFAULT_PANIC_GUARD_STOCK_EXPOSURE,
 ) -> dict[str, pd.DataFrame]:
     costs = tuple(float(value) for value in turnover_cost_bps_values)
     lags = tuple(int(value) for value in universe_lag_days_values)
@@ -209,6 +254,11 @@ def build_stress_live_readiness(
                     min_price_usd=min_price_usd,
                     min_adv20_usd=min_adv20_usd,
                     min_history_days=min_history_days,
+                    include_panic_rebound_guard_variants=include_panic_rebound_guard_variants,
+                    panic_guard_drawdown_threshold=panic_guard_drawdown_threshold,
+                    panic_guard_rebound_threshold=panic_guard_rebound_threshold,
+                    panic_guard_vol_threshold=panic_guard_vol_threshold,
+                    panic_guard_stock_exposure=panic_guard_stock_exposure,
                 )
                 live_readiness = evaluate_live_readiness(
                     result["concentration_variant_summary"],
@@ -222,6 +272,12 @@ def build_stress_live_readiness(
                     live_readiness = live_readiness.loc[live_readiness["Run"].astype(str).isin(candidates)].copy()
                 if live_readiness.empty:
                     continue
+                live_readiness["metric_gate_reason_excluding_research_role"] = live_readiness[
+                    "live_gate_reason"
+                ].map(_metric_reason_excluding_research_role)
+                live_readiness["metric_gate_passed_excluding_research_role"] = live_readiness[
+                    "metric_gate_reason_excluding_research_role"
+                ].eq("pass")
                 live_readiness.insert(0, "Stress Min ADV20 USD", float(min_adv20_usd))
                 live_readiness.insert(0, "Stress Universe Lag Trading Days", int(lag_days))
                 live_readiness.insert(0, "Stress Turnover Cost Bps", float(cost_bps))
@@ -280,6 +336,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-5y-excess-cagr-vs-qqq", type=float, default=0.0)
     parser.add_argument("--min-5y-excess-cagr-vs-spy", type=float, default=0.0)
     parser.add_argument("--min-3y-excess-cagr-vs-spy", type=float, default=0.0)
+    parser.add_argument(
+        "--include-panic-rebound-guard-variants",
+        action="store_true",
+        help="Include canonical panic-rebound guard variants in each stress scenario.",
+    )
+    parser.add_argument(
+        "--panic-guard-drawdown-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_DRAWDOWN_THRESHOLD,
+    )
+    parser.add_argument(
+        "--panic-guard-rebound-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_REBOUND_THRESHOLD,
+    )
+    parser.add_argument(
+        "--panic-guard-vol-threshold",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
+    )
+    parser.add_argument(
+        "--panic-guard-stock-exposure",
+        type=float,
+        default=DEFAULT_PANIC_GUARD_STOCK_EXPOSURE,
+    )
     parser.add_argument("--print-top", type=int, default=20)
     return parser
 
@@ -313,6 +394,11 @@ def main(argv: list[str] | None = None) -> int:
         min_5y_excess_cagr_vs_qqq=args.min_5y_excess_cagr_vs_qqq,
         min_5y_excess_cagr_vs_spy=args.min_5y_excess_cagr_vs_spy,
         min_3y_excess_cagr_vs_spy=args.min_3y_excess_cagr_vs_spy,
+        include_panic_rebound_guard_variants=bool(args.include_panic_rebound_guard_variants),
+        panic_guard_drawdown_threshold=float(args.panic_guard_drawdown_threshold),
+        panic_guard_rebound_threshold=float(args.panic_guard_rebound_threshold),
+        panic_guard_vol_threshold=float(args.panic_guard_vol_threshold),
+        panic_guard_stock_exposure=float(args.panic_guard_stock_exposure),
     )
     detail_path = output_dir / "stress_live_readiness_detail.csv"
     summary_path = output_dir / "stress_live_readiness_summary.csv"

@@ -586,6 +586,360 @@ Soft-penalty conclusion:
 - The next higher-quality expansion should be residual/beta-adjusted momentum or
   factor/industry momentum diagnostics, not more sector cap/penalty tuning.
 
+### Phase 6: Residual / beta-adjusted Russell momentum follow-up
+
+Goal: test whether the Top2/Top4 winner selection can keep offensive upside
+while reducing high-beta crowding and momentum-crash exposure.
+
+Web-expanded source scan, 2026-06-20:
+
+- Blitz, Huij, and Martens' residual momentum work supports testing momentum
+  after removing common factor exposure rather than relying only on total-return
+  momentum. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2319861
+- Frazzini and Pedersen's betting-against-beta work supports treating high beta
+  exposure as a separate risk dimension, not just as return momentum. Source:
+  https://www.nber.org/system/files/working_papers/w16601/w16601.pdf
+- Daniel and Moskowitz show momentum crashes are partly forecastable in panic,
+  high-volatility rebound states. Source:
+  https://www.nber.org/system/files/working_papers/w20439/w20439.pdf
+- Moreira and Muir show volatility-managed portfolios can improve factor Sharpe
+  ratios by cutting exposure when volatility is high. Source:
+  https://www.nber.org/papers/w22208
+
+Implementation:
+
+- Backtest feature snapshots now compute:
+  - `beta_126_vs_benchmark`;
+  - `beta_126_vs_broad_benchmark`;
+  - `resid_mom_6m_vs_benchmark`;
+  - `resid_mom_6m_vs_broad_benchmark`.
+- Ranking accepts two disabled-by-default research knobs:
+  - `residual_momentum_weight`;
+  - `beta_penalty_weight`.
+- Concentration runner emits research-only variants when
+  `--include-residual-momentum-variants` is enabled.
+- Live-readiness gate classifies all `resid*` and `beta*` rows as
+  `residual_beta_research` / `research_only`.
+
+Research command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_residual_beta_research_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds none \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-residual-momentum-variants \
+  --residual-momentum-weights 0.25,0.5 \
+  --beta-penalty-weights 0.25
+```
+
+Selected full-window rows:
+
+| Run | CAGR | MaxDD | Sharpe | Turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 1.27 | 3.52 | keep conservative live-design candidate |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 1.27 | 3.52 | keep balanced offensive live-design candidate |
+| `resid0p25_top2_cap50` | 45.93% | -38.03% | 1.20 | 3.62 | reject |
+| `resid0p5_top2_cap50` | 44.98% | -34.92% | 1.19 | 3.79 | reject |
+| `beta0p25_top2_cap50` | 47.43% | -34.21% | 1.28 | 3.73 | high-return research-only |
+| `resid0p25_blend_top2_25_top4_75` | 40.54% | -31.29% | 1.24 | 3.60 | reject |
+| `resid0p25_blend_top2_50_top4_50` | 42.54% | -31.34% | 1.24 | 3.60 | reject |
+| `resid0p5_blend_top2_25_top4_75` | 40.87% | -31.29% | 1.26 | 3.57 | reject |
+| `resid0p5_blend_top2_50_top4_50` | 42.46% | -31.40% | 1.25 | 3.65 | reject |
+| `beta0p25_blend_top2_25_top4_75` | 35.73% | -28.90% | 1.21 | 3.82 | reject |
+| `beta0p25_blend_top2_50_top4_50` | 39.74% | -30.57% | 1.25 | 3.79 | reject |
+
+Rolling-window result:
+
+| Run | Worst 3Y QQQ excess | Worst 3Y SPY excess | Worst 5Y QQQ excess | Worst 5Y SPY excess |
+| --- | ---: | ---: | ---: | ---: |
+| `blend_top2_25_top4_75` | -6.41% | +5.64% | +10.42% | +13.95% |
+| `blend_top2_50_top4_50` | -4.83% | +7.22% | +12.49% | +15.27% |
+| `resid0p5_top2_cap50` | -3.48% | +8.57% | +12.67% | +14.46% |
+| `beta0p25_top2_cap50` | -0.99% | +11.06% | +14.75% | +17.53% |
+| `resid0p5_blend_top2_25_top4_75` | -5.49% | +6.56% | +9.50% | +13.21% |
+| `resid0p5_blend_top2_50_top4_50` | -4.62% | +7.43% | +10.74% | +13.88% |
+| `beta0p25_blend_top2_25_top4_75` | -6.98% | +5.07% | +7.00% | +12.19% |
+| `beta0p25_blend_top2_50_top4_50` | -4.83% | +7.22% | +9.81% | +15.87% |
+
+Residual/beta conclusion:
+
+- Residual momentum did not improve the liveable blends. It reduced offensive
+  CAGR and increased drawdown versus both fixed blends.
+- A `0.25` beta penalty is useful as a diagnostic: pure Top2 keeps high CAGR,
+  improves rolling QQQ/SPY excess, and reduces max drawdown from about `-38%`
+  to about `-34%`. However, it still fails the live drawdown bar and remains
+  research-only.
+- Beta-penalized blends do not beat the current fixed 25/75 or 50/50 blends.
+  The 25/75 version gives up too much CAGR, and the 50/50 version is materially
+  below the existing 50/50 CAGR without enough drawdown improvement.
+- Do not promote residual/beta ranking to live. The next research should keep
+  the current selection formula and instead test **exposure management**:
+  QQQ realized-volatility scaling, panic-rebound crash filters, or simple
+  Top2-to-Top4 exposure throttling. That direction targets the remaining Top2
+  drawdown problem more directly than further rank-score tuning.
+
+### Phase 7: Exposure-management follow-up
+
+Goal: keep the current winner-selection formula, but test whether a deterministic
+exposure rule can reduce crash-state risk or improve risk-adjusted returns
+without introducing daily overtrading.
+
+Implementation:
+
+- Concentration runner emits rebalance-date volatility-managed variants when
+  `--include-volatility-managed-variants` is enabled.
+- Concentration runner emits panic-rebound guard variants when
+  `--include-panic-rebound-guard-variants` is enabled.
+- The panic-rebound guard is deliberately narrow:
+  - QQQ 126-trading-day drawdown at or below `-10%`;
+  - QQQ 21-trading-day rebound at or above `+3%`;
+  - QQQ 63-trading-day annualized volatility at or above `25%`;
+  - stock exposure cut to `50%` on the base strategy rebalance date.
+- Live-readiness gate classifies `voltarget*` and `panic*` rows as research-only.
+
+Volatility-managed command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_voltarget_research_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds none \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-volatility-managed-variants \
+  --vol-target-values 0.18,0.22 \
+  --vol-target-window 63 \
+  --vol-target-min-stock-exposure 0.5
+```
+
+Volatility-managed result:
+
+| Run | CAGR | MaxDD | Sharpe | Turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 1.27 | 3.52 | keep |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 1.27 | 3.52 | keep |
+| `voltarget18_min50_blend_top2_25_top4_75` | 33.97% | -27.13% | 1.16 | 3.65 | reject |
+| `voltarget18_min50_blend_top2_50_top4_50` | 36.07% | -30.43% | 1.16 | 3.66 | reject |
+| `voltarget22_min50_blend_top2_25_top4_75` | 37.49% | -28.19% | 1.19 | 3.70 | reject |
+| `voltarget22_min50_blend_top2_50_top4_50` | 39.83% | -31.38% | 1.20 | 3.71 | reject |
+
+Volatility-managed conclusion:
+
+- Broad QQQ volatility targeting is too blunt for this long-only mega-cap
+  leader strategy.
+- Even when the scaler updates only on base rebalance dates, it gives up too
+  much CAGR and rolling excess for too little drawdown benefit.
+- Do not promote volatility targeting as a default runtime layer.
+
+Panic-rebound guard command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_panic_guard_research_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds none \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-panic-rebound-guard-variants \
+  --panic-guard-drawdown-threshold 0.10 \
+  --panic-guard-rebound-threshold 0.03 \
+  --panic-guard-vol-threshold 0.25 \
+  --panic-guard-stock-exposure 0.50
+```
+
+Panic-rebound selected full-window rows:
+
+| Run | CAGR | MaxDD | Sharpe | Turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 1.27 | 3.52 | current conservative live-design candidate |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 1.27 | 3.52 | current balanced offensive live-design candidate |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | 43.67% | -28.19% | 1.30 | 3.83 | promising research-only |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 46.30% | -30.64% | 1.30 | 3.83 | promising research-only |
+| `panicdd10_ret3_vol25_stock50_top2_cap50` | 48.60% | -38.12% | 1.23 | 3.56 | still not liveable |
+
+Panic-rebound rolling result:
+
+| Run | Worst 3Y QQQ excess | Worst 3Y SPY excess | Worst 5Y QQQ excess | Worst 5Y SPY excess |
+| --- | ---: | ---: | ---: | ---: |
+| `blend_top2_25_top4_75` | -6.41% | +5.64% | +10.42% | +13.95% |
+| `blend_top2_50_top4_50` | -4.83% | +7.22% | +12.49% | +15.27% |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | -6.41% | +5.64% | +12.23% | +15.01% |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | -4.83% | +7.22% | +13.36% | +16.14% |
+
+Panic-rebound conclusion:
+
+- This is the first overlay in the current batch that improves both 25/75 and
+  50/50 full-window CAGR and Sharpe without worsening historical max drawdown.
+- It does not fix pure Top2 drawdown, so pure Top2 remains rejected.
+- Because the rule was selected after a small threshold scan, it must stay
+  research-only until it passes the same source-lag, stress, and preferably
+  walk-forward/OOS gates as the existing fixed blends.
+- Next step: add a dedicated stress-readiness run for this specific rule, then
+  decide whether it graduates from `research_only` to `live_design_review`.
+
+### Phase 8: Panic-rebound guard stress-readiness
+
+Goal: verify that the promising panic-rebound guard is not just a single
+21-trading-day-lag / 5 bps artifact.
+
+Validation note:
+
+- Harvey, Liu, and Zhu argue that financial factor discovery needs stricter
+  hurdles after repeated testing. Source:
+  https://www.nber.org/system/files/working_papers/w20592/w20592.pdf
+- Bailey, Borwein, Lopez de Prado, and Zhu propose measuring the probability of
+  backtest overfitting when selecting strategies from simulations. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253
+- Therefore this panic guard should not be promoted merely because it improved
+  the first full-window run. It needs stress and OOS evidence.
+
+Implementation:
+
+- Stress-readiness now can include panic-rebound guard variants in each stress
+  scenario.
+- Stress outputs include `metric_gate_passed_excluding_research_role`, which
+  strips only the intentional `research_only_role` blocker. Drawdown, lag,
+  rolling excess, and benchmark-return failures still fail the metric gate.
+
+Stress command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_stress_readiness \
+  --prices data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_panic_guard_stress_readiness_20260620 \
+  --start 2017-10-02 \
+  --turnover-cost-bps-values 5,10,15 \
+  --universe-lag-days-values 21,42,63 \
+  --min-adv20-usd-values 20000000 \
+  --blend-top2-weights 0.25,0.5 \
+  --candidate-runs blend_top2_25_top4_75,blend_top2_50_top4_50,panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75,panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50 \
+  --rolling-window-years 3,5 \
+  --include-panic-rebound-guard-variants \
+  --panic-guard-drawdown-threshold 0.10 \
+  --panic-guard-rebound-threshold 0.03 \
+  --panic-guard-vol-threshold 0.25 \
+  --panic-guard-stock-exposure 0.50
+```
+
+Stress summary:
+
+| Run | Scenarios | Passed live gate | Passed metric gate excluding research role | Worst MaxDD | Min 3Y QQQ excess | Min 5Y QQQ excess | Max turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 9 | 9 | 9 | -29.86% | -6.87% | +9.97% | 3.52 | stress live-design review |
+| `blend_top2_50_top4_50` | 9 | 9 | 9 | -31.07% | -5.30% | +12.07% | 3.52 | stress live-design review |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | 9 | 0 | 9 | -29.86% | -6.87% | +11.19% | 3.83 | stress-passed research |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 9 | 0 | 9 | -31.07% | -5.30% | +12.89% | 3.83 | stress-passed research |
+
+Stress conclusion:
+
+- The panic guard passed all 9 metric gates after stripping only the explicit
+  `research_only_role` blocker.
+- It preserved worst drawdown versus the corresponding fixed blend, improved
+  worst 5Y QQQ excess, and kept turnover below `4x/year` even with the guard.
+- The fixed blends still remain the only rows that formally pass live gate
+  because panic rows are intentionally classified as research-only.
+- This is now a **stress-passed research candidate**, not yet a default live
+  candidate. The remaining promotion blocker is walk-forward/OOS robustness
+  after acknowledging that the threshold was selected post hoc.
+- Next step: add a small walk-forward/OOS diagnostic for fixed 50/50 versus
+  panic-guard 50/50 and fixed 25/75 versus panic-guard 25/75. If OOS passes,
+  the canonical panic guard can be promoted to `live_design_review` but should
+  still ship default-off or in shadow mode first.
+
+
+### Phase 9: Panic-rebound guard walk-forward/OOS diagnostic
+
+Goal: decide whether the stress-passed panic guard can graduate from
+`research_only` to `live_design_review` after accounting for post-hoc threshold
+selection.
+
+Implementation:
+
+- Added a dedicated walk-forward/OOS diagnostic that compares each canonical
+  panic-guard blend only against its matching fixed-blend baseline:
+  - `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` versus
+    `blend_top2_25_top4_75`;
+  - `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` versus
+    `blend_top2_50_top4_50`.
+- The diagnostic uses rolling training windows and the next calendar year as OOS.
+- A panic row is counted as a promotion-quality OOS window only when the prior
+  training window passes the pre-defined promotion criteria.
+- The gate requires enough promotion OOS windows, positive median OOS excess,
+  acceptable worst OOS excess, acceptable drawdown degradation, and minimum OOS
+  win rate versus the fixed baseline.
+
+Walk-forward/OOS command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_walk_forward \
+  --prices data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_residual_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_panic_guard_walk_forward_oos_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --blend-top2-weights 0.25,0.5 \
+  --train-years 3 \
+  --min-oos-windows 3 \
+  --min-oos-win-rate 0.50 \
+  --min-worst-oos-excess-cagr -0.03 \
+  --max-oos-drawdown-degradation 0.03 \
+  --panic-guard-drawdown-threshold 0.10 \
+  --panic-guard-rebound-threshold 0.03 \
+  --panic-guard-vol-threshold 0.25 \
+  --panic-guard-stock-exposure 0.50
+```
+
+Walk-forward/OOS summary:
+
+| Panic run | Baseline run | Total windows | Promotion OOS windows | OOS win rate | Median OOS excess CAGR | Worst OOS excess CAGR | Worst OOS drawdown delta | Gate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | `blend_top2_25_top4_75` | 5 | 3 | 33.33% | 0.00% | 0.00% | 0.00% | fail |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | `blend_top2_50_top4_50` | 5 | 3 | 33.33% | 0.00% | 0.00% | 0.00% | fail |
+
+Window-level interpretation:
+
+- The 2022 OOS window was positive, but the prior train window did not qualify
+  for promotion because the train excess CAGR was not positive.
+- The 2023 OOS window was positive for both panic-guard blends and had better
+  Sharpe than the matching fixed blend.
+- The 2024 and 2025 OOS windows added no incremental value versus the matching
+  fixed blend.
+- As a result, the promotion-quality OOS win rate was only `33.33%`, below the
+  `50%` threshold, and median OOS excess was not positive.
+
+Walk-forward/OOS conclusion:
+
+- The canonical panic-rebound guard **does not graduate** to
+  `live_design_review`.
+- Even though it improved full-window metrics and passed stress metrics, the
+  OOS diagnostic does not show enough repeatable incremental edge versus the
+  fixed blends.
+- Keep all `panicdd10_ret3_vol25_stock50_*` rows classified as research-only.
+- Do not default-enable this overlay in runtime. If revisited, it should first
+  run as a shadow-only diagnostic with a pre-registered non-threshold or
+  structural hypothesis, not as another threshold grid.
+
 ## Architecture recommendation
 
 ### Current architecture understanding
