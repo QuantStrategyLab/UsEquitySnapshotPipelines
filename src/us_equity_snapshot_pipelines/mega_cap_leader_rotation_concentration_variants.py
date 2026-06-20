@@ -114,6 +114,24 @@ MODE_COLUMNS = (
     "Dynamic Drawdown Threshold",
     "Mode",
 )
+DAILY_RETURN_COLUMNS = (
+    "Date",
+    "Run",
+    "Variant Type",
+    "Strategy Return",
+    "QQQ Return",
+    "SPY Return",
+)
+TRADE_COLUMNS = (
+    "Date",
+    "Run",
+    "Variant Type",
+    "Symbol",
+    "Previous Weight",
+    "Target Weight",
+    "Trade Weight Delta",
+    "Abs Trade Weight Delta",
+)
 
 
 def parse_csv_floats(raw_value: str | Iterable[float] | None, *, default: tuple[float, ...]) -> tuple[float, ...]:
@@ -220,6 +238,77 @@ def _returns_from_weights(
     gross_returns = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)
     turnover = 0.5 * weights.diff().abs().sum(axis=1).shift(1).fillna(0.0)
     return gross_returns - turnover * (float(turnover_cost_bps) / 10_000.0)
+
+
+
+
+def _build_rebalance_trade_rows(
+    *,
+    run_name: str,
+    variant_type: str,
+    weights: pd.DataFrame,
+) -> list[dict[str, object]]:
+    frame = weights.fillna(0.0).copy()
+    if frame.empty:
+        return []
+    deltas = frame.diff().fillna(frame)
+    rows: list[dict[str, object]] = []
+    for as_of, delta_row in deltas.iterrows():
+        changed_symbols = [symbol for symbol, value in delta_row.items() if abs(float(value)) > 1e-12]
+        if not changed_symbols:
+            continue
+        for symbol in changed_symbols:
+            target_weight = float(frame.at[as_of, symbol])
+            delta = float(delta_row[symbol])
+            rows.append(
+                {
+                    "Date": pd.Timestamp(as_of).date().isoformat(),
+                    "Run": run_name,
+                    "Variant Type": variant_type,
+                    "Symbol": str(symbol),
+                    "Previous Weight": target_weight - delta,
+                    "Target Weight": target_weight,
+                    "Trade Weight Delta": delta,
+                    "Abs Trade Weight Delta": abs(delta),
+                }
+            )
+    return rows
+
+
+def _build_daily_return_rows(
+    *,
+    run_name: str,
+    variant_type: str,
+    portfolio_returns: pd.Series,
+    reference_returns: pd.DataFrame,
+    benchmark_symbol: str,
+    broad_benchmark_symbol: str,
+) -> list[dict[str, object]]:
+    strategy = pd.to_numeric(portfolio_returns, errors="coerce").dropna()
+    reference = reference_returns.reindex(strategy.index)
+    benchmark_returns = (
+        pd.to_numeric(reference[benchmark_symbol], errors="coerce")
+        if benchmark_symbol in reference.columns
+        else pd.Series(index=strategy.index, dtype=float)
+    )
+    broad_returns = (
+        pd.to_numeric(reference[broad_benchmark_symbol], errors="coerce")
+        if broad_benchmark_symbol in reference.columns
+        else pd.Series(index=strategy.index, dtype=float)
+    )
+    rows: list[dict[str, object]] = []
+    for as_of, value in strategy.items():
+        rows.append(
+            {
+                "Date": pd.Timestamp(as_of).date().isoformat(),
+                "Run": run_name,
+                "Variant Type": variant_type,
+                "Strategy Return": float(value),
+                "QQQ Return": float(benchmark_returns.get(as_of, float("nan"))),
+                "SPY Return": float(broad_returns.get(as_of, float("nan"))),
+            }
+        )
+    return rows
 
 
 def _build_yearly_rows(
@@ -1005,6 +1094,8 @@ def run_concentration_variant_research(
     summary_rows: list[dict[str, object]] = []
     yearly_rows: list[dict[str, object]] = []
     rolling_rows: list[dict[str, object]] = []
+    daily_return_rows: list[dict[str, object]] = []
+    trade_rows: list[dict[str, object]] = []
     rolling_values = parse_csv_ints(tuple(rolling_window_years), default=DEFAULT_ROLLING_WINDOW_YEARS)
     for run_name, variant_type, weights, blend_weight, threshold, top4_share in variants:
         returns = _returns_from_weights(weights, returns_matrix, turnover_cost_bps=float(turnover_cost_bps))
@@ -1035,6 +1126,23 @@ def run_concentration_variant_research(
                 top4_mode_share=top4_share,
             )
         )
+        trade_rows.extend(
+            _build_rebalance_trade_rows(
+                run_name=run_name,
+                variant_type=variant_type,
+                weights=weights,
+            )
+        )
+        daily_return_rows.extend(
+            _build_daily_return_rows(
+                run_name=run_name,
+                variant_type=variant_type,
+                portfolio_returns=returns,
+                reference_returns=reference_returns,
+                benchmark_symbol=benchmark_symbol,
+                broad_benchmark_symbol=broad_benchmark_symbol,
+            )
+        )
         yearly_rows.extend(
             _build_yearly_rows(
                 run_name=run_name,
@@ -1060,11 +1168,15 @@ def run_concentration_variant_research(
     summary = pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS)
     yearly = pd.DataFrame(yearly_rows, columns=YEARLY_COLUMNS)
     rolling = pd.DataFrame(rolling_rows, columns=ROLLING_COLUMNS)
+    daily_returns = pd.DataFrame(daily_return_rows, columns=DAILY_RETURN_COLUMNS)
+    rebalance_trades = pd.DataFrame(trade_rows, columns=TRADE_COLUMNS)
     mode_history = pd.DataFrame(mode_rows, columns=MODE_COLUMNS)
     return {
         "concentration_variant_summary": summary,
         "concentration_variant_yearly_summary": yearly,
         "concentration_variant_rolling_summary": rolling,
+        "concentration_variant_daily_returns": daily_returns,
+        "concentration_variant_rebalance_trades": rebalance_trades,
         "concentration_variant_mode_history": mode_history,
     }
 
@@ -1243,15 +1355,21 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = output_dir / "concentration_variant_summary.csv"
     yearly_path = output_dir / "concentration_variant_yearly_summary.csv"
     rolling_path = output_dir / "concentration_variant_rolling_summary.csv"
+    daily_returns_path = output_dir / "concentration_variant_daily_returns.csv"
+    rebalance_trades_path = output_dir / "concentration_variant_rebalance_trades.csv"
     mode_path = output_dir / "concentration_variant_mode_history.csv"
     result["concentration_variant_summary"].to_csv(summary_path, index=False)
     result["concentration_variant_yearly_summary"].to_csv(yearly_path, index=False)
     result["concentration_variant_rolling_summary"].to_csv(rolling_path, index=False)
+    result["concentration_variant_daily_returns"].to_csv(daily_returns_path, index=False)
+    result["concentration_variant_rebalance_trades"].to_csv(rebalance_trades_path, index=False)
     result["concentration_variant_mode_history"].to_csv(mode_path, index=False)
     print(result["concentration_variant_summary"].head(max(int(args.print_top), 0)).to_string(index=False))
     print(f"wrote concentration variant summary -> {summary_path}")
     print(f"wrote concentration variant yearly summary -> {yearly_path}")
     print(f"wrote concentration variant rolling summary -> {rolling_path}")
+    print(f"wrote concentration variant daily returns -> {daily_returns_path}")
+    print(f"wrote concentration variant rebalance trades -> {rebalance_trades_path}")
     print(f"wrote concentration variant mode history -> {mode_path}")
     return 0
 

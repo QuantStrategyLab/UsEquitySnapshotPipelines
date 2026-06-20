@@ -940,6 +940,452 @@ Walk-forward/OOS conclusion:
   run as a shadow-only diagnostic with a pre-registered non-threshold or
   structural hypothesis, not as another threshold grid.
 
+
+### Phase 10: Candidate-matrix overfit diagnostics
+
+Goal: add a lightweight overfit/OOS stability review before any new Russell
+variant can move from research output to live-design review. This phase does
+not add a new trading rule and does not change runtime behavior.
+
+Research basis:
+
+- White's Reality Check frames the data-snooping problem that appears when the
+  same data is reused for model selection. Source:
+  https://www.ssc.wisc.edu/~bhansen/718/White2000.pdf
+- Bailey, Borwein, Lopez de Prado, and Zhu propose PBO/CSCV as a way to assess
+  backtest overfitting in investment simulations. Source:
+  https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf
+- Bailey and Lopez de Prado's Deflated Sharpe Ratio highlights selection bias
+  and non-normal returns as reasons not to trust the best Sharpe from a broad
+  search at face value. Source:
+  https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_overfit_diagnostics`, a diagnostic-only module
+  that consumes existing research artifacts instead of rerunning or changing the
+  strategy.
+- Inputs:
+  - `concentration_variant_summary.csv`;
+  - `concentration_variant_rolling_summary.csv`;
+  - optional `walk_forward_oos_summary.csv`.
+- Outputs:
+  - `overfit_candidate_diagnostics.csv`;
+  - `overfit_rank_windows.csv`;
+  - `overfit_promotion_gate_summary.csv`.
+
+The diagnostic is intentionally labelled as a **PBO proxy**, not a formal CSCV
+or Deflated Sharpe implementation. The current research artifacts are aggregated
+rolling windows, not the full independent return panel needed to claim strict
+CSCV/PBO significance.
+
+Command template:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_overfit_diagnostics \
+  --summary data/output/russell_top50_panic_guard_research_YYYYMMDD/concentration_variant_summary.csv \
+  --rolling data/output/russell_top50_panic_guard_research_YYYYMMDD/concentration_variant_rolling_summary.csv \
+  --walk-forward-summary data/output/russell_top50_panic_guard_walk_forward_oos_YYYYMMDD/walk_forward_oos_summary.csv \
+  --output-dir data/output/russell_top50_overfit_diagnostics_YYYYMMDD
+```
+
+Diagnostic fields include:
+
+- full-sample CAGR rank and rank percentile;
+- whether the candidate is in the full-sample top quantile;
+- rolling rank percentile, top-quantile rate, and bottom-half rate;
+- positive QQQ/SPY excess rate across rolling windows;
+- worst rolling benchmark excess and worst rolling drawdown;
+- optional walk-forward/OOS gate status;
+- `overfit_risk_label`, `overfit_risk_reason`, and `recommended_action`.
+
+The promotion summary is machine-readable but deliberately narrow:
+
+- `overfit_gate_passed` means the overfit/OOS diagnostic does not block the row.
+- `live_promotion_gate_passed` additionally requires the row to belong to a
+  promotable fixed-blend or Top4 fallback family.
+- `gate_scope` is always `blocker_only_not_positive_evidence`; passing this file
+  is not sufficient evidence for live promotion without the live-readiness and
+  stress gates.
+
+Promotion rule update:
+
+- A full-sample winner that fails walk-forward/OOS remains research-only even if
+  stress metrics pass.
+- A full-sample top-quantile candidate with frequent rolling bottom-half ranks
+  should be rejected or kept as diagnostic-only.
+- Fixed blends can stay live-design candidates only if they are not merely
+  full-sample winners but also show stable rolling benchmark excess and do not
+  fail OOS diagnostics.
+- Research variants must not be promoted from this diagnostic alone; the output
+  is a blocker/risk classifier, not a positive proof of live readiness.
+
+2026-06-20 product-data rerun result:
+
+Inputs were rebuilt locally in:
+
+- `data/output/russell_top50_product_data_full_20260620_overfit_rerun`
+- 106 dynamic Top50 snapshots;
+- 5,300 dynamic universe rows;
+- 247,106 price rows;
+- expected delisted gaps remained `CELG`, `DWDP`, and `UTX`.
+
+Research artifacts:
+
+- `data/output/russell_top50_panic_guard_research_20260620_overfit_rerun`
+- `data/output/russell_top50_panic_guard_walk_forward_oos_20260620_overfit_rerun`
+- `data/output/russell_top50_overfit_diagnostics_20260620_overfit_rerun`
+  - `overfit_candidate_diagnostics.csv`
+  - `overfit_rank_windows.csv`
+  - `overfit_promotion_gate_summary.csv`
+
+Overfit diagnostic command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_overfit_diagnostics \
+  --summary data/output/russell_top50_panic_guard_research_20260620_overfit_rerun/concentration_variant_summary.csv \
+  --rolling data/output/russell_top50_panic_guard_research_20260620_overfit_rerun/concentration_variant_rolling_summary.csv \
+  --walk-forward-summary data/output/russell_top50_panic_guard_walk_forward_oos_20260620_overfit_rerun/walk_forward_oos_summary.csv \
+  --output-dir data/output/russell_top50_overfit_diagnostics_20260620_overfit_rerun
+```
+
+Selected diagnostics:
+
+| Run | Full-sample CAGR | MaxDD | Rolling bottom-half rate | Positive QQQ excess rate | Walk-forward OOS win rate | Risk | Action |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 46.30% | -30.64% | 0.00% | 90.00% | 33.33% | high | keep research-only, OOS failed |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | 43.67% | -28.19% | 100.00% | 90.00% | 33.33% | high | keep research-only, OOS failed |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 0.00% | 90.00% | n/a | low | live-candidate stability review |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 100.00% | 90.00% | n/a | low | live-candidate stability review |
+| `base_top4_cap25` | 39.64% | -27.28% | 100.00% | 90.00% | n/a | low | fallback stability review |
+
+Promotion gate summary:
+
+| Run | Overfit gate | Live-promotion gate | Reason |
+| --- | --- | --- | --- |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | fail | fail | `overfit_high_risk;walk_forward_gate_failed;not_promotable_candidate_family` |
+| `panicdd10_ret3_vol25_stock50_blend_top2_25_top4_75` | fail | fail | `overfit_high_risk;walk_forward_gate_failed;not_promotable_candidate_family` |
+| `blend_top2_50_top4_50` | pass | pass | `pass` |
+| `blend_top2_25_top4_75` | pass | pass | `pass` |
+| `base_top4_cap25` | pass | pass | `pass` |
+| `base_top2_cap50` | pass | fail | `not_promotable_candidate_family` |
+
+Interpretation:
+
+- The panic-rebound blend rows remain high risk because they failed the
+  walk-forward/OOS gate: promotion-quality OOS win rate was only `33.33%`, below
+  the `50%` threshold, and median OOS excess was not positive.
+- The `50/50` fixed blend remains the preferred aggressive live-design candidate
+  on this diagnostic because it has strong full-sample return, positive QQQ
+  excess in `90%` of rolling windows, and no OOS failure flag. Its drawdown still
+  requires offensive/aggressive labeling.
+- The `25/75` fixed blend remains the conservative live-design candidate. Its
+  rolling rank is lower than high-return research variants, but it still has
+  positive QQQ excess in `90%` of rolling windows and materially lower drawdown
+  than the `50/50` profile.
+- Pure Top2 still has the highest full-sample CAGR, but `-38%` drawdown keeps it
+  research-only regardless of the overfit diagnostic.
+
+Next robustness step:
+
+- Do not tune more panic thresholds. If stricter statistical testing is added,
+  prefer a Hansen SPA / Reality Check style evaluation over the frozen candidate
+  matrix, or build a fuller return-panel-based CSCV/PBO artifact. Until then,
+  this PBO-proxy diagnostic should act as a blocker, not as positive evidence
+  for promotion.
+
+
+### Phase 11: Return-panel Reality Check diagnostic
+
+Goal: move beyond aggregate overfit proxies by exporting a frozen-candidate daily
+return panel and running a bootstrap Reality Check diagnostic. This phase does
+not change strategy rules, live manifests, or runtime behavior.
+
+Research basis:
+
+- White's Reality Check uses bootstrap resampling to evaluate whether the best
+  observed rule could be a data-snooping artifact after many candidates were
+  considered. Source: https://www.ssc.wisc.edu/~bhansen/718/White2000.pdf
+- Hansen's SPA test improves on the Reality Check by being more powerful and
+  less sensitive to poor/irrelevant alternatives. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=264569
+- The data-snooping literature on technical trading rules commonly evaluates
+  White RC, Hansen SPA, and stepwise extensions together. Source:
+  https://papers.ssrn.com/sol3/Delivery.cfm/SSRN_ID1618184_code1196373.pdf?abstractid=1343896
+
+Implementation:
+
+- Concentration research now also writes
+  `concentration_variant_daily_returns.csv`, with one row per date and run:
+  - `Date`;
+  - `Run`;
+  - `Variant Type`;
+  - `Strategy Return`;
+  - `QQQ Return`;
+  - `SPY Return`.
+- Added `mega_cap_leader_rotation_reality_check`, which consumes that daily
+  return panel and runs a circular block bootstrap Reality Check over candidate
+  excess returns.
+- Outputs:
+  - `reality_check_candidate_summary.csv`;
+  - `reality_check_global_summary.csv`.
+
+Important scope limit:
+
+- This is a Reality Check style return-panel diagnostic, not a full Hansen SPA,
+  stepwise SPA, or CSCV/PBO implementation.
+- `diagnostic_scope` is `return_panel_bootstrap_not_live_gate`; passing it is
+  not sufficient for live promotion.
+- A candidate that fails walk-forward/OOS remains research-only even if it is
+  the best full-sample bootstrap candidate.
+
+2026-06-20 product-data rerun artifacts:
+
+- `data/output/russell_top50_panic_guard_research_20260620_reality_check_rerun`
+  - includes `concentration_variant_daily_returns.csv`;
+- `data/output/russell_top50_reality_check_20260620_rerun`;
+- `data/output/russell_top50_fixed_reality_check_20260620_rerun`;
+- `data/output/russell_top50_fixed_reality_check_spy_20260620_rerun`.
+
+All commands used `1,000` bootstrap iterations, a `21` trading-day circular
+block size, random seed `42`, and alpha `0.10`.
+
+Expanded fixed-plus-panic matrix versus QQQ:
+
+| Candidate set | Best run | Annualized mean excess | Reality Check p-value | Pass | Live interpretation |
+| --- | --- | ---: | ---: | --- | --- |
+| Top4, fixed blends, panic blends | `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 21.66% | 0.0060 | yes | still research-only because OOS blocker failed |
+
+Frozen fixed live-candidate matrix versus QQQ:
+
+| Candidate set | Best run | Annualized mean excess | Reality Check p-value | Pass | Live interpretation |
+| --- | --- | ---: | ---: | --- | --- |
+| Top4, `25/75`, `50/50` | `blend_top2_50_top4_50` | 20.88% | 0.0060 | yes | supports statistical review, still needs live/stress/OOS gates |
+
+Frozen fixed live-candidate matrix versus SPY:
+
+| Candidate set | Best run | Annualized mean excess | Reality Check p-value | Pass | Live interpretation |
+| --- | --- | ---: | ---: | --- | --- |
+| Top4, `25/75`, `50/50` | `blend_top2_50_top4_50` | 27.15% | 0.0030 | yes | supports statistical review, still needs live/stress/OOS gates |
+
+Interpretation:
+
+- The return-panel Reality Check gives the fixed `50/50` candidate additional
+  support versus both QQQ and SPY inside the frozen live-candidate matrix.
+- It also shows why this diagnostic cannot be a live gate by itself: the panic
+  `50/50` overlay is the best full-sample bootstrap candidate in the expanded
+  matrix, but it already failed the walk-forward/OOS blocker.
+- Therefore the current hierarchy remains unchanged:
+  - `blend_top2_50_top4_50` is the preferred aggressive/offensive candidate;
+  - `blend_top2_25_top4_75` remains the lower-drawdown conservative candidate;
+  - `base_top4_cap25` remains fallback;
+  - panic overlay remains research-only.
+
+Next research step:
+
+- If we want stricter statistical validation, implement Hansen SPA over the same
+  daily return panel rather than tuning more strategy thresholds.
+- If we want better live confidence before more statistics, expand PIT history or
+  add execution/liquidity participation diagnostics; both are more useful than
+  another overlay threshold grid.
+
+
+### Phase 12: Execution liquidity and participation diagnostics
+
+Goal: add a capacity check that estimates whether the fixed Russell candidates
+can be executed at plausible portfolio NAV levels without exceeding a fixed
+share of recent average dollar volume. This phase does not change returns,
+ranking, live manifests, or runtime behavior.
+
+Research basis:
+
+- Average daily trading volume is commonly used as a liquidity proxy; higher
+  ADTV generally makes entering or exiting positions easier, while low ADTV can
+  create execution challenges. Source:
+  https://www.investopedia.com/terms/a/averagedailytradingvolume.asp
+- Execution and market-impact research often frames order size through a
+  participation rate. Source:
+  https://haas.berkeley.edu/wp-content/uploads/hiddenImpact13.pdf
+- VWAP/market-impact examples commonly connect participation rate, order size,
+  and execution horizon; if an order is too large for a chosen participation
+  rate, it needs more time to execute. Source:
+  https://www.quantrocket.com/codeload/quant-finance-lectures/quant_finance_lectures/Lecture28-Market-Impact-Models.ipynb.html
+
+Implementation:
+
+- Concentration research now also writes
+  `concentration_variant_rebalance_trades.csv`, with one row per run, date, and
+  symbol whenever target weight changes. It contains weights only, not account
+  identifiers or real account balances.
+- Added `mega_cap_leader_rotation_liquidity_diagnostics`, which consumes:
+  - `concentration_variant_rebalance_trades.csv`;
+  - price history with close and volume.
+- The diagnostic computes rolling ADV dollar volume, trade notional under
+  supplied hypothetical NAV values, and participation rate after spreading the
+  order across a configurable number of execution days.
+- Outputs:
+  - `liquidity_trade_detail.csv`;
+  - `liquidity_summary.csv`.
+
+Command template:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_liquidity_diagnostics \
+  --trades data/output/russell_top50_panic_guard_research_YYYYMMDD/concentration_variant_rebalance_trades.csv \
+  --prices data/output/russell_top50_product_data_full_YYYYMMDD/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --output-dir data/output/russell_top50_fixed_liquidity_YYYYMMDD \
+  --portfolio-nav-values 100000,500000,1000000,5000000,10000000 \
+  --adv-window 20 \
+  --execution-days 1 \
+  --max-participation-rate 0.01 \
+  --exclude-symbols BOXX,QQQ,SPY \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50
+```
+
+2026-06-20 product-data rerun artifacts:
+
+- `data/output/russell_top50_panic_guard_research_20260620_liquidity_rerun`
+  - includes `concentration_variant_rebalance_trades.csv`;
+- `data/output/russell_top50_fixed_liquidity_20260620_rerun`;
+- `data/output/russell_top50_fixed_liquidity_2day_20260620_rerun`.
+
+Assumptions:
+
+- ADV window: `20` trading days;
+- one-day execution gate: max `1%` of ADV;
+- stock liquidity only; `BOXX`, `QQQ`, and `SPY` are excluded from this stock
+  participation diagnostic;
+- NAV values are hypothetical model sizes, not account data.
+
+One-day execution result:
+
+| Run | NAV | Max trade notional | Max participation | Gate | Action |
+| --- | ---: | ---: | ---: | --- | --- |
+| `base_top4_cap25` | $10,000,000 | $2,500,000 | 0.72% | pass | liquidity live review |
+| `blend_top2_25_top4_75` | $10,000,000 | $3,125,000 | 0.90% | pass | liquidity live review |
+| `blend_top2_50_top4_50` | $5,000,000 | $1,875,000 | 0.54% | pass | liquidity live review |
+| `blend_top2_50_top4_50` | $10,000,000 | $3,750,000 | 1.08% | fail | reduce NAV or extend execution days |
+
+Two-day execution result at `$10,000,000` NAV:
+
+| Run | Max trade notional | Max participation | Gate |
+| --- | ---: | ---: | --- |
+| `base_top4_cap25` | $2,500,000 | 0.36% | pass |
+| `blend_top2_25_top4_75` | $3,125,000 | 0.45% | pass |
+| `blend_top2_50_top4_50` | $3,750,000 | 0.54% | pass |
+
+Interpretation:
+
+- Liquidity is not a blocker for small to mid account sizes in this product-data
+  run.
+- For one-day execution with a strict `1%` ADV participation cap, the aggressive
+  `50/50` profile is comfortable through `$5,000,000` NAV and only slightly
+  exceeds the cap at `$10,000,000`.
+- Splitting the monthly rebalance over two trading days brings the `$10,000,000`
+  `50/50` profile back under the `1%` cap.
+- This supports keeping `50/50` as the preferred offensive candidate for
+  moderate NAV, but runtime/operator docs should include a NAV/execution-days
+  capacity note before live promotion.
+
+Next live-readiness implication:
+
+- Promotion artifacts should archive liquidity summaries for the chosen NAV
+  assumption.
+- Runtime should not hard-code account size into strategy logic; execution sizing
+  belongs in operator/broker layer diagnostics.
+- If NAV grows materially beyond the tested range, rerun this diagnostic with
+  larger NAV values or multi-day execution assumptions.
+
+### Phase 13: Integrated live-promotion review
+
+Goal: combine the independent live-readiness, stress, overfit, liquidity, and
+return-panel statistical-support artifacts into one machine-readable promotion
+review. This phase does not change strategy logic, live manifests, broker
+behavior, or runtime defaults.
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_promotion_review`, an aggregation-only module.
+- Inputs:
+  - `concentration_variant_summary.csv`;
+  - `live_readiness_summary.csv`;
+  - `stress_live_readiness_summary.csv`;
+  - `overfit_promotion_gate_summary.csv`;
+  - `liquidity_summary.csv`;
+  - optional QQQ/SPY `reality_check_candidate_summary.csv` files.
+- Output:
+  - `live_promotion_review.csv`.
+
+Required gates:
+
+1. baseline live-readiness gate;
+2. stress-readiness gate;
+3. overfit/OOS blocker gate;
+4. liquidity participation gate for the chosen NAV/execution-days assumption.
+
+The Reality Check result is treated as statistical support, not as a hard live
+gate. A candidate that fails any required gate stays research-only even if it
+wins the bootstrap diagnostic.
+
+Command template:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_promotion_review \
+  --summary data/output/russell_top50_panic_guard_research_YYYYMMDD/concentration_variant_summary.csv \
+  --live-readiness data/output/russell_top50_live_readiness_YYYYMMDD/live_readiness_summary.csv \
+  --stress-summary data/output/russell_top50_stress_readiness_YYYYMMDD/stress_live_readiness_summary.csv \
+  --overfit-promotion data/output/russell_top50_overfit_diagnostics_YYYYMMDD/overfit_promotion_gate_summary.csv \
+  --liquidity-summary data/output/russell_top50_fixed_liquidity_YYYYMMDD/liquidity_summary.csv \
+  --reality-check-qqq data/output/russell_top50_fixed_reality_check_YYYYMMDD/reality_check_candidate_summary.csv \
+  --reality-check-spy data/output/russell_top50_fixed_reality_check_spy_YYYYMMDD/reality_check_candidate_summary.csv \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
+  --portfolio-nav 5000000 \
+  --output-dir data/output/russell_top50_live_promotion_review_YYYYMMDD
+```
+
+2026-06-20 product-data rerun artifacts:
+
+- `data/output/russell_top50_live_readiness_20260620_promotion_review_rerun`;
+- `data/output/russell_top50_stress_readiness_20260620_promotion_review_rerun`;
+- `data/output/russell_top50_live_promotion_review_20260620_rerun`;
+- `data/output/russell_top50_live_promotion_review_10m_2day_20260620_rerun`.
+
+The promotion stress matrix used `5,10,15` bps turnover costs, `21,42,63`
+trading-day universe lags, `20,000,000` minimum ADV20, and `3,5` year rolling
+windows. All three fixed candidates passed all `9` stress scenarios:
+
+| Run | Stress scenarios | Passed | Worst MaxDD | Min 3Y QQQ excess CAGR | Min 5Y QQQ excess CAGR | Max turnover/year |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `base_top4_cap25` | 9 | 9 | -29.07% | -8.62% | +6.84% | 3.53 |
+| `blend_top2_25_top4_75` | 9 | 9 | -29.86% | -6.87% | +9.97% | 3.52 |
+| `blend_top2_50_top4_50` | 9 | 9 | -31.07% | -5.30% | +12.07% | 3.52 |
+
+Integrated review result at `$5,000,000` NAV with one-day execution:
+
+| Run | CAGR | MaxDD | Required gates | Statistical support | Decision |
+| --- | ---: | ---: | --- | --- | --- |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | pass | QQQ and SPY Reality Check | preferred aggressive live-design review |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | pass | not Reality Check winner | conservative live-design review |
+| `base_top4_cap25` | 39.64% | -27.28% | pass | not Reality Check winner | fallback live-design review |
+| `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 46.30% | -30.64% | fail | not Reality Check winner | research-only |
+
+Integrated review result at `$10,000,000` NAV with two-day execution produced
+the same promotion ordering. Under the stricter one-day execution assumption,
+`blend_top2_50_top4_50` should stay capped around `$5,000,000` NAV or use a
+multi-day execution plan because its `$10,000,000` one-day participation was
+slightly above the `1%` ADV cap.
+
+Promotion conclusion:
+
+- `blend_top2_50_top4_50` is the preferred offensive design if the mandate
+  accepts a historical drawdown around `-31%` and the account size/execution
+  plan fits the liquidity diagnostic.
+- `blend_top2_25_top4_75` is the conservative design if the mandate prioritizes
+  keeping drawdown below `-30%`.
+- `base_top4_cap25` remains the rollback/fallback design.
+- Panic-rebound overlays, pure Top2, sector-aware ranking, residual/beta
+  ranking, and volatility targeting remain research-only.
+
 ## Architecture recommendation
 
 ### Current architecture understanding
@@ -964,10 +1410,16 @@ Walk-forward/OOS conclusion:
 
 ## Final live-version candidate hierarchy
 
-1. **First liveable candidate:** Russell `25% Top2 / 75% Top4` conservative blend.
-2. **Aggressive candidate if mandate accepts about `-31%` historical max drawdown:** Russell `50% Top2 / 50% Top4` balanced offensive blend.
+1. **Preferred offensive candidate:** Russell `50% Top2 / 50% Top4` balanced
+   offensive blend, supported by live/stress/overfit/liquidity gates and QQQ/SPY
+   Reality Check diagnostics. It must be labelled aggressive because historical
+   max drawdown is around `-31%`.
+2. **Conservative candidate:** Russell `25% Top2 / 75% Top4` blend, for mandates
+   that prioritize keeping drawdown below `-30%`.
 3. **Fallback:** Russell `Top4 cap25` baseline.
-4. **Not live now:** Global ETF offensive sleeve, pure Russell Top2, dynamic drawdown switches, broad daily cash filters.
+4. **Not live now:** Global ETF offensive sleeve, pure Russell Top2,
+   panic-rebound overlays, dynamic drawdown switches, sector-aware ranking,
+   residual/beta ranking, volatility targeting, and broad daily cash filters.
 
 The next code change should therefore be small and reversible: harden Russell
 runtime variants with named config/diagnostics, keep the current balanced default
