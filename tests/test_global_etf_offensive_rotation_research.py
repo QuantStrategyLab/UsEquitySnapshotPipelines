@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 import pandas as pd
 
 from us_equity_snapshot_pipelines import global_etf_offensive_rotation_research as research
@@ -23,6 +25,11 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         candidate_ids = research._normalize_candidate_ids("offensive_growth_fast_top2_monthly, Live_Baseline ")
 
         self.assertEqual(candidate_ids, ("offensive_growth_fast_top2_monthly", "Live_Baseline"))
+
+    def test_parse_float_list_accepts_comma_separated_bps_values(self) -> None:
+        values = research._parse_float_list("5,10, 25")
+
+        self.assertEqual(values, (5.0, 10.0, 25.0))
 
     def test_collect_required_symbols_includes_benchmarks_and_safe_haven_once(self) -> None:
         variant = research.GlobalEtfOffensiveVariantSpec(
@@ -216,6 +223,24 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertIn("weights_liveable_blend_baseline80_fast20", result)
         self.assertIn("liveable_blend_baseline80_fast20", result["portfolio_returns"].columns)
 
+    def test_default_liveable_composites_include_static_sleeve_sensitivity_ladder(self) -> None:
+        weights_by_id = {
+            spec.candidate_id: float(spec.overlay_weight)
+            for spec in research.GLOBAL_ETF_LIVEABLE_COMPOSITES
+            if str(spec.rule).startswith("static_blend_baseline")
+        }
+
+        self.assertEqual(
+            {
+                "liveable_blend_baseline90_fast10": 0.10,
+                "liveable_blend_baseline85_fast15": 0.15,
+                "liveable_blend_baseline80_fast20": 0.20,
+                "liveable_blend_baseline75_fast25": 0.25,
+                "liveable_blend_baseline70_fast30": 0.30,
+            },
+            weights_by_id,
+        )
+
     def test_build_candidate_robustness_diagnostics_emits_windows_and_summary(self) -> None:
         dates = pd.bdate_range(start="2020-01-02", periods=900)
         portfolio_returns = pd.DataFrame(
@@ -247,6 +272,299 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertIn("SPY CAGR Win Rate", diagnostics["robustness_summary"].columns)
         self.assertEqual(set(diagnostics["robustness_windows"]["Candidate"]), {"candidate_a"})
         self.assertTrue(pd.to_numeric(diagnostics["robustness_summary"]["Median Turnover/Year"]).notna().all())
+
+    def test_live_readiness_summary_passes_only_baseline_robust_liveable_candidate(self) -> None:
+        period_summary = pd.DataFrame(
+            [
+                {
+                    "Period": "long",
+                    "Candidate": "baseline",
+                    "Candidate Group": "current_live_baseline",
+                    "CAGR": 0.10,
+                    "Max Drawdown": -0.20,
+                },
+                {
+                    "Period": "long",
+                    "Candidate": "candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "CAGR": 0.112,
+                    "Max Drawdown": -0.19,
+                },
+            ]
+        )
+        ranking = pd.DataFrame(
+            [
+                {
+                    "Candidate": "baseline",
+                    "Candidate Group": "current_live_baseline",
+                    "research_gate_passed": True,
+                    "live_review_candidate": False,
+                    "median_turnover_per_year": 3.0,
+                },
+                {
+                    "Candidate": "candidate",
+                    "Display Name": "Candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "Rule": "static_blend",
+                    "research_gate_passed": True,
+                    "live_review_candidate": True,
+                    "median_turnover_per_year": 4.0,
+                },
+            ]
+        )
+        robustness_windows = pd.DataFrame(
+            [
+                {
+                    "Candidate": candidate,
+                    "Window Type": window_type,
+                    "Window": window,
+                    "CAGR": cagr,
+                    "Max Drawdown": max_drawdown,
+                    "Turnover/Year": turnover,
+                }
+                for candidate, values in {
+                    "baseline": (0.10, -0.20, 3.0),
+                    "candidate": (0.12, -0.18, 4.0),
+                }.items()
+                for window_type, window in (
+                    ("calendar_year", "2021"),
+                    ("calendar_year", "2022"),
+                    ("rolling_3y", "2020_2022"),
+                    ("rolling_3y", "2021_2023"),
+                    ("rolling_5y", "2019_2023"),
+                    ("rolling_5y", "2020_2024"),
+                )
+                for cagr, max_drawdown, turnover in [values]
+            ]
+        )
+
+        summary = research.build_live_readiness_summary(
+            period_summary=period_summary,
+            ranking=ranking,
+            robustness_windows=robustness_windows,
+            baseline_candidate="baseline",
+        )
+
+        self.assertEqual(summary["Candidate"].tolist(), ["candidate"])
+        self.assertTrue(bool(summary["live_gate_passed"].iloc[0]))
+        self.assertEqual(summary["live_action"].iloc[0], "candidate_for_live_promotion_review")
+        self.assertEqual(summary["live_gate_reason"].iloc[0], "pass")
+
+    def test_live_readiness_summary_rejects_weak_rolling_baseline_comparison(self) -> None:
+        period_summary = pd.DataFrame(
+            [
+                {
+                    "Period": "long",
+                    "Candidate": "baseline",
+                    "Candidate Group": "current_live_baseline",
+                    "CAGR": 0.10,
+                    "Max Drawdown": -0.20,
+                },
+                {
+                    "Period": "long",
+                    "Candidate": "candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "CAGR": 0.12,
+                    "Max Drawdown": -0.19,
+                },
+            ]
+        )
+        ranking = pd.DataFrame(
+            [
+                {
+                    "Candidate": "baseline",
+                    "Candidate Group": "current_live_baseline",
+                    "research_gate_passed": True,
+                    "live_review_candidate": False,
+                    "median_turnover_per_year": 3.0,
+                },
+                {
+                    "Candidate": "candidate",
+                    "Display Name": "Candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "Rule": "static_blend",
+                    "research_gate_passed": True,
+                    "live_review_candidate": True,
+                    "median_turnover_per_year": 4.0,
+                },
+            ]
+        )
+        robustness_windows = pd.DataFrame(
+            [
+                {
+                    "Candidate": "baseline",
+                    "Window Type": "rolling_5y",
+                    "Window": "2019_2023",
+                    "CAGR": 0.10,
+                    "Max Drawdown": -0.20,
+                    "Turnover/Year": 3.0,
+                },
+                {
+                    "Candidate": "candidate",
+                    "Window Type": "rolling_5y",
+                    "Window": "2019_2023",
+                    "CAGR": 0.06,
+                    "Max Drawdown": -0.18,
+                    "Turnover/Year": 4.0,
+                },
+            ]
+        )
+
+        summary = research.build_live_readiness_summary(
+            period_summary=period_summary,
+            ranking=ranking,
+            robustness_windows=robustness_windows,
+            baseline_candidate="baseline",
+        )
+
+        self.assertFalse(bool(summary["live_gate_passed"].iloc[0]))
+        self.assertEqual(summary["live_action"].iloc[0], "continue_research")
+        self.assertIn("rolling_5y_baseline_win_rate_below_60pct", summary["live_gate_reason"].iloc[0])
+
+    def test_build_cost_stress_live_readiness_summary_runs_requested_costs(self) -> None:
+        baseline = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="live_global_etf_rotation_defensive_baseline",
+            display_name="Live Baseline",
+            candidate_group="current_live_baseline",
+            rule="monthly_top1_base",
+            ranking_pool=("AAA",),
+            primary_benchmark_symbol="SPY",
+            secondary_benchmark_symbol="QQQ",
+            safe_haven="BIL",
+            canary_assets=("SPY",),
+            top_n=1,
+            canary_bad_threshold=99,
+        )
+        overlay = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="offensive_growth_fast_top2_monthly",
+            display_name="Fast Overlay",
+            candidate_group="offensive_candidate",
+            rule="monthly_top1_overlay",
+            ranking_pool=("QQQ",),
+            primary_benchmark_symbol="SPY",
+            secondary_benchmark_symbol="QQQ",
+            safe_haven="BIL",
+            canary_assets=("SPY",),
+            top_n=1,
+            canary_bad_threshold=99,
+            score_mode="fast_136w",
+        )
+        composite = research.GlobalEtfLiveableCompositeSpec(
+            candidate_id="liveable_test_baseline90_fast10",
+            display_name="Liveable Test 90 / 10",
+            rule="static_blend_baseline90_fast10",
+            base_candidate_id="live_global_etf_rotation_defensive_baseline",
+            overlay_candidate_id="offensive_growth_fast_top2_monthly",
+            overlay_weight=0.10,
+        )
+
+        summary = research.build_cost_stress_live_readiness_summary(
+            price_history=_price_history(),
+            periods=(("long", "2024-01-02", None),),
+            cost_bps_values=(0.0, 10.0),
+            variants=(baseline, overlay),
+            liveable_composites=(composite,),
+            robustness_candidates=(
+                "live_global_etf_rotation_defensive_baseline",
+                "liveable_test_baseline90_fast10",
+            ),
+        )
+
+        self.assertEqual(set(summary["turnover_cost_bps"]), {0.0, 10.0})
+        self.assertEqual(set(summary["Candidate"]), {"liveable_test_baseline90_fast10"})
+        self.assertIn("live_gate_passed", summary.columns)
+
+    def test_build_candidate_liquidity_diagnostics_flags_low_dollar_volume_weight(self) -> None:
+        dates = pd.bdate_range(start="2024-01-02", periods=80)
+        rows: list[dict[str, object]] = []
+        for symbol, volume in {"AAA": 1_000_000, "QQQ": 100}.items():
+            for as_of in dates:
+                rows.append({"symbol": symbol, "as_of": as_of, "close": 100.0, "volume": volume})
+        weights = pd.DataFrame({"AAA": 0.60, "QQQ": 0.40}, index=dates)
+
+        diagnostics = research.build_candidate_liquidity_diagnostics(
+            price_history=pd.DataFrame(rows),
+            weights_by_candidate={"candidate": weights},
+            candidate_ids=("candidate",),
+            dollar_volume_window=20,
+            low_liquidity_dollar_volume=50_000.0,
+        )
+
+        summary = diagnostics["liquidity_summary"]
+        symbol_summary = diagnostics["liquidity_symbol_summary"]
+        self.assertEqual(summary["Candidate"].tolist(), ["candidate"])
+        self.assertAlmostEqual(float(summary["Max Low Liquidity Weight"].iloc[0]), 0.40)
+        qqq = symbol_summary.loc[symbol_summary["Symbol"].eq("QQQ")].iloc[0]
+        self.assertAlmostEqual(float(qqq["Median Dollar Volume"]), 10_000.0)
+        self.assertAlmostEqual(float(qqq["Low Liquidity Day Rate"]), 1.0)
+
+    def test_write_recommendation_uses_cost_stress_to_downgrade_live_candidate(self) -> None:
+        ranking = pd.DataFrame(
+            [
+                {
+                    "rank": 1,
+                    "Candidate": "candidate",
+                    "Display Name": "Candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "Rule": "static_blend",
+                    "research_gate_passed": True,
+                    "paper_review_candidate": False,
+                    "live_review_candidate": True,
+                    "review_action": "live_design_review",
+                }
+            ]
+        )
+        period_summary = pd.DataFrame(
+            [
+                {
+                    "Period": "long",
+                    "Candidate": "live_global_etf_rotation_defensive_baseline",
+                    "CAGR": 0.10,
+                    "Excess CAGR vs Benchmark": 0.01,
+                    "Excess CAGR vs Secondary Benchmark": -0.02,
+                    "Max Drawdown": -0.20,
+                }
+            ]
+        )
+        live_readiness = pd.DataFrame(
+            [
+                {
+                    "Candidate": "candidate",
+                    "live_gate_passed": True,
+                    "long_excess_cagr_vs_baseline": 0.01,
+                    "live_action": "candidate_for_live_promotion_review",
+                }
+            ]
+        )
+        cost_stress = pd.DataFrame(
+            [
+                {
+                    "turnover_cost_bps": 5.0,
+                    "Candidate": "candidate",
+                    "live_gate_passed": True,
+                    "long_excess_cagr_vs_baseline": 0.01,
+                },
+                {
+                    "turnover_cost_bps": 10.0,
+                    "Candidate": "candidate",
+                    "live_gate_passed": False,
+                    "long_excess_cagr_vs_baseline": 0.009,
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = research.write_recommendation(
+                Path(tmpdir),
+                ranking=ranking,
+                period_summary=period_summary,
+                live_readiness_summary=live_readiness,
+                cost_stress_summary=cost_stress,
+            )
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn("成本压力未全通过", text)
+        self.assertIn("最高通过成本 5.00 bps", text)
+        self.assertNotIn("进入 live promotion review，但不自动替换 live；优先复核候选：candidate。", text)
 
     def test_period_end_keeps_open_ended_windows_unbounded(self) -> None:
         periods = (("closed", "2020-01-01", "2020-12-31"), ("open", "2023-01-01", None))

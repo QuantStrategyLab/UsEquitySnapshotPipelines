@@ -59,13 +59,28 @@ MIN_TRADING_DAYS_PER_PERIOD = 60
 DRAWNDOWN_ADVANTAGE_VS_QQQ = 0.05
 DEFAULT_ROBUSTNESS_CANDIDATES = (
     "offensive_growth_fast_top2_monthly",
+    "liveable_blend_baseline90_fast10",
+    "liveable_blend_baseline85_fast15",
     "liveable_blend_baseline80_fast20",
+    "liveable_blend_baseline75_fast25",
     "liveable_blend_baseline70_fast30",
     "liveable_regime_qqqtrend_baseline70_fast30",
     "liveable_volmanaged_baseline70_fast30",
     "live_global_etf_rotation_defensive_baseline",
 )
 DEFAULT_ROLLING_ROBUSTNESS_YEARS = (3, 5)
+DEFAULT_LIVE_BASELINE_CANDIDATE = "live_global_etf_rotation_defensive_baseline"
+DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW = 63
+DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME = 50_000_000.0
+SAFE_LIKE_SYMBOLS = {"BIL", "BOXX", "SGOV", "CASH"}
+LIVE_MIN_LONG_EXCESS_CAGR_VS_BASELINE = 0.0025
+LIVE_MAX_LONG_DRAWDOWN_DEGRADATION_VS_BASELINE = 0.02
+LIVE_MAX_MEDIAN_TURNOVER_INCREASE_VS_BASELINE = 2.0
+LIVE_MIN_CALENDAR_BASELINE_CAGR_WIN_RATE = 0.50
+LIVE_MIN_ROLLING_3Y_BASELINE_CAGR_WIN_RATE = 0.50
+LIVE_MIN_ROLLING_5Y_BASELINE_CAGR_WIN_RATE = 0.60
+LIVE_MIN_WORST_ROLLING_EXCESS_CAGR_VS_BASELINE = -0.03
+LIVE_MAX_WORST_WINDOW_DRAWDOWN_DEGRADATION_VS_BASELINE = 0.03
 
 
 @dataclass(frozen=True)
@@ -255,6 +270,30 @@ GLOBAL_ETF_OFFENSIVE_VARIANTS: tuple[GlobalEtfOffensiveVariantSpec, ...] = (
 
 GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
     GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline90_fast10",
+        display_name="Liveable Blend Baseline 90 / Fast 10",
+        rule="static_blend_baseline90_fast10",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.10,
+        notes=(
+            "Research-only sleeve-sensitivity candidate: keep 90% in current defensive baseline and allocate "
+            "10% to the fast offensive sleeve."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline85_fast15",
+        display_name="Liveable Blend Baseline 85 / Fast 15",
+        rule="static_blend_baseline85_fast15",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.15,
+        notes=(
+            "Research-only sleeve-sensitivity candidate: keep 85% in current defensive baseline and allocate "
+            "15% to the fast offensive sleeve."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
         candidate_id="liveable_blend_baseline80_fast20",
         display_name="Liveable Blend Baseline 80 / Fast 20",
         rule="static_blend_baseline80_fast20",
@@ -264,6 +303,18 @@ GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
         notes=(
             "Research-only liveable sleeve candidate: keep 80% in current defensive baseline and allocate "
             "20% to the fast offensive sleeve. Composite returns are recomputed from combined daily weights."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline75_fast25",
+        display_name="Liveable Blend Baseline 75 / Fast 25",
+        rule="static_blend_baseline75_fast25",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.25,
+        notes=(
+            "Research-only sleeve-sensitivity candidate: keep 75% in current defensive baseline and allocate "
+            "25% to the fast offensive sleeve."
         ),
     ),
     GlobalEtfLiveableCompositeSpec(
@@ -370,6 +421,23 @@ def _normalize_candidate_ids(values: Sequence[str] | str | None) -> tuple[str, .
         candidate_id = str(value or "").strip()
         if candidate_id and candidate_id not in cleaned:
             cleaned.append(candidate_id)
+    return tuple(cleaned)
+
+
+def _parse_float_list(values: Sequence[float] | str | None) -> tuple[float, ...]:
+    if values is None:
+        return ()
+    raw_values = values.split(",") if isinstance(values, str) else values
+    cleaned: list[float] = []
+    for value in raw_values:
+        raw = str(value).strip()
+        if not raw:
+            continue
+        parsed = float(raw)
+        if parsed < 0.0:
+            raise ValueError("cost values must be non-negative")
+        if parsed not in cleaned:
+            cleaned.append(parsed)
     return tuple(cleaned)
 
 
@@ -1422,6 +1490,440 @@ def build_candidate_robustness_diagnostics(
     }
 
 
+def _rolling_dollar_volume(price_history: pd.DataFrame, *, window: int) -> pd.DataFrame:
+    frame = pd.DataFrame(price_history).copy()
+    required = {"symbol", "as_of", "close", "volume"}
+    missing = required - set(frame.columns)
+    if missing:
+        return pd.DataFrame()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip().str.upper()
+    frame["as_of"] = pd.to_datetime(frame["as_of"], errors="coerce").dt.tz_localize(None).dt.normalize()
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
+    frame = frame.dropna(subset=["symbol", "as_of", "close", "volume"])
+    if frame.empty:
+        return pd.DataFrame()
+    frame["dollar_volume"] = frame["close"] * frame["volume"]
+    dollar_volume = frame.pivot_table(index="as_of", columns="symbol", values="dollar_volume", aggfunc="last")
+    dollar_volume = dollar_volume.sort_index()
+    dollar_volume.columns = dollar_volume.columns.map(str).str.upper()
+    return dollar_volume.rolling(int(window), min_periods=1).median()
+
+
+def _risk_asset_columns(columns: Sequence[str]) -> list[str]:
+    return [str(column).strip().upper() for column in columns if str(column).strip().upper() not in SAFE_LIKE_SYMBOLS]
+
+
+def build_candidate_liquidity_diagnostics(
+    *,
+    price_history: pd.DataFrame,
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    candidate_ids: Sequence[str],
+    dollar_volume_window: int = DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW,
+    low_liquidity_dollar_volume: float = DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME,
+) -> dict[str, pd.DataFrame]:
+    rolling_dollar_volume = _rolling_dollar_volume(price_history, window=int(dollar_volume_window))
+    if rolling_dollar_volume.empty:
+        return {"liquidity_summary": pd.DataFrame(), "liquidity_symbol_summary": pd.DataFrame()}
+
+    summary_rows: list[dict[str, object]] = []
+    symbol_rows: list[dict[str, object]] = []
+    threshold = float(low_liquidity_dollar_volume)
+    for candidate_id in tuple(dict.fromkeys(str(item).strip() for item in candidate_ids if str(item).strip())):
+        if candidate_id not in weights_by_candidate:
+            continue
+        weights = pd.DataFrame(weights_by_candidate[candidate_id]).copy()
+        if weights.empty:
+            continue
+        weights.index = pd.to_datetime(weights.index).tz_localize(None).normalize()
+        weights.columns = [str(column).strip().upper() for column in weights.columns]
+        weights = weights.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        common_index = weights.index.intersection(rolling_dollar_volume.index)
+        common_columns = [column for column in weights.columns if column in rolling_dollar_volume.columns]
+        if len(common_index) == 0 or not common_columns:
+            continue
+        weights = weights.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+        dollar_volume = rolling_dollar_volume.reindex(index=common_index, columns=common_columns)
+        held_mask = weights.gt(1e-9)
+        weighted_dollar_volume = weights.mul(dollar_volume, axis=0).where(held_mask).sum(axis=1, min_count=1)
+        held_dollar_volume = dollar_volume.where(held_mask)
+        min_held_dollar_volume = held_dollar_volume.min(axis=1, skipna=True)
+        low_liquidity_weight = weights.where(dollar_volume.lt(threshold), 0.0).sum(axis=1)
+        risk_columns = _risk_asset_columns(common_columns)
+        risk_low_liquidity_weight = (
+            weights[risk_columns].where(dollar_volume[risk_columns].lt(threshold), 0.0).sum(axis=1)
+            if risk_columns
+            else pd.Series(0.0, index=weights.index)
+        )
+        risk_min_held_dollar_volume = (
+            dollar_volume[risk_columns].where(weights[risk_columns].gt(1e-9)).min(axis=1, skipna=True)
+            if risk_columns
+            else pd.Series(float("nan"), index=weights.index)
+        )
+        max_position_weight = weights.max(axis=1)
+        held_symbol_count = held_mask.sum(axis=1)
+
+        summary_rows.append(
+            {
+                "Candidate": candidate_id,
+                "Trading Days": int(len(common_index)),
+                "Dollar Volume Window": int(dollar_volume_window),
+                "Low Liquidity Dollar Volume Threshold": threshold,
+                "Median Weighted Dollar Volume": float(weighted_dollar_volume.median()),
+                "Worst Held Dollar Volume": float(min_held_dollar_volume.min()),
+                "Median Low Liquidity Weight": float(low_liquidity_weight.median()),
+                "Max Low Liquidity Weight": float(low_liquidity_weight.max()),
+                "Worst Risk Held Dollar Volume": float(risk_min_held_dollar_volume.min()),
+                "Median Risk Low Liquidity Weight": float(risk_low_liquidity_weight.median()),
+                "Max Risk Low Liquidity Weight": float(risk_low_liquidity_weight.max()),
+                "Median Max Position Weight": float(max_position_weight.median()),
+                "Max Position Weight": float(max_position_weight.max()),
+                "Median Held Symbol Count": float(held_symbol_count.median()),
+            }
+        )
+
+        for symbol in common_columns:
+            symbol_weight = weights[symbol]
+            symbol_held = symbol_weight.gt(1e-9)
+            if not bool(symbol_held.any()):
+                continue
+            symbol_dollar_volume = dollar_volume[symbol].where(symbol_held)
+            symbol_rows.append(
+                {
+                    "Candidate": candidate_id,
+                    "Symbol": symbol,
+                    "Safe Like": symbol in SAFE_LIKE_SYMBOLS,
+                    "Held Days": int(symbol_held.sum()),
+                    "Held Day Rate": float(symbol_held.mean()),
+                    "Average Weight When Held": float(symbol_weight.loc[symbol_held].mean()),
+                    "Max Weight": float(symbol_weight.max()),
+                    "Median Dollar Volume": float(symbol_dollar_volume.median()),
+                    "Worst Dollar Volume": float(symbol_dollar_volume.min()),
+                    "Low Liquidity Day Rate": float(symbol_dollar_volume.lt(threshold).sum() / int(symbol_held.sum())),
+                }
+            )
+
+    return {
+        "liquidity_summary": pd.DataFrame(summary_rows),
+        "liquidity_symbol_summary": pd.DataFrame(symbol_rows),
+    }
+
+
+def _numeric_value(row: pd.Series, column: str) -> float:
+    value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) else float("nan")
+
+
+def _live_readiness_gate_reason(
+    *,
+    research_gate_passed: bool,
+    long_cagr_gate: bool,
+    long_drawdown_gate: bool,
+    turnover_gate: bool,
+    calendar_win_gate: bool,
+    rolling_3y_win_gate: bool,
+    rolling_5y_win_gate: bool,
+    worst_rolling_excess_gate: bool,
+    worst_window_drawdown_gate: bool,
+) -> str:
+    reasons: list[str] = []
+    if not research_gate_passed:
+        reasons.append("research_gate_not_passed")
+    if not long_cagr_gate:
+        reasons.append("long_cagr_not_above_baseline")
+    if not long_drawdown_gate:
+        reasons.append("long_drawdown_worse_than_baseline")
+    if not turnover_gate:
+        reasons.append("turnover_increase_too_high")
+    if not calendar_win_gate:
+        reasons.append("calendar_baseline_win_rate_below_50pct")
+    if not rolling_3y_win_gate:
+        reasons.append("rolling_3y_baseline_win_rate_below_50pct")
+    if not rolling_5y_win_gate:
+        reasons.append("rolling_5y_baseline_win_rate_below_60pct")
+    if not worst_rolling_excess_gate:
+        reasons.append("worst_rolling_excess_vs_baseline_too_low")
+    if not worst_window_drawdown_gate:
+        reasons.append("worst_window_drawdown_worse_than_baseline")
+    return "pass" if not reasons else ";".join(reasons)
+
+
+def _baseline_relative_window_metrics(
+    windows: pd.DataFrame,
+    *,
+    candidate_id: str,
+    baseline_candidate: str,
+    window_type: str,
+) -> dict[str, float | int]:
+    if windows.empty:
+        return {
+            "count": 0,
+            "baseline_cagr_win_rate": float("nan"),
+            "median_excess_cagr_vs_baseline": float("nan"),
+            "worst_excess_cagr_vs_baseline": float("nan"),
+            "worst_drawdown_delta_vs_baseline": float("nan"),
+            "median_turnover_delta_vs_baseline": float("nan"),
+        }
+    typed = windows.loc[windows["Window Type"].eq(window_type)].copy()
+    candidate = typed.loc[typed["Candidate"].eq(candidate_id)].copy()
+    baseline = typed.loc[typed["Candidate"].eq(baseline_candidate)].copy()
+    if candidate.empty or baseline.empty:
+        return {
+            "count": 0,
+            "baseline_cagr_win_rate": float("nan"),
+            "median_excess_cagr_vs_baseline": float("nan"),
+            "worst_excess_cagr_vs_baseline": float("nan"),
+            "worst_drawdown_delta_vs_baseline": float("nan"),
+            "median_turnover_delta_vs_baseline": float("nan"),
+        }
+    columns = ["Window", "CAGR", "Max Drawdown", "Turnover/Year"]
+    merged = candidate[columns].merge(baseline[columns], on="Window", suffixes=("_candidate", "_baseline"))
+    if merged.empty:
+        return {
+            "count": 0,
+            "baseline_cagr_win_rate": float("nan"),
+            "median_excess_cagr_vs_baseline": float("nan"),
+            "worst_excess_cagr_vs_baseline": float("nan"),
+            "worst_drawdown_delta_vs_baseline": float("nan"),
+            "median_turnover_delta_vs_baseline": float("nan"),
+        }
+    for column in (
+        "CAGR_candidate",
+        "CAGR_baseline",
+        "Max Drawdown_candidate",
+        "Max Drawdown_baseline",
+        "Turnover/Year_candidate",
+        "Turnover/Year_baseline",
+    ):
+        merged[column] = pd.to_numeric(merged[column], errors="coerce")
+    excess_cagr = merged["CAGR_candidate"] - merged["CAGR_baseline"]
+    drawdown_delta = merged["Max Drawdown_candidate"] - merged["Max Drawdown_baseline"]
+    turnover_delta = merged["Turnover/Year_candidate"] - merged["Turnover/Year_baseline"]
+    return {
+        "count": int(len(merged)),
+        "baseline_cagr_win_rate": float(excess_cagr.gt(0.0).mean()),
+        "median_excess_cagr_vs_baseline": float(excess_cagr.median()),
+        "worst_excess_cagr_vs_baseline": float(excess_cagr.min()),
+        "worst_drawdown_delta_vs_baseline": float(drawdown_delta.min()),
+        "median_turnover_delta_vs_baseline": float(turnover_delta.median()),
+    }
+
+
+def build_live_readiness_summary(
+    *,
+    period_summary: pd.DataFrame,
+    ranking: pd.DataFrame,
+    robustness_windows: pd.DataFrame,
+    baseline_candidate: str = DEFAULT_LIVE_BASELINE_CANDIDATE,
+) -> pd.DataFrame:
+    periods = pd.DataFrame(period_summary).copy()
+    rank = pd.DataFrame(ranking).copy()
+    windows = pd.DataFrame(robustness_windows).copy()
+    if periods.empty or rank.empty:
+        return pd.DataFrame()
+
+    long_rows = periods.loc[periods["Period"].eq("long")].copy()
+    baseline_long = long_rows.loc[long_rows["Candidate"].eq(baseline_candidate)]
+    baseline_rank = rank.loc[rank["Candidate"].eq(baseline_candidate)]
+    if baseline_long.empty or baseline_rank.empty:
+        return pd.DataFrame()
+
+    baseline_long_row = baseline_long.iloc[0]
+    baseline_rank_row = baseline_rank.iloc[0]
+    baseline_long_cagr = _numeric_value(baseline_long_row, "CAGR")
+    baseline_long_drawdown = _numeric_value(baseline_long_row, "Max Drawdown")
+    baseline_median_turnover = _numeric_value(baseline_rank_row, "median_turnover_per_year")
+
+    candidates = rank.loc[rank["Candidate Group"].eq("liveable_candidate")].copy()
+    if candidates.empty:
+        return pd.DataFrame()
+
+    for column in ("CAGR", "Max Drawdown", "Turnover/Year"):
+        if column in windows.columns:
+            windows[column] = pd.to_numeric(windows[column], errors="coerce")
+
+    rows: list[dict[str, object]] = []
+    for _idx, candidate_rank in candidates.iterrows():
+        candidate_id = str(candidate_rank.get("Candidate"))
+        candidate_long = long_rows.loc[long_rows["Candidate"].eq(candidate_id)]
+        if candidate_long.empty:
+            continue
+        candidate_long_row = candidate_long.iloc[0]
+        candidate_long_cagr = _numeric_value(candidate_long_row, "CAGR")
+        candidate_long_drawdown = _numeric_value(candidate_long_row, "Max Drawdown")
+        candidate_median_turnover = _numeric_value(candidate_rank, "median_turnover_per_year")
+        long_excess_cagr = candidate_long_cagr - baseline_long_cagr
+        long_drawdown_delta = candidate_long_drawdown - baseline_long_drawdown
+        median_turnover_delta = candidate_median_turnover - baseline_median_turnover
+
+        window_metrics = {
+            window_type: _baseline_relative_window_metrics(
+                windows,
+                candidate_id=candidate_id,
+                baseline_candidate=baseline_candidate,
+                window_type=window_type,
+            )
+            for window_type in ("calendar_year", "rolling_3y", "rolling_5y")
+        }
+        rolling_worst_excess = (
+            min(
+                float(window_metrics[window_type]["worst_excess_cagr_vs_baseline"])
+                for window_type in ("rolling_3y", "rolling_5y")
+                if not pd.isna(window_metrics[window_type]["worst_excess_cagr_vs_baseline"])
+            )
+            if any(
+                not pd.isna(window_metrics[window_type]["worst_excess_cagr_vs_baseline"])
+                for window_type in ("rolling_3y", "rolling_5y")
+            )
+            else float("nan")
+        )
+        worst_drawdown_delta = (
+            min(
+                float(window_metrics[window_type]["worst_drawdown_delta_vs_baseline"])
+                for window_type in window_metrics
+                if not pd.isna(window_metrics[window_type]["worst_drawdown_delta_vs_baseline"])
+            )
+            if any(
+                not pd.isna(window_metrics[window_type]["worst_drawdown_delta_vs_baseline"])
+                for window_type in window_metrics
+            )
+            else float("nan")
+        )
+
+        research_gate_passed = bool(candidate_rank.get("research_gate_passed", False))
+        long_cagr_gate = not pd.isna(long_excess_cagr) and long_excess_cagr >= LIVE_MIN_LONG_EXCESS_CAGR_VS_BASELINE
+        long_drawdown_gate = (
+            not pd.isna(long_drawdown_delta) and long_drawdown_delta >= -LIVE_MAX_LONG_DRAWDOWN_DEGRADATION_VS_BASELINE
+        )
+        turnover_gate = (
+            not pd.isna(median_turnover_delta)
+            and median_turnover_delta <= LIVE_MAX_MEDIAN_TURNOVER_INCREASE_VS_BASELINE
+        )
+        calendar_win_rate = float(window_metrics["calendar_year"]["baseline_cagr_win_rate"])
+        rolling_3y_win_rate = float(window_metrics["rolling_3y"]["baseline_cagr_win_rate"])
+        rolling_5y_win_rate = float(window_metrics["rolling_5y"]["baseline_cagr_win_rate"])
+        calendar_win_gate = (
+            not pd.isna(calendar_win_rate) and calendar_win_rate >= LIVE_MIN_CALENDAR_BASELINE_CAGR_WIN_RATE
+        )
+        rolling_3y_win_gate = (
+            not pd.isna(rolling_3y_win_rate) and rolling_3y_win_rate >= LIVE_MIN_ROLLING_3Y_BASELINE_CAGR_WIN_RATE
+        )
+        rolling_5y_win_gate = (
+            not pd.isna(rolling_5y_win_rate) and rolling_5y_win_rate >= LIVE_MIN_ROLLING_5Y_BASELINE_CAGR_WIN_RATE
+        )
+        worst_rolling_excess_gate = (
+            not pd.isna(rolling_worst_excess) and rolling_worst_excess >= LIVE_MIN_WORST_ROLLING_EXCESS_CAGR_VS_BASELINE
+        )
+        worst_window_drawdown_gate = (
+            not pd.isna(worst_drawdown_delta)
+            and worst_drawdown_delta >= -LIVE_MAX_WORST_WINDOW_DRAWDOWN_DEGRADATION_VS_BASELINE
+        )
+        live_gate_passed = bool(
+            research_gate_passed
+            and long_cagr_gate
+            and long_drawdown_gate
+            and turnover_gate
+            and calendar_win_gate
+            and rolling_3y_win_gate
+            and rolling_5y_win_gate
+            and worst_rolling_excess_gate
+            and worst_window_drawdown_gate
+        )
+        rows.append(
+            {
+                "Candidate": candidate_id,
+                "Display Name": candidate_rank.get("Display Name"),
+                "Candidate Group": candidate_rank.get("Candidate Group"),
+                "Rule": candidate_rank.get("Rule"),
+                "Baseline Candidate": baseline_candidate,
+                "research_gate_passed": research_gate_passed,
+                "long_excess_cagr_vs_baseline": long_excess_cagr,
+                "long_drawdown_delta_vs_baseline": long_drawdown_delta,
+                "median_turnover_delta_vs_baseline": median_turnover_delta,
+                "calendar_window_count": int(window_metrics["calendar_year"]["count"]),
+                "calendar_baseline_cagr_win_rate": calendar_win_rate,
+                "calendar_median_excess_cagr_vs_baseline": float(
+                    window_metrics["calendar_year"]["median_excess_cagr_vs_baseline"]
+                ),
+                "rolling_3y_window_count": int(window_metrics["rolling_3y"]["count"]),
+                "rolling_3y_baseline_cagr_win_rate": rolling_3y_win_rate,
+                "rolling_3y_median_excess_cagr_vs_baseline": float(
+                    window_metrics["rolling_3y"]["median_excess_cagr_vs_baseline"]
+                ),
+                "rolling_5y_window_count": int(window_metrics["rolling_5y"]["count"]),
+                "rolling_5y_baseline_cagr_win_rate": rolling_5y_win_rate,
+                "rolling_5y_median_excess_cagr_vs_baseline": float(
+                    window_metrics["rolling_5y"]["median_excess_cagr_vs_baseline"]
+                ),
+                "worst_rolling_excess_cagr_vs_baseline": rolling_worst_excess,
+                "worst_window_drawdown_delta_vs_baseline": worst_drawdown_delta,
+                "live_gate_passed": live_gate_passed,
+                "live_gate_reason": _live_readiness_gate_reason(
+                    research_gate_passed=research_gate_passed,
+                    long_cagr_gate=long_cagr_gate,
+                    long_drawdown_gate=long_drawdown_gate,
+                    turnover_gate=turnover_gate,
+                    calendar_win_gate=calendar_win_gate,
+                    rolling_3y_win_gate=rolling_3y_win_gate,
+                    rolling_5y_win_gate=rolling_5y_win_gate,
+                    worst_rolling_excess_gate=worst_rolling_excess_gate,
+                    worst_window_drawdown_gate=worst_window_drawdown_gate,
+                ),
+                "live_action": "candidate_for_live_promotion_review" if live_gate_passed else "continue_research",
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["live_gate_passed", "long_excess_cagr_vs_baseline"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+
+
+def _weights_by_candidate_from_result(result: Mapping[str, object]) -> dict[str, pd.DataFrame]:
+    return {key.removeprefix("weights_"): value for key, value in result.items() if key.startswith("weights_")}
+
+
+def build_cost_stress_live_readiness_summary(
+    *,
+    price_history: pd.DataFrame,
+    periods: Sequence[tuple[str, str, str | None]],
+    cost_bps_values: Sequence[float],
+    variants: Sequence[GlobalEtfOffensiveVariantSpec] = GLOBAL_ETF_OFFENSIVE_VARIANTS,
+    liveable_composites: Sequence[GlobalEtfLiveableCompositeSpec] = GLOBAL_ETF_LIVEABLE_COMPOSITES,
+    robustness_candidates: Sequence[str] = DEFAULT_ROBUSTNESS_CANDIDATES,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for cost_bps in tuple(dict.fromkeys(float(value) for value in cost_bps_values)):
+        result = run_offensive_research(
+            price_history=price_history,
+            periods=periods,
+            variants=variants,
+            liveable_composites=liveable_composites,
+            turnover_cost_bps=float(cost_bps),
+        )
+        robustness = build_candidate_robustness_diagnostics(
+            price_history=price_history,
+            portfolio_returns=result["portfolio_returns"],
+            weights_by_candidate=_weights_by_candidate_from_result(result),
+            candidate_ids=robustness_candidates,
+        )
+        live_readiness = build_live_readiness_summary(
+            period_summary=result["period_summary"],
+            ranking=result["ranking"],
+            robustness_windows=robustness["robustness_windows"],
+        )
+        if live_readiness.empty:
+            continue
+        live_readiness = live_readiness.copy()
+        live_readiness.insert(0, "turnover_cost_bps", float(cost_bps))
+        frames.append(live_readiness)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def build_ranking(period_summary: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for candidate, frame in period_summary.groupby("Candidate", sort=False):
@@ -1610,8 +2112,24 @@ def run_offensive_research(
     }
 
 
-def write_recommendation(output_dir: Path, *, ranking: pd.DataFrame, period_summary: pd.DataFrame) -> Path:
+def write_recommendation(
+    output_dir: Path,
+    *,
+    ranking: pd.DataFrame,
+    period_summary: pd.DataFrame,
+    live_readiness_summary: pd.DataFrame | None = None,
+    cost_stress_summary: pd.DataFrame | None = None,
+    liquidity_summary: pd.DataFrame | None = None,
+) -> Path:
     path = output_dir / "recommendation.md"
+    live_readiness = pd.DataFrame(live_readiness_summary) if live_readiness_summary is not None else pd.DataFrame()
+    cost_stress = pd.DataFrame(cost_stress_summary) if cost_stress_summary is not None else pd.DataFrame()
+    liquidity = pd.DataFrame(liquidity_summary) if liquidity_summary is not None else pd.DataFrame()
+    live_ready = (
+        live_readiness.loc[live_readiness["live_gate_passed"].astype(bool)].copy()
+        if "live_gate_passed" in live_readiness.columns
+        else pd.DataFrame()
+    )
     live_mask = (
         ranking["live_review_candidate"].astype(bool)
         if "live_review_candidate" in ranking.columns
@@ -1619,9 +2137,43 @@ def write_recommendation(output_dir: Path, *, ranking: pd.DataFrame, period_summ
     )
     live_candidates = ranking.loc[live_mask].copy()
     top_candidates = ranking.loc[ranking["paper_review_candidate"].astype(bool)].copy()
-    if not live_candidates.empty:
+    if not cost_stress.empty and "turnover_cost_bps" in cost_stress.columns:
+        cost_stress["turnover_cost_bps"] = pd.to_numeric(cost_stress["turnover_cost_bps"], errors="coerce")
+        costs = sorted(float(value) for value in cost_stress["turnover_cost_bps"].dropna().unique())
+        passed = (
+            cost_stress.loc[cost_stress["live_gate_passed"].astype(bool)].copy()
+            if "live_gate_passed" in cost_stress.columns
+            else pd.DataFrame()
+        )
+        max_cost = max(costs) if costs else float("nan")
+        max_cost_passed = (
+            passed.loc[passed["turnover_cost_bps"].eq(max_cost)].copy() if not passed.empty else pd.DataFrame()
+        )
+        if not max_cost_passed.empty:
+            names = ", ".join(max_cost_passed.head(3)["Candidate"].astype(str).tolist())
+            recommendation = (
+                f"进入 live promotion review，但不自动替换 live；"
+                f"在最高成本压力 {max_cost:.2f} bps 下优先复核候选：{names}。"
+            )
+        elif not passed.empty:
+            highest_pass_cost = float(passed["turnover_cost_bps"].max())
+            names = ", ".join(
+                passed.loc[passed["turnover_cost_bps"].eq(highest_pass_cost)].head(3)["Candidate"].astype(str).tolist()
+            )
+            recommendation = (
+                f"成本压力未全通过，不自动替换 live；最高通过成本 {highest_pass_cost:.2f} bps，"
+                f"该成本下候选：{names}。需要先确认实盘成本假设。"
+            )
+        else:
+            recommendation = "成本压力下无候选通过 live gate；暂不迁移到 live，继续研究。"
+    elif not live_ready.empty:
+        names = ", ".join(live_ready.head(3)["Candidate"].astype(str).tolist())
+        recommendation = f"进入 live promotion review，但不自动替换 live；优先复核候选：{names}。"
+    elif not live_candidates.empty:
         names = ", ".join(live_candidates.head(3)["Candidate"].astype(str).tolist())
-        recommendation = f"进入 live design review，但不自动替换 live；优先复核候选：{names}。"
+        recommendation = (
+            f"进入 live design review，但 baseline-relative live gate 未通过，不自动替换 live；优先复核候选：{names}。"
+        )
     elif top_candidates.empty:
         recommendation = "暂不迁移到 live；保留当前 defensive baseline，进攻型候选继续 paper review 或补充样本。"
     else:
@@ -1656,10 +2208,29 @@ def write_recommendation(output_dir: Path, *, ranking: pd.DataFrame, period_summ
         ranking.head(10).to_csv(index=False).strip(),
         "```",
         "",
+        "## Live Readiness Preview",
+        "",
+        "```csv",
+        live_readiness.head(10).to_csv(index=False).strip() if not live_readiness.empty else "",
+        "```",
+        "",
+        "## Cost Stress Preview",
+        "",
+        "```csv",
+        cost_stress.head(20).to_csv(index=False).strip() if not cost_stress.empty else "",
+        "```",
+        "",
+        "## Liquidity Preview",
+        "",
+        "```csv",
+        liquidity.head(10).to_csv(index=False).strip() if not liquidity.empty else "",
+        "```",
+        "",
         "## Boundary",
         "",
-        "This is a research-only output. `live_design_review` only means the deterministic rule is worth manual "
-        "review; it does not change the live `global_etf_rotation` manifest or runtime behavior.",
+        "This is a research-only output. `live_design_review` and `live_promotion_review` only mean the "
+        "deterministic rule is worth manual review; they do not change the live `global_etf_rotation` manifest "
+        "or runtime behavior.",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1687,6 +2258,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=",".join(DEFAULT_ROBUSTNESS_CANDIDATES),
         help="Comma-separated candidate IDs for calendar-year and rolling robustness diagnostics.",
     )
+    parser.add_argument(
+        "--cost-stress-bps",
+        help=(
+            "Optional comma-separated turnover cost bps values. When provided, writes "
+            "cost_stress_live_readiness_summary.csv without emitting full per-cost weight files."
+        ),
+    )
+    parser.add_argument("--liquidity-dollar-volume-window", type=int, default=DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW)
+    parser.add_argument("--low-liquidity-dollar-volume", type=float, default=DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME)
     parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -1716,17 +2296,47 @@ def main(argv: list[str] | None = None) -> int:
     robustness = build_candidate_robustness_diagnostics(
         price_history=prices,
         portfolio_returns=result["portfolio_returns"],
-        weights_by_candidate={
-            key.removeprefix("weights_"): value for key, value in result.items() if key.startswith("weights_")
-        },
+        weights_by_candidate=_weights_by_candidate_from_result(result),
         candidate_ids=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
     )
     robustness["robustness_windows"].to_csv(output_dir / "candidate_robustness_windows.csv", index=False)
     robustness["robustness_summary"].to_csv(output_dir / "candidate_robustness_summary.csv", index=False)
+    live_readiness_summary = build_live_readiness_summary(
+        period_summary=result["period_summary"],
+        ranking=result["ranking"],
+        robustness_windows=robustness["robustness_windows"],
+    )
+    live_readiness_summary.to_csv(output_dir / "live_readiness_summary.csv", index=False)
+    liquidity = build_candidate_liquidity_diagnostics(
+        price_history=prices,
+        weights_by_candidate=_weights_by_candidate_from_result(result),
+        candidate_ids=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
+        dollar_volume_window=int(args.liquidity_dollar_volume_window),
+        low_liquidity_dollar_volume=float(args.low_liquidity_dollar_volume),
+    )
+    liquidity["liquidity_summary"].to_csv(output_dir / "candidate_liquidity_summary.csv", index=False)
+    liquidity["liquidity_symbol_summary"].to_csv(output_dir / "candidate_liquidity_symbol_summary.csv", index=False)
+    cost_stress_bps = _parse_float_list(args.cost_stress_bps)
+    cost_stress = pd.DataFrame()
+    if cost_stress_bps:
+        cost_stress = build_cost_stress_live_readiness_summary(
+            price_history=prices,
+            periods=periods,
+            cost_bps_values=cost_stress_bps,
+            robustness_candidates=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
+        )
+        cost_stress.to_csv(output_dir / "cost_stress_live_readiness_summary.csv", index=False)
     for key, value in result.items():
         if key.startswith("weights_"):
             pd.DataFrame(value).to_csv(output_dir / f"{key}.csv")
-    write_recommendation(output_dir, ranking=result["ranking"], period_summary=result["period_summary"])
+    write_recommendation(
+        output_dir,
+        ranking=result["ranking"],
+        period_summary=result["period_summary"],
+        live_readiness_summary=live_readiness_summary,
+        cost_stress_summary=cost_stress,
+        liquidity_summary=liquidity["liquidity_summary"],
+    )
     manifest = {
         "research": "global_etf_offensive_rotation",
         "periods": [{"name": name, "start": start, "end": end} for name, start, end in periods],
