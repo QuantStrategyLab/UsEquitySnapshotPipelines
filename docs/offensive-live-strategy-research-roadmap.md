@@ -2018,6 +2018,39 @@ live-decay has not been recomputed in this pass. The builder above is now in
 place to generate the monitor automatically when the Russell promotion artifact
 directory is present in monthly output.
 
+### Phase 19: Cross-sleeve live-strategy research expansion
+
+Goal: keep expanding the live-strategy design space without reopening broad
+parameter mining. The detailed pre-registration source for the next idea batch is
+`docs/live-strategy-research-expansion-20260620.md`.
+
+The next candidates are intentionally split into diagnostics and independent
+satellites:
+
+1. Russell residual/industry-aware diagnostics explain whether the current
+   leader-rotation edge is mostly sector crowding or stock-specific leadership;
+   they do not replace the fixed Top4 / 25-75 / 50-50 matrix by default.
+2. Russell sleeve-level volatility/crash brakes may only affect the aggressive
+   Top2 sleeve, not the whole portfolio.
+3. Global ETF offensive work stays constrained to four small-sleeve variants;
+   the defensive baseline remains the live line unless a candidate passes
+   baseline-relative OOS and cost gates.
+4. IBIT Smart DCA needs a strategy-side backtest that proves BOXX/parking sleeves
+   can fund scheduled buys with plugin disabled, and that the dynamic z-score
+   plugin adds positive net value before any default enablement.
+5. Multi-sleeve portfolio review is allowed only after each sleeve passes its own
+   promotion artifact; portfolio weights must be fixed and pre-registered.
+
+The first code step for this phase is now `useq-research-ibit-smart-dca`,
+which turns the existing deterministic `ibit_zscore_exit` plugin into a
+replayable strategy-consumption backtest while preserving the rule that plugins
+only produce signals and strategies own portfolio construction. It includes a
+BOXX/parking-only baseline, buy-only DCA baseline, optional BTC-to-IBIT proxy
+backfill, optional yfinance price download with BTC-USD aliasing, plugin-on
+target-allocation replay, cash-flow adjusted unitized returns, QQQ/SPY
+benchmark-relative metrics, and monthly review bundle discovery.
+
+
 ## Architecture recommendation
 
 ### Current architecture understanding

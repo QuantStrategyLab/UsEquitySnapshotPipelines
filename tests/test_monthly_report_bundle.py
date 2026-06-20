@@ -103,6 +103,46 @@ def _write_strategy_health_error(root: Path) -> None:
     (output_dir / "strategy_health_error.md").write_text("# Health Error\n", encoding="utf-8")
 
 
+def _write_ibit_dca_research_manifest(root: Path) -> None:
+    output_dir = root / "ibit_smart_dca_research"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        output_dir / "ibit_dca_research_manifest.json",
+        {
+            "manifest_type": "ibit_smart_dca_research",
+            "artifact_schema_version": "ibit_smart_dca_research.v1",
+            "inputs": {
+                "config": {
+                    "ibit_symbol": "IBIT",
+                    "parking_symbol": "BOXX",
+                    "primary_benchmark": "QQQ",
+                    "secondary_benchmark": "SPY",
+                    "btc_proxy_symbol": "BTC",
+                    "contribution_amount": 500.0,
+                },
+                "proxy": {
+                    "btc_proxy_symbol": "BTC",
+                    "proxy_rows_filled": 2500,
+                    "proxy_scale_source": "first_actual_ibit_close",
+                },
+                "variants": ["parking_only", "buy_only_dca", "plugin_on"],
+            },
+            "row_counts": {
+                "ibit_dca_period_summary": 3,
+                "ibit_dca_trade_ledger": 24,
+                "ibit_dca_signal_consumption": 18,
+                "ibit_dca_live_readiness_summary": 3,
+            },
+            "artifacts": {
+                "ibit_dca_period_summary": {"path": "ibit_dca_period_summary.csv"},
+                "ibit_dca_trade_ledger": {"path": "ibit_dca_trade_ledger.csv"},
+                "ibit_dca_signal_consumption": {"path": "ibit_dca_signal_consumption.csv"},
+                "ibit_dca_live_readiness_summary": {"path": "ibit_dca_live_readiness_summary.csv"},
+            },
+        },
+    )
+
+
 def test_build_bundle_collects_profile_summaries_from_downloaded_artifacts(tmp_path: Path) -> None:
     for contract in list_scheduled_profile_contracts():
         _write_profile_artifacts(tmp_path, contract.profile)
@@ -207,6 +247,29 @@ def test_build_bundle_includes_live_strategy_health_errors(tmp_path: Path) -> No
     assert "Live Strategy Health Build Errors" in markdown
     assert "bad return matrix" in markdown
     assert "do not permit automated strategy removal" in markdown
+
+
+def test_build_bundle_includes_ibit_dca_research_manifests(tmp_path: Path) -> None:
+    for contract in list_scheduled_profile_contracts():
+        _write_profile_artifacts(tmp_path, contract.profile)
+    _write_ibit_dca_research_manifest(tmp_path)
+
+    bundle = build_bundle(tmp_path, report_month="2026-06")
+    markdown = render_ai_review_input(bundle)
+    summary = render_job_summary(bundle)
+
+    assert bundle["status"] == "ok"
+    assert bundle["ibit_dca_research_count"] == 1
+    assert bundle["ibit_dca_research_problem_count"] == 0
+    research = bundle["ibit_dca_research_reports"][0]
+    assert research["manifest_type"] == "ibit_smart_dca_research"
+    assert research["variants"] == ["parking_only", "buy_only_dca", "plugin_on"]
+    assert research["parking_symbol"] == "BOXX"
+    assert research["btc_proxy_symbol"] == "BTC"
+    assert research["proxy_rows_filled"] == 2500
+    assert "IBIT Smart DCA Research" in markdown
+    assert "`parking_only, buy_only_dca, plugin_on`" in markdown
+    assert "IBIT DCA research reports: `1`" in summary
 
 
 def test_monthly_review_scripts_e2e_include_health_reports_and_errors(tmp_path: Path) -> None:
