@@ -40,6 +40,14 @@ Actionable implication for this repo:
 
 Daniel and Moskowitz show that momentum crashes are partly forecastable and occur in panic states after market declines, when volatility is high, and alongside rebounds. Source: https://www.nber.org/system/files/working_papers/w20439/w20439.pdf
 
+Barroso and Santa-Clara show that momentum risk is time-varying and that risk-managed
+momentum can materially reduce crash exposure. Source:
+https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2041429
+
+Moreira and Muir show that volatility-managed portfolios often improve factor
+Sharpe ratios by reducing exposure when volatility is high. Source:
+https://www.nber.org/papers/w22208
+
 Actionable implication:
 
 - A crash brake should not be a generic all-weather cash filter.
@@ -159,6 +167,11 @@ state, tokens, or per-account private notes in the archived row.
 
 Goal: prove the fixed-blend candidates are not only full-sample winners.
 
+Additional source-data risk: FTSE Russell announced that Russell US Indexes move
+from annual to semi-annual reconstitution in 2026, with the June 2026 newly
+reconstituted indexes taking effect after the US close on June 26, 2026. Source:
+https://www.lseg.com/en/ftse-russell/russell-reconstitution
+
 Minimal tests:
 
 - rolling 3Y/5Y gate already exists; add a walk-forward summary with fixed candidates only;
@@ -167,6 +180,34 @@ Minimal tests:
 - source-lag sensitivity: 21, 42 trading-day lag.
 
 Do not add new strategy formulas in this phase.
+
+Implemented stress artifact:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_stress_readiness \
+  --prices data/output/russell_top50_product_data_full/prices.csv \
+  --universe data/output/russell_top50_product_data_full/universe.csv \
+  --output-dir data/output/russell_top50_product_data_full_stress_readiness_YYYYMMDD \
+  --turnover-cost-bps-values 5,10,15,25 \
+  --universe-lag-days-values 21,42 \
+  --min-adv20-usd-values 20000000 \
+  --rolling-window-years 3,5
+```
+
+Outputs:
+
+- `stress_live_readiness_detail.csv`: one row per fixed candidate and stress
+  scenario.
+- `stress_live_readiness_summary.csv`: one row per fixed candidate with
+  all-scenario pass/fail, worst drawdown, worst rolling drawdown, minimum
+  rolling benchmark excess, maximum turnover, maximum cost stress, maximum source
+  lag, and maximum ADV floor.
+
+Promotion rule: a candidate may move from research artifact to live-design
+review only if it still passes across the pre-registered cost/source-lag/ADV
+stress matrix. This is a stricter check than the single baseline
+`live_readiness_summary.csv` and should be archived alongside the monthly
+snapshot manifest.
 
 ### Phase 3: Momentum-crash brake research only
 
