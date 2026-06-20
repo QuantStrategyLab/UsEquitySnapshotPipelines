@@ -1183,8 +1183,8 @@ Interpretation:
 
 Next research step:
 
-- If we want stricter statistical validation, implement Hansen SPA over the same
-  daily return panel rather than tuning more strategy thresholds.
+- If we want stricter statistical validation, run the SPA-style diagnostic over
+  the same daily return panel rather than tuning more strategy thresholds.
 - If we want better live confidence before more statistics, expand PIT history or
   add execution/liquidity participation diagnostics; both are more useful than
   another overlay threshold grid.
@@ -1313,6 +1313,7 @@ Implementation:
   - `overfit_promotion_gate_summary.csv`;
   - `liquidity_summary.csv`;
   - optional QQQ/SPY `reality_check_candidate_summary.csv` files.
+  - optional QQQ/SPY `spa_candidate_summary.csv` files.
 - Output:
   - `live_promotion_review.csv`.
 
@@ -1323,9 +1324,9 @@ Required gates:
 3. overfit/OOS blocker gate;
 4. liquidity participation gate for the chosen NAV/execution-days assumption.
 
-The Reality Check result is treated as statistical support, not as a hard live
-gate. A candidate that fails any required gate stays research-only even if it
-wins the bootstrap diagnostic.
+Reality Check and SPA-style results are treated as statistical support, not as
+hard live gates. A candidate that fails any required gate stays research-only
+even if it wins one or both bootstrap diagnostics.
 
 Command template:
 
@@ -1338,6 +1339,8 @@ PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_p
   --liquidity-summary data/output/russell_top50_fixed_liquidity_YYYYMMDD/liquidity_summary.csv \
   --reality-check-qqq data/output/russell_top50_fixed_reality_check_YYYYMMDD/reality_check_candidate_summary.csv \
   --reality-check-spy data/output/russell_top50_fixed_reality_check_spy_YYYYMMDD/reality_check_candidate_summary.csv \
+  --spa-qqq data/output/russell_top50_fixed_spa_YYYYMMDD/spa_candidate_summary.csv \
+  --spa-spy data/output/russell_top50_fixed_spa_spy_YYYYMMDD/spa_candidate_summary.csv \
   --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
   --portfolio-nav 5000000 \
   --output-dir data/output/russell_top50_live_promotion_review_YYYYMMDD
@@ -1369,6 +1372,33 @@ Integrated review result at `$5,000,000` NAV with one-day execution:
 | `base_top4_cap25` | 39.64% | -27.28% | pass | not Reality Check winner | fallback live-design review |
 | `panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50` | 46.30% | -30.64% | fail | not Reality Check winner | research-only |
 
+After Phase 14, the same review can also consume SPA-style support files. If
+both Reality Check and SPA-style diagnostics support the same QQQ/SPY winner,
+`statistical_support_level` becomes
+`qqq_and_spy_reality_check_and_spa`. This changes the statistical evidence
+label only; it does not change `required_gates_passed`.
+
+2026-06-20 SPA-integrated rerun:
+
+- Product-data input:
+  `data/output/russell_top50_product_data_full_20260620_spa_rerun`;
+- fixed-candidate concentration output:
+  `data/output/russell_top50_fixed_concentration_spa_20260620_rerun`;
+- era split output:
+  `data/output/russell_top50_era_split_20260620_rerun`;
+- MCS-style output:
+  `data/output/russell_top50_mcs_style_20260620_rerun`;
+- integrated promotion review:
+  `data/output/russell_top50_live_promotion_review_spa_20260620_rerun`.
+
+Result:
+
+| Run | Required gates | Statistical support | Era context | MCS-style context | Recommended action |
+| --- | --- | --- | --- | --- | --- |
+| `blend_top2_50_top4_50` | pass | `qqq_and_spy_reality_check_and_spa` | 3 of 4 eras best CAGR | only confidence-set member | preferred aggressive live-design review |
+| `blend_top2_25_top4_75` | pass | not Reality Check or SPA winner | robust conservative, no best-CAGR era | excluded by best candidate | conservative live-design review |
+| `base_top4_cap25` | pass | not Reality Check or SPA winner | early-era winner and fallback | excluded by best candidate | fallback live-design review |
+
 Integrated review result at `$10,000,000` NAV with two-day execution produced
 the same promotion ordering. Under the stricter one-day execution assumption,
 `blend_top2_50_top4_50` should stay capped around `$5,000,000` NAV or use a
@@ -1385,6 +1415,374 @@ Promotion conclusion:
 - `base_top4_cap25` remains the rollback/fallback design.
 - Panic-rebound overlays, pure Top2, sector-aware ranking, residual/beta
   ranking, and volatility targeting remain research-only.
+
+### Phase 14: SPA-style statistical support diagnostic
+
+Goal: add a stricter frozen-candidate statistical diagnostic than the first
+Reality Check artifact without introducing a new production dependency or
+changing any strategy rule.
+
+Research basis:
+
+- Hansen's Superior Predictive Ability test improves on White's Reality Check by
+  using a studentized statistic and sample-dependent null distribution, making
+  it less sensitive to poor or irrelevant alternatives. Source:
+  https://www.tandfonline.com/doi/abs/10.1198/073500105000000063
+- The `arch.bootstrap.SPA` implementation documents the same practical shape:
+  block bootstrap, studentization, and lower/consistent/upper re-centering
+  p-values. Source:
+  https://arch.readthedocs.io/en/latest/multiple-comparison/generated/arch.bootstrap.SPA.html
+- Hansen, Lunde, and Nason's Model Confidence Set is a useful future direction
+  when the objective changes from “does the best candidate beat a benchmark?”
+  to “which candidates remain statistically indistinguishable from the best?”
+  Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=522382
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_spa_check`, which consumes the same
+  `concentration_variant_daily_returns.csv` artifact as the Reality Check
+  diagnostic.
+- It computes candidate excess returns versus a selected benchmark column,
+  studentizes each candidate, and runs a circular block bootstrap with three
+  re-centering p-values:
+  - lower;
+  - consistent;
+  - upper.
+- Outputs:
+  - `spa_candidate_summary.csv`;
+  - `spa_global_summary.csv`.
+
+Scope limit:
+
+- `diagnostic_scope` is
+  `studentized_spa_style_bootstrap_not_live_gate`.
+- The local implementation is a dependency-free SPA-style diagnostic, not a
+  claim to replace a fully validated econometrics package such as
+  `arch.bootstrap.SPA`.
+- Passing SPA-style support is still not sufficient for live promotion. The
+  required gates remain live-readiness, stress-readiness, overfit/OOS blocker,
+  and liquidity participation.
+
+Command template:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_spa_check \
+  --daily-returns data/output/russell_top50_panic_guard_research_YYYYMMDD/concentration_variant_daily_returns.csv \
+  --output-dir data/output/russell_top50_fixed_spa_YYYYMMDD \
+  --benchmark-column "QQQ Return" \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
+  --bootstrap-iterations 1000 \
+  --block-size 21 \
+  --random-seed 42 \
+  --alpha 0.10
+```
+
+Recommended interpretation:
+
+- Run SPA-style diagnostics separately versus QQQ and SPY for the frozen fixed
+  live-candidate matrix.
+- Treat `SPA Consistent P Value <= 0.10` for `blend_top2_50_top4_50` as
+  additional statistical support, not as a hard gate.
+- Feed the QQQ/SPY SPA outputs into
+  `mega_cap_leader_rotation_promotion_review` through `--spa-qqq` and
+  `--spa-spy` after the daily-return artifact is available.
+- If SPA support disagrees with the Reality Check support, keep the candidate in
+  live-design review only if the required non-statistical gates still pass and
+  document the conflict in the promotion artifact.
+- Do not run SPA over a broad post-hoc parameter grid and then use the winner
+  as a new live candidate. The diagnostic is only credible when the candidate
+  matrix is frozen before the test.
+
+2026-06-20 product-data rerun result:
+
+Both commands used `1,000` bootstrap iterations, a `21` trading-day circular
+block size, random seed `42`, and alpha `0.10`.
+
+Frozen fixed live-candidate matrix versus QQQ:
+
+| Candidate set | Best run | Annualized mean excess | SPA consistent p-value | Pass |
+| --- | --- | ---: | ---: | --- |
+| Top4, `25/75`, `50/50` | `blend_top2_50_top4_50` | 20.88% | 0.0060 | yes |
+
+Frozen fixed live-candidate matrix versus SPY:
+
+| Candidate set | Best run | Annualized mean excess | SPA consistent p-value | Pass |
+| --- | --- | ---: | ---: | --- |
+| Top4, `25/75`, `50/50` | `blend_top2_50_top4_50` | 27.15% | 0.0030 | yes |
+
+Interpretation:
+
+- SPA-style support agrees with the earlier Reality Check support: the frozen
+  fixed-candidate winner is `blend_top2_50_top4_50` versus both QQQ and SPY.
+- This strengthens the statistical-support label for the preferred offensive
+  design but does not remove its drawdown label: historical max drawdown remains
+  about `-31%`.
+- No new live candidate is introduced by this test.
+
+### Phase 15: Pre-registered era/regime split diagnostic
+
+Goal: check whether the fixed live-candidate hierarchy depends on a single
+market phase. This diagnostic consumes the daily return panel and slices results
+into pre-registered eras. It does not add a strategy rule, optimize a parameter,
+or change runtime behavior.
+
+Research basis:
+
+- Regime/subperiod analysis is useful because factor and momentum behavior can
+  change materially across market conditions; a candidate that only works in one
+  regime is weaker live evidence than one that survives multiple regimes.
+  Source: https://insight.factset.com/understanding-regime-changes-for-robustness-in-backtesting
+- Backtest-overfitting research emphasizes that performance should be checked
+  across multiple time partitions and not only through a single full-sample
+  result. Source: https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf
+- Deflated Sharpe Ratio research highlights selection bias and multiple-testing
+  inflation. Source: https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_era_split_diagnostics`.
+- Inputs:
+  - `concentration_variant_daily_returns.csv`;
+  - optional comma-separated era specs in `name:start:end` format;
+  - optional candidate run filter.
+- Outputs:
+  - `era_split_candidate_summary.csv`;
+  - `era_split_promotion_summary.csv`.
+
+Default pre-registered eras:
+
+| Era | Date range | Intent |
+| --- | --- | --- |
+| `2017_2019_early_live_window` | 2017-10-02 to 2019-12-31 | early retained PIT window before the COVID/liquidity regime |
+| `2020_2021_covid_liquidity` | 2020-01-01 to 2021-12-31 | COVID crash and liquidity-led rebound |
+| `2022_bear_rate_shock` | 2022-01-01 to 2022-12-31 | rate-shock bear market |
+| `2023_2026_ai_recovery` | 2023-01-01 to 2026-12-31 | AI/mega-cap recovery window through available data |
+
+Command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_era_split_diagnostics \
+  --daily-returns data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_daily_returns.csv \
+  --output-dir data/output/russell_top50_era_split_20260620_rerun \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
+  --min-observations 60 \
+  --min-best-era-count 2 \
+  --min-positive-qqq-excess-rate 0.75 \
+  --min-positive-spy-excess-rate 0.75 \
+  --min-worst-qqq-excess-cagr -0.10 \
+  --min-worst-spy-excess-cagr -0.03 \
+  --min-worst-max-drawdown -0.35
+```
+
+2026-06-20 product-data rerun result:
+
+| Run | Era count | Best CAGR eras | Positive QQQ excess eras | Positive SPY excess eras | Worst QQQ excess | Worst SPY excess | Worst MaxDD | Action |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_50_top4_50` | 4 | 3 | 3 | 3 | -8.13% | -2.53% | -30.45% | era-supported preferred offensive review |
+| `blend_top2_25_top4_75` | 4 | 0 | 3 | 3 | -7.04% | -1.43% | -28.19% | era-supported conservative review |
+| `base_top4_cap25` | 4 | 1 | 3 | 3 | -6.00% | -0.39% | -27.28% | era-supported fallback review |
+
+Era detail:
+
+| Era | Best fixed candidate | `50/50` CAGR | `50/50` QQQ excess | `50/50` SPY excess | Interpretation |
+| --- | --- | ---: | ---: | ---: | --- |
+| `2017_2019_early_live_window` | `base_top4_cap25` | 11.28% | -8.13% | -2.53% | caveat: offensive blend lagged both benchmarks |
+| `2020_2021_covid_liquidity` | `blend_top2_50_top4_50` | 48.18% | +10.58% | +24.71% | offensive blend led |
+| `2022_bear_rate_shock` | `blend_top2_50_top4_50` | 16.53% | +49.42% | +34.90% | offensive blend led in bear/rate shock |
+| `2023_2026_ai_recovery` | `blend_top2_50_top4_50` | 81.69% | +46.49% | +58.74% | offensive blend led, but also had its worst era drawdown |
+
+Interpretation:
+
+- The era split strengthens the `50/50` preferred-offensive case because it wins
+  `3` of `4` pre-registered eras and passes the broad era robustness thresholds.
+- It also adds an important caveat: the early `2017-2019` window favors Top4,
+  and every fixed candidate underperforms QQQ in that era.
+- `25/75` remains a legitimate conservative design, not because it wins eras,
+  but because it preserves much of the offensive profile with lower drawdown.
+- This diagnostic should be archived as context in promotion review, not used to
+  search for a new era-switching strategy. Do not add a regime switch unless a
+  separately pre-registered rule passes the same live/stress/OOS/statistical
+  checks.
+
+### Phase 16: MCS-style pairwise confidence-set diagnostic
+
+Goal: determine whether the preferred offensive `50/50` candidate is merely the
+highest point estimate or whether its return advantage over `25/75` and Top4 is
+statistically distinguishable enough to justify keeping it as the preferred
+aggressive design.
+
+Research basis:
+
+- Hansen, Lunde, and Nason introduce the Model Confidence Set as a procedure
+  that returns a set of models expected to contain the best model at a chosen
+  confidence level. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=522382
+- Their paper emphasizes that uninformative data can produce a set with many
+  models, while informative data can narrow the set. Source:
+  https://www.kevinsheppard.com/files/teaching/mfe/advanced-econometrics/Hansen_Lunde_Nason.pdf
+- The `arch.bootstrap.MCS` documentation describes the practical interface as a
+  loss matrix plus block bootstrap. Source:
+  https://arch.readthedocs.io/en/stable/multiple-comparison/generated/arch.bootstrap.MCS.html
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_mcs_diagnostics`.
+- Inputs:
+  - `concentration_variant_daily_returns.csv`;
+  - optional candidate run filter.
+- Outputs:
+  - `mcs_style_candidate_summary.csv`;
+  - `mcs_style_pairwise_summary.csv`;
+  - `mcs_style_global_summary.csv`.
+
+Scope limit:
+
+- `diagnostic_scope` is
+  `mcs_style_pairwise_return_confidence_set_not_live_gate`.
+- This is a dependency-free pairwise confidence-set diagnostic, not a full
+  implementation of the Hansen-Lunde-Nason sequential MCS elimination algorithm.
+- It compares candidate daily returns directly. Since all candidates share the
+  same benchmark in the daily-return panel, comparing excess returns would yield
+  the same pairwise differences.
+- MCS-style evidence is context in `live_promotion_review.csv`; it is not a hard
+  required gate.
+
+Command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_mcs_diagnostics \
+  --daily-returns data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_daily_returns.csv \
+  --output-dir data/output/russell_top50_mcs_style_20260620_rerun \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
+  --bootstrap-iterations 1000 \
+  --block-size 21 \
+  --random-seed 42 \
+  --alpha 0.10
+```
+
+2026-06-20 product-data rerun result:
+
+| Best run | Compared run | Annualized advantage | Paired bootstrap p-value | Compared candidate status |
+| --- | --- | ---: | ---: | --- |
+| `blend_top2_50_top4_50` | `blend_top2_25_top4_75` | +2.44% | 0.0260 | excluded by best |
+| `blend_top2_50_top4_50` | `base_top4_cap25` | +4.88% | 0.0260 | excluded by best |
+
+Confidence-set result:
+
+| Run | In MCS-style confidence set | Dominated by best | Recommended action |
+| --- | --- | --- | --- |
+| `blend_top2_50_top4_50` | yes | no | MCS-style best candidate |
+| `blend_top2_25_top4_75` | no | yes | excluded by best |
+| `base_top4_cap25` | no | yes | excluded by best |
+
+Interpretation:
+
+- The MCS-style diagnostic supports the `50/50` candidate as more than a noisy
+  point-estimate winner inside this frozen fixed-candidate set.
+- This reduces the argument for defaulting to `25/75` purely because its
+  drawdown is lower. `25/75` remains the conservative override, not the preferred
+  offensive default.
+- The result does not remove the drawdown caveat. The preferred live label
+  remains aggressive/offensive because `50/50` historical max drawdown is about
+  `-31%`.
+- Do not use this diagnostic to promote broader parameter-grid winners. It is
+  credible only for the already frozen Top4 / 25-75 / 50-50 candidate matrix.
+
+### Phase 17: Promotion review bundle automation
+
+Goal: make the research evidence reproducible through one orchestration command
+after the core backtest, live-readiness, stress, overfit, and liquidity artifacts
+already exist. This avoids manually running separate Reality Check, SPA, era
+split, MCS-style, and promotion-review commands.
+
+Implementation:
+
+- Added `mega_cap_leader_rotation_promotion_bundle`.
+- Inputs:
+  - `concentration_variant_summary.csv`;
+  - `concentration_variant_daily_returns.csv`;
+  - `live_readiness_summary.csv`;
+  - `stress_live_readiness_summary.csv`;
+  - `overfit_promotion_gate_summary.csv`;
+  - `liquidity_summary.csv`.
+- Outputs:
+  - `reality_check_qqq/reality_check_candidate_summary.csv`;
+  - `reality_check_qqq/reality_check_global_summary.csv`;
+  - `reality_check_spy/reality_check_candidate_summary.csv`;
+  - `reality_check_spy/reality_check_global_summary.csv`;
+  - `spa_qqq/spa_candidate_summary.csv`;
+  - `spa_qqq/spa_global_summary.csv`;
+  - `spa_spy/spa_candidate_summary.csv`;
+  - `spa_spy/spa_global_summary.csv`;
+  - `era_split/era_split_candidate_summary.csv`;
+  - `era_split/era_split_promotion_summary.csv`;
+  - `mcs_style/mcs_style_candidate_summary.csv`;
+  - `mcs_style/mcs_style_pairwise_summary.csv`;
+  - `mcs_style/mcs_style_global_summary.csv`;
+  - `live_promotion_review.csv`;
+  - `promotion_bundle_manifest.json`.
+
+Command:
+
+```bash
+uv run useq-research-russell-top50-leader-rotation-promotion-bundle \
+  --summary data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_summary.csv \
+  --daily-returns data/output/russell_top50_fixed_concentration_spa_20260620_rerun/concentration_variant_daily_returns.csv \
+  --live-readiness data/output/russell_top50_live_readiness_spa_20260620_rerun/live_readiness_summary.csv \
+  --stress-summary data/output/russell_top50_stress_readiness_spa_20260620_rerun/stress_live_readiness_summary.csv \
+  --overfit-promotion data/output/russell_top50_overfit_spa_20260620_rerun/overfit_promotion_gate_summary.csv \
+  --liquidity-summary data/output/russell_top50_fixed_liquidity_spa_20260620_rerun/liquidity_summary.csv \
+  --candidate-runs base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50 \
+  --portfolio-nav 5000000 \
+  --bootstrap-iterations 1000 \
+  --block-size 21 \
+  --random-seed 42 \
+  --alpha 0.10 \
+  --output-dir data/output/russell_top50_promotion_bundle_20260620_rerun
+```
+
+2026-06-20 local bundle rerun:
+
+- Output directory:
+  `data/output/russell_top50_promotion_bundle_20260620_rerun`;
+- Script entry point smoke output:
+  `data/output/russell_top50_promotion_bundle_entrypoint_20260620_rerun`;
+- Manifest output smoke:
+  `data/output/russell_top50_promotion_bundle_manifest_20260620_rerun`;
+- Integrated review result stayed unchanged:
+  - `blend_top2_50_top4_50`: required gates pass,
+    `qqq_and_spy_reality_check_and_spa`, MCS-style best candidate, preferred
+    aggressive live-design review;
+  - `blend_top2_25_top4_75`: required gates pass, conservative live-design
+    review;
+  - `base_top4_cap25`: required gates pass, fallback live-design review.
+
+Recommended monthly research flow after this phase:
+
+1. Generate or refresh product-data PIT input and fixed-candidate concentration
+   output.
+2. Generate live-readiness, stress-readiness, overfit, and liquidity artifacts.
+3. Run `useq-research-russell-top50-leader-rotation-promotion-bundle` once.
+4. Archive `promotion_bundle_manifest.json`, `live_promotion_review.csv`, and
+   the nested statistical/context outputs as the operator/research evidence
+   pack.
+
+Manifest:
+
+- `promotion_bundle_manifest.json` has
+  `manifest_type=russell_top50_promotion_bundle` and
+  `artifact_schema_version=russell_top50_promotion_bundle.v1`.
+- It records:
+  - input paths and hashes when the inputs are local files;
+  - candidate runs;
+  - portfolio NAV;
+  - bootstrap configuration;
+  - output artifact paths and SHA256 hashes;
+  - compact review rows with required-gate pass/fail, statistical support,
+    promotion decision, and recommended action.
+
+This bundle is still research-only. It does not enable or change any live
+runtime profile.
 
 ## Architecture recommendation
 
