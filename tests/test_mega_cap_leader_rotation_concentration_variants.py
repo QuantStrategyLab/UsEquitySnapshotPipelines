@@ -178,6 +178,118 @@ def test_concentration_variant_research_can_build_sector_soft_penalty_variants()
     )
 
 
+def test_concentration_variant_research_can_build_residual_beta_variants() -> None:
+    result = run_concentration_variant_research(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-01-03",
+        end_date="2023-11-30",
+        universe_lag_trading_days=1,
+        blend_top2_weights=(0.50,),
+        dynamic_drawdown_thresholds=(),
+        rolling_window_years=(1,),
+        min_adv20_usd=1_000_000.0,
+        min_history_days=100,
+        turnover_cost_bps=0.0,
+        include_residual_momentum_variants=True,
+        residual_momentum_weights=(0.50,),
+        beta_penalty_weights=(0.25,),
+    )
+
+    summary = result["concentration_variant_summary"]
+    assert {
+        "resid0p5_top2_cap50",
+        "resid0p5_top4_cap25",
+        "resid0p5_blend_top2_50_top4_50",
+        "beta0p25_top2_cap50",
+        "beta0p25_top4_cap25",
+        "beta0p25_blend_top2_50_top4_50",
+    }.issubset(set(summary["Run"]))
+    residual_rows = summary.loc[summary["Run"].astype(str).str.startswith("resid0p5_")]
+    beta_rows = summary.loc[summary["Run"].astype(str).str.startswith("beta0p25_")]
+    assert set(residual_rows["Residual Momentum Weight"].dropna().astype(float)) == {0.50}
+    assert set(beta_rows["Beta Penalty Weight"].dropna().astype(float)) == {0.25}
+    assert set(residual_rows["Variant Type"]).issubset({"residual_beta_base_top2", "residual_beta_base_top4", "residual_beta_fixed_blend"})
+
+
+def test_concentration_variant_research_can_build_volatility_managed_variants() -> None:
+    result = run_concentration_variant_research(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-01-03",
+        end_date="2023-11-30",
+        universe_lag_trading_days=1,
+        blend_top2_weights=(0.50,),
+        dynamic_drawdown_thresholds=(),
+        rolling_window_years=(1,),
+        min_adv20_usd=1_000_000.0,
+        min_history_days=100,
+        turnover_cost_bps=0.0,
+        include_volatility_managed_variants=True,
+        vol_target_values=(0.18,),
+        vol_target_window=21,
+        vol_target_min_stock_exposure=0.50,
+    )
+
+    summary = result["concentration_variant_summary"]
+    assert {
+        "voltarget18_min50_top2_cap50",
+        "voltarget18_min50_top4_cap25",
+        "voltarget18_min50_blend_top2_50_top4_50",
+    }.issubset(set(summary["Run"]))
+    vol_rows = summary.loc[summary["Run"].astype(str).str.startswith("voltarget18_min50_")]
+    assert set(vol_rows["Vol Target"].dropna().astype(float)) == {0.18}
+    assert set(vol_rows["Vol Target Window"].dropna().astype(int)) == {21}
+    assert set(vol_rows["Min Stock Exposure"].dropna().astype(float)) == {0.50}
+    assert set(vol_rows["Variant Type"]).issubset(
+        {
+            "volatility_managed_base_top2",
+            "volatility_managed_base_top4",
+            "volatility_managed_fixed_blend",
+        }
+    )
+
+
+def test_concentration_variant_research_can_build_panic_rebound_guard_variants() -> None:
+    result = run_concentration_variant_research(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-01-03",
+        end_date="2023-11-30",
+        universe_lag_trading_days=1,
+        blend_top2_weights=(0.50,),
+        dynamic_drawdown_thresholds=(),
+        rolling_window_years=(1,),
+        min_adv20_usd=1_000_000.0,
+        min_history_days=100,
+        turnover_cost_bps=0.0,
+        include_panic_rebound_guard_variants=True,
+        panic_guard_drawdown_threshold=0.10,
+        panic_guard_rebound_threshold=0.03,
+        panic_guard_vol_threshold=0.25,
+        panic_guard_stock_exposure=0.50,
+    )
+
+    summary = result["concentration_variant_summary"]
+    assert {
+        "panicdd10_ret3_vol25_stock50_top2_cap50",
+        "panicdd10_ret3_vol25_stock50_top4_cap25",
+        "panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50",
+    }.issubset(set(summary["Run"]))
+    panic_rows = summary.loc[summary["Run"].astype(str).str.startswith("panicdd10_ret3_vol25_stock50_")]
+    assert set(panic_rows["Panic Drawdown Threshold"].dropna().astype(float)) == {0.10}
+    assert set(panic_rows["Panic Rebound Threshold"].dropna().astype(float)) == {0.03}
+    assert set(panic_rows["Panic Vol Threshold"].dropna().astype(float)) == {0.25}
+    assert set(panic_rows["Panic Stock Exposure"].dropna().astype(float)) == {0.50}
+    assert set(panic_rows["Variant Type"]).issubset(
+        {
+            "panic_rebound_guard_base_top2",
+            "panic_rebound_guard_base_top4",
+            "panic_rebound_guard_fixed_blend",
+        }
+    )
+
+
 def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
     prices_path = tmp_path / "prices.csv"
     universe_path = tmp_path / "universe.csv"
@@ -217,6 +329,27 @@ def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
             "--include-sector-soft-penalty-variants",
             "--sector-score-penalty-values",
             "0.5",
+            "--include-residual-momentum-variants",
+            "--residual-momentum-weights",
+            "0.5",
+            "--beta-penalty-weights",
+            "0.25",
+            "--include-volatility-managed-variants",
+            "--vol-target-values",
+            "0.18",
+            "--vol-target-window",
+            "21",
+            "--vol-target-min-stock-exposure",
+            "0.5",
+            "--include-panic-rebound-guard-variants",
+            "--panic-guard-drawdown-threshold",
+            "0.10",
+            "--panic-guard-rebound-threshold",
+            "0.03",
+            "--panic-guard-vol-threshold",
+            "0.25",
+            "--panic-guard-stock-exposure",
+            "0.5",
         ]
     )
 
@@ -229,3 +362,7 @@ def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
     assert "blend_top2_50_top4_50" in set(summary["Run"])
     assert "sector_cap1_blend_top2_50_top4_50" in set(summary["Run"])
     assert "sector_penalty0p5_blend_top2_50_top4_50" in set(summary["Run"])
+    assert "resid0p5_blend_top2_50_top4_50" in set(summary["Run"])
+    assert "beta0p25_blend_top2_50_top4_50" in set(summary["Run"])
+    assert "voltarget18_min50_blend_top2_50_top4_50" in set(summary["Run"])
+    assert "panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50" in set(summary["Run"])

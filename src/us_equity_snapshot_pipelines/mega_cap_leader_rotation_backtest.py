@@ -419,17 +419,68 @@ def _compute_window_drawdown(closes: pd.Series) -> float:
     return float(drawdown.min())
 
 
-def _precompute_symbol_feature_history(price_history: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def _rolling_beta(
+    symbol_returns: pd.Series,
+    reference_returns: pd.Series | None,
+    *,
+    window: int = 126,
+) -> pd.Series:
+    if reference_returns is None or reference_returns.dropna().empty:
+        return pd.Series(index=symbol_returns.index, dtype=float)
+    aligned = pd.concat(
+        [symbol_returns.rename("symbol"), reference_returns.rename("reference")],
+        axis=1,
+    ).astype(float)
+    covariance = aligned["symbol"].rolling(int(window)).cov(aligned["reference"])
+    variance = aligned["reference"].rolling(int(window)).var()
+    return covariance / variance.replace(0.0, np.nan)
+
+
+def _precompute_symbol_feature_history(
+    price_history: pd.DataFrame,
+    *,
+    benchmark_symbol: str = BENCHMARK_SYMBOL,
+    broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
+) -> dict[str, pd.DataFrame]:
     feature_history: dict[str, pd.DataFrame] = {}
+    close_matrix, returns_matrix = _build_close_and_returns(price_history)
+    benchmark_symbol = _normalize_symbol(benchmark_symbol)
+    broad_benchmark_symbol = _normalize_symbol(broad_benchmark_symbol)
+    benchmark_returns = returns_matrix[benchmark_symbol] if benchmark_symbol in returns_matrix.columns else None
+    broad_benchmark_returns = (
+        returns_matrix[broad_benchmark_symbol] if broad_benchmark_symbol in returns_matrix.columns else None
+    )
+    benchmark_mom_6m = (
+        close_matrix[benchmark_symbol] / close_matrix[benchmark_symbol].shift(126) - 1.0
+        if benchmark_symbol in close_matrix.columns
+        else pd.Series(index=close_matrix.index, dtype=float)
+    )
+    broad_benchmark_mom_6m = (
+        close_matrix[broad_benchmark_symbol] / close_matrix[broad_benchmark_symbol].shift(126) - 1.0
+        if broad_benchmark_symbol in close_matrix.columns
+        else pd.Series(index=close_matrix.index, dtype=float)
+    )
     for symbol, group in price_history.groupby("symbol", sort=False):
         history = group.sort_values("as_of").reset_index(drop=True).copy()
+        history_index = pd.DatetimeIndex(history["as_of"])
         closes = pd.to_numeric(history["close"], errors="coerce")
         volumes = pd.to_numeric(history["volume"], errors="coerce")
         returns = closes.pct_change(fill_method=None)
         dollar_volume = closes * volumes
         rolling_252_high = closes.rolling(252).max()
+        symbol_key = str(symbol)
+        matrix_returns = (
+            returns_matrix[symbol_key]
+            if symbol_key in returns_matrix.columns
+            else pd.Series(index=close_matrix.index, dtype=float)
+        )
+        beta_126_vs_benchmark = _rolling_beta(matrix_returns, benchmark_returns).reindex(history_index)
+        beta_126_vs_broad_benchmark = _rolling_beta(matrix_returns, broad_benchmark_returns).reindex(history_index)
+        aligned_benchmark_mom_6m = benchmark_mom_6m.reindex(history_index)
+        aligned_broad_benchmark_mom_6m = broad_benchmark_mom_6m.reindex(history_index)
+        mom_6m = closes / closes.shift(126) - 1.0
 
-        feature_history[str(symbol)] = pd.DataFrame(
+        feature_history[symbol_key] = pd.DataFrame(
             {
                 "as_of": history["as_of"],
                 "close": closes,
@@ -437,11 +488,20 @@ def _precompute_symbol_feature_history(price_history: pd.DataFrame) -> dict[str,
                 "adv20_usd": dollar_volume.rolling(20).mean(),
                 "history_days": np.arange(1, len(history) + 1, dtype=int),
                 "mom_3m": closes / closes.shift(63) - 1.0,
-                "mom_6m": closes / closes.shift(126) - 1.0,
+                "mom_6m": mom_6m,
                 "mom_12_1": closes.shift(21) / closes.shift(273) - 1.0,
                 "sma200_gap": closes / closes.rolling(200).mean() - 1.0,
                 "high_252_gap": closes / rolling_252_high - 1.0,
                 "vol_63": returns.rolling(63).std(ddof=0) * np.sqrt(252),
+                "beta_126_vs_benchmark": beta_126_vs_benchmark.to_numpy(),
+                "beta_126_vs_broad_benchmark": beta_126_vs_broad_benchmark.to_numpy(),
+                "resid_mom_6m_vs_benchmark": (
+                    mom_6m.to_numpy() - beta_126_vs_benchmark.to_numpy() * aligned_benchmark_mom_6m.to_numpy()
+                ),
+                "resid_mom_6m_vs_broad_benchmark": (
+                    mom_6m.to_numpy()
+                    - beta_126_vs_broad_benchmark.to_numpy() * aligned_broad_benchmark_mom_6m.to_numpy()
+                ),
             }
         )
     return feature_history
@@ -473,6 +533,10 @@ def _feature_row_at(
         "sma200_gap": float("nan"),
         "high_252_gap": float("nan"),
         "vol_63": float("nan"),
+        "beta_126_vs_benchmark": float("nan"),
+        "beta_126_vs_broad_benchmark": float("nan"),
+        "resid_mom_6m_vs_benchmark": float("nan"),
+        "resid_mom_6m_vs_broad_benchmark": float("nan"),
         "maxdd_126": float("nan"),
         "eligible": False,
     }
@@ -519,6 +583,24 @@ def _feature_row_at(
         "sma200_gap": float(current["sma200_gap"]) if pd.notna(current["sma200_gap"]) else float("nan"),
         "high_252_gap": float(current["high_252_gap"]) if pd.notna(current["high_252_gap"]) else float("nan"),
         "vol_63": float(current["vol_63"]) if pd.notna(current["vol_63"]) else float("nan"),
+        "beta_126_vs_benchmark": (
+            float(current["beta_126_vs_benchmark"]) if pd.notna(current["beta_126_vs_benchmark"]) else float("nan")
+        ),
+        "beta_126_vs_broad_benchmark": (
+            float(current["beta_126_vs_broad_benchmark"])
+            if pd.notna(current["beta_126_vs_broad_benchmark"])
+            else float("nan")
+        ),
+        "resid_mom_6m_vs_benchmark": (
+            float(current["resid_mom_6m_vs_benchmark"])
+            if pd.notna(current["resid_mom_6m_vs_benchmark"])
+            else float("nan")
+        ),
+        "resid_mom_6m_vs_broad_benchmark": (
+            float(current["resid_mom_6m_vs_broad_benchmark"])
+            if pd.notna(current["resid_mom_6m_vs_broad_benchmark"])
+            else float("nan")
+        ),
         "maxdd_126": maxdd_126,
         "eligible": bool(eligible),
     }
@@ -597,6 +679,8 @@ def score_candidates(
     safe_haven: str = SAFE_HAVEN,
     hold_bonus: float = 0.10,
     sector_score_penalty: float = 0.0,
+    residual_momentum_weight: float = 0.0,
+    beta_penalty_weight: float = 0.0,
 ) -> pd.DataFrame:
     frame = pd.DataFrame(snapshot).copy()
     if frame.empty:
@@ -617,19 +701,27 @@ def score_candidates(
         "vol_63",
         "maxdd_126",
     ]
+    extra_feature_columns: list[str] = []
+    if float(residual_momentum_weight) > 0.0:
+        extra_feature_columns.append("resid_mom_6m_vs_benchmark")
+    if float(beta_penalty_weight) > 0.0:
+        extra_feature_columns.append("beta_126_vs_benchmark")
+    for column in [*feature_columns, *extra_feature_columns]:
+        if column not in frame.columns:
+            frame[column] = np.nan
     eligible = frame.loc[
         ~frame["symbol"].isin(excluded)
         & frame["eligible"].astype(bool)
-        & frame[feature_columns].notna().all(axis=1)
+        & frame[[*feature_columns, *extra_feature_columns]].notna().all(axis=1)
     ].copy()
     if eligible.empty:
         return pd.DataFrame(columns=["rank", "symbol", "score", "eligible"])
 
-    for column in feature_columns:
+    for column in [*feature_columns, *extra_feature_columns]:
         eligible[f"z_{column}"] = _zscore(eligible[column])
     eligible["drawdown_abs"] = eligible["maxdd_126"].abs()
     eligible["z_drawdown_abs"] = _zscore(eligible["drawdown_abs"])
-    eligible["score"] = (
+    eligible["score_without_residual_beta"] = (
         eligible["z_mom_6m"] * 0.25
         + eligible["z_mom_3m"] * 0.20
         + eligible["z_rel_mom_6m_vs_benchmark"] * 0.20
@@ -639,11 +731,18 @@ def score_candidates(
         - eligible["z_vol_63"] * 0.025
         - eligible["z_drawdown_abs"] * 0.025
     )
+    eligible["score"] = eligible["score_without_residual_beta"]
+    if float(residual_momentum_weight) > 0.0:
+        eligible["score"] += eligible["z_resid_mom_6m_vs_benchmark"] * float(residual_momentum_weight)
+    if float(beta_penalty_weight) > 0.0:
+        eligible["score"] -= eligible["z_beta_126_vs_benchmark"] * float(beta_penalty_weight)
     if current_holdings_set:
         eligible.loc[eligible["symbol"].isin(current_holdings_set), "score"] += float(hold_bonus)
     eligible["base_score"] = eligible["score"]
     eligible["sector_soft_penalty_count"] = 0
     eligible["sector_score_penalty"] = float(sector_score_penalty)
+    eligible["residual_momentum_weight"] = float(residual_momentum_weight)
+    eligible["beta_penalty_weight"] = float(beta_penalty_weight)
     if float(sector_score_penalty) > 0.0 and "sector" in eligible.columns:
         remaining = eligible.copy()
         selected_frames: list[pd.DataFrame] = []
@@ -673,10 +772,13 @@ def score_candidates(
         "rank",
         "symbol",
         "sector",
+        "score_without_residual_beta",
         "base_score",
         "score",
         "sector_score_penalty",
         "sector_soft_penalty_count",
+        "residual_momentum_weight",
+        "beta_penalty_weight",
         "eligible",
         "close",
         "adv20_usd",
@@ -688,6 +790,10 @@ def score_candidates(
         "high_252_gap",
         "sma200_gap",
         "vol_63",
+        "beta_126_vs_benchmark",
+        "beta_126_vs_broad_benchmark",
+        "resid_mom_6m_vs_benchmark",
+        "resid_mom_6m_vs_broad_benchmark",
         "maxdd_126",
     ]
     return ranked.loc[:, [column for column in output_columns if column in ranked.columns]]
@@ -767,6 +873,8 @@ def build_target_weights(
     max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
     sector_score_penalty: float = 0.0,
+    residual_momentum_weight: float = 0.0,
+    beta_penalty_weight: float = 0.0,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
     hard_defense_exposure: float = 0.20,
@@ -803,6 +911,8 @@ def build_target_weights(
         safe_haven=safe_haven,
         hold_bonus=hold_bonus,
         sector_score_penalty=float(sector_score_penalty),
+        residual_momentum_weight=float(residual_momentum_weight),
+        beta_penalty_weight=float(beta_penalty_weight),
     )
     metadata: dict[str, object] = {
         "regime": regime,
@@ -815,6 +925,8 @@ def build_target_weights(
         "min_position_value_usd": float(min_position_value_usd),
         "max_names_per_sector": _resolve_max_names_per_sector(max_names_per_sector),
         "sector_score_penalty": float(sector_score_penalty),
+        "residual_momentum_weight": float(residual_momentum_weight),
+        "beta_penalty_weight": float(beta_penalty_weight),
         "selected_symbols": (),
     }
     if ranked.empty or stock_exposure <= 0 or effective_top_n <= 0:
@@ -977,6 +1089,8 @@ def run_backtest(
     max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
     sector_score_penalty: float = 0.0,
+    residual_momentum_weight: float = 0.0,
+    beta_penalty_weight: float = 0.0,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
     hard_defense_exposure: float = 0.20,
@@ -1000,7 +1114,11 @@ def run_backtest(
     if prices.empty:
         raise RuntimeError("No usable price history remains inside the selected date range")
 
-    feature_history_by_symbol = _precompute_symbol_feature_history(prices)
+    feature_history_by_symbol = _precompute_symbol_feature_history(
+        prices,
+        benchmark_symbol=benchmark_symbol,
+        broad_benchmark_symbol=broad_benchmark_symbol,
+    )
     close_matrix, returns_matrix = _build_close_and_returns(prices)
     if safe_haven not in close_matrix.columns:
         close_matrix[safe_haven] = 1.0
@@ -1052,6 +1170,8 @@ def run_backtest(
                 max_names_per_sector=max_names_per_sector,
                 hold_bonus=float(hold_bonus),
                 sector_score_penalty=float(sector_score_penalty),
+                residual_momentum_weight=float(residual_momentum_weight),
+                beta_penalty_weight=float(beta_penalty_weight),
                 risk_on_exposure=float(risk_on_exposure),
                 soft_defense_exposure=float(soft_defense_exposure),
                 hard_defense_exposure=float(hard_defense_exposure),
@@ -1096,6 +1216,8 @@ def run_backtest(
                     "min_position_value_usd": metadata.get("min_position_value_usd"),
                     "max_names_per_sector": metadata.get("max_names_per_sector"),
                     "sector_score_penalty": metadata.get("sector_score_penalty"),
+                    "residual_momentum_weight": metadata.get("residual_momentum_weight"),
+                    "beta_penalty_weight": metadata.get("beta_penalty_weight"),
                     "selected_symbols": ",".join(metadata.get("selected_symbols", ())),
                     "turnover": turnover,
                 }
@@ -1209,6 +1331,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Optional soft score penalty per already-selected name in the same sector; disabled when <= 0",
     )
+    parser.add_argument(
+        "--residual-momentum-weight",
+        type=float,
+        default=0.0,
+        help="Optional score weight for QQQ beta-adjusted 6-month residual momentum; disabled when <= 0",
+    )
+    parser.add_argument(
+        "--beta-penalty-weight",
+        type=float,
+        default=0.0,
+        help="Optional score penalty for high 126-day beta versus QQQ; disabled when <= 0",
+    )
     parser.add_argument("--risk-on-exposure", type=float, default=1.0)
     parser.add_argument("--soft-defense-exposure", type=float, default=0.50)
     parser.add_argument("--hard-defense-exposure", type=float, default=0.20)
@@ -1300,6 +1434,8 @@ def main(argv: list[str] | None = None) -> int:
         max_names_per_sector=args.max_names_per_sector,
         hold_bonus=args.hold_bonus,
         sector_score_penalty=args.sector_score_penalty,
+        residual_momentum_weight=args.residual_momentum_weight,
+        beta_penalty_weight=args.beta_penalty_weight,
         risk_on_exposure=args.risk_on_exposure,
         soft_defense_exposure=args.soft_defense_exposure,
         hard_defense_exposure=args.hard_defense_exposure,

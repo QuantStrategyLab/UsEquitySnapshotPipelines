@@ -106,6 +106,38 @@ def test_build_stress_live_readiness_runs_cost_and_lag_matrix() -> None:
     assert "stress_gate_reason" in summary.columns
 
 
+def test_build_stress_live_readiness_can_evaluate_panic_guard_metric_gate() -> None:
+    candidate_run = "panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50"
+    result = build_stress_live_readiness(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2021-02-01",
+        end_date="2023-05-31",
+        turnover_cost_bps_values=(0.0,),
+        universe_lag_days_values=(1,),
+        min_adv20_usd_values=(1_000_000.0,),
+        rolling_window_years=(1,),
+        blend_top2_weights=(0.50,),
+        candidate_runs=(candidate_run,),
+        min_history_days=100,
+        include_panic_rebound_guard_variants=True,
+        panic_guard_drawdown_threshold=0.10,
+        panic_guard_rebound_threshold=0.03,
+        panic_guard_vol_threshold=0.25,
+        panic_guard_stock_exposure=0.50,
+    )
+
+    detail = result["stress_live_readiness_detail"]
+    summary = result["stress_live_readiness_summary"]
+    assert set(detail["Run"]) == {candidate_run}
+    assert {
+        "metric_gate_passed_excluding_research_role",
+        "metric_gate_reason_excluding_research_role",
+    }.issubset(detail.columns)
+    assert set(summary["Run"]) == {candidate_run}
+    assert "all_metric_gates_passed_excluding_research_role" in summary.columns
+
+
 def test_summarize_stress_live_readiness_marks_all_pass_scenarios() -> None:
     detail = pd.DataFrame(
         [
@@ -152,6 +184,8 @@ def test_summarize_stress_live_readiness_marks_all_pass_scenarios() -> None:
     row = summary.iloc[0]
     assert bool(row["all_stress_gates_passed"]) is True
     assert row["stress_gate_reason"] == "pass"
+    assert bool(row["all_metric_gates_passed_excluding_research_role"]) is True
+    assert row["metric_stress_gate_reason"] == "pass"
     assert row["Max Stress Turnover Cost Bps"] == 25.0
     assert row["Max Stress Universe Lag Trading Days"] == 42.0
     assert row["recommended_action"] == "stress_live_design_review"
@@ -186,6 +220,7 @@ def test_stress_readiness_cli_writes_outputs(tmp_path) -> None:
             "1",
             "--min-history-days",
             "100",
+            "--include-panic-rebound-guard-variants",
         ]
     )
 
