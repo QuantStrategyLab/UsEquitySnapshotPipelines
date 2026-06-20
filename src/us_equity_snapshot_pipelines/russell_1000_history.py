@@ -599,7 +599,7 @@ def _build_snapshot_source_url(source_url_fn, as_of_date, holdings_url_template:
 
 def build_monthly_snapshot_request_dates(start_date, end_date=None) -> list[pd.Timestamp]:
     start = pd.Timestamp(start_date).tz_localize(None).normalize()
-    end = pd.Timestamp(end_date or pd.Timestamp.utcnow()).tz_localize(None).normalize()
+    end = pd.Timestamp(end_date or pd.Timestamp.now(tz="UTC")).tz_localize(None).normalize()
     if end < start:
         raise ValueError("end_date must be on or after start_date")
 
@@ -742,7 +742,7 @@ def list_wayback_timestamps(
     to_year: int | None = None,
     limit: int = 200,
 ) -> list[str]:
-    to_year = to_year or pd.Timestamp.utcnow().year
+    to_year = to_year or pd.Timestamp.now(tz="UTC").year
     quoted_url = quote(url, safe="")
     cdx_url = (
         f"{WAYBACK_CDX_API_URL}?url={quoted_url}"

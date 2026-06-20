@@ -41,6 +41,7 @@ jobs:
       CODEX_AUDIT_MODE: ${{ vars.CODEX_AUDIT_MODE || 'review_and_fix' }}
       CODEX_AUDIT_PROVIDER: ${{ vars.CODEX_AUDIT_PROVIDER || 'auto' }}
       CODEX_AUDIT_AUTO_MERGE: ${{ vars.CODEX_AUDIT_AUTO_MERGE || 'false' }}
+      CODEX_AUDIT_REQUIRED_STATUS_CHECKS: ${{ vars.CODEX_AUDIT_REQUIRED_STATUS_CHECKS || 'test' }}
 
     steps:
       - name: Checkout
@@ -50,6 +51,12 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Install monthly review dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "pandas>=2.0"
 
       - name: Resolve source run
         id: source
@@ -73,6 +80,17 @@ jobs:
           gh run download "${{ steps.source.outputs.run_id }}" \
             --repo "${GITHUB_REPOSITORY}" \
             --dir data/output/monthly_review_inputs
+
+      - name: Build live strategy health reports
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_live_strategy_health_reports.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
 
       - name: Build monthly review bundle
         id: bundle
@@ -103,9 +121,65 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Ensure guarded auto-merge labels
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED) && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_AUTO_MERGE)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/sync_codex_auto_merge_labels.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --auto-merge "${CODEX_AUDIT_AUTO_MERGE}" \
+            --summary-file data/output/monthly_report_bundle/codex_auto_merge_label_sync.md
+
+      - name: Check guarded auto-merge readiness
+        id: auto_merge_readiness
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/check_codex_auto_merge_readiness.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --branch "${GITHUB_REF_NAME}" \
+            --auto-merge "${CODEX_AUDIT_AUTO_MERGE}" \
+            --required-status-checks "${CODEX_AUDIT_REQUIRED_STATUS_CHECKS}" \
+            --summary-file data/output/monthly_report_bundle/codex_auto_merge_readiness.md
+
+      - name: Build guarded auto-merge enablement plan
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/plan_codex_auto_merge_enablement.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --branch "${GITHUB_REF_NAME}" \
+            --required-status-checks "${CODEX_AUDIT_REQUIRED_STATUS_CHECKS}" \
+            --output-file data/output/monthly_report_bundle/codex_auto_merge_enablement_plan.md
+
+      - name: Comment guarded auto-merge preflight summary
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/post_codex_auto_merge_preflight_comment.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --issue-number "${{ steps.review_issue.outputs.issue_number }}" \
+            --report-month "${{ steps.bundle.outputs.report_month }}" \
+            --readiness-file data/output/monthly_report_bundle/codex_auto_merge_readiness.md \
+            --label-sync-file data/output/monthly_report_bundle/codex_auto_merge_label_sync.md \
+            --enablement-plan-file data/output/monthly_report_bundle/codex_auto_merge_enablement_plan.md \
+            --output-file data/output/monthly_report_bundle/codex_auto_merge_preflight_comment.md
+
       - name: Detect Codex Audit GitHub App Credentials
         id: codex_review_app_credentials
-        if: success() && env.CODEX_AUDIT_ENABLED != 'false'
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
         env:
           APP_ID: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
@@ -131,6 +205,7 @@ jobs:
           permission-actions: write
 
       - name: Trigger Monthly Review Automation
+        if: success() && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
         env:
           APP_TOKEN: ${{ steps.codex_review_app_token.outputs.token }}
           CODEX_AUDIT_DISPATCH_TOKEN: ${{ secrets.CODEX_AUDIT_DISPATCH_TOKEN }}
@@ -141,7 +216,8 @@ jobs:
           TARGET_REPOSITORY: ${{ env.CODEX_AUDIT_BRIDGE_REPOSITORY }}
           REVIEW_MODE: ${{ env.CODEX_AUDIT_MODE }}
           REVIEW_PROVIDER: ${{ env.CODEX_AUDIT_PROVIDER }}
-          AUTO_MERGE: ${{ env.CODEX_AUDIT_AUTO_MERGE }}
+          AUTO_MERGE_REQUESTED: ${{ env.CODEX_AUDIT_AUTO_MERGE }}
+          AUTO_MERGE_READINESS_OUTCOME: ${{ steps.auto_merge_readiness.outcome || 'skipped' }}
           CODEX_AUDIT_ENABLED_RUNTIME: ${{ env.CODEX_AUDIT_ENABLED }}
         run: |
           set -euo pipefail
@@ -186,6 +262,14 @@ jobs:
               provider = os.environ["REVIEW_PROVIDER"].strip() or "codex"
               if provider not in {"api", "anthropic", "codex", "openai", "auto"}:
                   raise RuntimeError(f"Unsupported Codex audit provider: {provider}")
+              auto_merge_requested = enabled("AUTO_MERGE_REQUESTED")
+              auto_merge_ready = os.environ.get("AUTO_MERGE_READINESS_OUTCOME", "").strip() == "success"
+              auto_merge = auto_merge_requested and auto_merge_ready
+              if auto_merge_requested and not auto_merge_ready:
+                  print(
+                      "Guarded auto-merge was requested, but readiness did not pass; "
+                      "dispatching Codex audit with auto_merge=false."
+                  )
               payload = {
                   "ref": os.environ["CODEX_AUDIT_BRIDGE_REF"],
                   "inputs": {
@@ -194,7 +278,8 @@ jobs:
                       "issue_number": os.environ["ISSUE_NUMBER"],
                       "mode": mode,
                       "provider": provider,
-                      "auto_merge": str(os.environ["AUTO_MERGE"].strip().lower() == "true").lower(),
+                      "auto_merge": str(auto_merge).lower(),
+                      "task": "monthly_snapshot_audit",
                   },
               }
               status = dispatch(
@@ -213,11 +298,13 @@ jobs:
               dispatch_codex()
               raise SystemExit(0)
 
-          raise RuntimeError("Codex audit bridge dispatch is disabled by CODEX_AUDIT_ENABLED=false")
+          print("Codex audit bridge dispatch is disabled by CODEX_AUDIT_ENABLED=false")
           PY
 
       - name: Upload monthly review bundle
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: monthly-snapshot-review-${{ steps.bundle.outputs.report_month }}
+          name: monthly-snapshot-review-${{ steps.bundle.outputs.report_month || 'unknown' }}
           path: data/output/monthly_report_bundle/
+          if-no-files-found: warn
