@@ -7,7 +7,8 @@ This is a research-only track for testing whether an offensive Global ETF profil
 - No live manifest or broker behavior is changed by this research.
 - The current `global_etf_rotation` profile remains the defensive baseline.
 - Offensive candidates are deterministic, rule-based, and backtestable; AI is not part of signal generation.
-- Passing candidates are marked `paper_review_only`, not auto-promoted to live.
+- Passing pure offensive candidates are marked `paper_review_only`, not auto-promoted to live.
+- Passing liveable composites are marked `live_design_review`; this still does not change live runtime by itself.
 
 ## Candidate set
 
@@ -23,6 +24,15 @@ The runner compares:
 8. `offensive_growth_daa_cash_fraction_top2_monthly` — DAA-inspired canary breadth: each bad canary adds a proportional safe-haven sleeve.
 9. `offensive_growth_eaa_daa_cash_fraction_monthly` — combines EAA-style selection with DAA-style proportional canary cash fraction.
 
+Liveable composite candidates are generated only when both child strategies exist in the run:
+
+10. `liveable_blend_baseline80_fast20` — 80% current defensive baseline + 20% fast offensive sleeve.
+11. `liveable_blend_baseline70_fast30` — 70% current defensive baseline + 30% fast offensive sleeve.
+12. `liveable_regime_qqqtrend_baseline70_fast30` — 30% fast offensive sleeve only when QQQ is above its 200-day trend and fast momentum is positive; otherwise 100% defensive baseline.
+13. `liveable_volmanaged_baseline70_fast30` — same QQQ trend gate, but scales the fast sleeve down when 63-day realized QQQ volatility is above 18%.
+
+Composite returns are recomputed from combined daily weights and the raw asset return matrix, then transaction costs are applied to combined-weight turnover. This keeps the composite layer deterministic and avoids treating the child strategy returns as black boxes.
+
 The offensive pool tilts toward QQQ/VUG/IWF/MTUM, tech/semi/software, growth sectors, cyclicals, and selected international beta ETFs. Defensive commodities and low-vol sectors from the live pool are intentionally reduced.
 
 ## Literature scan used for expansion
@@ -32,6 +42,9 @@ The offensive pool tilts toward QQQ/VUG/IWF/MTUM, tech/semi/software, growth sec
 - Keller and Keuning, *Breadth Momentum and the Canary Universe: Defensive Asset Allocation (DAA)*: motivates a separate canary universe and cash fraction governed by bad canaries, instead of all-or-nothing de-risking. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3212862
 - Keller and Keuning, *Hybrid Asset Allocation (HAA)*: motivates replacing bad TopX assets with cash while keeping lower cash fractions than more defensive canary designs. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4346906
 - Antonacci, *Risk Premia Harvesting Through Dual Momentum*: reinforces combining absolute and relative momentum for lower volatility/drawdown than relative-only momentum. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2042750
+- Keller and Keuning, *Protective Asset Allocation (PAA)*: reinforces proportional crash protection rather than only all-in/all-out defensive switching. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2759734
+- Moreira and Muir, *Volatility-Managed Portfolios*: motivates reducing risky exposure when realized volatility is high. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2659431
+- Moskowitz, Ooi, and Pedersen, *Time Series Momentum*: supports using intermediate-horizon trend persistence as a deterministic risk-on/off input. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2089463
 
 ## Gate
 
@@ -139,6 +152,9 @@ The main runner now also writes:
 Default focus candidates are:
 
 - `offensive_growth_fast_top2_monthly`
+- `liveable_blend_baseline80_fast20`
+- `liveable_regime_qqqtrend_baseline70_fast30`
+- `liveable_volmanaged_baseline70_fast30`
 - `live_global_etf_rotation_defensive_baseline`
 
 For the 2010-2026 dataset, `offensive_growth_fast_top2_monthly` diagnostics were:
@@ -166,3 +182,34 @@ Promotion implication:
 - It may be useful as a separate offensive sleeve if the portfolio explicitly accepts multi-year SPY/QQQ underperformance risk.
 - It also trades materially more than the current defensive baseline: rolling 5Y median turnover/year is about 7.01 versus 3.91 for the baseline.
 - It should not replace the current defensive Global ETF profile.
+
+## 2026-06-20 liveable composite expansion
+
+After the robustness split showed that replacing the defensive baseline with the pure fast offensive strategy is too unstable, the next research pass tested deterministic liveable composites. Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --download \
+  --price-start 2010-01-01 \
+  --output-dir data/output/global_etf_liveable_rotation_research_20260620
+```
+
+Data range: 2010-01-04 through 2026-06-18, 35 symbols, 141,232 price rows.
+
+| Rank | Candidate | Gate | Long CAGR | Long excess vs SPY | Long excess vs QQQ | Worst drawdown | Median turnover/year | Action |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | `liveable_blend_baseline70_fast30` | pass | 15.65% | +1.83% | -4.04% | -20.08% | 4.05 | live design review |
+| 2 | `liveable_regime_qqqtrend_baseline70_fast30` | pass | 15.60% | +1.79% | -4.08% | -23.98% | 4.10 | live design review |
+| 3 | `liveable_blend_baseline80_fast20` | pass | 15.41% | +1.60% | -4.27% | -21.12% | 3.74 | live design review |
+| 4 | `liveable_volmanaged_baseline70_fast30` | pass | 15.19% | +1.37% | -4.49% | -23.98% | 4.07 | live design review |
+| 5 | `offensive_growth_fast_top2_monthly` | pass | 15.98% | +2.17% | -3.70% | -28.07% | 6.40 | paper review only |
+| 6 | `live_global_etf_rotation_defensive_baseline` | pass | 14.81% | +0.99% | -4.88% | -23.31% | 3.12 | keep current live |
+
+Composite conclusion:
+
+- The most promising liveable line is `liveable_blend_baseline70_fast30`: it improves long-window CAGR versus the current baseline by about 0.84 percentage points, improves max drawdown by about 3.23 percentage points, and keeps turnover much lower than the pure offensive sleeve.
+- The dynamic QQQ-trend and volatility-managed overlays are valid backtestable rules, but in this run they did not beat the simpler fixed 70/30 sleeve. They remain research candidates, not preferred defaults.
+- Even the best composite should not be auto-promoted yet: calendar-year and rolling robustness still show inconsistent SPY/QQQ outperformance. `live_design_review` means “worth manual strategy-design review,” not “ready for production default.”
+- If this line moves toward live, implement it as a strategy-level sleeve/overlay feature that consumes deterministic child strategy weights. It should not be a plugin: the plugin architecture should continue to produce signals only, while this rule is a transparent, backtestable portfolio construction rule.

@@ -59,6 +59,9 @@ MIN_TRADING_DAYS_PER_PERIOD = 60
 DRAWNDOWN_ADVANTAGE_VS_QQQ = 0.05
 DEFAULT_ROBUSTNESS_CANDIDATES = (
     "offensive_growth_fast_top2_monthly",
+    "liveable_blend_baseline80_fast20",
+    "liveable_regime_qqqtrend_baseline70_fast30",
+    "liveable_volmanaged_baseline70_fast30",
     "live_global_etf_rotation_defensive_baseline",
 )
 DEFAULT_ROLLING_ROBUSTNESS_YEARS = (3, 5)
@@ -92,6 +95,23 @@ class GlobalEtfOffensiveVariantSpec:
     confidence_volatility_gate_enabled: bool = False
     confidence_volatility_window: int = 126
     confidence_volatility_max_ratio: float = 1.3
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class GlobalEtfLiveableCompositeSpec:
+    candidate_id: str
+    display_name: str
+    rule: str
+    base_candidate_id: str
+    overlay_candidate_id: str
+    overlay_weight: float
+    regime_symbol: str = DEFAULT_SECONDARY_BENCHMARK
+    trend_sma_period: int = 200
+    trend_fast_momentum_required: bool = True
+    volatility_window: int = 63
+    target_volatility: float = 0.18
+    min_overlay_weight: float = 0.0
     notes: str = ""
 
 
@@ -232,6 +252,64 @@ GLOBAL_ETF_OFFENSIVE_VARIANTS: tuple[GlobalEtfOffensiveVariantSpec, ...] = (
     ),
 )
 
+GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline80_fast20",
+        display_name="Liveable Blend Baseline 80 / Fast 20",
+        rule="static_blend_baseline80_fast20",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.20,
+        notes=(
+            "Research-only liveable sleeve candidate: keep 80% in current defensive baseline and allocate "
+            "20% to the fast offensive sleeve. Composite returns are recomputed from combined daily weights."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline70_fast30",
+        display_name="Liveable Blend Baseline 70 / Fast 30",
+        rule="static_blend_baseline70_fast30",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.30,
+        notes=(
+            "Research-only liveable sleeve candidate: larger offensive sleeve while retaining the current "
+            "defensive baseline as the core allocation."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_regime_qqqtrend_baseline70_fast30",
+        display_name="Liveable QQQ-Trend Overlay Baseline 70 / Fast 30",
+        rule="qqq_trend_overlay_baseline70_fast30",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.30,
+        regime_symbol=DEFAULT_SECONDARY_BENCHMARK,
+        trend_sma_period=200,
+        notes=(
+            "Research-only liveable overlay: add the 30% fast offensive sleeve only after QQQ is above its "
+            "200-day trend and fast momentum is positive; otherwise hold 100% of the defensive baseline."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_volmanaged_baseline70_fast30",
+        display_name="Liveable Vol-Managed Overlay Baseline 70 / Fast 30",
+        rule="volatility_managed_overlay_baseline70_fast30",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.30,
+        regime_symbol=DEFAULT_SECONDARY_BENCHMARK,
+        trend_sma_period=200,
+        volatility_window=63,
+        target_volatility=0.18,
+        min_overlay_weight=0.05,
+        notes=(
+            "Research-only liveable overlay: monthly QQQ trend gate plus volatility-managed fast sleeve. "
+            "The overlay is capped at 30% and scaled down when 63-day realized QQQ volatility is above 18%."
+        ),
+    ),
+)
+
 
 def _parse_periods(
     raw_periods: str | Sequence[tuple[str, str, str | None]] | None,
@@ -296,6 +374,7 @@ def _normalize_candidate_ids(values: Sequence[str] | str | None) -> tuple[str, .
 
 def collect_required_symbols(
     variants: Sequence[GlobalEtfOffensiveVariantSpec] = GLOBAL_ETF_OFFENSIVE_VARIANTS,
+    composites: Sequence[GlobalEtfLiveableCompositeSpec] = GLOBAL_ETF_LIVEABLE_COMPOSITES,
 ) -> tuple[str, ...]:
     symbols: list[str] = []
     for variant in variants:
@@ -309,6 +388,10 @@ def collect_required_symbols(
             normalized = str(symbol or "").strip().upper()
             if normalized and normalized not in symbols:
                 symbols.append(normalized)
+    for composite in composites:
+        normalized = str(composite.regime_symbol or "").strip().upper()
+        if normalized and normalized not in symbols:
+            symbols.append(normalized)
     return tuple(symbols)
 
 
@@ -900,6 +983,260 @@ def _period_summary_from_result(
     return {"Period": period_name, **summary}
 
 
+def _weight_frame_for_index(weights_history: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
+    weights = pd.DataFrame(weights_history).copy()
+    if weights.empty:
+        return pd.DataFrame(index=index)
+    weights.index = pd.to_datetime(weights.index).tz_localize(None).normalize()
+    weights = weights.sort_index()
+    weights.columns = [str(column).strip().upper() for column in weights.columns]
+    weights = weights.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    return weights.reindex(index).ffill().fillna(0.0)
+
+
+def _monthly_applied_overlay_weight(
+    raw_weight: pd.Series,
+    *,
+    target_index: pd.DatetimeIndex,
+    rebalance_months: Sequence[int] = DEFAULT_MONTHLY_REBALANCE_MONTHS,
+) -> pd.Series:
+    raw = pd.to_numeric(pd.Series(raw_weight), errors="coerce").fillna(0.0)
+    raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
+    decisions = pd.Series(float("nan"), index=raw.index, dtype=float)
+    rebalance_dates = _rebalance_dates(pd.DatetimeIndex(raw.index), rebalance_months)
+    if rebalance_dates:
+        dates = [date for date in sorted(rebalance_dates) if date in raw.index]
+        decisions.loc[dates] = raw.loc[dates].astype(float)
+    applied = decisions.ffill().shift(1)
+    applied = applied.reindex(target_index).ffill().fillna(0.0)
+    return applied.clip(lower=0.0, upper=1.0)
+
+
+def _composite_trend_gate(context: IndicatorContext, spec: GlobalEtfLiveableCompositeSpec) -> pd.Series:
+    symbol = str(spec.regime_symbol).strip().upper()
+    if symbol not in context.close.columns:
+        return pd.Series(False, index=context.close.index)
+    close = pd.to_numeric(context.close[symbol], errors="coerce")
+    sma = close.rolling(int(spec.trend_sma_period), min_periods=int(spec.trend_sma_period)).mean()
+    eligible = close.gt(sma)
+    if spec.trend_fast_momentum_required and symbol in context.fast_momentum.columns:
+        eligible = eligible & pd.to_numeric(context.fast_momentum[symbol], errors="coerce").gt(0.0)
+    return eligible.fillna(False)
+
+
+def _build_composite_overlay_weight(
+    context: IndicatorContext,
+    spec: GlobalEtfLiveableCompositeSpec,
+    *,
+    target_index: pd.DatetimeIndex,
+) -> pd.Series:
+    max_weight = max(0.0, min(1.0, float(spec.overlay_weight)))
+    rule = str(spec.rule).strip().lower()
+    if rule.startswith("static_blend"):
+        return pd.Series(max_weight, index=target_index, dtype=float)
+
+    trend_gate = _composite_trend_gate(context, spec)
+    if rule.startswith("qqq_trend_overlay"):
+        raw_weight = pd.Series(0.0, index=context.close.index, dtype=float)
+        raw_weight.loc[trend_gate] = max_weight
+        return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
+
+    if rule.startswith("volatility_managed_overlay"):
+        symbol = str(spec.regime_symbol).strip().upper()
+        returns = pd.to_numeric(context.returns.get(symbol, pd.Series(index=context.returns.index)), errors="coerce")
+        realized_vol = returns.rolling(int(spec.volatility_window), min_periods=int(spec.volatility_window)).std(
+            ddof=0
+        ) * math.sqrt(252.0)
+        scale = (float(spec.target_volatility) / realized_vol).replace([np.inf, -np.inf], np.nan)
+        raw_weight = max_weight * scale.clip(lower=0.0, upper=1.0).fillna(0.0)
+        if float(spec.min_overlay_weight) > 0.0:
+            raw_weight = raw_weight.where(raw_weight.le(0.0), raw_weight.clip(lower=float(spec.min_overlay_weight)))
+        raw_weight = raw_weight.reindex(context.close.index).fillna(0.0)
+        raw_weight.loc[~trend_gate] = 0.0
+        return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
+
+    raise ValueError(f"unsupported liveable composite rule: {spec.rule}")
+
+
+def _combine_composite_weights(
+    *,
+    base_weights: pd.DataFrame,
+    overlay_weights: pd.DataFrame,
+    overlay_weight: pd.Series,
+) -> pd.DataFrame:
+    index = pd.DatetimeIndex(overlay_weight.index)
+    base = _weight_frame_for_index(base_weights, index)
+    overlay = _weight_frame_for_index(overlay_weights, index)
+    columns = sorted(set(base.columns) | set(overlay.columns))
+    base = base.reindex(columns=columns, fill_value=0.0)
+    overlay = overlay.reindex(columns=columns, fill_value=0.0)
+    sleeve = pd.to_numeric(overlay_weight, errors="coerce").reindex(index).fillna(0.0).clip(lower=0.0, upper=1.0)
+    combined = base.mul(1.0 - sleeve, axis=0).add(overlay.mul(sleeve, axis=0), fill_value=0.0)
+    row_sum = combined.sum(axis=1)
+    valid = row_sum.gt(0.0)
+    combined.loc[valid] = combined.loc[valid].div(row_sum.loc[valid], axis=0)
+    return combined.fillna(0.0)
+
+
+def _composite_signal_history(
+    spec: GlobalEtfLiveableCompositeSpec,
+    *,
+    overlay_weight: pd.Series,
+) -> pd.DataFrame:
+    if overlay_weight.empty:
+        return pd.DataFrame()
+    weight = pd.to_numeric(pd.Series(overlay_weight), errors="coerce").fillna(0.0)
+    changed = weight.diff().abs().gt(1e-9)
+    changed.iloc[0] = bool(abs(float(weight.iloc[0])) > 1e-9)
+    rows: list[dict[str, object]] = []
+    for next_date, sleeve_weight in weight.loc[changed].items():
+        pos = weight.index.get_loc(next_date)
+        as_of = weight.index[max(0, int(pos) - 1)]
+        rows.append(
+            {
+                "candidate_id": spec.candidate_id,
+                "as_of": as_of,
+                "next_date": next_date,
+                "signal_description": spec.rule,
+                "is_emergency": False,
+                "base_candidate_id": spec.base_candidate_id,
+                "overlay_candidate_id": spec.overlay_candidate_id,
+                "overlay_weight": float(sleeve_weight),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_liveable_composite_backtest(
+    *,
+    spec: GlobalEtfLiveableCompositeSpec,
+    context: IndicatorContext,
+    base_weights: pd.DataFrame,
+    overlay_weights: pd.DataFrame,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    turnover_cost_bps: float = DEFAULT_TURNOVER_COST_BPS,
+) -> dict[str, object]:
+    full_start = pd.Timestamp(start_date).normalize() if start_date else context.close.index.min()
+    full_end = pd.Timestamp(end_date).normalize() if end_date else context.close.index.max()
+    target_index = context.returns.index[(context.returns.index >= full_start) & (context.returns.index <= full_end)]
+    target_index = target_index.intersection(pd.DatetimeIndex(base_weights.index)).intersection(
+        pd.DatetimeIndex(overlay_weights.index)
+    )
+    if len(target_index) < 2:
+        raise ValueError(f"not enough child weight history for {spec.candidate_id}")
+
+    overlay_weight = _build_composite_overlay_weight(context, spec, target_index=target_index)
+    combined_weights = _combine_composite_weights(
+        base_weights=base_weights,
+        overlay_weights=overlay_weights,
+        overlay_weight=overlay_weight,
+    )
+    asset_returns = context.returns.reindex(target_index).fillna(0.0)
+    tradable_columns = [column for column in combined_weights.columns if column in asset_returns.columns]
+    gross_returns = (
+        combined_weights.reindex(columns=tradable_columns, fill_value=0.0)
+        .mul(asset_returns.reindex(columns=tradable_columns), axis=0)
+        .sum(axis=1)
+    )
+    turnover = 0.5 * combined_weights.diff().abs().sum(axis=1).fillna(0.0)
+    portfolio_returns = gross_returns - turnover * (float(turnover_cost_bps) / 10_000.0)
+    portfolio_returns.name = spec.candidate_id
+
+    benchmark_returns = context.returns.get(DEFAULT_PRIMARY_BENCHMARK, pd.Series(index=portfolio_returns.index))
+    secondary_benchmark_returns = context.returns.get(
+        DEFAULT_SECONDARY_BENCHMARK, pd.Series(index=portfolio_returns.index)
+    )
+    summary = summarize_returns(
+        portfolio_returns,
+        weights_history=combined_weights,
+        benchmark_returns=benchmark_returns,
+        secondary_benchmark_returns=secondary_benchmark_returns,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    summary.update(
+        {
+            "Candidate": spec.candidate_id,
+            "Display Name": spec.display_name,
+            "Candidate Group": "liveable_candidate",
+            "Rule": spec.rule,
+            "Primary Benchmark Symbol": DEFAULT_PRIMARY_BENCHMARK,
+            "Secondary Benchmark Symbol": DEFAULT_SECONDARY_BENCHMARK,
+            "Safe Haven": DEFAULT_SAFE_HAVEN,
+            "Top N": "",
+            "Rebalance Months": ",".join(str(month) for month in DEFAULT_MONTHLY_REBALANCE_MONTHS),
+            "SMA Period": int(spec.trend_sma_period),
+            "Canary Bad Threshold": "",
+            "Score Mode": "composite",
+            "Canary Mode": "child_strategy",
+            "Safe Fraction Per Bad Canary": "",
+            "Confidence Weighting": "",
+            "Confidence Volatility Gate": "",
+            "Ranking Pool Size": "",
+            "Ranking Pool": f"{spec.base_candidate_id},{spec.overlay_candidate_id}",
+            "Notes": spec.notes,
+        }
+    )
+    return {
+        "summary": summary,
+        "portfolio_returns": portfolio_returns,
+        "weights_history": combined_weights,
+        "turnover_history": turnover,
+        "signal_history": _composite_signal_history(spec, overlay_weight=overlay_weight),
+        "benchmark_returns": benchmark_returns,
+        "secondary_benchmark_returns": secondary_benchmark_returns,
+    }
+
+
+def build_liveable_composite_results(
+    *,
+    context: IndicatorContext,
+    specs: Sequence[GlobalEtfLiveableCompositeSpec],
+    periods: Sequence[tuple[str, str, str | None]],
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    turnover_cost_bps: float,
+) -> dict[str, object]:
+    full_start = _period_start(periods)
+    full_end = _period_end(periods)
+    rows: list[dict[str, object]] = []
+    returns_by_candidate: dict[str, pd.Series] = {}
+    weights_by_composite: dict[str, pd.DataFrame] = {}
+    signal_frames: list[pd.DataFrame] = []
+    for spec in specs:
+        if spec.base_candidate_id not in weights_by_candidate or spec.overlay_candidate_id not in weights_by_candidate:
+            continue
+        result = run_liveable_composite_backtest(
+            spec=spec,
+            context=context,
+            base_weights=weights_by_candidate[spec.base_candidate_id],
+            overlay_weights=weights_by_candidate[spec.overlay_candidate_id],
+            start_date=full_start,
+            end_date=full_end,
+            turnover_cost_bps=turnover_cost_bps,
+        )
+        returns_by_candidate[spec.candidate_id] = pd.Series(result["portfolio_returns"], name=spec.candidate_id)
+        weights_by_composite[spec.candidate_id] = pd.DataFrame(result["weights_history"])
+        signal_history = pd.DataFrame(result.get("signal_history", pd.DataFrame()))
+        if not signal_history.empty:
+            signal_frames.append(signal_history)
+        for period_name, start_date, end_date in periods:
+            rows.append(
+                _period_summary_from_result(
+                    result,
+                    period_name=period_name,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            )
+    return {
+        "period_rows": rows,
+        "returns_by_candidate": returns_by_candidate,
+        "weights_by_candidate": weights_by_composite,
+        "signal_history": pd.concat(signal_frames, ignore_index=True) if signal_frames else pd.DataFrame(),
+    }
+
+
 def _gate_reason(
     *,
     all_periods_available: bool,
@@ -1193,9 +1530,13 @@ def build_ranking(period_summary: pd.DataFrame) -> pd.DataFrame:
     ranking["paper_review_candidate"] = ranking["research_gate_passed"] & ranking["Candidate Group"].eq(
         "offensive_candidate"
     )
+    ranking["live_review_candidate"] = ranking["research_gate_passed"] & ranking["Candidate Group"].eq(
+        "liveable_candidate"
+    )
     ranking["review_action"] = "reject"
     ranking.loc[ranking["Candidate Group"].eq("current_live_baseline"), "review_action"] = "keep_current_live"
     ranking.loc[ranking["paper_review_candidate"], "review_action"] = "paper_review_only"
+    ranking.loc[ranking["live_review_candidate"], "review_action"] = "live_design_review"
     return ranking
 
 
@@ -1204,6 +1545,7 @@ def run_offensive_research(
     price_history: pd.DataFrame,
     periods: Sequence[tuple[str, str, str | None]] = DEFAULT_PERIODS,
     variants: Sequence[GlobalEtfOffensiveVariantSpec] = GLOBAL_ETF_OFFENSIVE_VARIANTS,
+    liveable_composites: Sequence[GlobalEtfLiveableCompositeSpec] = GLOBAL_ETF_LIVEABLE_COMPOSITES,
     turnover_cost_bps: float = DEFAULT_TURNOVER_COST_BPS,
 ) -> dict[str, pd.DataFrame]:
     full_start = _period_start(periods)
@@ -1239,6 +1581,21 @@ def run_offensive_research(
                     end_date=end_date,
                 )
             )
+
+    composite_result = build_liveable_composite_results(
+        context=indicator_context,
+        specs=liveable_composites,
+        periods=periods,
+        weights_by_candidate=weights_by_candidate,
+        turnover_cost_bps=turnover_cost_bps,
+    )
+    rows.extend(composite_result["period_rows"])
+    returns_by_candidate.update(composite_result["returns_by_candidate"])
+    weights_by_candidate.update(composite_result["weights_by_candidate"])
+    composite_signals = pd.DataFrame(composite_result.get("signal_history", pd.DataFrame()))
+    if not composite_signals.empty:
+        signal_frames.append(composite_signals)
+
     period_summary = pd.DataFrame(rows)
     ranking = build_ranking(period_summary)
     portfolio_returns = pd.concat(returns_by_candidate.values(), axis=1) if returns_by_candidate else pd.DataFrame()
@@ -1254,8 +1611,17 @@ def run_offensive_research(
 
 def write_recommendation(output_dir: Path, *, ranking: pd.DataFrame, period_summary: pd.DataFrame) -> Path:
     path = output_dir / "recommendation.md"
+    live_mask = (
+        ranking["live_review_candidate"].astype(bool)
+        if "live_review_candidate" in ranking.columns
+        else pd.Series(False, index=ranking.index)
+    )
+    live_candidates = ranking.loc[live_mask].copy()
     top_candidates = ranking.loc[ranking["paper_review_candidate"].astype(bool)].copy()
-    if top_candidates.empty:
+    if not live_candidates.empty:
+        names = ", ".join(live_candidates.head(3)["Candidate"].astype(str).tolist())
+        recommendation = f"进入 live design review，但不自动替换 live；优先复核候选：{names}。"
+    elif top_candidates.empty:
         recommendation = "暂不迁移到 live；保留当前 defensive baseline，进攻型候选继续 paper review 或补充样本。"
     else:
         names = ", ".join(top_candidates.head(3)["Candidate"].astype(str).tolist())
@@ -1291,7 +1657,8 @@ def write_recommendation(output_dir: Path, *, ranking: pd.DataFrame, period_summ
         "",
         "## Boundary",
         "",
-        "This is a research-only output. It does not change the live `global_etf_rotation` manifest or runtime behavior.",
+        "This is a research-only output. `live_design_review` only means the deterministic rule is worth manual "
+        "review; it does not change the live `global_etf_rotation` manifest or runtime behavior.",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1364,6 +1731,7 @@ def main(argv: list[str] | None = None) -> int:
         "periods": [{"name": name, "start": start, "end": end} for name, start, end in periods],
         "turnover_cost_bps": float(args.turnover_cost_bps),
         "variants": [asdict(variant) for variant in GLOBAL_ETF_OFFENSIVE_VARIANTS],
+        "liveable_composites": [asdict(spec) for spec in GLOBAL_ETF_LIVEABLE_COMPOSITES],
         "outputs": sorted(path.name for path in output_dir.iterdir() if path.is_file()),
     }
     (output_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

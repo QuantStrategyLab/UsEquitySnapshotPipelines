@@ -108,6 +108,114 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertTrue(bool(ranking["paper_review_candidate"].iloc[0]))
         self.assertEqual(ranking["review_action"].iloc[0], "paper_review_only")
 
+    def test_build_ranking_marks_liveable_candidate_for_live_design_review(self) -> None:
+        rows = []
+        for period in ("short", "medium", "long"):
+            rows.append(
+                {
+                    "Period": period,
+                    "Candidate": "liveable_candidate",
+                    "Display Name": "Liveable Candidate",
+                    "Candidate Group": "liveable_candidate",
+                    "Rule": "static_blend",
+                    "Primary Benchmark Symbol": "SPY",
+                    "Secondary Benchmark Symbol": "QQQ",
+                    "Trading Days": 120,
+                    "CAGR": 0.18,
+                    "Sharpe": 1.1,
+                    "Max Drawdown": -0.10,
+                    "Excess CAGR vs Benchmark": 0.04,
+                    "Excess CAGR vs Secondary Benchmark": -0.01,
+                    "Benchmark Max Drawdown": -0.15,
+                    "Secondary Benchmark Max Drawdown": -0.20,
+                    "Turnover/Year": 5.0,
+                }
+            )
+        ranking = research.build_ranking(pd.DataFrame(rows))
+
+        self.assertTrue(bool(ranking["research_gate_passed"].iloc[0]))
+        self.assertTrue(bool(ranking["live_review_candidate"].iloc[0]))
+        self.assertFalse(bool(ranking["paper_review_candidate"].iloc[0]))
+        self.assertEqual(ranking["review_action"].iloc[0], "live_design_review")
+
+    def test_static_liveable_composite_recomputes_returns_from_combined_weights(self) -> None:
+        prices = _price_history()
+        close = research._normalize_price_history(prices)
+        variant = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="context",
+            display_name="Context",
+            candidate_group="offensive_candidate",
+            rule="context",
+            ranking_pool=("AAA", "QQQ"),
+        )
+        context = research._build_indicator_context(close, variants=(variant,))
+        index = pd.DatetimeIndex(context.returns.index[1:])
+        base_weights = pd.DataFrame({"AAA": 1.0}, index=index)
+        overlay_weights = pd.DataFrame({"QQQ": 1.0}, index=index)
+        spec = research.GlobalEtfLiveableCompositeSpec(
+            candidate_id="liveable_test_static",
+            display_name="Liveable Test Static",
+            rule="static_blend_test",
+            base_candidate_id="base",
+            overlay_candidate_id="overlay",
+            overlay_weight=0.25,
+        )
+
+        result = research.run_liveable_composite_backtest(
+            spec=spec,
+            context=context,
+            base_weights=base_weights,
+            overlay_weights=overlay_weights,
+            turnover_cost_bps=0.0,
+        )
+
+        returns = pd.Series(result["portfolio_returns"])
+        expected = 0.75 * context.returns.loc[returns.index, "AAA"] + 0.25 * context.returns.loc[returns.index, "QQQ"]
+        pd.testing.assert_series_equal(returns, expected.rename(spec.candidate_id), check_freq=False)
+        weights = pd.DataFrame(result["weights_history"])
+        self.assertAlmostEqual(float(weights["AAA"].iloc[-1]), 0.75)
+        self.assertAlmostEqual(float(weights["QQQ"].iloc[-1]), 0.25)
+
+    def test_run_offensive_research_adds_liveable_composites_when_children_exist(self) -> None:
+        baseline = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="live_global_etf_rotation_defensive_baseline",
+            display_name="Live Baseline",
+            candidate_group="current_live_baseline",
+            rule="monthly_top1_base",
+            ranking_pool=("AAA",),
+            primary_benchmark_symbol="SPY",
+            secondary_benchmark_symbol="QQQ",
+            safe_haven="BIL",
+            canary_assets=("SPY",),
+            top_n=1,
+            canary_bad_threshold=99,
+        )
+        overlay = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="offensive_growth_fast_top2_monthly",
+            display_name="Fast Overlay",
+            candidate_group="offensive_candidate",
+            rule="monthly_top1_overlay",
+            ranking_pool=("QQQ",),
+            primary_benchmark_symbol="SPY",
+            secondary_benchmark_symbol="QQQ",
+            safe_haven="BIL",
+            canary_assets=("SPY",),
+            top_n=1,
+            canary_bad_threshold=99,
+            score_mode="fast_136w",
+        )
+
+        result = research.run_offensive_research(
+            price_history=_price_history(),
+            periods=(("long", "2024-01-02", None),),
+            variants=(baseline, overlay),
+            turnover_cost_bps=0.0,
+        )
+
+        self.assertIn("liveable_blend_baseline80_fast20", set(result["ranking"]["Candidate"]))
+        self.assertIn("weights_liveable_blend_baseline80_fast20", result)
+        self.assertIn("liveable_blend_baseline80_fast20", result["portfolio_returns"].columns)
+
     def test_build_candidate_robustness_diagnostics_emits_windows_and_summary(self) -> None:
         dates = pd.bdate_range(start="2020-01-02", periods=900)
         portfolio_returns = pd.DataFrame(
