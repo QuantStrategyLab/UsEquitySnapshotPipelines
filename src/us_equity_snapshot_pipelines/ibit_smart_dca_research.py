@@ -9,8 +9,12 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from us_equity_snapshot_pipelines.ibit_zscore_exit_plugin import build_ibit_zscore_exit_signal
-from us_equity_snapshot_pipelines.yfinance_prices import download_price_history
+from us_equity_snapshot_pipelines.ibit_zscore_exit_plugin import (
+    IBIT_ZSCORE_EXIT_SCHEMA_VERSION,
+    PLUGIN_IBIT_ZSCORE_EXIT,
+    build_ibit_zscore_exit_signal,
+)
+from us_equity_snapshot_pipelines.yfinance_prices import download_price_history, normalize_price_field
 
 SCHEMA_VERSION = "ibit_smart_dca_research.v1"
 MANIFEST_TYPE = "ibit_smart_dca_research"
@@ -18,12 +22,15 @@ PARKING_ONLY_VARIANT = "parking_only"
 BUY_ONLY_VARIANT = "buy_only_dca"
 PLUGIN_ON_VARIANT = "plugin_on"
 PLUGIN_DISABLED_ROUTE = "plugin_disabled"
+MIN_ZSCORE_AVAILABLE_SIGNAL_RATIO_FOR_PROMOTION = 0.80
 
 
 @dataclass(frozen=True)
 class IbitDcaResearchConfig:
     ibit_symbol: str = "IBIT"
     parking_symbol: str = "BOXX"
+    parking_proxy_symbol: str = ""
+    price_field: str = "adjusted_close"
     primary_benchmark: str = "QQQ"
     secondary_benchmark: str = "SPY"
     btc_proxy_symbol: str = ""
@@ -60,15 +67,31 @@ def download_ibit_smart_dca_price_history(
     end: str | None = None,
     ibit_symbol: str = "IBIT",
     parking_symbol: str = "BOXX",
+    parking_proxy_symbol: str = "",
+    price_field: str = "adjusted_close",
     primary_benchmark: str = "QQQ",
     secondary_benchmark: str = "SPY",
     btc_proxy_symbol: str = "BTC",
     proxy: str | None = None,
 ) -> pd.DataFrame:
-    symbols = _unique_symbols(ibit_symbol, parking_symbol, primary_benchmark, secondary_benchmark, btc_proxy_symbol)
+    symbols = _unique_symbols(
+        ibit_symbol,
+        parking_symbol,
+        parking_proxy_symbol,
+        primary_benchmark,
+        secondary_benchmark,
+        btc_proxy_symbol,
+    )
     btc_symbol = _normalize_symbol(btc_proxy_symbol)
     symbol_aliases = {btc_symbol: ("BTC-USD",)} if btc_symbol else None
-    return download_price_history(symbols, start=start, end=end, symbol_aliases=symbol_aliases, proxy=proxy)
+    return download_price_history(
+        symbols,
+        start=start,
+        end=end,
+        symbol_aliases=symbol_aliases,
+        proxy=proxy,
+        price_field=price_field,
+    )
 
 
 def _normalize_price_matrix(prices: pd.DataFrame, *, date_column: str = "as_of") -> pd.DataFrame:
@@ -160,6 +183,65 @@ def _apply_ibit_proxy_price(
     frame[ibit_symbol] = ibit
     metadata["proxy_rows_filled"] = int(fill_mask.sum())
     metadata["proxy_scale"] = float(scale)
+    return frame, metadata
+
+
+def _apply_parking_proxy_price(
+    matrix: pd.DataFrame,
+    *,
+    parking_symbol: str,
+    parking_proxy_symbol: str | None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    proxy_symbol = _normalize_symbol(parking_proxy_symbol or "")
+    metadata: dict[str, object] = {
+        "parking_proxy_symbol": proxy_symbol,
+        "parking_proxy_rows_filled": 0,
+        "parking_proxy_scale": float("nan"),
+        "parking_proxy_scale_source": "none",
+        "first_actual_parking_date": "",
+    }
+    if not proxy_symbol or proxy_symbol == parking_symbol:
+        return matrix, metadata
+
+    frame = matrix.copy()
+    parking = (
+        pd.to_numeric(frame[parking_symbol], errors="coerce")
+        if parking_symbol in frame.columns
+        else pd.Series(np.nan, index=frame.index)
+    )
+    actual = parking.dropna()
+    if proxy_symbol not in matrix.columns:
+        if not actual.empty and not bool((frame.index < pd.Timestamp(actual.index[0])).any()):
+            return frame, metadata
+        raise ValueError(f"parking_proxy_symbol {proxy_symbol} is not present in price history")
+
+    proxy = pd.to_numeric(frame[proxy_symbol], errors="coerce")
+    valid_proxy = proxy.dropna()
+    if valid_proxy.empty:
+        raise ValueError(f"parking_proxy_symbol {proxy_symbol} has no valid prices")
+
+    if actual.empty:
+        scale = 100.0 / float(valid_proxy.iloc[0])
+        fill_mask = parking.isna() & proxy.notna()
+        metadata["parking_proxy_scale_source"] = "normalized_100"
+    else:
+        first_actual_date = pd.Timestamp(actual.index[0])
+        proxy_at_inception = proxy.loc[:first_actual_date].dropna()
+        if proxy_at_inception.empty:
+            proxy_at_inception = proxy.loc[first_actual_date:].dropna()
+        if proxy_at_inception.empty:
+            raise ValueError(f"parking_proxy_symbol {proxy_symbol} has no price around first parking date")
+        scale = float(actual.iloc[0]) / float(proxy_at_inception.iloc[-1])
+        fill_mask = parking.isna() & proxy.notna() & (frame.index < first_actual_date)
+        metadata["parking_proxy_scale_source"] = "first_actual_parking_close"
+        metadata["first_actual_parking_date"] = str(first_actual_date.date())
+
+    filled_values = proxy * scale
+    parking = parking.copy()
+    parking.loc[fill_mask] = filled_values.loc[fill_mask]
+    frame[parking_symbol] = parking
+    metadata["parking_proxy_rows_filled"] = int(fill_mask.sum())
+    metadata["parking_proxy_scale"] = float(scale)
     return frame, metadata
 
 
@@ -296,7 +378,41 @@ def _build_plugin_signal(
     config = dict(plugin_config or {})
     config["as_of"] = str(as_of.date())
     config.setdefault("parking_symbol", parking_symbol)
-    return build_ibit_zscore_exit_signal(pd.DataFrame(zscore_history), config)
+    try:
+        signal = build_ibit_zscore_exit_signal(pd.DataFrame(zscore_history), config)
+    except ValueError as exc:
+        if "no valid zscore rows at or before as_of" not in str(exc):
+            raise
+        signal = {
+            "schema_version": IBIT_ZSCORE_EXIT_SCHEMA_VERSION,
+            "as_of": str(as_of.date()),
+            "plugin": PLUGIN_IBIT_ZSCORE_EXIT,
+            "canonical_route": "normal",
+            "suggested_action": "no_action_zscore_unavailable",
+            "would_trade_if_enabled": False,
+            "metrics": {
+                "mvrv_zscore": float("nan"),
+                "zscore_history_rows": 0,
+                "threshold_history_rows": 0,
+                "data_status": "zscore_unavailable",
+            },
+            "thresholds": {},
+            "position_control": {
+                "final_route": "normal",
+                "route_source": "zscore_unavailable",
+                "suggested_action": "no_action_zscore_unavailable",
+                "parking_symbol": parking_symbol,
+                "target_ibit_exposure": 1.0,
+                "target_parking_exposure": 0.0,
+                "target_allocations": {"IBIT": 1.0, parking_symbol: 0.0},
+                "reason_codes": ("zscore_unavailable_before_first_metric",),
+            },
+            "reason_codes": ("zscore_unavailable_before_first_metric",),
+        }
+    metrics = dict(signal.get("metrics", {}))
+    metrics.setdefault("data_status", "available")
+    signal["metrics"] = metrics
+    return signal
 
 
 def _simulate_variant(
@@ -350,24 +466,45 @@ def _simulate_variant(
                 target_parking_exposure = float(signal["position_control"]["target_parking_exposure"])
                 canonical_route = str(signal["canonical_route"])
                 suggested_action = str(signal["suggested_action"])
+                metrics = dict(signal.get("metrics", {}))
+                signal_as_of = str(signal.get("as_of", "") or "")
+                signal_data_status = str(metrics.get("data_status", "") or "available")
+                mvrv_zscore = float(metrics.get("mvrv_zscore", float("nan")))
+                zscore_history_rows_used = int(metrics.get("zscore_history_rows", 0) or 0)
+                threshold_history_rows_used = int(metrics.get("threshold_history_rows", 0) or 0)
             elif variant == PARKING_ONLY_VARIANT:
                 target_ibit_exposure = 0.0
                 target_parking_exposure = 1.0
                 canonical_route = PARKING_ONLY_VARIANT
                 suggested_action = "hold_parking"
+                signal_as_of = str(pd.Timestamp(as_of).date())
+                signal_data_status = "not_applicable"
+                mvrv_zscore = float("nan")
+                zscore_history_rows_used = 0
+                threshold_history_rows_used = 0
             else:
                 target_ibit_exposure = 1.0
                 target_parking_exposure = 0.0
                 canonical_route = PLUGIN_DISABLED_ROUTE
                 suggested_action = "buy_only_dca"
+                signal_as_of = str(pd.Timestamp(as_of).date())
+                signal_data_status = "plugin_disabled"
+                mvrv_zscore = float("nan")
+                zscore_history_rows_used = 0
+                threshold_history_rows_used = 0
 
             signal_rows.append(
                 {
                     "as_of": str(pd.Timestamp(as_of).date()),
+                    "signal_as_of": signal_as_of,
                     "variant": variant,
                     "plugin_enabled": variant == PLUGIN_ON_VARIANT,
                     "canonical_route": canonical_route,
                     "suggested_action": suggested_action,
+                    "signal_data_status": signal_data_status,
+                    "mvrv_zscore": mvrv_zscore,
+                    "zscore_history_rows_used": zscore_history_rows_used,
+                    "threshold_history_rows_used": threshold_history_rows_used,
                     "target_ibit_exposure": float(target_ibit_exposure),
                     "target_parking_exposure": float(target_parking_exposure),
                 }
@@ -476,6 +613,8 @@ def build_ibit_smart_dca_research(
     zscore_history: pd.DataFrame | None = None,
     ibit_symbol: str = "IBIT",
     parking_symbol: str = "BOXX",
+    parking_proxy_symbol: str = "",
+    price_field: str = "adjusted_close",
     primary_benchmark: str = "QQQ",
     secondary_benchmark: str = "SPY",
     btc_proxy_symbol: str = "",
@@ -491,6 +630,8 @@ def build_ibit_smart_dca_research(
     config = IbitDcaResearchConfig(
         ibit_symbol=_normalize_symbol(ibit_symbol),
         parking_symbol=_normalize_symbol(parking_symbol),
+        parking_proxy_symbol=_normalize_symbol(parking_proxy_symbol),
+        price_field=normalize_price_field(price_field),
         primary_benchmark=_normalize_symbol(primary_benchmark),
         secondary_benchmark=_normalize_symbol(secondary_benchmark),
         btc_proxy_symbol=_normalize_symbol(btc_proxy_symbol),
@@ -506,6 +647,10 @@ def build_ibit_smart_dca_research(
     matrix, proxy_metadata = _apply_ibit_proxy_price(
         matrix, ibit_symbol=config.ibit_symbol, btc_proxy_symbol=config.btc_proxy_symbol
     )
+    matrix, parking_proxy_metadata = _apply_parking_proxy_price(
+        matrix, parking_symbol=config.parking_symbol, parking_proxy_symbol=config.parking_proxy_symbol
+    )
+    proxy_metadata.update(parking_proxy_metadata)
     variants = [PARKING_ONLY_VARIANT, BUY_ONLY_VARIANT]
     if config.plugin_enabled:
         variants.append(PLUGIN_ON_VARIANT)
@@ -604,7 +749,9 @@ def build_ibit_smart_dca_research(
     return {
         "ibit_dca_period_summary": period_summary,
         "ibit_dca_trade_ledger": pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame(),
-        "ibit_dca_holdings_ledger": pd.concat(holdings_frames, ignore_index=True) if holdings_frames else pd.DataFrame(),
+        "ibit_dca_holdings_ledger": pd.concat(holdings_frames, ignore_index=True)
+        if holdings_frames
+        else pd.DataFrame(),
         "ibit_dca_signal_consumption": pd.concat(signal_frames, ignore_index=True) if signal_frames else pd.DataFrame(),
         "ibit_dca_live_readiness_summary": pd.DataFrame(readiness_rows),
         "manifest_inputs": {
@@ -675,6 +822,26 @@ def build_ibit_dca_review_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         str(route): int(count)
         for route, count in plugin_signals.get("canonical_route", pd.Series(dtype=str)).value_counts().items()
     }
+    data_status_counts = {
+        str(status): int(count)
+        for status, count in plugin_signals.get("signal_data_status", pd.Series(dtype=str)).value_counts().items()
+    }
+    unavailable_signal_count = int(data_status_counts.get("zscore_unavailable", 0))
+    plugin_signal_count = int(len(plugin_signals))
+    available_signal_count = int(data_status_counts.get("available", 0))
+    zscore_available_signal_ratio = (
+        float(available_signal_count) / float(plugin_signal_count) if plugin_signal_count > 0 else 0.0
+    )
+    zscore_coverage_gate = (
+        "pass"
+        if plugin_signal_count > 0 and zscore_available_signal_ratio >= MIN_ZSCORE_AVAILABLE_SIGNAL_RATIO_FOR_PROMOTION
+        else "fail"
+    )
+    promotion_blockers: list[str] = []
+    if plugin_signal_count <= 0:
+        promotion_blockers.append("plugin_signal_missing")
+    if zscore_coverage_gate != "pass":
+        promotion_blockers.append("zscore_coverage_below_minimum")
     non_normal_signal_count = int(sum(count for route, count in route_counts.items() if route != "normal"))
     manifest_inputs = dict(result.get("manifest_inputs", {}))
     zscore_metadata = dict(manifest_inputs.get("zscore_history", {}))
@@ -685,9 +852,16 @@ def build_ibit_dca_review_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             "plugin_gate": "n/a",
             "plugin_reason": "plugin-on variant was not included",
             "runtime_impact": "none",
-            "plugin_signal_count": int(len(plugin_signals)),
+            "promotion_blockers": [*promotion_blockers, "plugin_on_variant_missing"],
+            "plugin_signal_count": plugin_signal_count,
+            "plugin_available_signal_count": available_signal_count,
             "plugin_route_counts": route_counts,
+            "plugin_signal_data_status_counts": data_status_counts,
+            "plugin_unavailable_signal_count": unavailable_signal_count,
             "plugin_non_normal_signal_count": non_normal_signal_count,
+            "zscore_coverage_gate": zscore_coverage_gate,
+            "zscore_available_signal_ratio": zscore_available_signal_ratio,
+            "zscore_min_available_signal_ratio": MIN_ZSCORE_AVAILABLE_SIGNAL_RATIO_FOR_PROMOTION,
             "zscore_history_rows": int(zscore_metadata.get("rows", 0) or 0),
             "zscore_history_start": str(zscore_metadata.get("start", "") or ""),
             "zscore_history_end": str(zscore_metadata.get("end", "") or ""),
@@ -695,16 +869,26 @@ def build_ibit_dca_review_summary(result: Mapping[str, Any]) -> dict[str, Any]:
 
     plugin_row = plugin_rows.iloc[0]
     plugin_gate = str(plugin_row.get("gate", "") or "")
+    if plugin_gate != "pass":
+        promotion_blockers.append("plugin_gate_failed")
+    promotion_candidate = plugin_gate == "pass" and zscore_coverage_gate == "pass"
     return {
-        "review_status": (
-            "candidate_for_live_promotion_review" if plugin_gate == "pass" else "research_reject_or_continue"
-        ),
+        "review_status": "candidate_for_live_promotion_review"
+        if promotion_candidate
+        else "research_reject_or_continue",
         "plugin_gate": plugin_gate,
         "plugin_reason": str(plugin_row.get("reason", "") or ""),
         "runtime_impact": "none",
-        "plugin_signal_count": int(len(plugin_signals)),
+        "promotion_blockers": promotion_blockers,
+        "plugin_signal_count": plugin_signal_count,
+        "plugin_available_signal_count": available_signal_count,
         "plugin_route_counts": route_counts,
+        "plugin_signal_data_status_counts": data_status_counts,
+        "plugin_unavailable_signal_count": unavailable_signal_count,
         "plugin_non_normal_signal_count": non_normal_signal_count,
+        "zscore_coverage_gate": zscore_coverage_gate,
+        "zscore_available_signal_ratio": zscore_available_signal_ratio,
+        "zscore_min_available_signal_ratio": MIN_ZSCORE_AVAILABLE_SIGNAL_RATIO_FOR_PROMOTION,
         "zscore_history_rows": int(zscore_metadata.get("rows", 0) or 0),
         "zscore_history_start": str(zscore_metadata.get("start", "") or ""),
         "zscore_history_end": str(zscore_metadata.get("end", "") or ""),
@@ -728,19 +912,28 @@ def render_ibit_dca_research_report(result: Mapping[str, Any]) -> str:
         "# IBIT Smart DCA Research Report",
         "",
         f"- Review status: `{review_summary['review_status']}`",
+        f"- Promotion blockers: `{', '.join(review_summary.get('promotion_blockers') or []) or 'none'}`",
         f"- Plugin gate: `{review_summary['plugin_gate']}`",
         f"- Plugin reason: {review_summary['plugin_reason'] or 'n/a'}",
         f"- Z-score history: `{review_summary.get('zscore_history_start') or 'n/a'}` to "
         f"`{review_summary.get('zscore_history_end') or 'n/a'}` "
         f"({review_summary.get('zscore_history_rows', 0)} rows)",
         f"- Plugin non-normal signal count: `{review_summary.get('plugin_non_normal_signal_count', 0)}`",
+        f"- Plugin unavailable z-score signal count: `{review_summary.get('plugin_unavailable_signal_count', 0)}`",
         f"- Plugin route counts: `{review_summary.get('plugin_route_counts') or {}}`",
+        f"- Plugin signal data-status counts: `{review_summary.get('plugin_signal_data_status_counts') or {}}`",
+        f"- Z-score coverage gate: `{review_summary.get('zscore_coverage_gate', 'n/a')}`",
+        f"- Z-score available signal ratio: `{_format_pct(review_summary.get('zscore_available_signal_ratio'))}`",
         "- Runtime impact: `none` — this is research evidence only and must not change live allocation by itself.",
         "",
         "## Configuration",
         "",
         f"- IBIT symbol: `{config.get('ibit_symbol', '') or 'n/a'}`",
         f"- Parking symbol: `{config.get('parking_symbol', '') or 'n/a'}`",
+        f"- Parking proxy symbol: "
+        f"`{proxy.get('parking_proxy_symbol', '') or config.get('parking_proxy_symbol', '') or 'n/a'}`",
+        f"- Parking proxy rows filled: `{proxy.get('parking_proxy_rows_filled', 0)}`",
+        f"- Price field: `{config.get('price_field', '') or 'n/a'}`",
         f"- Primary benchmark: `{config.get('primary_benchmark', '') or 'n/a'}`",
         f"- Secondary benchmark: `{config.get('secondary_benchmark', '') or 'n/a'}`",
         f"- BTC proxy symbol: `{proxy.get('btc_proxy_symbol', '') or config.get('btc_proxy_symbol', '') or 'n/a'}`",
@@ -834,7 +1027,9 @@ def write_ibit_smart_dca_research_outputs(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Research-only IBIT Smart DCA parking/plugin-consumption backtest.")
     parser.add_argument("--prices", default="", help="Long or wide price CSV containing IBIT and parking symbols.")
-    parser.add_argument("--download", action="store_true", help="Download IBIT/parking/benchmark/BTC proxy prices with yfinance.")
+    parser.add_argument(
+        "--download", action="store_true", help="Download IBIT/parking/benchmark/BTC proxy prices with yfinance."
+    )
     parser.add_argument("--price-start", default="2014-01-01", help="Start date for --download price history.")
     parser.add_argument("--price-end", default=None, help="Optional end date for --download price history.")
     parser.add_argument("--download-proxy", default=None, help="Optional HTTP(S)/SOCKS proxy for yfinance download.")
@@ -842,9 +1037,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--ibit-symbol", default="IBIT")
     parser.add_argument("--parking-symbol", default="BOXX")
+    parser.add_argument(
+        "--parking-proxy-symbol",
+        default="",
+        help="Optional cash-like proxy to backfill pre-parking inception prices.",
+    )
+    parser.add_argument("--price-field", default="adjusted_close", choices=("adjusted_close", "close"))
     parser.add_argument("--primary-benchmark", default="QQQ")
     parser.add_argument("--secondary-benchmark", default="SPY")
-    parser.add_argument("--btc-proxy-symbol", default="", help="Optional BTC proxy column/symbol to backfill pre-IBIT prices. Use BTC with --download.")
+    parser.add_argument(
+        "--btc-proxy-symbol",
+        default="",
+        help="Optional BTC proxy column/symbol to backfill pre-IBIT prices. Use BTC with --download.",
+    )
     parser.add_argument("--initial-parking-value", type=float, default=0.0)
     parser.add_argument("--contribution-amount", type=float, default=0.0)
     parser.add_argument("--rebalance-frequency", default="MS")
@@ -863,6 +1068,8 @@ def main() -> int:
             end=args.price_end,
             ibit_symbol=args.ibit_symbol,
             parking_symbol=args.parking_symbol,
+            parking_proxy_symbol=args.parking_proxy_symbol,
+            price_field=args.price_field,
             primary_benchmark=args.primary_benchmark,
             secondary_benchmark=args.secondary_benchmark,
             btc_proxy_symbol=btc_proxy_symbol,
@@ -880,6 +1087,8 @@ def main() -> int:
         zscore_history=zscore_history,
         ibit_symbol=args.ibit_symbol,
         parking_symbol=args.parking_symbol,
+        parking_proxy_symbol=args.parking_proxy_symbol,
+        price_field=args.price_field,
         primary_benchmark=args.primary_benchmark,
         secondary_benchmark=args.secondary_benchmark,
         btc_proxy_symbol=btc_proxy_symbol,

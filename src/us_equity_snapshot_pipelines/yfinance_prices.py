@@ -25,6 +25,18 @@ YAHOO_USER_AGENT = "Mozilla/5.0"
 HTTP_PROXY_SCHEMES = {"http", "https"}
 SOCKS_PROXY_SCHEMES = {"socks4", "socks4a", "socks5", "socks5h"}
 SUPPORTED_PROXY_SCHEMES = HTTP_PROXY_SCHEMES | SOCKS_PROXY_SCHEMES
+PRICE_FIELD_ADJUSTED_CLOSE = "adjusted_close"
+PRICE_FIELD_CLOSE = "close"
+SUPPORTED_PRICE_FIELDS = {PRICE_FIELD_ADJUSTED_CLOSE, PRICE_FIELD_CLOSE}
+
+
+def normalize_price_field(value: object) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"", "adjusted", "adj_close", "adjclose"}:
+        return PRICE_FIELD_ADJUSTED_CLOSE
+    if text in SUPPORTED_PRICE_FIELDS:
+        return text
+    raise ValueError(f"unsupported price_field: {value!r}")
 
 
 def _normalize_symbol_alias_candidates(candidates) -> list[str]:
@@ -63,9 +75,7 @@ def _normalize_input_symbols(
             original_text = str(item or "").strip().upper()
             alias_candidates = alias_map.get(original_text, [])
             download_symbol = (
-                alias_candidates[0]
-                if alias_candidates
-                else DEFAULT_SYMBOL_ALIASES.get(original_text, original_text)
+                alias_candidates[0] if alias_candidates else DEFAULT_SYMBOL_ALIASES.get(original_text, original_text)
             )
 
         original_text = str(original or "").strip().upper()
@@ -207,11 +217,7 @@ def normalize_yfinance_download(data, symbols) -> pd.DataFrame:
                     "volume": _optional_float(values_by_field["volume"].get(as_of)),
                 }
             )
-    return (
-        pd.DataFrame(rows, columns=PRICE_HISTORY_COLUMNS)
-        .sort_values(["as_of", "symbol"])
-        .reset_index(drop=True)
-    )
+    return pd.DataFrame(rows, columns=PRICE_HISTORY_COLUMNS).sort_values(["as_of", "symbol"]).reset_index(drop=True)
 
 
 def _optional_float(value) -> float:
@@ -276,9 +282,7 @@ def _fetch_yahoo_chart_payload(
             return response.json()
         except Exception as exc:
             if "SOCKS" in str(exc) or "socks" in str(exc):
-                raise RuntimeError(
-                    "SOCKS proxy support requires PySocks; install requests[socks] or PySocks"
-                ) from exc
+                raise RuntimeError("SOCKS proxy support requires PySocks; install requests[socks] or PySocks") from exc
             raise
     if resolved_proxy:
         opener = build_opener(ProxyHandler({"http": resolved_proxy, "https": resolved_proxy}))
@@ -288,7 +292,13 @@ def _fetch_yahoo_chart_payload(
         return json.loads(response.read().decode("utf-8"))
 
 
-def _normalize_yahoo_chart_payload(payload: Mapping[str, object], *, original_symbol: str) -> pd.DataFrame:
+def _normalize_yahoo_chart_payload(
+    payload: Mapping[str, object],
+    *,
+    original_symbol: str,
+    price_field: str = PRICE_FIELD_ADJUSTED_CLOSE,
+) -> pd.DataFrame:
+    resolved_price_field = normalize_price_field(price_field)
     chart = dict(payload.get("chart") or {})
     error = chart.get("error")
     if error:
@@ -313,9 +323,13 @@ def _normalize_yahoo_chart_payload(payload: Mapping[str, object], *, original_sy
             continue
         adjusted_close = _optional_index_float(adjclose_values, idx)
         adjustment_ratio = 1.0
-        if pd.notna(adjusted_close) and close:
+        if resolved_price_field == PRICE_FIELD_ADJUSTED_CLOSE and pd.notna(adjusted_close) and close:
             adjustment_ratio = float(adjusted_close) / float(close)
-        adjusted_close_value = float(adjusted_close) if pd.notna(adjusted_close) else float(close)
+        close_value = (
+            float(adjusted_close)
+            if resolved_price_field == PRICE_FIELD_ADJUSTED_CLOSE and pd.notna(adjusted_close)
+            else float(close)
+        )
         rows.append(
             {
                 "symbol": original_symbol,
@@ -323,7 +337,7 @@ def _normalize_yahoo_chart_payload(payload: Mapping[str, object], *, original_sy
                 "open": _optional_adjusted_float(quote_data.get("open"), idx, adjustment_ratio),
                 "high": _optional_adjusted_float(quote_data.get("high"), idx, adjustment_ratio),
                 "low": _optional_adjusted_float(quote_data.get("low"), idx, adjustment_ratio),
-                "close": adjusted_close_value,
+                "close": close_value,
                 "volume": _optional_index_float(quote_data.get("volume"), idx),
             }
         )
@@ -349,14 +363,20 @@ def download_yahoo_chart_price_history(
     end: str | None = None,
     symbol_aliases: Mapping[str, Sequence[str] | str] | None = None,
     proxy: str | None = None,
+    price_field: str = PRICE_FIELD_ADJUSTED_CLOSE,
 ) -> pd.DataFrame:
+    resolved_price_field = normalize_price_field(price_field)
     symbol_pairs = _normalize_input_symbols(symbols, symbol_aliases=symbol_aliases)
     frames: list[pd.DataFrame] = []
     for original_symbol, download_symbol in symbol_pairs:
         symbol_frames: list[pd.DataFrame] = []
         for candidate in _build_download_candidates(download_symbol, symbol_aliases=symbol_aliases):
             payload = _fetch_yahoo_chart_payload(candidate, start=start, end=end, proxy=proxy)
-            normalized = _normalize_yahoo_chart_payload(payload, original_symbol=original_symbol)
+            normalized = _normalize_yahoo_chart_payload(
+                payload,
+                original_symbol=original_symbol,
+                price_field=resolved_price_field,
+            )
             if not normalized.empty:
                 symbol_frames.append(normalized)
                 break
@@ -387,9 +407,11 @@ def download_price_history(
     download_fn: Callable | None = None,
     symbol_aliases: Mapping[str, Sequence[str] | str] | None = None,
     proxy: str | None = None,
+    price_field: str = PRICE_FIELD_ADJUSTED_CLOSE,
 ) -> pd.DataFrame:
     if not symbols:
         raise ValueError("symbols must not be empty")
+    resolved_price_field = normalize_price_field(price_field)
     if download_fn is None:
         import yfinance as yf
 
@@ -409,7 +431,7 @@ def download_price_history(
             batch_download_symbols,
             start=start,
             end=end,
-            auto_adjust=True,
+            auto_adjust=resolved_price_field == PRICE_FIELD_ADJUSTED_CLOSE,
             progress=False,
             threads=False,
         )
@@ -424,7 +446,7 @@ def download_price_history(
                     [candidate],
                     start=start,
                     end=end,
-                    auto_adjust=True,
+                    auto_adjust=resolved_price_field == PRICE_FIELD_ADJUSTED_CLOSE,
                     progress=False,
                     threads=False,
                 )
@@ -483,7 +505,9 @@ def download_price_history_with_proxy_candidates(
     symbol_aliases: Mapping[str, Sequence[str] | str] | None = None,
     proxy: str | None = None,
     proxy_candidates: Sequence[str] | None = None,
+    price_field: str = PRICE_FIELD_ADJUSTED_CLOSE,
 ) -> pd.DataFrame:
+    resolved_price_field = normalize_price_field(price_field)
     candidates: list[str | None] = []
     if proxy:
         candidates.append(proxy)
@@ -506,15 +530,13 @@ def download_price_history_with_proxy_candidates(
                         end=end,
                         symbol_aliases=symbol_aliases,
                         proxy=candidate,
+                        price_field=resolved_price_field,
                     ),
                     symbols,
                     symbol_aliases=symbol_aliases,
                 )
             except Exception as chart_first_exc:
-                errors.append(
-                    f"{_redact_proxy(candidate)} chart: "
-                    f"{type(chart_first_exc).__name__}: {chart_first_exc}"
-                )
+                errors.append(f"{_redact_proxy(candidate)} chart: {type(chart_first_exc).__name__}: {chart_first_exc}")
         try:
             return _require_downloaded_symbols(
                 download_price_history(
@@ -525,6 +547,7 @@ def download_price_history_with_proxy_candidates(
                     download_fn=download_fn,
                     symbol_aliases=symbol_aliases,
                     proxy=candidate,
+                    price_field=resolved_price_field,
                 ),
                 symbols,
                 symbol_aliases=symbol_aliases,
@@ -539,14 +562,14 @@ def download_price_history_with_proxy_candidates(
                             end=end,
                             symbol_aliases=symbol_aliases,
                             proxy=candidate,
+                            price_field=resolved_price_field,
                         ),
                         symbols,
                         symbol_aliases=symbol_aliases,
                     )
                 except Exception as fallback_exc:
                     errors.append(
-                        f"{_redact_proxy(candidate)} chart fallback: "
-                        f"{type(fallback_exc).__name__}: {fallback_exc}"
+                        f"{_redact_proxy(candidate)} chart fallback: {type(fallback_exc).__name__}: {fallback_exc}"
                     )
             last_error = exc
             errors.append(f"{_redact_proxy(candidate)}: {type(exc).__name__}: {exc}")

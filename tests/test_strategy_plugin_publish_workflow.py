@@ -149,6 +149,8 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert "scripts/download_ibit_zscore_metrics.py" in workflow
     assert "Build IBIT DCA research artifact" in workflow
     assert "scripts/build_scheduled_ibit_dca_research.py" in workflow
+    assert "--parking-proxy-symbol BIL" in workflow
+    assert "--price-field adjusted_close" in workflow
     assert "RESEARCH_OUTPUT_DIR: data/output/ibit_smart_dca/research/ibit_dca" in workflow
     assert "ibit_dca_research_manifest.json" in workflow
     assert "ibit_dca_research_report.md" in workflow

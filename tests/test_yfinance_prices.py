@@ -31,7 +31,17 @@ def test_load_proxy_candidates_normalizes_http_proxy_file(tmp_path) -> None:
 def test_proxy_candidate_download_falls_through_to_second_candidate(monkeypatch) -> None:
     calls: list[str | None] = []
 
-    def fake_download(symbols, *, start, end=None, chunk_size=100, download_fn=None, symbol_aliases=None, proxy=None):
+    def fake_download(
+        symbols,
+        *,
+        start,
+        end=None,
+        chunk_size=100,
+        download_fn=None,
+        symbol_aliases=None,
+        proxy=None,
+        price_field="adjusted_close",
+    ):
         calls.append(proxy)
         if proxy == "http://1.2.3.4:8080":
             raise RuntimeError("proxy failed")
@@ -121,7 +131,11 @@ def test_normalize_yahoo_chart_payload_uses_adjusted_close_ratio() -> None:
         }
     }
 
-    result = yfinance_prices._normalize_yahoo_chart_payload(payload, original_symbol="QQQ")
+    result = yfinance_prices._normalize_yahoo_chart_payload(
+        payload,
+        original_symbol="QQQ",
+        price_field="adjusted_close",
+    )
 
     row = result.iloc[0]
     assert row["symbol"] == "QQQ"
@@ -129,3 +143,74 @@ def test_normalize_yahoo_chart_payload_uses_adjusted_close_ratio() -> None:
     assert row["high"] == 55.0
     assert row["low"] == 45.0
     assert row["close"] == 50.0
+
+
+def test_normalize_yahoo_chart_payload_can_use_raw_close() -> None:
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1767312000],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0],
+                                "high": [110.0],
+                                "low": [90.0],
+                                "close": [100.0],
+                                "volume": [1000],
+                            }
+                        ],
+                        "adjclose": [{"adjclose": [50.0]}],
+                    },
+                }
+            ],
+            "error": None,
+        }
+    }
+
+    result = yfinance_prices._normalize_yahoo_chart_payload(payload, original_symbol="QQQ", price_field="close")
+
+    row = result.iloc[0]
+    assert row["open"] == 100.0
+    assert row["high"] == 110.0
+    assert row["low"] == 90.0
+    assert row["close"] == 100.0
+
+
+def test_download_price_history_uses_auto_adjust_for_adjusted_close(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_download(symbols, *, start, end, auto_adjust, progress, threads):
+        calls.append({"symbols": tuple(symbols), "auto_adjust": auto_adjust})
+        dates = pd.DatetimeIndex([pd.Timestamp("2026-01-02")])
+        return pd.DataFrame(
+            {
+                "Open": [100.0],
+                "High": [101.0],
+                "Low": [99.0],
+                "Close": [100.0],
+                "Volume": [1000],
+            },
+            index=dates,
+        )
+
+    yfinance_prices.download_price_history(
+        ["QQQ"],
+        start="2026-01-01",
+        end="2026-01-03",
+        download_fn=fake_download,
+        price_field="adjusted_close",
+    )
+    yfinance_prices.download_price_history(
+        ["QQQ"],
+        start="2026-01-01",
+        end="2026-01-03",
+        download_fn=fake_download,
+        price_field="close",
+    )
+
+    assert calls == [
+        {"symbols": ("QQQ",), "auto_adjust": True},
+        {"symbols": ("QQQ",), "auto_adjust": False},
+    ]

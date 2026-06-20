@@ -52,6 +52,8 @@ def build_scheduled_ibit_dca_research(
     download_proxy: str | None = None,
     ibit_symbol: str = "IBIT",
     parking_symbol: str = "BOXX",
+    parking_proxy_symbol: str = "BIL",
+    price_field: str = "adjusted_close",
     primary_benchmark: str = "QQQ",
     secondary_benchmark: str = "SPY",
     btc_proxy_symbol: str = "BTC",
@@ -72,6 +74,8 @@ def build_scheduled_ibit_dca_research(
         end=price_end,
         ibit_symbol=ibit_symbol,
         parking_symbol=parking_symbol,
+        parking_proxy_symbol=parking_proxy_symbol,
+        price_field=price_field,
         primary_benchmark=primary_benchmark,
         secondary_benchmark=secondary_benchmark,
         btc_proxy_symbol=btc_proxy_symbol,
@@ -84,6 +88,8 @@ def build_scheduled_ibit_dca_research(
         zscore_history=zscore_history,
         ibit_symbol=ibit_symbol,
         parking_symbol=parking_symbol,
+        parking_proxy_symbol=parking_proxy_symbol,
+        price_field=price_field,
         primary_benchmark=primary_benchmark,
         secondary_benchmark=secondary_benchmark,
         btc_proxy_symbol=btc_proxy_symbol,
@@ -109,6 +115,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-proxy", default=None)
     parser.add_argument("--ibit-symbol", default="IBIT")
     parser.add_argument("--parking-symbol", default="BOXX")
+    parser.add_argument("--parking-proxy-symbol", default="BIL")
+    parser.add_argument("--price-field", default="adjusted_close", choices=("adjusted_close", "close"))
     parser.add_argument("--primary-benchmark", default="QQQ")
     parser.add_argument("--secondary-benchmark", default="SPY")
     parser.add_argument("--btc-proxy-symbol", default="BTC")
@@ -131,6 +139,8 @@ def main() -> int:
         download_proxy=args.download_proxy,
         ibit_symbol=args.ibit_symbol,
         parking_symbol=args.parking_symbol,
+        parking_proxy_symbol=args.parking_proxy_symbol,
+        price_field=args.price_field,
         primary_benchmark=args.primary_benchmark,
         secondary_benchmark=args.secondary_benchmark,
         btc_proxy_symbol=args.btc_proxy_symbol,
