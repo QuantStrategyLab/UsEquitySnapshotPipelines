@@ -374,6 +374,218 @@ Current recommendation:
 - The only candidate family worth revisiting is the conservative `85/15` or `90/10` static sleeve, but only if a stricter train-edge rule or real execution-cost data changes the OOS failure.
 - Do not implement a runtime offensive overlay for Global ETF before the OOS gate passes.
 
+### Phase 5: Offensive v2 research backlog, pre-registered before new tuning
+
+Goal: broaden the search space without turning it into an unconstrained
+parameter hunt. The next batch should add only small, interpretable hypotheses
+that can be measured against the current Russell fixed-blend leader line and the
+current Global ETF defensive baseline.
+
+Web-expanded source scan, 2026-06-20:
+
+- Moskowitz, Ooi, and Pedersen document 1-12 month time-series momentum across
+  liquid asset classes. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2089463
+- Moskowitz and Grinblatt document a strong industry-momentum effect and show
+  that industry momentum contributes substantially to individual-stock momentum
+  profits. Source: https://www.aqr.com/Insights/Research/Journal-Article/Do-Industries-Explain-Momentum
+- Blitz, Huij, and Martens document residual momentum, suggesting that
+  market/factor-adjusted momentum can behave differently from raw total-return
+  momentum. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2319861
+- Novy-Marx argues that earnings/fundamental momentum explains much of price
+  momentum. Source: https://www.nber.org/system/files/working_papers/w20984/w20984.pdf
+- Daniel and Moskowitz show momentum crash risk is partly forecastable in panic,
+  high-volatility rebound states. Source: https://www.nber.org/system/files/working_papers/w20439/w20439.pdf
+- Moreira and Muir show that volatility-managed portfolios can improve factor
+  Sharpe ratios by reducing exposure when volatility is high. Source: https://www.nber.org/papers/w22208
+- Harvey, Liu, and Zhu warn that factor discovery needs much stricter evidence
+  after multiple testing. Source: https://www.nber.org/system/files/working_papers/w20592/w20592.pdf
+
+Pre-registered candidate families:
+
+| Family | First test | Data needed | Live-readiness stance |
+| --- | --- | --- | --- |
+| Sector-aware Russell concentration | Keep the existing Top2/Top4 formulas, but cap selected names per sector at `1` for research-only Top2, Top4, and fixed blends. | Existing Russell dynamic universe `sector` field; no new vendor. | Research-only until it beats fixed 25/75 and 50/50 blends after cost, source-lag, ADV, and rolling gates. |
+| Residual / beta-adjusted Russell momentum | Rank by price momentum residualized versus QQQ/SPY or sector ETF proxy, with a frozen lookback. | Existing price history is enough for a first proxy; sector ETF data only if needed. | Not a live candidate until it beats raw-score blends and survives overfitting gates. |
+| Fundamental / earnings momentum | Add earnings-surprise or analyst-revision confirmation only if a reliable point-in-time source is available. | Needs PIT earnings/revision data; free Yahoo-like snapshots are not enough for live promotion. | Do not implement live by default without auditable PIT data. |
+| Global ETF safe offensive sleeve | Keep current defensive baseline live; only revisit 85/15 or 90/10 if real execution data or a stricter train-edge rule clears walk-forward failure. | Existing ETF price/volume data plus future execution logs. | Current conclusion stays no default live change. |
+
+Implemented research hook:
+
+The Russell concentration runner can now add the first sector-aware research
+family without changing the default output:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_YYYYMMDD/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_YYYYMMDD/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_sector_cap_research_YYYYMMDD \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds "" \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-sector-capped-variants \
+  --sector-cap-values 1
+```
+
+Additional summary field:
+
+- `Max Names Per Sector` is populated for the sector-capped rows and empty for
+  existing baseline/fixed-blend/dynamic rows.
+
+Promotion bar:
+
+- Sector-capped rows are not live candidates by construction.
+- A sector-capped blend can only move to live-design review if it improves
+  worst rolling QQQ/SPY excess or drawdown versus `blend_top2_50_top4_50`
+  without materially reducing long CAGR, and still passes the same stress
+  matrix as the current fixed blends.
+- If the result only reduces drawdown by giving up offensive edge, prefer the
+  existing `blend_top2_25_top4_75` conservative profile instead of adding a new
+  runtime variant.
+
+2026-06-20 sector-cap product-data rerun:
+
+Input was rebuilt from product-data v2 in:
+
+- `data/output/russell_top50_product_data_full_20260620_sectorcap_rerun`
+- 106 dynamic Top50 snapshots;
+- 5,300 universe rows;
+- 247,120 price rows;
+- expected delisted gaps remained `CELG`, `DWDP`, and `UTX`.
+
+Research command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_20260620_sectorcap_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_sectorcap_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_sector_cap_research_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds none \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-sector-capped-variants \
+  --sector-cap-values 1
+```
+
+Selected full-window rows:
+
+| Run | CAGR | MaxDD | Sharpe | Turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 1.27 | 3.52 | keep conservative live-design candidate |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 1.27 | 3.52 | keep balanced offensive live-design candidate |
+| `sector_cap1_top2_cap50` | 43.61% | -40.83% | 1.23 | 3.85 | reject |
+| `sector_cap1_top4_cap25` | 25.32% | -31.60% | 1.05 | 4.05 | reject |
+| `sector_cap1_blend_top2_25_top4_75` | 30.04% | -30.17% | 1.14 | 3.98 | reject |
+| `sector_cap1_blend_top2_50_top4_50` | 34.67% | -33.11% | 1.19 | 3.93 | reject |
+
+Rolling-window result:
+
+| Run | Worst 3Y QQQ excess | Worst 3Y SPY excess | Worst 5Y QQQ excess | Worst 5Y SPY excess |
+| --- | ---: | ---: | ---: | ---: |
+| `blend_top2_25_top4_75` | -6.41% | +5.64% | +10.42% | +13.95% |
+| `blend_top2_50_top4_50` | -4.83% | +7.22% | +12.49% | +15.27% |
+| `sector_cap1_blend_top2_25_top4_75` | -15.36% | -3.31% | -3.55% | +1.64% |
+| `sector_cap1_blend_top2_50_top4_50` | -14.09% | -2.04% | +2.04% | +4.82% |
+
+Live-readiness command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_live_readiness \
+  --summary data/output/russell_top50_sector_cap_research_20260620/concentration_variant_summary.csv \
+  --rolling data/output/russell_top50_sector_cap_research_20260620/concentration_variant_rolling_summary.csv \
+  --output-dir data/output/russell_top50_sector_cap_live_readiness_20260620
+```
+
+Sector-cap conclusion:
+
+- `max_names_per_sector=1` is too blunt for this mega-cap universe. It forces
+  the strategy away from the dominant winner clusters without improving drawdown.
+- It reduces CAGR materially, worsens rolling 3Y QQQ/SPY excess, increases
+  turnover, and in several variants also worsens drawdown.
+- All `sector_cap1_*` rows are classified as `sector_capped_research` and
+  `research_only` by the live-readiness gate.
+- Do not run further stress/live promotion on this exact sector-cap rule. If
+  sector information is revisited, use it as a diagnostic or soft penalty rather
+  than a hard one-name-per-sector cap.
+
+2026-06-20 sector soft-penalty follow-up:
+
+After hard sector caps failed, a softer pre-registered test subtracted a fixed
+score penalty for repeated sector selections. This keeps the winner cluster
+available when its score edge is large, but mildly prefers cross-sector
+alternatives when scores are close.
+
+Implementation:
+
+- Backtest ranking accepts `sector_score_penalty`, default `0.0`.
+- Concentration runner emits research-only variants when
+  `--include-sector-soft-penalty-variants` is enabled.
+- Live-readiness gate classifies all `sector_penalty*` rows as
+  `sector_soft_penalty_research` / `research_only`.
+
+Research command:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants \
+  --prices data/output/russell_top50_product_data_full_20260620_sectorcap_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_sectorcap_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_sector_soft_penalty_research_20260620 \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --blend-top2-weights 0.25,0.5 \
+  --dynamic-drawdown-thresholds none \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --include-sector-soft-penalty-variants \
+  --sector-score-penalty-values 0.25,0.5
+```
+
+Selected full-window rows:
+
+| Run | CAGR | MaxDD | Sharpe | Turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `blend_top2_25_top4_75` | 42.44% | -28.19% | 1.27 | 3.52 | keep conservative live-design candidate |
+| `blend_top2_50_top4_50` | 45.06% | -30.64% | 1.27 | 3.52 | keep balanced offensive live-design candidate |
+| `sector_penalty0p25_top2_cap50` | 50.62% | -38.22% | 1.27 | 3.50 | high-return research-only |
+| `sector_penalty0p25_blend_top2_25_top4_75` | 38.18% | -27.91% | 1.22 | 3.67 | reject as live replacement |
+| `sector_penalty0p25_blend_top2_50_top4_50` | 42.45% | -31.38% | 1.25 | 3.62 | reject as live replacement |
+| `sector_penalty0p5_blend_top2_25_top4_75` | 35.03% | -27.91% | 1.17 | 3.77 | reject |
+| `sector_penalty0p5_blend_top2_50_top4_50` | 38.13% | -31.38% | 1.18 | 3.72 | reject |
+
+Rolling-window result:
+
+| Run | Worst 3Y QQQ excess | Worst 3Y SPY excess | Worst 5Y QQQ excess | Worst 5Y SPY excess |
+| --- | ---: | ---: | ---: | ---: |
+| `blend_top2_25_top4_75` | -6.41% | +5.64% | +10.42% | +13.95% |
+| `blend_top2_50_top4_50` | -4.83% | +7.22% | +12.49% | +15.27% |
+| `sector_penalty0p25_top2_cap50` | +1.54% | +13.59% | +17.23% | +20.02% |
+| `sector_penalty0p25_blend_top2_25_top4_75` | -3.64% | +8.41% | +6.09% | +12.69% |
+| `sector_penalty0p25_blend_top2_50_top4_50` | -1.74% | +10.31% | +10.74% | +15.73% |
+| `sector_penalty0p5_blend_top2_25_top4_75` | -7.79% | +4.26% | +4.91% | +9.93% |
+| `sector_penalty0p5_blend_top2_50_top4_50` | -4.74% | +7.31% | +9.23% | +12.01% |
+
+Soft-penalty conclusion:
+
+- A mild `0.25` penalty improves pure Top2 return and rolling benchmark excess,
+  but it does **not** solve the pure Top2 drawdown problem: max drawdown remains
+  about `-38%`, so it stays research-only.
+- The liveable blends are worse than the existing fixed blends. They either give
+  up too much CAGR or increase drawdown/turnover without enough incremental
+  rolling-excess benefit.
+- This confirms that sector information is useful as a diagnostic for explaining
+  winner clustering, but current sector-aware selection rules should not replace
+  the approved fixed Top2/Top4 blends.
+- The next higher-quality expansion should be residual/beta-adjusted momentum or
+  factor/industry momentum diagnostics, not more sector cap/penalty tuning.
+
 ## Architecture recommendation
 
 ### Current architecture understanding

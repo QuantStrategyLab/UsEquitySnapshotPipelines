@@ -596,6 +596,7 @@ def score_candidates(
     broad_benchmark_symbol: str = BROAD_BENCHMARK_SYMBOL,
     safe_haven: str = SAFE_HAVEN,
     hold_bonus: float = 0.10,
+    sector_score_penalty: float = 0.0,
 ) -> pd.DataFrame:
     frame = pd.DataFrame(snapshot).copy()
     if frame.empty:
@@ -640,16 +641,42 @@ def score_candidates(
     )
     if current_holdings_set:
         eligible.loc[eligible["symbol"].isin(current_holdings_set), "score"] += float(hold_bonus)
-    ranked = eligible.sort_values(
-        by=["score", "rel_mom_6m_vs_benchmark", "mom_6m", "symbol"],
-        ascending=[False, False, False, True],
-    ).reset_index(drop=True)
+    eligible["base_score"] = eligible["score"]
+    eligible["sector_soft_penalty_count"] = 0
+    eligible["sector_score_penalty"] = float(sector_score_penalty)
+    if float(sector_score_penalty) > 0.0 and "sector" in eligible.columns:
+        remaining = eligible.copy()
+        selected_frames: list[pd.DataFrame] = []
+        sector_counts: dict[str, int] = {}
+        while not remaining.empty:
+            penalty_counts = remaining["sector"].fillna("unknown").astype(str).map(sector_counts).fillna(0).astype(int)
+            adjusted = remaining.assign(
+                sector_soft_penalty_count=penalty_counts,
+                score=remaining["base_score"] - penalty_counts * float(sector_score_penalty),
+            ).sort_values(
+                by=["score", "rel_mom_6m_vs_benchmark", "mom_6m", "symbol"],
+                ascending=[False, False, False, True],
+            )
+            selected = adjusted.head(1)
+            selected_frames.append(selected)
+            sector = str(selected["sector"].iloc[0] or "unknown")
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            remaining = remaining.drop(index=selected.index)
+        ranked = pd.concat(selected_frames, ignore_index=True)
+    else:
+        ranked = eligible.sort_values(
+            by=["score", "rel_mom_6m_vs_benchmark", "mom_6m", "symbol"],
+            ascending=[False, False, False, True],
+        ).reset_index(drop=True)
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
     output_columns = [
         "rank",
         "symbol",
         "sector",
+        "base_score",
         "score",
+        "sector_score_penalty",
+        "sector_soft_penalty_count",
         "eligible",
         "close",
         "adv20_usd",
@@ -739,6 +766,7 @@ def build_target_weights(
     single_name_cap: float = 0.35,
     max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
+    sector_score_penalty: float = 0.0,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
     hard_defense_exposure: float = 0.20,
@@ -774,6 +802,7 @@ def build_target_weights(
         broad_benchmark_symbol=broad_benchmark_symbol,
         safe_haven=safe_haven,
         hold_bonus=hold_bonus,
+        sector_score_penalty=float(sector_score_penalty),
     )
     metadata: dict[str, object] = {
         "regime": regime,
@@ -785,6 +814,7 @@ def build_target_weights(
         "portfolio_total_equity": portfolio_total_equity,
         "min_position_value_usd": float(min_position_value_usd),
         "max_names_per_sector": _resolve_max_names_per_sector(max_names_per_sector),
+        "sector_score_penalty": float(sector_score_penalty),
         "selected_symbols": (),
     }
     if ranked.empty or stock_exposure <= 0 or effective_top_n <= 0:
@@ -946,6 +976,7 @@ def run_backtest(
     single_name_cap: float = 0.35,
     max_names_per_sector: int | None = None,
     hold_bonus: float = 0.10,
+    sector_score_penalty: float = 0.0,
     risk_on_exposure: float = 1.0,
     soft_defense_exposure: float = 0.50,
     hard_defense_exposure: float = 0.20,
@@ -1020,6 +1051,7 @@ def run_backtest(
                 single_name_cap=float(single_name_cap),
                 max_names_per_sector=max_names_per_sector,
                 hold_bonus=float(hold_bonus),
+                sector_score_penalty=float(sector_score_penalty),
                 risk_on_exposure=float(risk_on_exposure),
                 soft_defense_exposure=float(soft_defense_exposure),
                 hard_defense_exposure=float(hard_defense_exposure),
@@ -1063,6 +1095,7 @@ def run_backtest(
                     "portfolio_total_equity": metadata.get("portfolio_total_equity"),
                     "min_position_value_usd": metadata.get("min_position_value_usd"),
                     "max_names_per_sector": metadata.get("max_names_per_sector"),
+                    "sector_score_penalty": metadata.get("sector_score_penalty"),
                     "selected_symbols": ",".join(metadata.get("selected_symbols", ())),
                     "turnover": turnover,
                 }
@@ -1170,6 +1203,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional per-sector selected-name cap; disabled when omitted or <= 0",
     )
     parser.add_argument("--hold-bonus", type=float, default=0.10)
+    parser.add_argument(
+        "--sector-score-penalty",
+        type=float,
+        default=0.0,
+        help="Optional soft score penalty per already-selected name in the same sector; disabled when <= 0",
+    )
     parser.add_argument("--risk-on-exposure", type=float, default=1.0)
     parser.add_argument("--soft-defense-exposure", type=float, default=0.50)
     parser.add_argument("--hard-defense-exposure", type=float, default=0.20)
@@ -1260,6 +1299,7 @@ def main(argv: list[str] | None = None) -> int:
         single_name_cap=args.single_name_cap,
         max_names_per_sector=args.max_names_per_sector,
         hold_bonus=args.hold_bonus,
+        sector_score_penalty=args.sector_score_penalty,
         risk_on_exposure=args.risk_on_exposure,
         soft_defense_exposure=args.soft_defense_exposure,
         hard_defense_exposure=args.hard_defense_exposure,

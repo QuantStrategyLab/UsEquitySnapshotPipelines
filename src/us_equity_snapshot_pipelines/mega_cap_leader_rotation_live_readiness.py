@@ -68,6 +68,10 @@ def _candidate_role(row: pd.Series) -> tuple[str, str, float]:
     daily_risk_mode = str(row.get("Daily Risk Mode", "")).strip().lower()
     top2_weight = _number(row.get("Top2 Blend Weight"), default=float("nan"))
 
+    if run.startswith("sector_cap") or variant_type.startswith("sector_capped_"):
+        return "sector_capped_research", "research_only", DEFAULT_CONSERVATIVE_MAX_DRAWDOWN
+    if run.startswith("sector_penalty") or variant_type.startswith("sector_soft_penalty_"):
+        return "sector_soft_penalty_research", "research_only", DEFAULT_CONSERVATIVE_MAX_DRAWDOWN
     if (
         variant_type == "dynamic_top2_drawdown_to_top4"
         or run.startswith("dynamic_")

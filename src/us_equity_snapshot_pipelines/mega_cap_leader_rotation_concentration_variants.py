@@ -28,10 +28,14 @@ from .russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_BLEND_TOP2_WEIGHTS = (0.25, 0.50, 0.75)
 DEFAULT_DYNAMIC_DRAWDOWN_THRESHOLDS = (0.08, 0.10, 0.12)
+DEFAULT_SECTOR_CAP_VALUES = (1,)
+DEFAULT_SECTOR_SCORE_PENALTY_VALUES = (0.25, 0.50)
 SUMMARY_COLUMNS = (
     "Run",
     "Variant Type",
     "Universe Lag Trading Days",
+    "Max Names Per Sector",
+    "Sector Score Penalty",
     "Top2 Blend Weight",
     "Top4 Blend Weight",
     "Dynamic Drawdown Threshold",
@@ -96,7 +100,11 @@ MODE_COLUMNS = (
 def parse_csv_floats(raw_value: str | Iterable[float] | None, *, default: tuple[float, ...]) -> tuple[float, ...]:
     if raw_value is None:
         return default
+    if isinstance(raw_value, str) and raw_value.strip().lower() in {"", "none", "off"}:
+        return ()
     values = raw_value.split(",") if isinstance(raw_value, str) else list(raw_value)
+    if not values:
+        return ()
     parsed: list[float] = []
     seen: set[float] = set()
     for value in values:
@@ -110,7 +118,7 @@ def parse_csv_floats(raw_value: str | Iterable[float] | None, *, default: tuple[
             continue
         seen.add(number)
         parsed.append(number)
-    return tuple(parsed) or default
+    return tuple(parsed)
 
 
 def _trading_index(price_history: pd.DataFrame) -> pd.DatetimeIndex:
@@ -125,6 +133,15 @@ def _variant_name_for_blend(top2_weight: float) -> str:
     top2_label = int(round(float(top2_weight) * 100))
     top4_label = int(round((1.0 - float(top2_weight)) * 100))
     return f"blend_top2_{top2_label}_top4_{top4_label}"
+
+
+def _sector_variant_name(base_name: str, max_names_per_sector: int) -> str:
+    return f"sector_cap{int(max_names_per_sector)}_{base_name}"
+
+
+def _penalty_variant_name(base_name: str, sector_score_penalty: float) -> str:
+    label = f"{float(sector_score_penalty):.2f}".rstrip("0").rstrip(".").replace(".", "p")
+    return f"sector_penalty{label}_{base_name}"
 
 
 def _variant_name_for_drawdown(threshold: float) -> str:
@@ -306,6 +323,8 @@ def _summary_for_variant(
     broad_benchmark_symbol: str,
     safe_haven: str,
     universe_lag_trading_days: int,
+    max_names_per_sector: int | None = None,
+    sector_score_penalty: float | None = None,
     top2_blend_weight: float | None = None,
     dynamic_drawdown_threshold: float | None = None,
     top4_mode_share: float | None = None,
@@ -340,6 +359,8 @@ def _summary_for_variant(
             "Run": run_name,
             "Variant Type": variant_type,
             "Universe Lag Trading Days": int(universe_lag_trading_days),
+            "Max Names Per Sector": max_names_per_sector,
+            "Sector Score Penalty": sector_score_penalty,
             "Top2 Blend Weight": top2_blend_weight,
             "Top4 Blend Weight": (1.0 - top2_blend_weight) if top2_blend_weight is not None else None,
             "Dynamic Drawdown Threshold": dynamic_drawdown_threshold,
@@ -366,6 +387,10 @@ def run_concentration_variant_research(
     min_price_usd: float = 10.0,
     min_adv20_usd: float = 20_000_000.0,
     min_history_days: int = 273,
+    include_sector_capped_variants: bool = False,
+    sector_cap_values: Iterable[int] = DEFAULT_SECTOR_CAP_VALUES,
+    include_sector_soft_penalty_variants: bool = False,
+    sector_score_penalty_values: Iterable[float] = DEFAULT_SECTOR_SCORE_PENALTY_VALUES,
 ) -> dict[str, pd.DataFrame]:
     prices = _normalize_price_history(price_history)
     if end_date is not None:
@@ -424,12 +449,127 @@ def run_concentration_variant_research(
         ("base_top2_cap50", "base_top2", top2_weights, 1.0, None, 0.0),
         ("base_top4_cap25", "base_top4", top4_weights, 0.0, None, 1.0),
     ]
+    variant_sector_caps: dict[str, int | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
+    variant_sector_penalties: dict[str, float | None] = {
+        "base_top2_cap50": None,
+        "base_top4_cap25": None,
+    }
     for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
         if not 0.0 < top2_weight < 1.0:
             continue
         run_name = _variant_name_for_blend(top2_weight)
         weights = float(top2_weight) * top2_weights + (1.0 - float(top2_weight)) * top4_weights
         variants.append((run_name, "fixed_blend", weights, float(top2_weight), None, 1.0 - float(top2_weight)))
+        variant_sector_caps[run_name] = None
+        variant_sector_penalties[run_name] = None
+
+    if include_sector_capped_variants:
+        for sector_cap in parse_csv_ints(tuple(sector_cap_values), default=DEFAULT_SECTOR_CAP_VALUES):
+            max_sector_count = int(sector_cap)
+            if max_sector_count <= 0:
+                continue
+            sector_top2 = run_backtest(
+                prices,
+                lagged_universe,
+                top_n=2,
+                single_name_cap=0.50,
+                max_names_per_sector=max_sector_count,
+                **base_kwargs,
+            )
+            sector_top4 = run_backtest(
+                prices,
+                lagged_universe,
+                top_n=4,
+                single_name_cap=0.25,
+                max_names_per_sector=max_sector_count,
+                **base_kwargs,
+            )
+            sector_top2_weights = _align_weights(sector_top2["weights_history"], index=index, columns=weight_columns)
+            sector_top4_weights = _align_weights(sector_top4["weights_history"], index=index, columns=weight_columns)
+            top2_name = _sector_variant_name("top2_cap50", max_sector_count)
+            top4_name = _sector_variant_name("top4_cap25", max_sector_count)
+            variants.append((top2_name, "sector_capped_base_top2", sector_top2_weights, 1.0, None, 0.0))
+            variants.append((top4_name, "sector_capped_base_top4", sector_top4_weights, 0.0, None, 1.0))
+            variant_sector_caps[top2_name] = max_sector_count
+            variant_sector_caps[top4_name] = max_sector_count
+            variant_sector_penalties[top2_name] = None
+            variant_sector_penalties[top4_name] = None
+            for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
+                if not 0.0 < top2_weight < 1.0:
+                    continue
+                base_blend_name = _variant_name_for_blend(top2_weight)
+                run_name = _sector_variant_name(base_blend_name, max_sector_count)
+                weights = float(top2_weight) * sector_top2_weights + (1.0 - float(top2_weight)) * sector_top4_weights
+                variants.append(
+                    (
+                        run_name,
+                        "sector_capped_fixed_blend",
+                        weights,
+                        float(top2_weight),
+                        None,
+                        1.0 - float(top2_weight),
+                    )
+                )
+                variant_sector_caps[run_name] = max_sector_count
+                variant_sector_penalties[run_name] = None
+
+    if include_sector_soft_penalty_variants:
+        for penalty in parse_csv_floats(
+            tuple(sector_score_penalty_values),
+            default=DEFAULT_SECTOR_SCORE_PENALTY_VALUES,
+        ):
+            sector_score_penalty = float(penalty)
+            if sector_score_penalty <= 0.0:
+                continue
+            penalty_top2 = run_backtest(
+                prices,
+                lagged_universe,
+                top_n=2,
+                single_name_cap=0.50,
+                max_names_per_sector=0,
+                sector_score_penalty=sector_score_penalty,
+                **base_kwargs,
+            )
+            penalty_top4 = run_backtest(
+                prices,
+                lagged_universe,
+                top_n=4,
+                single_name_cap=0.25,
+                max_names_per_sector=0,
+                sector_score_penalty=sector_score_penalty,
+                **base_kwargs,
+            )
+            penalty_top2_weights = _align_weights(penalty_top2["weights_history"], index=index, columns=weight_columns)
+            penalty_top4_weights = _align_weights(penalty_top4["weights_history"], index=index, columns=weight_columns)
+            top2_name = _penalty_variant_name("top2_cap50", sector_score_penalty)
+            top4_name = _penalty_variant_name("top4_cap25", sector_score_penalty)
+            variants.append((top2_name, "sector_soft_penalty_base_top2", penalty_top2_weights, 1.0, None, 0.0))
+            variants.append((top4_name, "sector_soft_penalty_base_top4", penalty_top4_weights, 0.0, None, 1.0))
+            variant_sector_caps[top2_name] = None
+            variant_sector_caps[top4_name] = None
+            variant_sector_penalties[top2_name] = sector_score_penalty
+            variant_sector_penalties[top4_name] = sector_score_penalty
+            for top2_weight in parse_csv_floats(tuple(blend_top2_weights), default=DEFAULT_BLEND_TOP2_WEIGHTS):
+                if not 0.0 < top2_weight < 1.0:
+                    continue
+                base_blend_name = _variant_name_for_blend(top2_weight)
+                run_name = _penalty_variant_name(base_blend_name, sector_score_penalty)
+                weights = float(top2_weight) * penalty_top2_weights + (1.0 - float(top2_weight)) * penalty_top4_weights
+                variants.append(
+                    (
+                        run_name,
+                        "sector_soft_penalty_fixed_blend",
+                        weights,
+                        float(top2_weight),
+                        None,
+                        1.0 - float(top2_weight),
+                    )
+                )
+                variant_sector_caps[run_name] = None
+                variant_sector_penalties[run_name] = sector_score_penalty
 
     mode_rows: list[dict[str, object]] = []
     for threshold in parse_csv_floats(
@@ -477,6 +617,8 @@ def run_concentration_variant_research(
                 broad_benchmark_symbol=broad_benchmark_symbol,
                 safe_haven=safe_haven,
                 universe_lag_trading_days=int(universe_lag_trading_days),
+                max_names_per_sector=variant_sector_caps.get(run_name),
+                sector_score_penalty=variant_sector_penalties.get(run_name),
                 top2_blend_weight=blend_weight,
                 dynamic_drawdown_threshold=threshold,
                 top4_mode_share=top4_share,
@@ -548,6 +690,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-price-usd", type=float, default=10.0)
     parser.add_argument("--min-adv20-usd", type=float, default=20_000_000.0)
     parser.add_argument("--min-history-days", type=int, default=273)
+    parser.add_argument(
+        "--include-sector-capped-variants",
+        action="store_true",
+        help="Also test research-only Top2/Top4 blend variants with a per-sector selected-name cap.",
+    )
+    parser.add_argument(
+        "--sector-cap-values",
+        default=",".join(str(value) for value in DEFAULT_SECTOR_CAP_VALUES),
+        help="Comma-separated max selected names per sector values used when sector-capped variants are enabled.",
+    )
+    parser.add_argument(
+        "--include-sector-soft-penalty-variants",
+        action="store_true",
+        help="Also test research-only variants that subtract a soft score penalty for repeated sectors.",
+    )
+    parser.add_argument(
+        "--sector-score-penalty-values",
+        default=",".join(str(value) for value in DEFAULT_SECTOR_SCORE_PENALTY_VALUES),
+        help="Comma-separated soft score penalties used when sector soft-penalty variants are enabled.",
+    )
     parser.add_argument("--print-top", type=int, default=20)
     return parser
 
@@ -575,6 +737,13 @@ def main(argv: list[str] | None = None) -> int:
         min_price_usd=args.min_price_usd,
         min_adv20_usd=args.min_adv20_usd,
         min_history_days=args.min_history_days,
+        include_sector_capped_variants=bool(args.include_sector_capped_variants),
+        sector_cap_values=parse_csv_ints(args.sector_cap_values, default=DEFAULT_SECTOR_CAP_VALUES),
+        include_sector_soft_penalty_variants=bool(args.include_sector_soft_penalty_variants),
+        sector_score_penalty_values=parse_csv_floats(
+            args.sector_score_penalty_values,
+            default=DEFAULT_SECTOR_SCORE_PENALTY_VALUES,
+        ),
     )
     summary_path = output_dir / "concentration_variant_summary.csv"
     yearly_path = output_dir / "concentration_variant_yearly_summary.csv"
