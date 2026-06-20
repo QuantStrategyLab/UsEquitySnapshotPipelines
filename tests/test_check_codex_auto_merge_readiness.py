@@ -353,6 +353,83 @@ def test_evaluate_readiness_fails_when_policy_labels_match(tmp_path: Path, monke
     assert decision["errors"] == ["auto-merge and human-review labels must be distinct before enabling auto-merge"]
 
 
+def test_evaluate_readiness_accepts_branch_endpoint_fallback_when_protection_detail_is_forbidden(
+    tmp_path: Path, monkeypatch
+) -> None:
+    policy_path = tmp_path / "policy.json"
+    workflow_path = tmp_path / "auto_merge.yml"
+    write_policy(policy_path)
+    write_workflow(workflow_path)
+
+    def fake_github_request(method: str, url: str, token: str, payload=None, *, timeout=30):
+        if url.endswith("/labels/auto-merge-ok") or url.endswith("/labels/human-review-required"):
+            return {"name": url.rsplit("/", 1)[-1]}
+        if url.endswith("/branches/main/protection"):
+            raise GitHubApiError(method, url, 403, '{"message":"Resource not accessible by integration"}')
+        if url.endswith("/branches/main"):
+            return {
+                "protected": True,
+                "protection": {
+                    "required_status_checks": {
+                        "contexts": ["test"],
+                        "checks": [{"context": "test"}],
+                    }
+                },
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr(readiness, "github_request", fake_github_request)
+
+    decision = evaluate_readiness(
+        auto_merge=True,
+        repo="QuantStrategyLab/UsEquitySnapshotPipelines",
+        branch="main",
+        token="token",
+        policy_path=policy_path,
+        workflow_path=workflow_path,
+    )
+
+    assert decision["ready"]
+    assert decision["errors"] == []
+
+
+def test_evaluate_readiness_rejects_branch_endpoint_fallback_without_required_checks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    policy_path = tmp_path / "policy.json"
+    workflow_path = tmp_path / "auto_merge.yml"
+    write_policy(policy_path)
+    write_workflow(workflow_path)
+
+    def fake_github_request(method: str, url: str, token: str, payload=None, *, timeout=30):
+        if url.endswith("/labels/auto-merge-ok") or url.endswith("/labels/human-review-required"):
+            return {"name": url.rsplit("/", 1)[-1]}
+        if url.endswith("/branches/main/protection"):
+            raise GitHubApiError(method, url, 403, '{"message":"Resource not accessible by integration"}')
+        if url.endswith("/branches/main"):
+            return {
+                "protected": True,
+                "protection": {"required_status_checks": {"contexts": ["lint"]}},
+            }
+        if url.endswith("/rules/branches/main?per_page=100"):
+            return []
+        raise AssertionError(url)
+
+    monkeypatch.setattr(readiness, "github_request", fake_github_request)
+
+    decision = evaluate_readiness(
+        auto_merge=True,
+        repo="QuantStrategyLab/UsEquitySnapshotPipelines",
+        branch="main",
+        token="token",
+        policy_path=policy_path,
+        workflow_path=workflow_path,
+    )
+
+    assert not decision["ready"]
+    assert decision["errors"] == ["required status checks missing for main: test"]
+
+
 def test_evaluate_readiness_fails_when_branch_is_not_protected(tmp_path: Path, monkeypatch) -> None:
     policy_path = tmp_path / "policy.json"
     workflow_path = tmp_path / "auto_merge.yml"
