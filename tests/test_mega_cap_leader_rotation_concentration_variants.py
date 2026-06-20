@@ -96,6 +96,8 @@ def test_concentration_variant_research_builds_blend_and_dynamic_tables() -> Non
     summary = result["concentration_variant_summary"]
     yearly = result["concentration_variant_yearly_summary"]
     rolling = result["concentration_variant_rolling_summary"]
+    daily_returns = result["concentration_variant_daily_returns"]
+    rebalance_trades = result["concentration_variant_rebalance_trades"]
     mode_history = result["concentration_variant_mode_history"]
     assert {
         "base_top2_cap50",
@@ -106,7 +108,13 @@ def test_concentration_variant_research_builds_blend_and_dynamic_tables() -> Non
     assert {"CAGR", "Max Drawdown", "Top4 Mode Share"}.issubset(summary.columns)
     assert {"Strategy Return", "QQQ Return", "SPY Return"}.issubset(yearly.columns)
     assert {"Window Years", "Strategy CAGR", "QQQ CAGR"}.issubset(rolling.columns)
+    assert {"Date", "Run", "Strategy Return", "QQQ Return", "SPY Return"}.issubset(daily_returns.columns)
+    assert {"Date", "Run", "Symbol", "Trade Weight Delta", "Abs Trade Weight Delta"}.issubset(rebalance_trades.columns)
+    assert {"base_top2_cap50", "blend_top2_50_top4_50"}.issubset(set(daily_returns["Run"]))
+    assert {"base_top2_cap50", "blend_top2_50_top4_50"}.issubset(set(rebalance_trades["Run"]))
     assert not rolling.empty
+    assert not daily_returns.empty
+    assert not rebalance_trades.empty
     assert not mode_history.empty
 
 
@@ -357,6 +365,8 @@ def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
     assert (output_dir / "concentration_variant_summary.csv").exists()
     assert (output_dir / "concentration_variant_yearly_summary.csv").exists()
     assert (output_dir / "concentration_variant_rolling_summary.csv").exists()
+    assert (output_dir / "concentration_variant_daily_returns.csv").exists()
+    assert (output_dir / "concentration_variant_rebalance_trades.csv").exists()
     assert (output_dir / "concentration_variant_mode_history.csv").exists()
     summary = pd.read_csv(output_dir / "concentration_variant_summary.csv")
     assert "blend_top2_50_top4_50" in set(summary["Run"])
