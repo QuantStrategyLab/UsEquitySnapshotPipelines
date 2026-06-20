@@ -153,6 +153,7 @@ Default focus candidates are:
 
 - `offensive_growth_fast_top2_monthly`
 - `liveable_blend_baseline80_fast20`
+- `liveable_blend_baseline70_fast30`
 - `liveable_regime_qqqtrend_baseline70_fast30`
 - `liveable_volmanaged_baseline70_fast30`
 - `live_global_etf_rotation_defensive_baseline`
