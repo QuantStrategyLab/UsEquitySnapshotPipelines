@@ -41,6 +41,7 @@ useq-backtest-taco-panic-rebound-overlay-compare = "us_equity_snapshot_pipelines
 useq-backtest-crisis-regime-guard = "us_equity_snapshot_pipelines.crisis_regime_guard_research:main"
 useq-backtest-crisis-response = "us_equity_snapshot_pipelines.crisis_response_research:main"
 useq-backtest-global-etf-universe-sensitivity = "us_equity_snapshot_pipelines.global_etf_rotation_universe_sensitivity:main"
+useq-backtest-global-etf-offensive-rotation = "us_equity_snapshot_pipelines.global_etf_offensive_rotation_research:main"
 useq-build-global-etf-rotation-snapshot = "us_equity_snapshot_pipelines.global_etf_rotation_snapshot:main"
 useq-research-memory-semiconductor-momentum = "us_equity_snapshot_pipelines.memory_semiconductor_momentum_research:main"
 useq-build-crisis-context-pack = "us_equity_snapshot_pipelines.crisis_context_research:main"
