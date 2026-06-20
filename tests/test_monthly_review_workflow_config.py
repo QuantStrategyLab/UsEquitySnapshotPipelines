@@ -13,7 +13,8 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     workflow = MONTHLY_REVIEW.read_text(encoding="utf-8")
 
     assert "Publish Snapshot Artifacts" in workflow
-    assert "contains(fromJSON('[\"schedule\",\"workflow_run\"]'), github.event.workflow_run.event)" in workflow
+    assert "github.event.workflow_run.event == 'workflow_run'" in workflow
+    assert "contains(fromJSON('[\"schedule\",\"workflow_run\"]'), github.event.workflow_run.event)" not in workflow
     assert "actions: write" in workflow
     assert "Install monthly review dependencies" in workflow
     assert 'python -m pip install "pandas>=2.0"' in workflow

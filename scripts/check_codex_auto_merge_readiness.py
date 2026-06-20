@@ -420,6 +420,55 @@ def _ruleset_status_check_contexts(rules: list[Any], *, strict_only: bool = Fals
     return contexts
 
 
+def _validate_branch_endpoint_protection(
+    branch_payload: dict[str, Any],
+    *,
+    branch: str,
+    required_status_checks: tuple[str, ...],
+) -> list[str]:
+    if branch_payload.get("protected") is not True:
+        return [f"branch protection is not enabled for {branch}"]
+    protection = branch_payload.get("protection")
+    if not isinstance(protection, dict):
+        return [f"branch protection response is invalid for {branch}"]
+    status_checks = protection.get("required_status_checks")
+    if not isinstance(status_checks, dict):
+        return [f"required status checks are not enabled for {branch}"]
+    if status_checks.get("strict") is False:
+        return [f"required status checks must require branches to be up to date for {branch}"]
+    contexts = _protection_status_check_contexts(protection)
+    missing = [context for context in required_status_checks if context not in contexts]
+    if missing:
+        return [f"required status checks missing for {branch}: {', '.join(missing)}"]
+    return []
+
+
+def _check_branch_endpoint_readiness(
+    *,
+    api_url: str,
+    repo: str,
+    encoded_branch: str,
+    branch: str,
+    token: str,
+    required_status_checks: tuple[str, ...],
+) -> list[str]:
+    try:
+        branch_payload = github_request("GET", f"{api_url}/repos/{repo}/branches/{encoded_branch}", token)
+    except GitHubApiError as exc:
+        if exc.status_code == 404:
+            return [f"branch protection is not enabled for {branch}"]
+        if exc.status_code == 0:
+            return [f"branch protection branch fallback failed: {exc.response_body}"]
+        return [f"branch protection branch fallback failed with HTTP {exc.status_code}"]
+    if not isinstance(branch_payload, dict):
+        return [f"branch protection branch fallback response is invalid for {branch}"]
+    return _validate_branch_endpoint_protection(
+        branch_payload,
+        branch=branch,
+        required_status_checks=required_status_checks,
+    )
+
+
 def _validate_branch_rules(
     rules: list[Any],
     *,
@@ -505,6 +554,17 @@ def check_remote_readiness(
     except GitHubApiError as exc:
         if exc.status_code == 404:
             branch_protection_missing = True
+        elif exc.status_code == 403:
+            branch_protection_errors.extend(
+                _check_branch_endpoint_readiness(
+                    api_url=api_url,
+                    repo=repo,
+                    encoded_branch=encoded_branch,
+                    branch=branch,
+                    token=token,
+                    required_status_checks=required_status_checks,
+                )
+            )
         elif exc.status_code == 0:
             should_check_branch_rulesets = False
             branch_protection_errors.append(f"branch protection check failed: {exc.response_body}")
