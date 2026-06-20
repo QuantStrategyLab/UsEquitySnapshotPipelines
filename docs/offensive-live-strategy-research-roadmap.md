@@ -165,6 +165,36 @@ contain account, token, secret, password, cookie, JWT, or authorization text.
 This keeps operator artifacts useful for review without leaking broker/account
 state.
 
+2026-06-20 local cross-repository integration check:
+
+- Runtime source: `UsEquityStrategies` PR `#151`, branch
+  `codex/russell-runtime-variants`.
+- Pipeline source: this roadmap PR, branch `codex/offensive-live-next-research`.
+- Product-data input: `data/output/russell_top50_product_data_full_20260620_rerun`
+  rebuilt from product-data v2.
+- Snapshot as-of: `2026-05-29`; runtime evaluation date: `2026-06-01`, inside
+  the monthly execution window.
+
+Result:
+
+- Runtime active variant: `blend_top2_50_top4_50`.
+- Runtime target weights: `MU 37.5%`, `SNDK 37.5%`, `AMD 12.5%`, `INTC 12.5%`.
+- Runtime emitted `3` shadow review rows.
+- Archive builder wrote:
+  - `russell_top50_leader_rotation_shadow_review_rows.csv`
+  - `russell_top50_leader_rotation_shadow_review_rows.json`
+  - `russell_top50_leader_rotation_shadow_review_manifest.json`
+- The archived rows contained no account/token/secret/password/cookie/JWT/
+  authorization text.
+
+Shadow comparison from that integration run:
+
+| Shadow variant | Turnover delta vs active | Largest increase | Largest decrease |
+| --- | ---: | --- | --- |
+| `top4_baseline` | 25.00% | `AMD +12.50%` | `MU -12.50%` |
+| `blend_top2_25_top4_75` | 12.50% | `AMD +6.25%` | `MU -6.25%` |
+| `blend_top2_50_top4_50` | 0.00% | none | none |
+
 Review row schema:
 
 `UsEquityStrategies` defines the row order through
