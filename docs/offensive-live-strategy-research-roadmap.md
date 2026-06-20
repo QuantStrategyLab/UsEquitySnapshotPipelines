@@ -267,6 +267,47 @@ Promotion requirement:
 - The brake must improve drawdown or worst rolling excess without reducing long CAGR enough to fail the current fixed-blend gate.
 - If it increases turnover materially, keep it research-only.
 
+Implemented research artifact:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_research \
+  --prices data/output/russell_top50_product_data_full_20260620_rerun/input/mega_cap_leader_rotation_dynamic_top50_price_history.csv \
+  --universe data/output/russell_top50_product_data_full_20260620_rerun/input/mega_cap_leader_rotation_dynamic_top50_universe_history.csv \
+  --output-dir data/output/russell_top50_product_data_full_crash_brake_20260620_rerun \
+  --start 2017-10-02 \
+  --universe-lag-days 21 \
+  --rolling-window-years 3,5 \
+  --turnover-cost-bps 5 \
+  --min-adv20-usd 20000000 \
+  --drawdown-threshold 0.08 \
+  --baseline-top2-weight 0.50 \
+  --floor-top2-weight 0.25
+```
+
+The rule is deliberately narrow: it does not move the whole portfolio to cash.
+It only reduces the Top2 sleeve from `50%` to `25%` when QQQ is below its
+200-day SMA, QQQ 63-day drawdown is worse than `-8%`, and either QQQ 21-day
+return is positive or QQQ 63-day realized volatility is above its trailing
+one-year median.
+
+2026-06-20 product-data rerun result:
+
+| Lag | Run | CAGR | MaxDD | Sharpe | Turnover/year | Min rolling QQQ excess CAGR | Interpretation |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 21 | `blend_top2_50_top4_50_no_brake` | 45.06% | -30.64% | 1.27 | 3.52 | -4.83% | offensive baseline |
+| 21 | `crash_brake_top2_50_floor25` | 44.35% | -29.99% | 1.26 | 3.77 | -5.20% | modest drawdown improvement, worse return/turnover |
+| 21 | `blend_top2_25_top4_75_no_brake` | 42.44% | -28.19% | 1.27 | 3.52 | -6.41% | conservative fallback |
+| 42 | `blend_top2_50_top4_50_no_brake` | 39.95% | -30.31% | 1.19 | 3.24 | -1.91% | source-lag stress baseline |
+| 42 | `crash_brake_top2_50_floor25` | 38.99% | -30.67% | 1.17 | 3.51 | -2.35% | worse drawdown and worse return |
+| 42 | `blend_top2_25_top4_75_no_brake` | 37.53% | -28.81% | 1.18 | 3.32 | -3.90% | lower-risk fallback |
+
+Conclusion: this specific panic/rebound Top2 sleeve brake does **not** deserve
+default live activation. It reduces 21-day-lag max drawdown by only about
+`65` bps, worsens rolling QQQ excess, increases turnover, and fails to improve
+the 42-day source-lag stress. Keep it as a research-only comparator unless a
+future pre-registered variant improves drawdown without degrading rolling excess
+and turnover.
+
 ### Phase 4: Global ETF stays defensive unless OOS improves
 
 Goal: avoid turning a weak OOS result into production complexity.
