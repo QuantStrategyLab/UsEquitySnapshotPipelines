@@ -209,6 +209,43 @@ stress matrix. This is a stricter check than the single baseline
 `live_readiness_summary.csv` and should be archived alongside the monthly
 snapshot manifest.
 
+2026-06-20 product-data rerun evidence:
+
+The full point-in-time input refresh was rerun locally with product-data v2:
+
+- 106 dynamic Top50 universe snapshots;
+- 5,300 dynamic universe rows;
+- 247,107 price rows;
+- expected delisted price gaps remained `CELG`, `DWDP`, and `UTX`.
+
+The stress matrix was then run with `5,10,15,25` bps turnover costs, `21,42`
+trading-day universe lags, `20,000,000` minimum ADV20, and `3,5` year rolling
+windows. Output paths:
+
+- `data/output/russell_top50_product_data_full_20260620_rerun`
+- `data/output/russell_top50_product_data_full_stress_readiness_20260620_rerun`
+
+Stress summary:
+
+| Run | Stress scenarios | Passed | Worst MaxDD | Min 3Y QQQ excess CAGR | Min 5Y QQQ excess CAGR | Max turnover/year | Action |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `base_top4_cap25` | 8 | 8 | -27.81% | -9.07% | +6.46% | 3.53 | stress live-design review |
+| `blend_top2_25_top4_75` | 8 | 8 | -29.00% | -7.33% | +9.51% | 3.52 | stress live-design review |
+| `blend_top2_50_top4_50` | 8 | 8 | -31.49% | -5.76% | +11.65% | 3.52 | stress live-design review |
+
+Interpretation:
+
+- The `50% Top2 / 50% Top4` balanced profile remains the best offensive
+  candidate because it has the strongest rolling QQQ excess profile across the
+  fixed candidates, but its worst drawdown is above `-30%`; it should be labelled
+  aggressive/offensive, not defensive.
+- The `25% Top2 / 75% Top4` conservative profile stays below `-30%` drawdown and
+  improves rolling QQQ excess versus pure Top4; it remains the lower-risk live
+  design candidate.
+- The 42-trading-day source-lag stress reduces CAGR materially, so source-lag
+  monitoring should be part of the live promotion checklist even when the gate
+  passes.
+
 ### Phase 3: Momentum-crash brake research only
 
 Goal: test one narrow risk brake for the aggressive Top2 sleeve.
