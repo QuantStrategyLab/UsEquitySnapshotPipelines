@@ -139,6 +139,32 @@ Shadow/live-readiness checklist:
    `mega_cap_leader_rotation_live_readiness` gate and the result is archived
    with the runtime snapshot manifest.
 
+Runtime shadow review archive:
+
+After the `UsEquityStrategies` runtime emits
+`leader_rotation_shadow_review_rows`, archive the rows through:
+
+```bash
+PYTHONPATH=src python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_review \
+  --diagnostics-json /path/to/release_status_summary_or_runtime_diagnostics.json \
+  --output-dir data/output/russell_top50_shadow_review_YYYYMMDD \
+  --profile russell_top50_leader_rotation \
+  --snapshot-as-of YYYY-MM-DD
+```
+
+Outputs:
+
+- `russell_top50_leader_rotation_shadow_review_rows.csv`
+- `russell_top50_leader_rotation_shadow_review_rows.json`
+- `russell_top50_leader_rotation_shadow_review_manifest.json`
+
+The archive builder accepts either a runtime diagnostics object or a
+`release_status_summary.json` object with nested `diagnostics`. It keeps only
+the stable row fields listed below and rejects review notes that appear to
+contain account, token, secret, password, cookie, JWT, or authorization text.
+This keeps operator artifacts useful for review without leaking broker/account
+state.
+
 Review row schema:
 
 `UsEquityStrategies` defines the row order through
