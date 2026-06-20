@@ -31,6 +31,24 @@ PROMOTION_REVIEW_COLUMNS = (
     "reality_check_qqq_p_value",
     "reality_check_spy_passed",
     "reality_check_spy_p_value",
+    "spa_qqq_passed",
+    "spa_qqq_consistent_p_value",
+    "spa_spy_passed",
+    "spa_spy_consistent_p_value",
+    "era_robustness_passed",
+    "era_robustness_reason",
+    "era_best_cagr_count",
+    "era_positive_qqq_excess_rate",
+    "era_positive_spy_excess_rate",
+    "era_worst_qqq_excess_cagr",
+    "era_worst_spy_excess_cagr",
+    "era_worst_max_drawdown",
+    "era_recommended_action",
+    "mcs_style_in_confidence_set",
+    "mcs_style_dominated_by_best",
+    "mcs_style_p_value_vs_best",
+    "mcs_style_annualized_gap_vs_best",
+    "mcs_style_recommended_action",
     "required_gates_passed",
     "required_gate_reason",
     "statistical_support_level",
@@ -99,6 +117,94 @@ def _reality_by_run(frame: pd.DataFrame | None, *, prefix: str) -> pd.DataFrame:
     return output.drop_duplicates(subset=["Run"], keep="first")
 
 
+def _spa_by_run(frame: pd.DataFrame | None, *, prefix: str) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["Run", f"{prefix}_passed", f"{prefix}_consistent_p_value"])
+    if "Run" not in frame.columns:
+        raise ValueError("SPA summary must include Run column")
+    output = frame.loc[
+        :,
+        [column for column in ["Run", "SPA Passed", "SPA Consistent P Value"] if column in frame.columns],
+    ].copy()
+    output = output.rename(
+        columns={
+            "SPA Passed": f"{prefix}_passed",
+            "SPA Consistent P Value": f"{prefix}_consistent_p_value",
+        }
+    )
+    if f"{prefix}_passed" not in output.columns:
+        output[f"{prefix}_passed"] = False
+    if f"{prefix}_consistent_p_value" not in output.columns:
+        output[f"{prefix}_consistent_p_value"] = float("nan")
+    return output.drop_duplicates(subset=["Run"], keep="first")
+
+
+def _era_by_run(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["Run"])
+    if "Run" not in frame.columns:
+        raise ValueError("era split promotion summary must include Run column")
+    keep = [
+        "Run",
+        "era_robustness_passed",
+        "era_robustness_reason",
+        "Best CAGR Era Count",
+        "Positive QQQ Excess Era Rate",
+        "Positive SPY Excess Era Rate",
+        "Worst QQQ Excess CAGR",
+        "Worst SPY Excess CAGR",
+        "Worst Max Drawdown",
+        "recommended_action",
+    ]
+    output = frame.loc[:, [column for column in keep if column in frame.columns]].copy()
+    output = output.rename(
+        columns={
+            "Best CAGR Era Count": "era_best_cagr_count",
+            "Positive QQQ Excess Era Rate": "era_positive_qqq_excess_rate",
+            "Positive SPY Excess Era Rate": "era_positive_spy_excess_rate",
+            "Worst QQQ Excess CAGR": "era_worst_qqq_excess_cagr",
+            "Worst SPY Excess CAGR": "era_worst_spy_excess_cagr",
+            "Worst Max Drawdown": "era_worst_max_drawdown",
+            "recommended_action": "era_recommended_action",
+        }
+    )
+    if "era_robustness_passed" not in output.columns:
+        output["era_robustness_passed"] = False
+    if "era_robustness_reason" not in output.columns:
+        output["era_robustness_reason"] = "missing_gate_artifact"
+    return output.drop_duplicates(subset=["Run"], keep="first")
+
+
+def _mcs_by_run(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["Run"])
+    if "Run" not in frame.columns:
+        raise ValueError("MCS-style candidate summary must include Run column")
+    keep = [
+        "Run",
+        "In MCS Style Confidence Set",
+        "Dominated By Best Candidate",
+        "Pairwise P Value vs Best",
+        "Annualized Gap vs Best",
+        "recommended_action",
+    ]
+    output = frame.loc[:, [column for column in keep if column in frame.columns]].copy()
+    output = output.rename(
+        columns={
+            "In MCS Style Confidence Set": "mcs_style_in_confidence_set",
+            "Dominated By Best Candidate": "mcs_style_dominated_by_best",
+            "Pairwise P Value vs Best": "mcs_style_p_value_vs_best",
+            "Annualized Gap vs Best": "mcs_style_annualized_gap_vs_best",
+            "recommended_action": "mcs_style_recommended_action",
+        }
+    )
+    if "mcs_style_in_confidence_set" not in output.columns:
+        output["mcs_style_in_confidence_set"] = False
+    if "mcs_style_dominated_by_best" not in output.columns:
+        output["mcs_style_dominated_by_best"] = False
+    return output.drop_duplicates(subset=["Run"], keep="first")
+
+
 def _liquidity_for_nav(frame: pd.DataFrame | None, *, portfolio_nav: float | None) -> pd.DataFrame:
     if frame is None or frame.empty:
         return pd.DataFrame(columns=["Run"])
@@ -122,6 +228,44 @@ def _liquidity_for_nav(frame: pd.DataFrame | None, *, portfolio_nav: float | Non
     return liquidity.loc[:, [column for column in keep if column in liquidity.columns]]
 
 
+def _market_text(markets: list[str]) -> str:
+    if markets == ["qqq", "spy"]:
+        return "qqq_and_spy"
+    return "_and_".join(markets)
+
+
+def _statistical_support_level(row: pd.Series) -> str:
+    reality_markets = [
+        market
+        for market, column in (
+            ("qqq", "reality_check_qqq_passed"),
+            ("spy", "reality_check_spy_passed"),
+        )
+        if _bool(row.get(column), default=False)
+    ]
+    spa_markets = [
+        market
+        for market, column in (
+            ("qqq", "spa_qqq_passed"),
+            ("spy", "spa_spy_passed"),
+        )
+        if _bool(row.get(column), default=False)
+    ]
+    if reality_markets and spa_markets and reality_markets == spa_markets:
+        return f"{_market_text(reality_markets)}_reality_check_and_spa"
+    parts = []
+    if reality_markets:
+        parts.append(f"{_market_text(reality_markets)}_reality_check")
+    if spa_markets:
+        parts.append(f"{_market_text(spa_markets)}_spa")
+    if parts:
+        return "_plus_".join(parts)
+    has_spa_artifact = pd.notna(row.get("spa_qqq_consistent_p_value")) or pd.notna(
+        row.get("spa_spy_consistent_p_value")
+    )
+    return "not_reality_check_or_spa_winner" if has_spa_artifact else "not_reality_check_winner"
+
+
 def _decision(row: pd.Series) -> tuple[bool, str, str, str, str]:
     gate_checks = {
         "live_gate": _bool(row.get("live_gate_passed"), default=False),
@@ -133,16 +277,7 @@ def _decision(row: pd.Series) -> tuple[bool, str, str, str, str]:
     required_passed = not failed
     required_reason = "pass" if required_passed else ";".join(failed)
 
-    qqq_support = _bool(row.get("reality_check_qqq_passed"), default=False)
-    spy_support = _bool(row.get("reality_check_spy_passed"), default=False)
-    if qqq_support and spy_support:
-        support = "qqq_and_spy_reality_check"
-    elif qqq_support:
-        support = "qqq_reality_check"
-    elif spy_support:
-        support = "spy_reality_check"
-    else:
-        support = "not_reality_check_winner"
+    support = _statistical_support_level(row)
 
     role = str(row.get("Candidate Role", ""))
     profile = str(row.get("Gate Profile", ""))
@@ -150,7 +285,7 @@ def _decision(row: pd.Series) -> tuple[bool, str, str, str, str]:
         return False, required_reason, support, "research_only", "keep_research_only"
     if role == "balanced_offensive_live_design" or profile == "balanced_offensive":
         action = "promote_aggressive_live_design_review"
-        if support == "qqq_and_spy_reality_check":
+        if support.startswith("qqq_and_spy_reality_check"):
             action = "preferred_aggressive_live_design_review"
         return True, "pass", support, "live_design_review_balanced_offensive", action
     if role == "conservative_live_design" or profile == "conservative":
@@ -169,6 +304,10 @@ def build_promotion_review(
     liquidity_summary: pd.DataFrame | None = None,
     reality_check_qqq: pd.DataFrame | None = None,
     reality_check_spy: pd.DataFrame | None = None,
+    spa_qqq: pd.DataFrame | None = None,
+    spa_spy: pd.DataFrame | None = None,
+    era_split_promotion: pd.DataFrame | None = None,
+    mcs_style_summary: pd.DataFrame | None = None,
     candidate_runs: Iterable[str] | None = None,
     portfolio_nav: float | None = None,
 ) -> pd.DataFrame:
@@ -202,6 +341,10 @@ def build_promotion_review(
     liquidity = _liquidity_for_nav(liquidity_summary, portfolio_nav=portfolio_nav)
     qqq = _reality_by_run(reality_check_qqq, prefix="reality_check_qqq")
     spy = _reality_by_run(reality_check_spy, prefix="reality_check_spy")
+    spa_qqq_frame = _spa_by_run(spa_qqq, prefix="spa_qqq")
+    spa_spy_frame = _spa_by_run(spa_spy, prefix="spa_spy")
+    era = _era_by_run(era_split_promotion)
+    mcs = _mcs_by_run(mcs_style_summary)
 
     output = base.merge(live, on="Run", how="left")
     output = output.merge(stress, on="Run", how="left")
@@ -209,6 +352,10 @@ def build_promotion_review(
     output = output.merge(liquidity, on="Run", how="left")
     output = output.merge(qqq, on="Run", how="left")
     output = output.merge(spy, on="Run", how="left")
+    output = output.merge(spa_qqq_frame, on="Run", how="left")
+    output = output.merge(spa_spy_frame, on="Run", how="left")
+    output = output.merge(era, on="Run", how="left")
+    output = output.merge(mcs, on="Run", how="left")
 
     roles = output["Run"].map(lambda run: _candidate_role_from_run(str(run)))
     if "Candidate Role" not in output.columns:
@@ -224,6 +371,11 @@ def build_promotion_review(
         "liquidity_gate_passed",
         "reality_check_qqq_passed",
         "reality_check_spy_passed",
+        "spa_qqq_passed",
+        "spa_spy_passed",
+        "era_robustness_passed",
+        "mcs_style_in_confidence_set",
+        "mcs_style_dominated_by_best",
     ):
         if column not in output.columns:
             output[column] = False
@@ -264,6 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--liquidity-summary", required=True, help="Input liquidity_summary.csv")
     parser.add_argument("--reality-check-qqq", help="Optional QQQ reality_check_candidate_summary.csv")
     parser.add_argument("--reality-check-spy", help="Optional SPY reality_check_candidate_summary.csv")
+    parser.add_argument("--spa-qqq", help="Optional QQQ spa_candidate_summary.csv")
+    parser.add_argument("--spa-spy", help="Optional SPY spa_candidate_summary.csv")
+    parser.add_argument("--era-split-promotion", help="Optional era_split_promotion_summary.csv")
+    parser.add_argument("--mcs-style-summary", help="Optional mcs_style_candidate_summary.csv")
     parser.add_argument("--candidate-runs", default="")
     parser.add_argument("--portfolio-nav", type=float)
     parser.add_argument("--output-dir", required=True)
@@ -281,6 +437,10 @@ def main(argv: list[str] | None = None) -> int:
         liquidity_summary=read_table(args.liquidity_summary),
         reality_check_qqq=read_table(args.reality_check_qqq) if args.reality_check_qqq else None,
         reality_check_spy=read_table(args.reality_check_spy) if args.reality_check_spy else None,
+        spa_qqq=read_table(args.spa_qqq) if args.spa_qqq else None,
+        spa_spy=read_table(args.spa_spy) if args.spa_spy else None,
+        era_split_promotion=read_table(args.era_split_promotion) if args.era_split_promotion else None,
+        mcs_style_summary=read_table(args.mcs_style_summary) if args.mcs_style_summary else None,
         candidate_runs=parse_csv_strings(args.candidate_runs, default=()),
         portfolio_nav=args.portfolio_nav,
     )

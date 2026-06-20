@@ -83,6 +83,88 @@ def _reality_spy() -> pd.DataFrame:
     )
 
 
+def _spa_qqq() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"Run": "blend_top2_50_top4_50", "SPA Passed": True, "SPA Consistent P Value": 0.008},
+            {"Run": "blend_top2_25_top4_75", "SPA Passed": False, "SPA Consistent P Value": 0.008},
+            {"Run": "base_top4_cap25", "SPA Passed": False, "SPA Consistent P Value": 0.008},
+        ]
+    )
+
+
+def _spa_spy() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"Run": "blend_top2_50_top4_50", "SPA Passed": True, "SPA Consistent P Value": 0.004},
+            {"Run": "blend_top2_25_top4_75", "SPA Passed": False, "SPA Consistent P Value": 0.004},
+            {"Run": "base_top4_cap25", "SPA Passed": False, "SPA Consistent P Value": 0.004},
+        ]
+    )
+
+
+def _era_split() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Run": "blend_top2_50_top4_50",
+                "Best CAGR Era Count": 3,
+                "Positive QQQ Excess Era Rate": 0.75,
+                "Positive SPY Excess Era Rate": 0.75,
+                "Worst QQQ Excess CAGR": -0.08,
+                "Worst SPY Excess CAGR": -0.02,
+                "Worst Max Drawdown": -0.31,
+                "era_robustness_passed": True,
+                "era_robustness_reason": "pass",
+                "recommended_action": "era_supported_preferred_offensive_review",
+            },
+            {
+                "Run": "blend_top2_25_top4_75",
+                "Best CAGR Era Count": 0,
+                "Positive QQQ Excess Era Rate": 0.75,
+                "Positive SPY Excess Era Rate": 0.75,
+                "Worst QQQ Excess CAGR": -0.07,
+                "Worst SPY Excess CAGR": -0.01,
+                "Worst Max Drawdown": -0.28,
+                "era_robustness_passed": True,
+                "era_robustness_reason": "pass",
+                "recommended_action": "era_supported_conservative_review",
+            },
+        ]
+    )
+
+
+def _mcs_style() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Run": "blend_top2_50_top4_50",
+                "In MCS Style Confidence Set": True,
+                "Dominated By Best Candidate": False,
+                "Pairwise P Value vs Best": float("nan"),
+                "Annualized Gap vs Best": 0.0,
+                "recommended_action": "mcs_style_best_candidate",
+            },
+            {
+                "Run": "blend_top2_25_top4_75",
+                "In MCS Style Confidence Set": False,
+                "Dominated By Best Candidate": True,
+                "Pairwise P Value vs Best": 0.03,
+                "Annualized Gap vs Best": -0.024,
+                "recommended_action": "mcs_style_excluded_by_best",
+            },
+            {
+                "Run": "base_top4_cap25",
+                "In MCS Style Confidence Set": False,
+                "Dominated By Best Candidate": True,
+                "Pairwise P Value vs Best": 0.04,
+                "Annualized Gap vs Best": -0.049,
+                "recommended_action": "mcs_style_excluded_by_best",
+            },
+        ]
+    )
+
+
 def test_build_promotion_review_prefers_balanced_when_all_required_gates_pass() -> None:
     review = build_promotion_review(
         _summary(),
@@ -105,6 +187,43 @@ def test_build_promotion_review_prefers_balanced_when_all_required_gates_pass() 
     assert "live_gate" in indexed.loc["panicdd10_ret3_vol25_stock50_blend_top2_50_top4_50", "required_gate_reason"]
 
 
+def test_build_promotion_review_includes_spa_as_statistical_support_not_required_gate() -> None:
+    review = build_promotion_review(
+        _summary(),
+        live_readiness=_live(),
+        stress_summary=_stress(),
+        overfit_promotion=_overfit(),
+        liquidity_summary=_liquidity(),
+        reality_check_qqq=_reality_qqq(),
+        reality_check_spy=_reality_spy(),
+        spa_qqq=_spa_qqq(),
+        spa_spy=_spa_spy(),
+        era_split_promotion=_era_split(),
+        mcs_style_summary=_mcs_style(),
+        portfolio_nav=5_000_000,
+    )
+    indexed = review.set_index("Run")
+
+    assert bool(indexed.loc["blend_top2_50_top4_50", "required_gates_passed"]) is True
+    assert indexed.loc["blend_top2_50_top4_50", "statistical_support_level"] == (
+        "qqq_and_spy_reality_check_and_spa"
+    )
+    assert indexed.loc["blend_top2_50_top4_50", "recommended_action"] == "preferred_aggressive_live_design_review"
+    assert bool(indexed.loc["blend_top2_50_top4_50", "spa_qqq_passed"]) is True
+    assert indexed.loc["blend_top2_50_top4_50", "spa_qqq_consistent_p_value"] == 0.008
+    assert bool(indexed.loc["blend_top2_50_top4_50", "era_robustness_passed"]) is True
+    assert indexed.loc["blend_top2_50_top4_50", "era_best_cagr_count"] == 3
+    assert indexed.loc["blend_top2_50_top4_50", "era_recommended_action"] == (
+        "era_supported_preferred_offensive_review"
+    )
+    assert bool(indexed.loc["blend_top2_50_top4_50", "mcs_style_in_confidence_set"]) is True
+    assert indexed.loc["blend_top2_50_top4_50", "mcs_style_recommended_action"] == "mcs_style_best_candidate"
+    assert bool(indexed.loc["blend_top2_25_top4_75", "mcs_style_dominated_by_best"]) is True
+    assert indexed.loc["blend_top2_25_top4_75", "statistical_support_level"] == (
+        "not_reality_check_or_spa_winner"
+    )
+
+
 def test_promotion_review_cli_writes_output(tmp_path) -> None:
     paths = {}
     for name, frame in {
@@ -115,6 +234,10 @@ def test_promotion_review_cli_writes_output(tmp_path) -> None:
         "liquidity": _liquidity(),
         "qqq": _reality_qqq(),
         "spy": _reality_spy(),
+        "spa_qqq": _spa_qqq(),
+        "spa_spy": _spa_spy(),
+        "era": _era_split(),
+        "mcs": _mcs_style(),
     }.items():
         path = tmp_path / f"{name}.csv"
         frame.to_csv(path, index=False)
@@ -137,6 +260,14 @@ def test_promotion_review_cli_writes_output(tmp_path) -> None:
             str(paths["qqq"]),
             "--reality-check-spy",
             str(paths["spy"]),
+            "--spa-qqq",
+            str(paths["spa_qqq"]),
+            "--spa-spy",
+            str(paths["spa_spy"]),
+            "--era-split-promotion",
+            str(paths["era"]),
+            "--mcs-style-summary",
+            str(paths["mcs"]),
             "--portfolio-nav",
             "5000000",
             "--output-dir",
