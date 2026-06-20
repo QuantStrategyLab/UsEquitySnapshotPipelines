@@ -61,6 +61,8 @@ DEFAULT_ROBUSTNESS_CANDIDATES = (
     "offensive_growth_fast_top2_monthly",
     "liveable_blend_baseline90_fast10",
     "liveable_blend_baseline85_fast15",
+    "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
+    "liveable_trend_drawdown_brake_baseline85_fast15_floor0",
     "liveable_blend_baseline80_fast20",
     "liveable_blend_baseline75_fast25",
     "liveable_blend_baseline70_fast30",
@@ -70,8 +72,28 @@ DEFAULT_ROBUSTNESS_CANDIDATES = (
 )
 DEFAULT_ROLLING_ROBUSTNESS_YEARS = (3, 5)
 DEFAULT_LIVE_BASELINE_CANDIDATE = "live_global_etf_rotation_defensive_baseline"
+DEFAULT_WALK_FORWARD_CANDIDATES = (
+    "liveable_blend_baseline90_fast10",
+    "liveable_blend_baseline85_fast15",
+    "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
+    "liveable_trend_drawdown_brake_baseline85_fast15_floor0",
+    "liveable_blend_baseline80_fast20",
+    "liveable_blend_baseline75_fast25",
+    "liveable_blend_baseline70_fast30",
+    "liveable_regime_qqqtrend_baseline70_fast30",
+    "liveable_volmanaged_baseline70_fast30",
+)
+DEFAULT_WALK_FORWARD_TRAIN_YEARS = 5
+DEFAULT_WALK_FORWARD_MIN_TRAIN_DAYS_PER_YEAR = 180
+DEFAULT_WALK_FORWARD_MIN_TEST_DAYS = 120
+DEFAULT_WALK_FORWARD_MIN_TRAIN_EXCESS_CAGR = 0.0
 DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW = 63
 DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME = 50_000_000.0
+DEFAULT_DYNAMIC_COST_LOW_LIQUIDITY_PENALTY_BPS = 10.0
+DEFAULT_DYNAMIC_COST_MAX_LOW_LIQUIDITY_PENALTY_BPS = 25.0
+DEFAULT_DYNAMIC_COST_PARTICIPATION_RATE_THRESHOLD = 0.02
+DEFAULT_DYNAMIC_COST_PARTICIPATION_PENALTY_BPS = 10.0
+DEFAULT_DYNAMIC_COST_MAX_PARTICIPATION_PENALTY_BPS = 25.0
 SAFE_LIKE_SYMBOLS = {"BIL", "BOXX", "SGOV", "CASH"}
 LIVE_MIN_LONG_EXCESS_CAGR_VS_BASELINE = 0.0025
 LIVE_MAX_LONG_DRAWDOWN_DEGRADATION_VS_BASELINE = 0.02
@@ -81,6 +103,11 @@ LIVE_MIN_ROLLING_3Y_BASELINE_CAGR_WIN_RATE = 0.50
 LIVE_MIN_ROLLING_5Y_BASELINE_CAGR_WIN_RATE = 0.60
 LIVE_MIN_WORST_ROLLING_EXCESS_CAGR_VS_BASELINE = -0.03
 LIVE_MAX_WORST_WINDOW_DRAWDOWN_DEGRADATION_VS_BASELINE = 0.03
+WALK_FORWARD_MIN_WINDOW_COUNT = 3
+WALK_FORWARD_MIN_OOS_WIN_RATE = 0.50
+WALK_FORWARD_MIN_OOS_MEDIAN_EXCESS_CAGR = 0.0
+WALK_FORWARD_MIN_WORST_OOS_EXCESS_CAGR = -0.03
+WALK_FORWARD_MAX_WORST_OOS_DRAWDOWN_DEGRADATION = 0.03
 
 
 @dataclass(frozen=True)
@@ -127,8 +154,23 @@ class GlobalEtfLiveableCompositeSpec:
     trend_fast_momentum_required: bool = True
     volatility_window: int = 63
     target_volatility: float = 0.18
+    drawdown_window: int = 63
+    drawdown_threshold: float = -0.08
     min_overlay_weight: float = 0.0
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class DynamicExecutionCostConfig:
+    base_cost_bps: float = DEFAULT_TURNOVER_COST_BPS
+    dollar_volume_window: int = DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW
+    low_liquidity_dollar_volume: float = DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME
+    low_liquidity_penalty_bps: float = DEFAULT_DYNAMIC_COST_LOW_LIQUIDITY_PENALTY_BPS
+    max_low_liquidity_penalty_bps: float = DEFAULT_DYNAMIC_COST_MAX_LOW_LIQUIDITY_PENALTY_BPS
+    estimated_portfolio_nav: float = 0.0
+    participation_rate_threshold: float = DEFAULT_DYNAMIC_COST_PARTICIPATION_RATE_THRESHOLD
+    participation_penalty_bps: float = DEFAULT_DYNAMIC_COST_PARTICIPATION_PENALTY_BPS
+    max_participation_penalty_bps: float = DEFAULT_DYNAMIC_COST_MAX_PARTICIPATION_PENALTY_BPS
 
 
 GLOBAL_ETF_OFFENSIVE_VARIANTS: tuple[GlobalEtfOffensiveVariantSpec, ...] = (
@@ -291,6 +333,42 @@ GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
         notes=(
             "Research-only sleeve-sensitivity candidate: keep 85% in current defensive baseline and allocate "
             "15% to the fast offensive sleeve."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_trend_drawdown_brake_baseline85_fast15_floor10",
+        display_name="Liveable Trend/Drawdown Brake Baseline 85 / Fast 15 Floor 10",
+        rule="trend_drawdown_brake_baseline85_fast15_floor10",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.15,
+        regime_symbol=DEFAULT_SECONDARY_BENCHMARK,
+        trend_sma_period=200,
+        drawdown_window=63,
+        drawdown_threshold=-0.08,
+        min_overlay_weight=0.10,
+        notes=(
+            "Research-only deterministic brake: cap the fast sleeve at 15%, but reduce it to 10% "
+            "on the next monthly rebalance when QQQ is below its 200-day trend, fast momentum is "
+            "negative, or the 63-day QQQ drawdown is worse than -8%."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_trend_drawdown_brake_baseline85_fast15_floor0",
+        display_name="Liveable Trend/Drawdown Brake Baseline 85 / Fast 15 Floor 0",
+        rule="trend_drawdown_brake_baseline85_fast15_floor0",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_fast_top2_monthly",
+        overlay_weight=0.15,
+        regime_symbol=DEFAULT_SECONDARY_BENCHMARK,
+        trend_sma_period=200,
+        drawdown_window=63,
+        drawdown_threshold=-0.08,
+        min_overlay_weight=0.0,
+        notes=(
+            "Research-only deterministic brake: cap the fast sleeve at 15%, but switch back to 100% "
+            "current defensive baseline on the next monthly rebalance when QQQ is below its 200-day "
+            "trend, fast momentum is negative, or the 63-day QQQ drawdown is worse than -8%."
         ),
     ),
     GlobalEtfLiveableCompositeSpec(
@@ -1110,6 +1188,18 @@ def _build_composite_overlay_weight(
         raw_weight.loc[trend_gate] = max_weight
         return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
 
+    if rule.startswith("trend_drawdown_brake"):
+        symbol = str(spec.regime_symbol).strip().upper()
+        min_weight = max(0.0, min(max_weight, float(spec.min_overlay_weight)))
+        raw_weight = pd.Series(min_weight, index=context.close.index, dtype=float)
+        close = pd.to_numeric(context.close.get(symbol, pd.Series(index=context.close.index)), errors="coerce")
+        rolling_peak = close.rolling(int(spec.drawdown_window), min_periods=int(spec.drawdown_window)).max()
+        drawdown = close.div(rolling_peak).sub(1.0)
+        drawdown_ok = drawdown.ge(float(spec.drawdown_threshold)).fillna(False)
+        risk_on = trend_gate & drawdown_ok
+        raw_weight.loc[risk_on] = max_weight
+        return _monthly_applied_overlay_weight(raw_weight, target_index=target_index)
+
     if rule.startswith("volatility_managed_overlay"):
         symbol = str(spec.regime_symbol).strip().upper()
         returns = pd.to_numeric(context.returns.get(symbol, pd.Series(index=context.returns.index)), errors="coerce")
@@ -1606,6 +1696,593 @@ def build_candidate_liquidity_diagnostics(
     return {
         "liquidity_summary": pd.DataFrame(summary_rows),
         "liquidity_symbol_summary": pd.DataFrame(symbol_rows),
+    }
+
+
+def _safe_positive(value: float, *, default: float = 0.0) -> float:
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric > 0.0 else float(default)
+
+
+def _dynamic_low_liquidity_penalty_bps(
+    dollar_volume: pd.DataFrame,
+    *,
+    threshold: float,
+    penalty_bps: float,
+    max_penalty_bps: float,
+) -> pd.DataFrame:
+    if dollar_volume.empty:
+        return pd.DataFrame(index=dollar_volume.index, columns=dollar_volume.columns, dtype=float)
+    safe_threshold = _safe_positive(threshold)
+    if safe_threshold <= 0.0 or float(penalty_bps) <= 0.0 or float(max_penalty_bps) <= 0.0:
+        return pd.DataFrame(0.0, index=dollar_volume.index, columns=dollar_volume.columns)
+    volume = pd.DataFrame(dollar_volume).apply(pd.to_numeric, errors="coerce")
+    ratio = safe_threshold / volume.where(volume.gt(0.0))
+    penalty = float(penalty_bps) * (np.sqrt(ratio) - 1.0)
+    return penalty.clip(lower=0.0, upper=float(max_penalty_bps)).fillna(float(max_penalty_bps))
+
+
+def _dynamic_participation_penalty_bps(
+    trade_weight_delta: pd.DataFrame,
+    dollar_volume: pd.DataFrame,
+    *,
+    estimated_portfolio_nav: float,
+    participation_rate_threshold: float,
+    penalty_bps: float,
+    max_penalty_bps: float,
+) -> pd.DataFrame:
+    nav = _safe_positive(estimated_portfolio_nav)
+    threshold = _safe_positive(participation_rate_threshold)
+    if nav <= 0.0 or threshold <= 0.0 or float(penalty_bps) <= 0.0 or float(max_penalty_bps) <= 0.0:
+        return pd.DataFrame(0.0, index=trade_weight_delta.index, columns=trade_weight_delta.columns)
+    volume = pd.DataFrame(dollar_volume).apply(pd.to_numeric, errors="coerce")
+    trade_dollars = pd.DataFrame(trade_weight_delta).abs().mul(nav)
+    participation = trade_dollars / volume.where(volume.gt(0.0))
+    penalty = float(penalty_bps) * (np.sqrt(participation / threshold) - 1.0)
+    return penalty.clip(lower=0.0, upper=float(max_penalty_bps)).fillna(float(max_penalty_bps))
+
+
+def _dynamic_cost_for_weights(
+    *,
+    weights: pd.DataFrame,
+    asset_returns: pd.DataFrame,
+    rolling_dollar_volume: pd.DataFrame,
+    config: DynamicExecutionCostConfig,
+) -> dict[str, object]:
+    prepared_weights = pd.DataFrame(weights).copy()
+    if prepared_weights.empty:
+        return {"returns": pd.Series(dtype=float), "costs": pd.Series(dtype=float), "summary": {}}
+    prepared_weights.index = pd.to_datetime(prepared_weights.index).tz_localize(None).normalize()
+    prepared_weights.columns = [str(column).strip().upper() for column in prepared_weights.columns]
+    prepared_weights = prepared_weights.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    common_index = prepared_weights.index.intersection(asset_returns.index).intersection(rolling_dollar_volume.index)
+    common_columns = [column for column in prepared_weights.columns if column in asset_returns.columns]
+    if len(common_index) == 0 or not common_columns:
+        return {"returns": pd.Series(dtype=float), "costs": pd.Series(dtype=float), "summary": {}}
+
+    prepared_weights = prepared_weights.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+    returns = asset_returns.reindex(index=common_index, columns=common_columns).fillna(0.0)
+    dollar_volume = rolling_dollar_volume.reindex(index=common_index, columns=common_columns)
+    gross_returns = prepared_weights.mul(returns, axis=0).sum(axis=1)
+    trade_delta = prepared_weights.diff().abs().fillna(0.0)
+    turnover = 0.5 * trade_delta.sum(axis=1)
+
+    low_liquidity_penalty = _dynamic_low_liquidity_penalty_bps(
+        dollar_volume,
+        threshold=float(config.low_liquidity_dollar_volume),
+        penalty_bps=float(config.low_liquidity_penalty_bps),
+        max_penalty_bps=float(config.max_low_liquidity_penalty_bps),
+    )
+    participation_penalty = _dynamic_participation_penalty_bps(
+        trade_delta,
+        dollar_volume,
+        estimated_portfolio_nav=float(config.estimated_portfolio_nav),
+        participation_rate_threshold=float(config.participation_rate_threshold),
+        penalty_bps=float(config.participation_penalty_bps),
+        max_penalty_bps=float(config.max_participation_penalty_bps),
+    )
+    effective_cost_bps = (
+        float(config.base_cost_bps)
+        + low_liquidity_penalty.reindex_like(trade_delta).fillna(float(config.max_low_liquidity_penalty_bps))
+        + participation_penalty.reindex_like(trade_delta).fillna(0.0)
+    )
+    daily_cost = 0.5 * trade_delta.mul(effective_cost_bps / 10_000.0, axis=0).sum(axis=1)
+    adjusted_returns = gross_returns - daily_cost
+    effective_daily_bps = daily_cost.div(turnover.where(turnover.gt(0.0))) * 10_000.0
+    years = max((common_index[-1] - common_index[0]).days / 365.25, 1 / 365.25)
+    traded_mask = trade_delta.gt(1e-12)
+    low_liquidity_trade_weight = trade_delta.where(
+        dollar_volume.lt(float(config.low_liquidity_dollar_volume)), 0.0
+    ).sum(axis=1)
+    participation_rate = (
+        trade_delta.mul(float(config.estimated_portfolio_nav)).div(dollar_volume.where(dollar_volume.gt(0.0)))
+        if float(config.estimated_portfolio_nav) > 0.0
+        else pd.DataFrame(0.0, index=trade_delta.index, columns=trade_delta.columns)
+    )
+    summary = {
+        "Trading Days": int(len(common_index)),
+        "Trade Days": int(turnover.gt(1e-12).sum()),
+        "Estimated Portfolio NAV": float(config.estimated_portfolio_nav),
+        "Base Cost Bps": float(config.base_cost_bps),
+        "Dollar Volume Window": int(config.dollar_volume_window),
+        "Low Liquidity Dollar Volume Threshold": float(config.low_liquidity_dollar_volume),
+        "Low Liquidity Penalty Bps": float(config.low_liquidity_penalty_bps),
+        "Max Low Liquidity Penalty Bps": float(config.max_low_liquidity_penalty_bps),
+        "Participation Rate Threshold": float(config.participation_rate_threshold),
+        "Participation Penalty Bps": float(config.participation_penalty_bps),
+        "Max Participation Penalty Bps": float(config.max_participation_penalty_bps),
+        "Turnover/Year": float(turnover.sum() / years),
+        "Annualized Cost Drag": float(daily_cost.sum() / years),
+        "Total Cost Drag": float(daily_cost.sum()),
+        "Median Effective Cost Bps On Trade Days": float(effective_daily_bps.dropna().median()),
+        "Max Effective Cost Bps On Trade Days": float(effective_daily_bps.dropna().max()),
+        "Max Daily Cost Drag": float(daily_cost.max()),
+        "Median Low Liquidity Trade Weight": float(low_liquidity_trade_weight.where(turnover.gt(1e-12)).median()),
+        "Max Low Liquidity Trade Weight": float(low_liquidity_trade_weight.max()),
+        "Max Participation Rate": float(participation_rate.where(traded_mask).max().max()),
+    }
+    return {"returns": adjusted_returns, "costs": daily_cost, "summary": summary}
+
+
+def build_dynamic_execution_cost_adjusted_returns(
+    *,
+    price_history: pd.DataFrame,
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    candidate_ids: Sequence[str],
+    config: DynamicExecutionCostConfig,
+) -> dict[str, pd.DataFrame]:
+    close = _normalize_price_history(price_history)
+    asset_returns = close.pct_change(fill_method=None).fillna(0.0)
+    rolling_dollar_volume = _rolling_dollar_volume(price_history, window=int(config.dollar_volume_window))
+    if rolling_dollar_volume.empty:
+        return {
+            "portfolio_returns": pd.DataFrame(),
+            "daily_costs": pd.DataFrame(),
+            "dynamic_cost_summary": pd.DataFrame(),
+        }
+
+    returns_by_candidate: dict[str, pd.Series] = {}
+    costs_by_candidate: dict[str, pd.Series] = {}
+    summary_rows: list[dict[str, object]] = []
+    for candidate_id in tuple(dict.fromkeys(str(item).strip() for item in candidate_ids if str(item).strip())):
+        if candidate_id not in weights_by_candidate:
+            continue
+        result = _dynamic_cost_for_weights(
+            weights=pd.DataFrame(weights_by_candidate[candidate_id]),
+            asset_returns=asset_returns,
+            rolling_dollar_volume=rolling_dollar_volume,
+            config=config,
+        )
+        returns = pd.Series(result["returns"], dtype=float)
+        if returns.empty:
+            continue
+        returns.name = candidate_id
+        returns_by_candidate[candidate_id] = returns
+        costs = pd.Series(result["costs"], dtype=float)
+        costs.name = candidate_id
+        costs_by_candidate[candidate_id] = costs
+        summary_rows.append({"Candidate": candidate_id, **dict(result["summary"])})
+
+    return {
+        "portfolio_returns": pd.concat(returns_by_candidate.values(), axis=1)
+        if returns_by_candidate
+        else pd.DataFrame(),
+        "daily_costs": pd.concat(costs_by_candidate.values(), axis=1) if costs_by_candidate else pd.DataFrame(),
+        "dynamic_cost_summary": pd.DataFrame(summary_rows),
+    }
+
+
+def _metadata_from_period_summary(period_summary: pd.DataFrame) -> dict[str, dict[str, object]]:
+    metadata_columns = (
+        "Candidate",
+        "Display Name",
+        "Candidate Group",
+        "Rule",
+        "Primary Benchmark Symbol",
+        "Secondary Benchmark Symbol",
+        "Safe Haven",
+        "Top N",
+        "Rebalance Months",
+        "SMA Period",
+        "Canary Bad Threshold",
+        "Score Mode",
+        "Canary Mode",
+        "Safe Fraction Per Bad Canary",
+        "Confidence Weighting",
+        "Confidence Volatility Gate",
+        "Ranking Pool Size",
+        "Ranking Pool",
+        "Notes",
+    )
+    frame = pd.DataFrame(period_summary).copy()
+    metadata: dict[str, dict[str, object]] = {}
+    if frame.empty:
+        return metadata
+    for candidate_id, subset in frame.groupby("Candidate", sort=False):
+        row = subset.iloc[0]
+        metadata[str(candidate_id)] = {column: row.get(column) for column in metadata_columns if column in row.index}
+    return metadata
+
+
+def build_period_summary_from_portfolio_returns(
+    *,
+    price_history: pd.DataFrame,
+    periods: Sequence[tuple[str, str, str | None]],
+    portfolio_returns: pd.DataFrame,
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    source_period_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    close = _normalize_price_history(price_history)
+    asset_returns = close.pct_change(fill_method=None).fillna(0.0)
+    benchmark_returns = asset_returns.get(DEFAULT_PRIMARY_BENCHMARK, pd.Series(index=asset_returns.index, dtype=float))
+    secondary_benchmark_returns = asset_returns.get(
+        DEFAULT_SECONDARY_BENCHMARK, pd.Series(index=asset_returns.index, dtype=float)
+    )
+    metadata = _metadata_from_period_summary(source_period_summary)
+    rows: list[dict[str, object]] = []
+    portfolio = pd.DataFrame(portfolio_returns).copy()
+    if portfolio.empty:
+        return pd.DataFrame()
+    portfolio.index = pd.to_datetime(portfolio.index).tz_localize(None).normalize()
+    for candidate_id in portfolio.columns:
+        candidate_id = str(candidate_id)
+        candidate_returns = pd.to_numeric(portfolio[candidate_id], errors="coerce").dropna()
+        if candidate_returns.empty:
+            continue
+        weights = pd.DataFrame(weights_by_candidate.get(candidate_id, pd.DataFrame())).copy()
+        if not weights.empty:
+            weights.index = pd.to_datetime(weights.index).tz_localize(None).normalize()
+        for period_name, start_date, end_date in periods:
+            start_ts = pd.Timestamp(start_date).normalize()
+            end_ts = pd.Timestamp(end_date).normalize() if end_date else candidate_returns.index.max()
+            period_returns = candidate_returns.loc[
+                (candidate_returns.index >= start_ts) & (candidate_returns.index <= end_ts)
+            ]
+            if period_returns.empty:
+                continue
+            period_weights = weights.loc[start_ts:end_ts] if not weights.empty else pd.DataFrame()
+            summary = summarize_returns(
+                period_returns,
+                weights_history=period_weights,
+                benchmark_returns=benchmark_returns,
+                secondary_benchmark_returns=secondary_benchmark_returns,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            summary.update(metadata.get(candidate_id, {"Candidate": candidate_id}))
+            rows.append({"Period": period_name, **summary})
+    return pd.DataFrame(rows)
+
+
+def build_dynamic_cost_live_readiness_diagnostics(
+    *,
+    price_history: pd.DataFrame,
+    periods: Sequence[tuple[str, str, str | None]],
+    config: DynamicExecutionCostConfig,
+    variants: Sequence[GlobalEtfOffensiveVariantSpec] = GLOBAL_ETF_OFFENSIVE_VARIANTS,
+    liveable_composites: Sequence[GlobalEtfLiveableCompositeSpec] = GLOBAL_ETF_LIVEABLE_COMPOSITES,
+    robustness_candidates: Sequence[str] = DEFAULT_ROBUSTNESS_CANDIDATES,
+) -> dict[str, pd.DataFrame]:
+    gross_result = run_offensive_research(
+        price_history=price_history,
+        periods=periods,
+        variants=variants,
+        liveable_composites=liveable_composites,
+        turnover_cost_bps=0.0,
+    )
+    weights_by_candidate = _weights_by_candidate_from_result(gross_result)
+    adjusted = build_dynamic_execution_cost_adjusted_returns(
+        price_history=price_history,
+        weights_by_candidate=weights_by_candidate,
+        candidate_ids=robustness_candidates,
+        config=config,
+    )
+    portfolio_returns = adjusted["portfolio_returns"]
+    if portfolio_returns.empty:
+        empty = pd.DataFrame()
+        return {
+            "dynamic_cost_period_summary": empty,
+            "dynamic_cost_ranking": empty,
+            "dynamic_cost_portfolio_returns": empty,
+            "dynamic_cost_summary": empty,
+            "dynamic_cost_robustness_windows": empty,
+            "dynamic_cost_robustness_summary": empty,
+            "dynamic_cost_live_readiness_summary": empty,
+        }
+    period_summary = build_period_summary_from_portfolio_returns(
+        price_history=price_history,
+        periods=periods,
+        portfolio_returns=portfolio_returns,
+        weights_by_candidate=weights_by_candidate,
+        source_period_summary=gross_result["period_summary"],
+    )
+    ranking = build_ranking(period_summary)
+    robustness = build_candidate_robustness_diagnostics(
+        price_history=price_history,
+        portfolio_returns=portfolio_returns,
+        weights_by_candidate=weights_by_candidate,
+        candidate_ids=robustness_candidates,
+    )
+    live_readiness = build_live_readiness_summary(
+        period_summary=period_summary,
+        ranking=ranking,
+        robustness_windows=robustness["robustness_windows"],
+    )
+    cost_summary = adjusted["dynamic_cost_summary"]
+    if not live_readiness.empty and not cost_summary.empty:
+        live_readiness = live_readiness.merge(cost_summary, on="Candidate", how="left")
+    return {
+        "dynamic_cost_period_summary": period_summary,
+        "dynamic_cost_ranking": ranking,
+        "dynamic_cost_portfolio_returns": portfolio_returns,
+        "dynamic_cost_summary": cost_summary,
+        "dynamic_cost_robustness_windows": robustness["robustness_windows"],
+        "dynamic_cost_robustness_summary": robustness["robustness_summary"],
+        "dynamic_cost_live_readiness_summary": live_readiness,
+    }
+
+
+def _candidate_period_vs_baseline_summary(
+    *,
+    candidate_id: str,
+    baseline_candidate: str,
+    portfolio_returns: pd.DataFrame,
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    min_trading_days: int,
+) -> dict[str, object] | None:
+    portfolio = pd.DataFrame(portfolio_returns).copy()
+    if candidate_id not in portfolio.columns or baseline_candidate not in portfolio.columns:
+        return None
+    portfolio.index = pd.to_datetime(portfolio.index).tz_localize(None).normalize()
+    candidate_returns = pd.to_numeric(portfolio[candidate_id], errors="coerce").loc[start:end].dropna()
+    baseline_returns = pd.to_numeric(portfolio[baseline_candidate], errors="coerce").loc[start:end].dropna()
+    common_index = candidate_returns.index.intersection(baseline_returns.index)
+    if len(common_index) < int(min_trading_days):
+        return None
+    candidate_returns = candidate_returns.reindex(common_index)
+    baseline_returns = baseline_returns.reindex(common_index)
+    weights = pd.DataFrame(weights_by_candidate.get(candidate_id, pd.DataFrame())).copy()
+    if not weights.empty:
+        weights.index = pd.to_datetime(weights.index).tz_localize(None).normalize()
+        weights = weights.loc[start:end]
+    summary = summarize_returns(
+        candidate_returns,
+        weights_history=weights,
+        benchmark_returns=baseline_returns,
+        start_date=start.date().isoformat(),
+        end_date=end.date().isoformat(),
+    )
+    baseline_summary = _benchmark_summary(baseline_returns, pd.DatetimeIndex(common_index))
+    return {
+        "Candidate": candidate_id,
+        "Start": summary["Start"],
+        "End": summary["End"],
+        "Trading Days": summary["Trading Days"],
+        "CAGR": float(summary["CAGR"]),
+        "Baseline CAGR": float(baseline_summary["cagr"]),
+        "Excess CAGR vs Baseline": float(summary["CAGR"]) - float(baseline_summary["cagr"]),
+        "Max Drawdown": float(summary["Max Drawdown"]),
+        "Baseline Max Drawdown": float(baseline_summary["max_drawdown"]),
+        "Drawdown Delta vs Baseline": float(summary["Max Drawdown"]) - float(baseline_summary["max_drawdown"]),
+        "Turnover/Year": float(summary["Turnover/Year"]),
+    }
+
+
+def _walk_forward_gate_reason(
+    *,
+    window_count_gate: bool,
+    win_rate_gate: bool,
+    median_excess_gate: bool,
+    worst_excess_gate: bool,
+    worst_drawdown_gate: bool,
+) -> str:
+    reasons: list[str] = []
+    if not window_count_gate:
+        reasons.append("not_enough_oos_windows")
+    if not win_rate_gate:
+        reasons.append("oos_win_rate_below_50pct")
+    if not median_excess_gate:
+        reasons.append("median_oos_excess_not_positive")
+    if not worst_excess_gate:
+        reasons.append("worst_oos_excess_too_low")
+    if not worst_drawdown_gate:
+        reasons.append("worst_oos_drawdown_worse_than_baseline")
+    return "pass" if not reasons else ";".join(reasons)
+
+
+def build_walk_forward_selection_diagnostics(
+    *,
+    portfolio_returns: pd.DataFrame,
+    weights_by_candidate: Mapping[str, pd.DataFrame],
+    candidate_ids: Sequence[str] = DEFAULT_WALK_FORWARD_CANDIDATES,
+    baseline_candidate: str = DEFAULT_LIVE_BASELINE_CANDIDATE,
+    train_years: int = DEFAULT_WALK_FORWARD_TRAIN_YEARS,
+    min_train_days_per_year: int = DEFAULT_WALK_FORWARD_MIN_TRAIN_DAYS_PER_YEAR,
+    min_test_days: int = DEFAULT_WALK_FORWARD_MIN_TEST_DAYS,
+    min_train_excess_cagr_vs_baseline: float = DEFAULT_WALK_FORWARD_MIN_TRAIN_EXCESS_CAGR,
+) -> dict[str, pd.DataFrame]:
+    portfolio = pd.DataFrame(portfolio_returns).copy()
+    if portfolio.empty or baseline_candidate not in portfolio.columns:
+        return {"walk_forward_windows": pd.DataFrame(), "walk_forward_summary": pd.DataFrame()}
+    portfolio.index = pd.to_datetime(portfolio.index).tz_localize(None).normalize()
+    portfolio = portfolio.sort_index()
+    candidate_list = tuple(
+        dict.fromkeys(
+            str(candidate_id).strip()
+            for candidate_id in candidate_ids
+            if str(candidate_id).strip() and str(candidate_id).strip() in portfolio.columns
+        )
+    )
+    if not candidate_list:
+        return {"walk_forward_windows": pd.DataFrame(), "walk_forward_summary": pd.DataFrame()}
+
+    min_year = int(portfolio.index.min().year)
+    max_year = int(portfolio.index.max().year)
+    rows: list[dict[str, object]] = []
+    min_train_days = int(train_years) * int(min_train_days_per_year)
+    for test_year in range(min_year + int(train_years), max_year + 1):
+        train_start = pd.Timestamp(year=test_year - int(train_years), month=1, day=1)
+        train_end = pd.Timestamp(year=test_year - 1, month=12, day=31)
+        test_start = pd.Timestamp(year=test_year, month=1, day=1)
+        test_end = pd.Timestamp(year=test_year, month=12, day=31)
+        train_rows: list[dict[str, object]] = []
+        for candidate_id in candidate_list:
+            train_summary = _candidate_period_vs_baseline_summary(
+                candidate_id=candidate_id,
+                baseline_candidate=baseline_candidate,
+                portfolio_returns=portfolio,
+                weights_by_candidate=weights_by_candidate,
+                start=train_start,
+                end=train_end,
+                min_trading_days=min_train_days,
+            )
+            if train_summary is not None:
+                train_rows.append(train_summary)
+        if not train_rows:
+            continue
+        train_frame = pd.DataFrame(train_rows)
+        for column in ("Excess CAGR vs Baseline", "Drawdown Delta vs Baseline", "Turnover/Year"):
+            train_frame[column] = pd.to_numeric(train_frame[column], errors="coerce")
+        train_frame = train_frame.dropna(subset=["Excess CAGR vs Baseline"])
+        if train_frame.empty:
+            continue
+        min_train_excess = float(min_train_excess_cagr_vs_baseline)
+        excess_gate = (
+            train_frame["Excess CAGR vs Baseline"].ge(min_train_excess)
+            if min_train_excess > 0.0
+            else train_frame["Excess CAGR vs Baseline"].gt(0.0)
+        )
+        eligible = train_frame.loc[
+            excess_gate
+            & train_frame["Drawdown Delta vs Baseline"].ge(-LIVE_MAX_WORST_WINDOW_DRAWDOWN_DEGRADATION_VS_BASELINE)
+        ].copy()
+        if eligible.empty:
+            rows.append(
+                {
+                    "Train Window": f"{train_start.date().isoformat()}_{train_end.date().isoformat()}",
+                    "Test Window": str(test_year),
+                    "Selected Candidate": baseline_candidate,
+                    "Selection Action": "keep_baseline",
+                    "Train Candidate Count": int(len(train_frame)),
+                    "Min Train Excess CAGR vs Baseline": min_train_excess,
+                    "Train Selected Excess CAGR vs Baseline": 0.0,
+                    "Train Selected Drawdown Delta vs Baseline": 0.0,
+                    "Train Selected Turnover/Year": 0.0,
+                    "Test Trading Days": 0,
+                    "Test CAGR": float("nan"),
+                    "Test Baseline CAGR": float("nan"),
+                    "Test Excess CAGR vs Baseline": 0.0,
+                    "Test Drawdown Delta vs Baseline": 0.0,
+                    "Test Turnover/Year": 0.0,
+                }
+            )
+            continue
+        selected = (
+            eligible.sort_values(
+                ["Excess CAGR vs Baseline", "Drawdown Delta vs Baseline", "Turnover/Year"],
+                ascending=[False, False, True],
+            )
+            .iloc[0]
+            .copy()
+        )
+        selected_candidate = str(selected["Candidate"])
+        test_summary = _candidate_period_vs_baseline_summary(
+            candidate_id=selected_candidate,
+            baseline_candidate=baseline_candidate,
+            portfolio_returns=portfolio,
+            weights_by_candidate=weights_by_candidate,
+            start=test_start,
+            end=test_end,
+            min_trading_days=min_test_days,
+        )
+        if test_summary is None:
+            continue
+        rows.append(
+            {
+                "Train Window": f"{train_start.date().isoformat()}_{train_end.date().isoformat()}",
+                "Test Window": str(test_year),
+                "Selected Candidate": selected_candidate,
+                "Selection Action": "promote_candidate",
+                "Train Candidate Count": int(len(train_frame)),
+                "Min Train Excess CAGR vs Baseline": min_train_excess,
+                "Train Selected Excess CAGR vs Baseline": float(selected["Excess CAGR vs Baseline"]),
+                "Train Selected Drawdown Delta vs Baseline": float(selected["Drawdown Delta vs Baseline"]),
+                "Train Selected Turnover/Year": float(selected["Turnover/Year"]),
+                "Test Trading Days": int(test_summary["Trading Days"]),
+                "Test CAGR": float(test_summary["CAGR"]),
+                "Test Baseline CAGR": float(test_summary["Baseline CAGR"]),
+                "Test Excess CAGR vs Baseline": float(test_summary["Excess CAGR vs Baseline"]),
+                "Test Drawdown Delta vs Baseline": float(test_summary["Drawdown Delta vs Baseline"]),
+                "Test Turnover/Year": float(test_summary["Turnover/Year"]),
+            }
+        )
+    windows = pd.DataFrame(rows)
+    if windows.empty:
+        return {"walk_forward_windows": windows, "walk_forward_summary": pd.DataFrame()}
+    for column in (
+        "Train Selected Excess CAGR vs Baseline",
+        "Test Excess CAGR vs Baseline",
+        "Test Drawdown Delta vs Baseline",
+        "Test Turnover/Year",
+    ):
+        windows[column] = pd.to_numeric(windows[column], errors="coerce")
+    promoted = windows.loc[windows["Selection Action"].eq("promote_candidate")].copy()
+    selected_counts = promoted["Selected Candidate"].value_counts().sort_index().to_dict() if not promoted.empty else {}
+    test_excess = promoted["Test Excess CAGR vs Baseline"] if not promoted.empty else pd.Series(dtype=float)
+    test_drawdown_delta = promoted["Test Drawdown Delta vs Baseline"] if not promoted.empty else pd.Series(dtype=float)
+    window_count = int(len(promoted))
+    win_rate = float(test_excess.gt(0.0).mean()) if window_count else float("nan")
+    median_excess = float(test_excess.median()) if window_count else float("nan")
+    worst_excess = float(test_excess.min()) if window_count else float("nan")
+    worst_drawdown_delta = float(test_drawdown_delta.min()) if window_count else float("nan")
+    window_count_gate = window_count >= WALK_FORWARD_MIN_WINDOW_COUNT
+    win_rate_gate = not pd.isna(win_rate) and win_rate >= WALK_FORWARD_MIN_OOS_WIN_RATE
+    median_excess_gate = not pd.isna(median_excess) and median_excess > WALK_FORWARD_MIN_OOS_MEDIAN_EXCESS_CAGR
+    worst_excess_gate = not pd.isna(worst_excess) and worst_excess >= WALK_FORWARD_MIN_WORST_OOS_EXCESS_CAGR
+    worst_drawdown_gate = (
+        not pd.isna(worst_drawdown_delta) and worst_drawdown_delta >= -WALK_FORWARD_MAX_WORST_OOS_DRAWDOWN_DEGRADATION
+    )
+    summary = pd.DataFrame(
+        [
+            {
+                "Baseline Candidate": baseline_candidate,
+                "Candidate Set": ",".join(candidate_list),
+                "Train Years": int(train_years),
+                "Min Train Excess CAGR vs Baseline": float(min_train_excess_cagr_vs_baseline),
+                "Total OOS Windows": int(len(windows)),
+                "Promotion OOS Windows": window_count,
+                "Keep Baseline Windows": int(windows["Selection Action"].eq("keep_baseline").sum()),
+                "OOS Baseline CAGR Win Rate": win_rate,
+                "Median OOS Excess CAGR vs Baseline": median_excess,
+                "Worst OOS Excess CAGR vs Baseline": worst_excess,
+                "Worst OOS Drawdown Delta vs Baseline": worst_drawdown_delta,
+                "Median OOS Turnover/Year": float(promoted["Test Turnover/Year"].median())
+                if window_count
+                else float("nan"),
+                "Selected Candidate Counts": json.dumps(selected_counts, sort_keys=True),
+                "walk_forward_gate_passed": bool(
+                    window_count_gate
+                    and win_rate_gate
+                    and median_excess_gate
+                    and worst_excess_gate
+                    and worst_drawdown_gate
+                ),
+                "walk_forward_gate_reason": _walk_forward_gate_reason(
+                    window_count_gate=window_count_gate,
+                    win_rate_gate=win_rate_gate,
+                    median_excess_gate=median_excess_gate,
+                    worst_excess_gate=worst_excess_gate,
+                    worst_drawdown_gate=worst_drawdown_gate,
+                ),
+            }
+        ]
+    )
+    return {
+        "walk_forward_windows": windows.reset_index(drop=True),
+        "walk_forward_summary": summary,
     }
 
 
@@ -2119,11 +2796,15 @@ def write_recommendation(
     period_summary: pd.DataFrame,
     live_readiness_summary: pd.DataFrame | None = None,
     cost_stress_summary: pd.DataFrame | None = None,
+    dynamic_cost_summary: pd.DataFrame | None = None,
+    walk_forward_summary: pd.DataFrame | None = None,
     liquidity_summary: pd.DataFrame | None = None,
 ) -> Path:
     path = output_dir / "recommendation.md"
     live_readiness = pd.DataFrame(live_readiness_summary) if live_readiness_summary is not None else pd.DataFrame()
     cost_stress = pd.DataFrame(cost_stress_summary) if cost_stress_summary is not None else pd.DataFrame()
+    dynamic_cost = pd.DataFrame(dynamic_cost_summary) if dynamic_cost_summary is not None else pd.DataFrame()
+    walk_forward = pd.DataFrame(walk_forward_summary) if walk_forward_summary is not None else pd.DataFrame()
     liquidity = pd.DataFrame(liquidity_summary) if liquidity_summary is not None else pd.DataFrame()
     live_ready = (
         live_readiness.loc[live_readiness["live_gate_passed"].astype(bool)].copy()
@@ -2137,7 +2818,58 @@ def write_recommendation(
     )
     live_candidates = ranking.loc[live_mask].copy()
     top_candidates = ranking.loc[ranking["paper_review_candidate"].astype(bool)].copy()
-    if not cost_stress.empty and "turnover_cost_bps" in cost_stress.columns:
+    if not dynamic_cost.empty and "live_gate_passed" in dynamic_cost.columns:
+        dynamic_cost_focus = dynamic_cost.copy()
+        dynamic_nav_note = ""
+        if "Estimated Portfolio NAV" in dynamic_cost_focus.columns:
+            dynamic_cost_focus["Estimated Portfolio NAV"] = pd.to_numeric(
+                dynamic_cost_focus["Estimated Portfolio NAV"], errors="coerce"
+            )
+            nav_values = sorted(
+                float(value) for value in dynamic_cost_focus["Estimated Portfolio NAV"].dropna().unique()
+            )
+            if len(nav_values) > 1:
+                max_nav = max(nav_values)
+                max_nav_rows = dynamic_cost_focus.loc[dynamic_cost_focus["Estimated Portfolio NAV"].eq(max_nav)].copy()
+                max_nav_passed = max_nav_rows.loc[max_nav_rows["live_gate_passed"].astype(bool)].copy()
+                if not max_nav_passed.empty:
+                    dynamic_cost_focus = max_nav_rows
+                    dynamic_nav_note = f"最高 NAV ${max_nav:,.0f} 压力下"
+                else:
+                    dynamic_passed_all = dynamic_cost_focus.loc[
+                        dynamic_cost_focus["live_gate_passed"].astype(bool)
+                    ].copy()
+                    if not dynamic_passed_all.empty:
+                        highest_pass_nav = float(dynamic_passed_all["Estimated Portfolio NAV"].max())
+                        names = ", ".join(
+                            dynamic_passed_all.loc[dynamic_passed_all["Estimated Portfolio NAV"].eq(highest_pass_nav)]
+                            .head(3)["Candidate"]
+                            .astype(str)
+                            .tolist()
+                        )
+                        recommendation = (
+                            f"动态成本 NAV 压力未全通过，不自动替换 live；最高通过 NAV ${highest_pass_nav:,.0f}，"
+                            f"该资金规模下候选：{names}。需要先确认实盘账户规模和执行方式。"
+                        )
+                    else:
+                        recommendation = (
+                            "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
+                        )
+                    dynamic_cost_focus = pd.DataFrame()
+        dynamic_passed = (
+            dynamic_cost_focus.loc[dynamic_cost_focus["live_gate_passed"].astype(bool)].copy()
+            if not dynamic_cost_focus.empty
+            else pd.DataFrame()
+        )
+        if not dynamic_passed.empty:
+            names = ", ".join(dynamic_passed.head(3)["Candidate"].astype(str).tolist())
+            prefix = dynamic_nav_note or "动态成本模型下"
+            recommendation = f"{prefix}进入 live promotion review，但不自动替换 live；优先复核候选：{names}。"
+        elif dynamic_cost_focus.empty:
+            pass
+        else:
+            recommendation = "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
+    elif not cost_stress.empty and "turnover_cost_bps" in cost_stress.columns:
         cost_stress["turnover_cost_bps"] = pd.to_numeric(cost_stress["turnover_cost_bps"], errors="coerce")
         costs = sorted(float(value) for value in cost_stress["turnover_cost_bps"].dropna().unique())
         passed = (
@@ -2180,6 +2912,28 @@ def write_recommendation(
         names = ", ".join(top_candidates.head(3)["Candidate"].astype(str).tolist())
         recommendation = f"仅进入 paper review，不自动 live；优先复核候选：{names}。"
 
+    if not walk_forward.empty and "walk_forward_gate_passed" in walk_forward.columns:
+        walk_forward_focus = walk_forward.copy()
+        if "Estimated Portfolio NAV" in walk_forward_focus.columns:
+            walk_forward_focus["Estimated Portfolio NAV"] = pd.to_numeric(
+                walk_forward_focus["Estimated Portfolio NAV"], errors="coerce"
+            )
+            nav_values = sorted(
+                float(value) for value in walk_forward_focus["Estimated Portfolio NAV"].dropna().unique()
+            )
+            if nav_values:
+                walk_forward_focus = walk_forward_focus.loc[
+                    walk_forward_focus["Estimated Portfolio NAV"].eq(max(nav_values))
+                ].copy()
+        walk_forward_passed = walk_forward_focus["walk_forward_gate_passed"].astype(bool)
+        if not bool(walk_forward_passed.any()):
+            reason = (
+                str(walk_forward_focus["walk_forward_gate_reason"].iloc[0])
+                if "walk_forward_gate_reason" in walk_forward_focus.columns and not walk_forward_focus.empty
+                else "unknown"
+            )
+            recommendation = f"walk-forward/OOS gate 未通过，不自动替换 live；先保留当前 baseline。失败原因：{reason}。"
+
     baseline_rows = period_summary.loc[period_summary["Candidate"].eq("live_global_etf_rotation_defensive_baseline")]
     long_baseline = baseline_rows.loc[baseline_rows["Period"].eq("long")]
     baseline_text = ""
@@ -2218,6 +2972,18 @@ def write_recommendation(
         "",
         "```csv",
         cost_stress.head(20).to_csv(index=False).strip() if not cost_stress.empty else "",
+        "```",
+        "",
+        "## Dynamic Cost Preview",
+        "",
+        "```csv",
+        dynamic_cost.head(20).to_csv(index=False).strip() if not dynamic_cost.empty else "",
+        "```",
+        "",
+        "## Walk-Forward Preview",
+        "",
+        "```csv",
+        walk_forward.head(20).to_csv(index=False).strip() if not walk_forward.empty else "",
         "```",
         "",
         "## Liquidity Preview",
@@ -2259,6 +3025,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated candidate IDs for calendar-year and rolling robustness diagnostics.",
     )
     parser.add_argument(
+        "--walk-forward-candidates",
+        default=",".join(DEFAULT_WALK_FORWARD_CANDIDATES),
+        help="Comma-separated liveable candidate IDs for walk-forward promotion selection diagnostics.",
+    )
+    parser.add_argument("--walk-forward-train-years", type=int, default=DEFAULT_WALK_FORWARD_TRAIN_YEARS)
+    parser.add_argument(
+        "--walk-forward-min-train-excess-cagr",
+        type=float,
+        default=DEFAULT_WALK_FORWARD_MIN_TRAIN_EXCESS_CAGR,
+        help="Minimum training-window CAGR excess versus baseline required before promoting a candidate OOS.",
+    )
+    parser.add_argument(
         "--cost-stress-bps",
         help=(
             "Optional comma-separated turnover cost bps values. When provided, writes "
@@ -2267,6 +3045,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--liquidity-dollar-volume-window", type=int, default=DEFAULT_LIQUIDITY_DOLLAR_VOLUME_WINDOW)
     parser.add_argument("--low-liquidity-dollar-volume", type=float, default=DEFAULT_LOW_LIQUIDITY_DOLLAR_VOLUME)
+    parser.add_argument(
+        "--dynamic-cost",
+        action="store_true",
+        help="Write volume/liquidity-aware dynamic execution-cost diagnostics and live-readiness outputs.",
+    )
+    parser.add_argument(
+        "--dynamic-cost-nav",
+        type=float,
+        default=0.0,
+        help="Estimated portfolio NAV used for participation-rate cost penalties; 0 disables participation penalty.",
+    )
+    parser.add_argument(
+        "--dynamic-cost-navs",
+        help=(
+            "Optional comma-separated NAV ladder for dynamic execution-cost stress. "
+            "When provided, the dynamic live-readiness output contains one row set per NAV."
+        ),
+    )
+    parser.add_argument("--dynamic-cost-base-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
+    parser.add_argument(
+        "--dynamic-cost-low-liquidity-penalty-bps",
+        type=float,
+        default=DEFAULT_DYNAMIC_COST_LOW_LIQUIDITY_PENALTY_BPS,
+    )
+    parser.add_argument(
+        "--dynamic-cost-participation-penalty-bps",
+        type=float,
+        default=DEFAULT_DYNAMIC_COST_PARTICIPATION_PENALTY_BPS,
+    )
     parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -2293,11 +3100,14 @@ def main(argv: list[str] | None = None) -> int:
     result["ranking"].to_csv(output_dir / "ranking.csv", index=False)
     result["portfolio_returns"].to_csv(output_dir / "portfolio_returns.csv")
     result["signal_history"].to_csv(output_dir / "rebalance_events.csv", index=False)
+    weights_by_candidate = _weights_by_candidate_from_result(result)
+    robustness_candidates = _normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES
+    walk_forward_candidates = _normalize_candidate_ids(args.walk_forward_candidates) or DEFAULT_WALK_FORWARD_CANDIDATES
     robustness = build_candidate_robustness_diagnostics(
         price_history=prices,
         portfolio_returns=result["portfolio_returns"],
-        weights_by_candidate=_weights_by_candidate_from_result(result),
-        candidate_ids=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
+        weights_by_candidate=weights_by_candidate,
+        candidate_ids=robustness_candidates,
     )
     robustness["robustness_windows"].to_csv(output_dir / "candidate_robustness_windows.csv", index=False)
     robustness["robustness_summary"].to_csv(output_dir / "candidate_robustness_summary.csv", index=False)
@@ -2307,10 +3117,19 @@ def main(argv: list[str] | None = None) -> int:
         robustness_windows=robustness["robustness_windows"],
     )
     live_readiness_summary.to_csv(output_dir / "live_readiness_summary.csv", index=False)
+    walk_forward = build_walk_forward_selection_diagnostics(
+        portfolio_returns=result["portfolio_returns"],
+        weights_by_candidate=weights_by_candidate,
+        candidate_ids=walk_forward_candidates,
+        train_years=int(args.walk_forward_train_years),
+        min_train_excess_cagr_vs_baseline=float(args.walk_forward_min_train_excess_cagr),
+    )
+    walk_forward["walk_forward_windows"].to_csv(output_dir / "walk_forward_selection_windows.csv", index=False)
+    walk_forward["walk_forward_summary"].to_csv(output_dir / "walk_forward_selection_summary.csv", index=False)
     liquidity = build_candidate_liquidity_diagnostics(
         price_history=prices,
-        weights_by_candidate=_weights_by_candidate_from_result(result),
-        candidate_ids=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
+        weights_by_candidate=weights_by_candidate,
+        candidate_ids=robustness_candidates,
         dollar_volume_window=int(args.liquidity_dollar_volume_window),
         low_liquidity_dollar_volume=float(args.low_liquidity_dollar_volume),
     )
@@ -2323,9 +3142,83 @@ def main(argv: list[str] | None = None) -> int:
             price_history=prices,
             periods=periods,
             cost_bps_values=cost_stress_bps,
-            robustness_candidates=_normalize_candidate_ids(args.robustness_candidates) or DEFAULT_ROBUSTNESS_CANDIDATES,
+            robustness_candidates=robustness_candidates,
         )
         cost_stress.to_csv(output_dir / "cost_stress_live_readiness_summary.csv", index=False)
+    dynamic_cost_live_readiness = pd.DataFrame()
+    dynamic_walk_forward_summary = pd.DataFrame()
+    dynamic_cost_navs = _parse_float_list(args.dynamic_cost_navs)
+    dynamic_enabled = bool(args.dynamic_cost) or bool(dynamic_cost_navs) or float(args.dynamic_cost_nav) > 0.0
+    if dynamic_enabled:
+        nav_values = dynamic_cost_navs or (float(args.dynamic_cost_nav),)
+        live_frames: list[pd.DataFrame] = []
+        cost_frames: list[pd.DataFrame] = []
+        walk_forward_frames: list[pd.DataFrame] = []
+        walk_forward_window_frames: list[pd.DataFrame] = []
+        detailed_dynamic_cost: dict[str, pd.DataFrame] | None = None
+        for nav in tuple(dict.fromkeys(float(value) for value in nav_values)):
+            dynamic_config = DynamicExecutionCostConfig(
+                base_cost_bps=float(args.dynamic_cost_base_bps),
+                dollar_volume_window=int(args.liquidity_dollar_volume_window),
+                low_liquidity_dollar_volume=float(args.low_liquidity_dollar_volume),
+                low_liquidity_penalty_bps=float(args.dynamic_cost_low_liquidity_penalty_bps),
+                estimated_portfolio_nav=float(nav),
+                participation_penalty_bps=float(args.dynamic_cost_participation_penalty_bps),
+            )
+            dynamic_cost = build_dynamic_cost_live_readiness_diagnostics(
+                price_history=prices,
+                periods=periods,
+                config=dynamic_config,
+                robustness_candidates=robustness_candidates,
+            )
+            if detailed_dynamic_cost is None:
+                detailed_dynamic_cost = dynamic_cost
+            live_frame = pd.DataFrame(dynamic_cost["dynamic_cost_live_readiness_summary"])
+            cost_frame = pd.DataFrame(dynamic_cost["dynamic_cost_summary"])
+            if not live_frame.empty:
+                live_frames.append(live_frame)
+            if not cost_frame.empty:
+                cost_frames.append(cost_frame)
+            dynamic_walk_forward = build_walk_forward_selection_diagnostics(
+                portfolio_returns=dynamic_cost["dynamic_cost_portfolio_returns"],
+                weights_by_candidate=weights_by_candidate,
+                candidate_ids=walk_forward_candidates,
+                train_years=int(args.walk_forward_train_years),
+                min_train_excess_cagr_vs_baseline=float(args.walk_forward_min_train_excess_cagr),
+            )
+            dynamic_wf_summary = pd.DataFrame(dynamic_walk_forward["walk_forward_summary"])
+            dynamic_wf_windows = pd.DataFrame(dynamic_walk_forward["walk_forward_windows"])
+            if not dynamic_wf_summary.empty:
+                dynamic_wf_summary.insert(0, "Estimated Portfolio NAV", float(nav))
+                walk_forward_frames.append(dynamic_wf_summary)
+            if not dynamic_wf_windows.empty:
+                dynamic_wf_windows.insert(0, "Estimated Portfolio NAV", float(nav))
+                walk_forward_window_frames.append(dynamic_wf_windows)
+
+        if detailed_dynamic_cost is not None:
+            for key, value in detailed_dynamic_cost.items():
+                pd.DataFrame(value).to_csv(
+                    output_dir / f"{key}.csv",
+                    index=str(key).endswith(("portfolio_returns", "daily_costs")),
+                )
+        dynamic_cost_live_readiness = pd.concat(live_frames, ignore_index=True) if live_frames else pd.DataFrame()
+        dynamic_cost_summary = pd.concat(cost_frames, ignore_index=True) if cost_frames else pd.DataFrame()
+        dynamic_walk_forward_summary = (
+            pd.concat(walk_forward_frames, ignore_index=True) if walk_forward_frames else pd.DataFrame()
+        )
+        dynamic_walk_forward_windows = (
+            pd.concat(walk_forward_window_frames, ignore_index=True) if walk_forward_window_frames else pd.DataFrame()
+        )
+        dynamic_cost_live_readiness.to_csv(
+            output_dir / "dynamic_cost_nav_stress_live_readiness_summary.csv", index=False
+        )
+        dynamic_cost_summary.to_csv(output_dir / "dynamic_cost_nav_stress_summary.csv", index=False)
+        dynamic_walk_forward_summary.to_csv(
+            output_dir / "dynamic_cost_nav_stress_walk_forward_summary.csv", index=False
+        )
+        dynamic_walk_forward_windows.to_csv(
+            output_dir / "dynamic_cost_nav_stress_walk_forward_windows.csv", index=False
+        )
     for key, value in result.items():
         if key.startswith("weights_"):
             pd.DataFrame(value).to_csv(output_dir / f"{key}.csv")
@@ -2335,12 +3228,22 @@ def main(argv: list[str] | None = None) -> int:
         period_summary=result["period_summary"],
         live_readiness_summary=live_readiness_summary,
         cost_stress_summary=cost_stress,
+        dynamic_cost_summary=dynamic_cost_live_readiness,
+        walk_forward_summary=dynamic_walk_forward_summary
+        if not dynamic_walk_forward_summary.empty
+        else walk_forward["walk_forward_summary"],
         liquidity_summary=liquidity["liquidity_summary"],
     )
     manifest = {
         "research": "global_etf_offensive_rotation",
         "periods": [{"name": name, "start": start, "end": end} for name, start, end in periods],
         "turnover_cost_bps": float(args.turnover_cost_bps),
+        "dynamic_cost_enabled": dynamic_enabled,
+        "dynamic_cost_nav": float(args.dynamic_cost_nav),
+        "dynamic_cost_navs": list(dynamic_cost_navs),
+        "walk_forward_train_years": int(args.walk_forward_train_years),
+        "walk_forward_min_train_excess_cagr": float(args.walk_forward_min_train_excess_cagr),
+        "walk_forward_candidates": list(walk_forward_candidates),
         "variants": [asdict(variant) for variant in GLOBAL_ETF_OFFENSIVE_VARIANTS],
         "liveable_composites": [asdict(spec) for spec in GLOBAL_ETF_LIVEABLE_COMPOSITES],
         "outputs": sorted(path.name for path in output_dir.iterdir() if path.is_file()),

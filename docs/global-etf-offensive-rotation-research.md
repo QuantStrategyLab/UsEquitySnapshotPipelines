@@ -49,6 +49,8 @@ The offensive pool tilts toward QQQ/VUG/IWF/MTUM, tech/semi/software, growth sec
 - Keller and Keuning, *Protective Asset Allocation (PAA)*: reinforces proportional crash protection rather than only all-in/all-out defensive switching. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2759734
 - Moreira and Muir, *Volatility-Managed Portfolios*: motivates reducing risky exposure when realized volatility is high. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2659431
 - Moskowitz, Ooi, and Pedersen, *Time Series Momentum*: supports using intermediate-horizon trend persistence as a deterministic risk-on/off input. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2089463
+- Hurst, Ooi, and Pedersen, *A Century of Evidence on Trend-Following Investing*: motivates trend-following as a defensive/risk-management overlay rather than only a return enhancer. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2993026
+- Clare, Seaton, Smith, and Thomas, *Trend Following, Stop Losses and the Frequency of Trading*: motivates simple monthly trend rules and warns that higher-frequency trading can damage returns. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2126476
 - Bailey, Borwein, López de Prado, and Zhu, *The Probability of Backtest Overfitting*: motivates avoiding promotion based on the best single in-sample result after testing many variants. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253
 - Bailey and López de Prado, *The Deflated Sharpe Ratio*: motivates adjusting expectations for selection bias, non-normal returns, and short samples. Source: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551
 - White, *A Reality Check for Data Snooping*: reinforces that repeated rule selection can create apparently good results by chance. Source: https://www.ssc.wisc.edu/~bhansen/718/White2000.pdf
@@ -56,6 +58,8 @@ The offensive pool tilts toward QQQ/VUG/IWF/MTUM, tech/semi/software, growth sec
 - SEC Investor Bulletin on ETFs: reinforces that bid-ask spreads are a direct ETF trading cost and tighter spreads are generally associated with more liquid, higher-volume ETFs. Source: https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins-24
 - FINRA ETF overview: reinforces that ETFs trade intraday like stocks and are subject to bid-ask spreads. Source: https://www.finra.org/investors/investing/investment-products/exchange-traded-funds-and-products
 - Vanguard ETF guidance: reinforces checking ETF liquidity, trading volume, and bid-ask spread before execution. Source: https://investor.vanguard.com/investor-resources-education/understanding-investment-types/choosing-between-funds-individual-securities
+- Almgren and Chriss, *Optimal Execution of Portfolio Transactions*: motivates treating execution cost as a function of trade size, liquidity, and market impact rather than only a flat turnover haircut. Source: https://www.smallake.kr/wp-content/uploads/2016/03/optliq.pdf
+- Amihud, *Illiquidity and Stock Returns*: motivates using daily dollar volume as a rough, reproducible liquidity/price-impact proxy when intraday spread data is not available. Source: https://www.cis.upenn.edu/~mkearns/finread/amihud.pdf
 
 ## Gate
 
@@ -107,6 +111,11 @@ Outputs:
 - `candidate_liquidity_summary.csv`
 - `candidate_liquidity_symbol_summary.csv`
 - `cost_stress_live_readiness_summary.csv` when `--cost-stress-bps` is provided
+- `walk_forward_selection_windows.csv`
+- `walk_forward_selection_summary.csv`
+- `dynamic_cost_*` files when `--dynamic-cost` or `--dynamic-cost-navs` is provided
+- `dynamic_cost_nav_stress_live_readiness_summary.csv` when one or more dynamic-cost NAV assumptions are evaluated
+- `dynamic_cost_nav_stress_walk_forward_summary.csv` and `dynamic_cost_nav_stress_walk_forward_windows.csv` when dynamic-cost NAV assumptions are evaluated
 - `weights_<candidate>.csv`
 - `downloaded_price_history.csv`
 - `recommendation.md`
@@ -411,3 +420,225 @@ Liquidity conclusion:
 - However, all variants can experience high low-liquidity risk exposure in specific windows because the existing defensive baseline can hold lower-dollar-volume ETFs such as `IHI`, `ITA`, and `DBA`.
 - This is not a blocker for the fast sleeve itself, but live migration should include execution rules: use limit orders, avoid market-open/close liquidity stress, and consider replacing or capping low-dollar-volume baseline ETFs if account size grows.
 - Liquidity diagnostics support using 5-10 bps as plausible stress assumptions for small-to-moderate notional, but 15-25 bps remains the conservative stress band.
+
+## 2026-06-20 dynamic execution-cost NAV stress
+
+Flat bps cost stress is useful, but it does not distinguish a high-volume ETF trade from a low-volume ETF trade. The runner now supports a deterministic dynamic execution-cost model using only daily close/volume data:
+
+- base cost bps: default 5 bps;
+- low-liquidity penalty: based on 63-day rolling median dollar volume versus the $50 million threshold, capped at 25 bps;
+- participation penalty: optional, based on estimated trade dollars divided by rolling dollar volume; default threshold is 2% of rolling dollar volume, capped at 25 bps;
+- cost is applied by traded symbol weight, so the same total turnover costs more when the rebalance touches lower-liquidity or higher-participation symbols.
+
+This is still a conservative proxy, not a replacement for live bid/ask spread or broker execution data.
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --output-dir data/output/global_etf_dynamic_cost_nav_stress_20260620
+```
+
+Data range: 2010-01-04 through 2026-06-18, 35 symbols, 141,232 price rows.
+
+Selected dynamic-cost live gate rows:
+
+| NAV | Candidate | Live gate | Long excess vs baseline | Rolling 5Y win vs baseline | Annualized cost drag | Max effective cost on trade days | Max participation | Reason |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| $100k | `liveable_blend_baseline85_fast15` | pass | +0.46% | 66.67% | 0.28% | 17.50 bps | 1.50% | pass |
+| $100k | `liveable_blend_baseline90_fast10` | pass | +0.32% | 66.67% | 0.26% | 17.50 bps | 1.58% | pass |
+| $100k | `liveable_blend_baseline80_fast20` | fail | +0.59% | 55.56% | 0.29% | 17.50 bps | 1.41% | rolling 5Y baseline win-rate below 60% |
+| $250k | `liveable_blend_baseline85_fast15` | pass | +0.46% | 66.67% | 0.28% | 17.50 bps | 3.74% | pass |
+| $250k | `liveable_blend_baseline90_fast10` | pass | +0.32% | 66.67% | 0.26% | 17.50 bps | 3.96% | pass |
+| $250k | `liveable_blend_baseline80_fast20` | fail | +0.59% | 55.56% | 0.29% | 17.50 bps | 3.52% | rolling 5Y baseline win-rate below 60% |
+| $1,000k | `liveable_blend_baseline85_fast15` | pass | +0.46% | 66.67% | 0.30% | 23.45 bps | 14.96% | pass |
+| $1,000k | `liveable_blend_baseline90_fast10` | pass | +0.32% | 66.67% | 0.29% | 24.10 bps | 15.84% | pass |
+| $1,000k | `liveable_blend_baseline80_fast20` | fail | +0.60% | 55.56% | 0.31% | 22.82 bps | 14.08% | rolling 5Y baseline win-rate below 60% |
+
+Dynamic-cost conclusion:
+
+- Under the current dynamic proxy, `liveable_blend_baseline80_fast20` is no longer the preferred live candidate because the stricter rolling 5Y baseline win-rate gate falls to 55.56%.
+- `liveable_blend_baseline85_fast15` is the current preferred candidate across the tested NAV ladder: it has higher long excess than 90/10 while still passing the live gate at $100k, $250k, and $1M.
+- `liveable_blend_baseline90_fast10` remains the more conservative fallback if the live rule prioritizes lowest execution sensitivity over return uplift.
+- No runtime manifest should change until the execution model assumptions are approved. For live design, use `85/15` as the leading candidate, keep `90/10` as fallback, and treat `80/20` as research-only unless real execution data proves costs are materially lower than this proxy.
+
+## 2026-06-20 walk-forward / OOS promotion gate
+
+To reduce the winner-picking risk from repeatedly comparing multiple sleeve candidates, the runner now writes walk-forward selection diagnostics:
+
+- train window: previous 5 calendar years;
+- test window: next calendar year only;
+- selection rule: among the allowed liveable candidates, pick the highest training-window excess CAGR versus the current live baseline, subject to positive train excess and no more than 3 percentage points drawdown degradation; if no candidate qualifies, keep the baseline for that OOS year;
+- OOS gate: at least 3 promoted OOS windows, OOS win-rate at least 50%, positive median OOS excess CAGR, worst OOS excess CAGR no worse than -3 percentage points, and worst OOS drawdown degradation no worse than -3 percentage points.
+
+This is intentionally harsher than the full-sample live gate. It tests whether the candidate-selection process itself survives forward-only evaluation.
+
+### Full candidate-set walk-forward
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --output-dir data/output/global_etf_dynamic_cost_oos_20260620
+```
+
+Result across the NAV ladder:
+
+| NAV | OOS windows | Promoted windows | OOS win rate | Median OOS excess | Worst OOS excess | Selected candidates | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| $100k | 7 | 6 | 50.00% | -0.15% | -14.32% | 70/30 static, QQQ-trend 70/30 | fail |
+| $250k | 7 | 6 | 50.00% | -0.15% | -14.32% | 70/30 static, QQQ-trend 70/30 | fail |
+| $1M | 7 | 6 | 50.00% | -0.15% | -14.28% | 70/30 static, QQQ-trend 70/30 | fail |
+
+Conclusion: the full candidate-set selection process is not live-ready. The training window tends to select aggressive 70/30 variants, which then fail OOS, especially in the 2025 partial-year window.
+
+### Safe-sleeve walk-forward (`85/15`, `90/10` only)
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --walk-forward-candidates liveable_blend_baseline85_fast15,liveable_blend_baseline90_fast10 \
+  --output-dir data/output/global_etf_dynamic_cost_oos_safe_sleeves_20260620
+```
+
+Result across the NAV ladder:
+
+| NAV | OOS windows | Promoted windows | OOS win rate | Median OOS excess | Worst OOS excess | Selected candidates | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| $100k | 7 | 5 | 60.00% | +1.03% | -7.27% | 85/15 four times, 90/10 once | fail |
+| $250k | 7 | 5 | 60.00% | +1.03% | -7.27% | 85/15 four times, 90/10 once | fail |
+| $1M | 7 | 5 | 60.00% | +1.03% | -7.25% | 85/15 four times, 90/10 once | fail |
+
+Safe-sleeve conclusion:
+
+- Restricting the candidate set to `85/15` and `90/10` materially improves OOS behavior: win-rate rises to 60% and median OOS excess is positive.
+- It still fails the current live gate because the worst OOS excess CAGR is about -7.3 percentage points, worse than the -3 percentage point threshold.
+- Current recommendation: do **not** auto-promote any global ETF offensive sleeve yet. The best next research direction is to add a deterministic drawdown/regime brake to `85/15`, then re-run the same dynamic-cost and walk-forward gates without expanding the candidate search space.
+
+## 2026-06-20 trend/drawdown brake follow-up
+
+Two deterministic `85/15` brake candidates were added after the safe-sleeve OOS failure:
+
+- `liveable_trend_drawdown_brake_baseline85_fast15_floor10`: normally holds the 15% fast sleeve, but reduces it to 10% on the next monthly rebalance when QQQ is below its 200-day SMA, QQQ fast momentum is negative, or the 63-day QQQ drawdown is worse than -8%.
+- `liveable_trend_drawdown_brake_baseline85_fast15_floor0`: same signal, but reduces the fast sleeve to 0%, returning to the current defensive baseline.
+
+These are still research-only portfolio construction rules. They do not require a plugin and do not change the live manifest.
+
+### Floor 10 brake
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --walk-forward-candidates liveable_trend_drawdown_brake_baseline85_fast15_floor10,liveable_blend_baseline90_fast10 \
+  --output-dir data/output/global_etf_dynamic_cost_oos_brake_only_20260620
+```
+
+Result:
+
+| NAV | OOS windows | Promoted windows | OOS win rate | Median OOS excess | Worst OOS excess | Selected candidates | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| $100k | 7 | 5 | 60.00% | +0.81% | -6.72% | floor10 brake five times | fail |
+| $250k | 7 | 5 | 60.00% | +0.81% | -6.72% | floor10 brake five times | fail |
+| $1M | 7 | 5 | 60.00% | +0.81% | -6.70% | floor10 brake five times | fail |
+
+### Floor 0 brake
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --walk-forward-candidates liveable_trend_drawdown_brake_baseline85_fast15_floor0,liveable_blend_baseline90_fast10 \
+  --output-dir data/output/global_etf_dynamic_cost_oos_brake_floor0_20260620
+```
+
+Result:
+
+| NAV | OOS windows | Promoted windows | OOS win rate | Median OOS excess | Worst OOS excess | Selected candidates | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| $100k | 7 | 6 | 50.00% | +0.01% | -4.87% | floor0 brake four times, 90/10 twice | fail |
+| $250k | 7 | 6 | 50.00% | +0.01% | -4.87% | floor0 brake four times, 90/10 twice | fail |
+| $1M | 7 | 6 | 50.00% | +0.01% | -4.86% | floor0 brake four times, 90/10 twice | fail |
+
+Brake conclusion:
+
+- The brake works directionally: worst OOS excess improves from about -7.3% (`85/15`/`90/10`) to -6.7% with floor10, and to -4.9% with floor0.
+- It still fails the live OOS gate. Floor0 is also too defensive in the full-sample live gate because calendar baseline win-rate falls below 50%.
+- Current recommendation remains unchanged: keep the current defensive baseline live. The offensive sleeve is not ready for default live promotion.
+- Further research should avoid adding more unconstrained variants. If continuing, test either a stricter promotion threshold that keeps baseline when train excess is marginal, or a regime rule driven by the strategy's own baseline-relative drawdown rather than QQQ-only drawdown.
+
+## 2026-06-20 minimum train-edge walk-forward threshold
+
+The walk-forward selection rule now supports `--walk-forward-min-train-excess-cagr`. The default is `0.0`, which preserves the previous behavior: any positive training-window excess CAGR can qualify. A positive threshold requires the candidate's training-window excess CAGR versus the live baseline to be at least the configured value before it can be promoted into the next OOS year.
+
+This was tested on the more defensive candidate set:
+
+- `liveable_trend_drawdown_brake_baseline85_fast15_floor0`
+- `liveable_blend_baseline90_fast10`
+
+Command pattern:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --walk-forward-candidates liveable_trend_drawdown_brake_baseline85_fast15_floor0,liveable_blend_baseline90_fast10 \
+  --walk-forward-min-train-excess-cagr <threshold> \
+  --output-dir data/output/global_etf_dynamic_cost_oos_brake_floor0_mintrain_<threshold>_20260620
+```
+
+Threshold ladder result:
+
+| Min train excess | Promotion windows | Keep-baseline windows | OOS win rate | Median OOS excess | Worst OOS excess | Gate |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 0.50% | 4 | 3 | 50.00% | +0.26% | -4.87% | fail |
+| 0.75% | 2 | 5 | 50.00% | -1.26% | -4.87% | fail |
+| 1.00% | 0 | 7 | n/a | n/a | n/a | fail |
+
+Minimum-train-edge conclusion:
+
+- A 0.50% threshold skips some marginal promotions but still promotes `90/10` into the weak 2025 OOS window, leaving worst OOS excess around -4.9%.
+- A 0.75% threshold promotes too rarely and still includes the 2025 failure.
+- A 1.00% threshold keeps the baseline every year; this is safe but provides no evidence that an offensive sleeve is live-ready.
+- Current recommendation remains unchanged: no Global ETF offensive sleeve should be default live. The only live-safe action is to keep the existing defensive baseline.
