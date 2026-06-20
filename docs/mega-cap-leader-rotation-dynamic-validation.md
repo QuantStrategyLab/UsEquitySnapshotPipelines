@@ -596,3 +596,340 @@ Before considering any runtime strategy based on this research:
    Russell Top50 leader-rotation idea, not a MAGS plugin.
 7. Do not combine it with TACO or Crisis Response until the base strategy is
    independently validated.
+
+## 2026-06-20 Product-Data v2 Refresh Smoke
+
+The old iShares `1467271812596.ajax` historical JSON/CSV path can now return
+HTML for IWB holdings requests. The source input layer therefore added a
+BlackRock/iShares product-data v2 holdings source with this fallback order:
+
+1. `blackrock_product_data_v2` through the iShares-hosted varnish API path;
+2. the same product-data path on the BlackRock host as host fallback;
+3. the legacy iShares JSON endpoint as source fallback;
+4. existing latest-snapshot secondary/fallback logic in the source-input
+   pipeline.
+
+Source pages used for manual verification:
+
+- iShares IWB product page: https://www.ishares.com/us/products/239707/ishares-russell-1000-etf
+- BlackRock IWB product page: https://www.blackrock.com/us/individual/products/239707/ishares-russell-1000-etf
+
+A bounded smoke run was executed to prove the new source can rebuild a dynamic
+Top50 universe and feed the existing backtest path. This is deliberately a short
+post-2024 validation window and must not be interpreted as live-ready evidence.
+It is a data-source and pipeline continuity check only.
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest \
+  --download --dynamic-universe \
+  --universe-start 2024-01-01 \
+  --price-start 2023-01-01 \
+  --mega-universe-size 50 \
+  --start 2024-03-01 \
+  --top-n 4 \
+  --single-name-cap 0.25 \
+  --risk-on-exposure 1.0 \
+  --soft-defense-exposure 1.0 \
+  --hard-defense-exposure 1.0 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/russell_top50_product_data_smoke_20260620
+```
+
+Pipeline output:
+
+- 30 point-in-time IWB holdings snapshots;
+- 1,500 dynamic Top50 universe rows;
+- 66,857 downloaded price rows;
+- output directory:
+  `data/output/russell_top50_product_data_smoke_20260620`.
+
+Top4 cap25 smoke result from `2024-03-01` through `2026-06-18`:
+
+| Strategy | Universe | CAGR | MaxDD | Sharpe | Calmar | Total return | QQQ total return | SPY total return |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Top4 cap25 | dynamic Top50 | 75.79% | -24.03% | 1.66 | 3.15 | 265.38% | 70.78% | 51.41% |
+
+Lag validation on the same short-window data:
+
+| Run | Lag | CAGR | MaxDD | Sharpe | Calmar | Total return |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Top2 cap50 | 21 | 84.16% | -34.92% | 1.49 | 2.41 | 306.60% |
+| Top3 cap35 sector2 | 21 | 66.15% | -28.64% | 1.51 | 2.31 | 221.00% |
+| Top4 cap25 | 21 | 74.53% | -25.92% | 1.66 | 2.88 | 259.41% |
+| Top4 cap25 sector2 | 21 | 70.76% | -25.92% | 1.75 | 2.73 | 241.83% |
+
+Concentration follow-up on the same 21-trading-day lag smoke data:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Turnover/Year | Comment |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Top2 cap50 | 84.16% | -34.92% | 1.49 | 2.41 | 4.14 | highest return, still aggressive drawdown |
+| Top4 cap25 | 74.53% | -25.92% | 1.66 | 2.88 | 3.81 | cleaner robust baseline |
+| 25% Top2 / 75% Top4 | 77.60% | -28.19% | 1.64 | 2.75 | 3.89 | conservative blend |
+| 50% Top2 / 50% Top4 | 80.24% | -30.45% | 1.60 | 2.64 | 3.97 | balanced research candidate |
+| 75% Top2 / 25% Top4 | 82.43% | -32.69% | 1.55 | 2.52 | 4.05 | more aggressive blend |
+| Dynamic Top2 DD -10% -> Top4 | 79.90% | -30.08% | 1.47 | 2.66 | 5.12 | not clearly better than fixed blend |
+
+Interpretation:
+
+- The new product-data v2 source is good enough to resume full PIT Top50
+  research; it fixed the historical holdings refresh blocker that appeared when
+  the legacy iShares endpoint returned HTML.
+- The short-window results remain directionally consistent with the earlier
+  retained research: Top2 has the highest return but too much drawdown for a
+  default live candidate; Top4 is the cleaner robust baseline; a fixed Top2/Top4
+  blend is operationally simpler and more stable than a drawdown-threshold
+  switch.
+- This smoke window is too short and too favorable to promote live. The next
+  required step is a full `2017-09` to current refresh using product-data v2,
+  followed by the same 21-trading-day lag, rolling-window, and concentration
+  gates.
+
+## 2026-06-20 Product-Data v2 Full PIT Refresh
+
+After the bounded smoke test, the product-data v2 source was used to rebuild the
+full retained point-in-time Top50 window from `2017-09` through `2026-06-18`.
+This removes the previous blocker where the legacy iShares historical JSON path
+returned HTML.
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest \
+  --download --dynamic-universe \
+  --universe-start 2017-09-01 \
+  --price-start 2016-01-01 \
+  --mega-universe-size 50 \
+  --start 2017-10-02 \
+  --top-n 4 \
+  --single-name-cap 0.25 \
+  --risk-on-exposure 1.0 \
+  --soft-defense-exposure 1.0 \
+  --hard-defense-exposure 1.0 \
+  --turnover-cost-bps 5 \
+  --output-dir data/output/russell_top50_product_data_full_20260620
+```
+
+Pipeline output:
+
+- 106 point-in-time IWB holdings snapshots;
+- 5,300 dynamic Top50 universe rows;
+- 247,106 downloaded price rows;
+- output directory:
+  `data/output/russell_top50_product_data_full_20260620`.
+
+Known price gaps remain `CELG`, `DWDP`, and `UTX`; Yahoo reported them as
+possibly delisted. This is consistent with the earlier retained research and is
+still a data-quality caveat before live promotion.
+
+### Full-window lag validation
+
+Command output:
+`data/output/russell_top50_product_data_full_validation_20260620`
+
+Setup:
+
+- Backtest window: `2017-10-02` through `2026-06-18`
+- Universe lags: `0`, `1`, and `21` trading days
+- Risk mode: no daily or monthly cash defense (`risk_on=1`, `soft=1`, `hard=1`)
+- Turnover cost: `5` bps
+- Rolling windows: complete calendar-year `3Y` and `5Y`
+
+Selected 21-trading-day lag rows:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Total return | QQQ total return | SPY total return | Turnover/Year |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Top2 cap50 | 49.71% | -38.12% | 1.24 | 1.30 | 3259.63% | 438.34% | 240.30% | 3.50 |
+| Top3 cap35 | 41.12% | -28.64% | 1.22 | 1.44 | 1908.01% | 438.34% | 240.30% | 3.64 |
+| Top3 cap35 sector2 | 40.84% | -28.70% | 1.23 | 1.42 | 1873.74% | 438.34% | 240.30% | 3.67 |
+| Top4 cap25 | 39.64% | -27.28% | 1.25 | 1.45 | 1732.21% | 438.34% | 240.30% | 3.53 |
+| Top4 cap25 sector2 | 37.50% | -28.71% | 1.26 | 1.31 | 1501.15% | 438.34% | 240.30% | 3.62 |
+
+Rolling-window stress versus QQQ/SPY:
+
+| Run | Window | Worst QQQ excess CAGR | Worst QQQ window | Worst SPY excess CAGR | Worst strategy MaxDD |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Top2 cap50 | 3Y | -2.20% | 2019-2021 | +9.85% | -38.12% |
+| Top2 cap50 | 5Y | +14.67% | 2018-2022 | +17.45% | -38.12% |
+| Top3 cap35 | 3Y | -4.38% | 2019-2021 | +7.67% | -28.64% |
+| Top3 cap35 | 5Y | +8.75% | 2019-2023 | +11.56% | -28.64% |
+| Top4 cap25 | 3Y | -8.16% | 2019-2021 | +3.89% | -27.28% |
+| Top4 cap25 | 5Y | +7.36% | 2019-2023 | +12.49% | -27.28% |
+
+Interpretation:
+
+- Top2 remains the highest-return sleeve, but its `-38.12%` drawdown is too high
+  for a default live profile unless the strategy is explicitly positioned as a
+  high-volatility aggressive sleeve.
+- Top4 remains the cleanest robust baseline: it has the lowest drawdown in the
+  core grid and every 5-year window beats QQQ and SPY, but it can still lag QQQ
+  in a strong broad-tech bull window such as `2019-2021`.
+- Top3 does not dominate Top4: it adds return versus Top4, but gives up roughly
+  1.4 drawdown points and still does not remove the `2019-2021` QQQ lag.
+
+### Full-window concentration validation
+
+Command output:
+`data/output/russell_top50_product_data_full_concentration_20260620`
+
+Selected 21-trading-day lag rows:
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Total return | Turnover/Year | Comment |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Top2 cap50 | 49.71% | -38.12% | 1.24 | 1.30 | 3259.63% | 3.50 | highest return, too much default drawdown |
+| Top4 cap25 | 39.64% | -27.28% | 1.25 | 1.45 | 1732.21% | 3.53 | clean robust baseline |
+| 25% Top2 / 75% Top4 | 42.44% | -28.19% | 1.27 | 1.51 | 2077.58% | 3.52 | best current conservative live-design candidate |
+| 50% Top2 / 50% Top4 | 45.06% | -30.64% | 1.27 | 1.47 | 2451.86% | 3.52 | best current balanced offensive candidate |
+| 75% Top2 / 25% Top4 | 47.48% | -34.47% | 1.26 | 1.38 | 2848.69% | 3.51 | more aggressive, weaker risk fit |
+| Dynamic Top2 DD -10% -> Top4 | 43.41% | -30.08% | 1.17 | 1.44 | 2210.95% | 5.14 | higher turnover, not better than fixed blend |
+
+Rolling-window stress for selected concentration candidates:
+
+| Run | Window | Worst QQQ excess CAGR | Worst QQQ window | Worst SPY excess CAGR | Worst strategy MaxDD |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Top4 cap25 | 3Y | -8.16% | 2019-2021 | +3.89% | -27.28% |
+| Top4 cap25 | 5Y | +7.36% | 2019-2023 | +12.49% | -27.28% |
+| 25% Top2 / 75% Top4 | 3Y | -6.41% | 2019-2021 | +5.64% | -28.19% |
+| 25% Top2 / 75% Top4 | 5Y | +10.42% | 2019-2023 | +13.95% | -28.19% |
+| 50% Top2 / 50% Top4 | 3Y | -4.83% | 2019-2021 | +7.22% | -30.64% |
+| 50% Top2 / 50% Top4 | 5Y | +12.49% | 2018-2022 | +15.27% | -30.64% |
+| Dynamic Top2 DD -10% -> Top4 | 3Y | -5.77% | 2019-2021 | +6.28% | -30.08% |
+| Dynamic Top2 DD -10% -> Top4 | 5Y | +10.24% | 2018-2022 | +13.02% | -30.08% |
+
+Concentration interpretation:
+
+- The fixed blends still dominate the dynamic drawdown switch on simplicity and
+  turnover. The dynamic switch has higher turnover and lower Sharpe than the
+  `50% Top2 / 50% Top4` fixed blend while offering similar drawdown.
+- `25% Top2 / 75% Top4` is the most conservative live-design candidate because
+  it stays below a `-30%` max drawdown while improving return and rolling-window
+  QQQ excess versus pure Top4.
+- `50% Top2 / 50% Top4` is the best balanced offensive candidate if a drawdown
+  slightly above `-30%` is acceptable. It has materially better CAGR and less
+  severe 3-year QQQ underperformance than Top4.
+- `75% Top2 / 25% Top4` and pure Top2 are research-only unless the target live
+  mandate explicitly accepts mid-to-high `30%` drawdowns.
+
+### Full-window frequency and daily-risk validation
+
+Command output:
+`data/output/russell_top50_product_data_full_frequency_risk_20260620`
+
+This reran the earlier frequency/daily-risk checks on the refreshed product-data
+v2 inputs using the `50% Top2 / 50% Top4` balanced candidate.
+
+| Run | CAGR | MaxDD | Sharpe | Calmar | Turnover/Year | Avg stock exposure |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Monthly, no daily risk | 45.06% | -30.64% | 1.27 | 1.47 | 3.52 | 99.04% |
+| Monthly, hard cash | 39.23% | -32.34% | 1.19 | 1.21 | 5.93 | 94.61% |
+| Monthly, partial cash | 33.93% | -30.85% | 1.11 | 1.10 | 7.99 | 86.58% |
+| Biweekly, no daily risk | 37.59% | -29.94% | 1.14 | 1.26 | 4.36 | 98.68% |
+| Weekly, no daily risk | 38.12% | -30.63% | 1.15 | 1.24 | 5.02 | 98.90% |
+
+Frequency/risk interpretation:
+
+- Keep monthly rebalancing as the live-design default. Weekly/biweekly trading
+  increases turnover and reduces CAGR/Calmar.
+- Do not add broad daily cash-defense overlays to this leader-rotation profile.
+  They reduce return, increase turnover, and do not improve drawdown enough.
+- If risk control is revisited, it should be narrow and momentum-crash-specific,
+  not a broad QQQ/breadth cash switch. Momentum-crash research highlights that
+  crash risk is concentrated after market declines with high volatility and sharp
+  rebounds, while dual/absolute momentum research supports simple trend filters
+  for drawdown control. Those ideas should be tested as separate, pre-registered
+  variants rather than added ad hoc to the base live candidate.
+
+Relevant research references for future variants:
+
+- Daniel and Moskowitz, *Momentum Crashes*: momentum crashes are associated with
+  panic states after market declines and high volatility. Source:
+  https://www.nber.org/system/files/working_papers/w20439/w20439.pdf
+- Moskowitz, Ooi, and Pedersen, *Time Series Momentum*: motivates simple trend
+  and absolute-momentum filters. Source:
+  https://w4.stern.nyu.edu/facdir/lpederse/papers/TimeSeriesMomentum.pdf
+- Antonacci, *Risk Premia Harvesting Through Dual Momentum*: supports combining
+  relative and absolute momentum to reduce volatility and drawdown. Source:
+  https://papers.ssrn.com/sol3/Delivery.cfm/SSRN_ID2881657_code1556771.pdf?abstractid=2042750
+- AQR, *Understanding Defensive Equity*: useful if later testing a quality/low-vol
+  overlay, but that would change this from pure leader rotation toward a more
+  defensive factor strategy. Source:
+  https://www.aqr.com/-/media/AQR/Documents/Insights/White-Papers/Understanding-Defensive-Equity.pdf
+
+### Product-data v2 live-design recommendation
+
+Current recommendation after the full PIT refresh:
+
+1. Do **not** promote pure Top2 as the default runtime profile.
+2. Treat `25% Top2 / 75% Top4` as the conservative live-design candidate.
+3. Treat `50% Top2 / 50% Top4` as the balanced offensive live-design candidate
+   if the live mandate accepts about `-31%` historical max drawdown.
+4. Keep Top4 as the fallback robust baseline.
+5. Keep monthly rebalance, 21-trading-day universe lag, no broad daily cash
+   defense, and 5 bps turnover cost as the default live-design assumptions.
+6. Before runtime enablement, add an explicit live-readiness gate that requires:
+   - full PIT data generated by product-data v2 or better;
+   - no unhandled source fallback streak;
+   - 21-trading-day lag validation;
+   - positive 5-year rolling excess CAGR versus QQQ and SPY;
+   - positive 3-year rolling excess CAGR versus SPY;
+   - documented QQQ lag windows rather than hiding them;
+   - max drawdown target below `-30%` for conservative, or below `-32%` for
+     balanced offensive;
+   - no broad daily cash-defense overlay unless a separately backtested
+     momentum-crash-specific rule passes the same gate.
+
+## 2026-06-20 Live-Readiness Gate Output
+
+The live-design recommendation above is now reproducible through a deterministic
+post-backtest gate. The evaluator consumes already-generated concentration or
+validation summaries and rolling-window summaries, so it does not rerun the
+backtest or expand the parameter search.
+
+Command:
+
+```bash
+PYTHONPATH=src \
+  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_live_readiness \
+  --summary data/output/russell_top50_product_data_full_concentration_20260620/concentration_variant_summary.csv \
+  --rolling data/output/russell_top50_product_data_full_concentration_20260620/concentration_variant_rolling_summary.csv \
+  --output-dir data/output/russell_top50_product_data_full_live_readiness_20260620
+```
+
+Gate output:
+`data/output/russell_top50_product_data_full_live_readiness_20260620/live_readiness_summary.csv`
+
+Current pass/fail result:
+
+| Run | Role | Gate profile | Live gate | Reason | Recommended action |
+| --- | --- | --- | --- | --- | --- |
+| `base_top2_cap50` | aggressive research | research-only | fail | research-only role and max drawdown below balanced threshold | research only |
+| `base_top4_cap25` | robust baseline | fallback | pass | pass | fallback live-design review |
+| `blend_top2_25_top4_75` | conservative live design | conservative | pass | pass | conservative live-design review |
+| `blend_top2_50_top4_50` | balanced offensive live design | balanced offensive | pass | pass | balanced offensive live-design review |
+| `blend_top2_75_top4_25` | aggressive blend research | research-only | fail | research-only role and max drawdown below balanced threshold | research only |
+| dynamic Top2 drawdown switches | dynamic/daily-risk research | research-only | fail | dynamic/daily-risk candidate | research only |
+
+Implemented gate requirements:
+
+- requires `21` trading-day universe lag when the input has a lag column;
+- rejects research-only roles, pure Top2, aggressive 75/25 blend, and dynamic or
+  daily-risk candidates by default;
+- requires full-period total return above QQQ and SPY;
+- requires positive `5Y` rolling excess CAGR versus QQQ and SPY;
+- requires positive `3Y` rolling excess CAGR versus SPY;
+- allows documented `3Y` rolling QQQ underperformance, because the refreshed
+  full PIT test shows every core candidate lags QQQ in `2019-2021` while still
+  beating SPY;
+- conservative/fallback max drawdown threshold: `-30%`;
+- balanced offensive max drawdown threshold: `-32%`.
+
+This gate keeps the strategy in live-design review rather than runtime-enabled.
+The next implementation step, if approved, is to add a runtime profile behind a
+disabled-by-default flag using either `25% Top2 / 75% Top4` or `50% Top2 / 50% Top4`,
+then run the same gate in CI or as a research workflow before enabling live.

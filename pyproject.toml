@@ -30,6 +30,7 @@ useq-backtest-russell-top50-leader-rotation-robustness = "us_equity_snapshot_pip
 useq-validate-russell-top50-leader-rotation-dynamic-universe = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_dynamic_validation:main"
 useq-research-russell-top50-leader-rotation-concentration-variants = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants:main"
 useq-research-russell-top50-leader-rotation-frequency-risk = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_frequency_risk_research:main"
+useq-research-russell-top50-leader-rotation-live-readiness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_live_readiness:main"
 useq-research-russell-1000-proxy-long-history = "us_equity_snapshot_pipelines.russell_1000_proxy_long_history:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest:main"
