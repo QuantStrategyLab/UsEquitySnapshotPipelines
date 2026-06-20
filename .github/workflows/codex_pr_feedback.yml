@@ -7,26 +7,44 @@ name: Codex PR Feedback
   pull_request_review:
     types: [submitted]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CODEX_AUDIT_ENABLED: ${{ vars.CODEX_AUDIT_ENABLED || 'true' }}
+  CODEX_AUDIT_BRIDGE_REPOSITORY: ${{ vars.CODEX_AUDIT_BRIDGE_REPOSITORY || 'QuantStrategyLab/CodexAuditBridge' }}
+  CODEX_AUDIT_BRIDGE_REF: ${{ vars.CODEX_AUDIT_BRIDGE_REF || 'main' }}
+  CODEX_AUDIT_MODE: ${{ vars.CODEX_AUDIT_MODE || 'review_and_fix' }}
+  CODEX_AUDIT_PROVIDER: ${{ vars.CODEX_AUDIT_PROVIDER || 'auto' }}
+  CODEX_AUDIT_AUTO_MERGE: ${{ vars.CODEX_AUDIT_AUTO_MERGE || 'false' }}
+  CODEX_AUDIT_REQUIRED_STATUS_CHECKS: ${{ vars.CODEX_AUDIT_REQUIRED_STATUS_CHECKS || 'test' }}
+
 jobs:
   ci-feedback:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && startsWith(github.event.workflow_run.head_branch, 'codex/monthly-review-issue-')
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' && startsWith(github.event.workflow_run.head_branch, 'codex/monthly-review-issue-') && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      contents: read
       issues: write
       pull-requests: read
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Post CI failure back to Codex issue
+        id: feedback
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH_NAME: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_NAME: ${{ github.event.workflow_run.name }}
-          MAX_CODEX_FEEDBACK_ROUNDS: "3"
+          MAX_CODEX_FEEDBACK_ROUNDS: ${{ vars.CODEX_AUDIT_MAX_FEEDBACK_ROUNDS || '3' }}
         run: |
+          set -euo pipefail
           mkdir -p data/output/codex_feedback
-          gh pr list --state open --head "${BRANCH_NAME}" --json number,title,url,body > data/output/codex_feedback/pr.json
+          gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head "${BRANCH_NAME}" --json number,title,url,body,headRefOid,headRepository,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository == false and .headRepository.nameWithOwner == "'"${GITHUB_REPOSITORY}"'")]' > data/output/codex_feedback/pr.json
           python3 - <<'PY'
           import json
           import os
@@ -40,6 +58,12 @@ jobs:
               raise SystemExit(0)
 
           pr = prs[0]
+          if str(pr.get("headRefOid") or "") != os.environ["RUN_HEAD_SHA"]:
+              Path("data/output/codex_feedback/skip.txt").write_text(
+                  "Skipping stale CI failure because the workflow_run head SHA no longer matches the current PR head.\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(0)
           body = pr.get("body") or ""
           match = re.search(r"<!--\s*codex-monthly-remediation:issue-(\d+)\s*-->", body)
           if not match:
@@ -63,64 +87,219 @@ jobs:
               """
           )
           Path("data/output/codex_feedback/issue_number.txt").write_text(issue_number, encoding="utf-8")
+          Path("data/output/codex_feedback/pr_number.txt").write_text(str(pr["number"]), encoding="utf-8")
           Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
           PY
           if [ -f data/output/codex_feedback/issue_number.txt ]; then
             issue_number="$(cat data/output/codex_feedback/issue_number.txt)"
-            gh issue view "${issue_number}" --comments --json comments > data/output/codex_feedback/issue.json
-            python3 - <<'PY'
-            import json
-            import os
-            import textwrap
-            from pathlib import Path
+            pr_number="$(cat data/output/codex_feedback/pr_number.txt)"
+            policy_labels="$(python3 - <<'PY'
+          import sys
 
-            output_dir = Path("data/output/codex_feedback")
-            issue = json.loads((output_dir / "issue.json").read_text(encoding="utf-8"))
-            comments = [comment.get("body") or "" for comment in issue.get("comments", [])]
-            previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
-            max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
-            comment_path = output_dir / "comment.md"
-            if previous_rounds >= max_rounds:
-                comment = textwrap.dedent(
-                    f"""\
-                    <!-- codex-pr-feedback:limit -->
-                    ## Codex PR Retry Limit Reached
+          from scripts.check_codex_auto_merge_readiness import DEFAULT_POLICY_PATH, ReadinessError, load_policy_labels
 
-                    Automatic Codex feedback reached the retry limit.
-
-                    - Previous feedback rounds: `{previous_rounds}`
-                    - Maximum automatic rounds: `{max_rounds}`
-
-                    The workflow removed `codex-bridge` from this issue. Please inspect the PR and re-apply the label only if another automated Codex pass is still appropriate.
-                    """
-                )
-                comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
-                (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
-            else:
-                attempt = previous_rounds + 1
-                comment = comment_path.read_text(encoding="utf-8").rstrip()
-                comment_path.write_text(
-                    f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
-                    encoding="utf-8",
-                )
-            PY
-            if [ -f data/output/codex_feedback/limit_reached ]; then
-              gh issue edit "${issue_number}" --remove-label codex-bridge || true
+          try:
+              labels = load_policy_labels(DEFAULT_POLICY_PATH)
+          except ReadinessError as exc:
+              print(
+                  f"::warning::Skipping stale guarded auto-merge label cleanup because auto-merge policy labels are invalid: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(0)
+          print(labels["auto_merge_label"])
+          print(labels["human_review_label"])
+          PY
+          )"
+            guard_label="$(printf '%s\n' "${policy_labels}" | sed -n '1p')"
+            human_review_label="$(printf '%s\n' "${policy_labels}" | sed -n '2p')"
+            if [ -n "${guard_label}" ]; then
+              gh issue edit "${pr_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "${guard_label}" || true
+              echo "Removed stale guarded auto-merge label ${guard_label} from PR #${pr_number} after CI failure if it existed."
+            else
+              echo "Skipped stale guarded auto-merge label cleanup after CI failure because policy labels are invalid."
             fi
-            gh issue comment "${issue_number}" --body-file data/output/codex_feedback/comment.md
+            gh api --paginate --slurp \
+            "/repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments?per_page=100" \
+            > data/output/codex_feedback/comment_pages.json
+            python3 - <<'PY'
+          import json
+          import os
+          import textwrap
+          from pathlib import Path
+
+          output_dir = Path("data/output/codex_feedback")
+          comment_pages = json.loads((output_dir / "comment_pages.json").read_text(encoding="utf-8"))
+          comments = []
+          for page in comment_pages:
+              if isinstance(page, list):
+                  comments.extend(comment.get("body") or "" for comment in page if isinstance(comment, dict))
+          previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
+          try:
+              configured_max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
+          except ValueError:
+              configured_max_rounds = 3
+          max_rounds = min(max(configured_max_rounds, 1), 10)
+          comment_path = output_dir / "comment.md"
+          if previous_rounds >= max_rounds:
+              comment = textwrap.dedent(
+                  f"""\
+                  <!-- codex-pr-feedback:limit -->
+                  ## Codex PR Retry Limit Reached
+
+                  Automatic Codex feedback reached the retry limit.
+
+                  - Previous feedback rounds: `{previous_rounds}`
+                  - Maximum automatic rounds: `{max_rounds}`
+
+                  The workflow removed `codex-bridge` from this issue and will try to mark the PR with the configured human-review label. Please inspect the PR and re-apply `codex-bridge` only if another automated Codex pass is still appropriate.
+                  """
+              )
+              comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
+              (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
+          else:
+              attempt = previous_rounds + 1
+              comment = comment_path.read_text(encoding="utf-8").rstrip()
+              comment_path.write_text(
+                  f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
+                  encoding="utf-8",
+              )
+          PY
+          if [ -f data/output/codex_feedback/limit_reached ]; then
+            gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label codex-bridge || true
+            if [ -n "${human_review_label}" ]; then
+              gh label create "${human_review_label}" --repo "${GITHUB_REPOSITORY}" --color d93f0b --description "Codex remediation PR requires human review before merge." || true
+              gh issue edit "${pr_number}" --repo "${GITHUB_REPOSITORY}" --add-label "${human_review_label}" || true
+              echo "Marked PR #${pr_number} with human-review label ${human_review_label} after retry limit was reached."
+            else
+              echo "Skipped adding human-review label after retry limit because policy labels are invalid."
+            fi
+            echo "dispatch_feedback=false" >> "$GITHUB_OUTPUT"
           else
-            cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "dispatch_feedback=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "issue_number=${issue_number}" >> "$GITHUB_OUTPUT"
+          gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body-file data/output/codex_feedback/comment.md
+          else
+          echo "dispatch_feedback=false" >> "$GITHUB_OUTPUT"
+          cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Detect Codex Audit GitHub App Credentials
+        id: codex_review_app_credentials
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        env:
+          APP_ID: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID:-}" ] && [ -n "${APP_PRIVATE_KEY:-}" ]; then
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App Token For Codex Audit
+        id: codex_review_app_token
+        if: steps.codex_review_app_credentials.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            CodexAuditBridge
+          permission-actions: write
+
+      - name: Check guarded auto-merge readiness
+        id: auto_merge_readiness
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/check_codex_auto_merge_readiness.py \
+          --repo "${GITHUB_REPOSITORY}" \
+          --branch "${{ github.event.repository.default_branch || github.ref_name }}" \
+          --auto-merge "${CODEX_AUDIT_AUTO_MERGE}" \
+          --required-status-checks "${CODEX_AUDIT_REQUIRED_STATUS_CHECKS}" \
+          --summary-file data/output/codex_feedback/codex_auto_merge_readiness.md
+
+      - name: Dispatch Codex feedback retry
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        env:
+          GH_TOKEN: ${{ steps.codex_review_app_token.outputs.token || secrets.CODEX_AUDIT_DISPATCH_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.feedback.outputs.issue_number }}
+          SOURCE_REF: ${{ github.event.repository.default_branch || github.ref_name }}
+          TARGET_REPOSITORY: ${{ env.CODEX_AUDIT_BRIDGE_REPOSITORY }}
+          REVIEW_MODE: ${{ env.CODEX_AUDIT_MODE }}
+          REVIEW_PROVIDER: ${{ env.CODEX_AUDIT_PROVIDER }}
+          AUTO_MERGE_REQUESTED: ${{ env.CODEX_AUDIT_AUTO_MERGE }}
+          AUTO_MERGE_READINESS_OUTCOME: ${{ steps.auto_merge_readiness.outcome || 'skipped' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+          echo "Codex audit feedback dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN" >&2
+          exit 1
+          fi
+          if [[ ! "${TARGET_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "Invalid Codex audit repository: ${TARGET_REPOSITORY}" >&2
+          exit 1
+          fi
+          case "${REVIEW_MODE}" in
+          review_only|review_and_fix) ;;
+          *) echo "Unsupported Codex audit mode: ${REVIEW_MODE}" >&2; exit 1 ;;
+          esac
+          case "${REVIEW_PROVIDER}" in
+          auto|api|anthropic|codex|openai) ;;
+          *) echo "Unsupported Codex audit provider: ${REVIEW_PROVIDER}" >&2; exit 1 ;;
+          esac
+          auto_merge_requested="false"
+          if [ "${AUTO_MERGE_REQUESTED}" = "true" ] || [ "${AUTO_MERGE_REQUESTED}" = "True" ] || [ "${AUTO_MERGE_REQUESTED}" = "TRUE" ]; then
+          auto_merge_requested="true"
+          fi
+          auto_merge="false"
+          if [ "${auto_merge_requested}" = "true" ] && [ "${AUTO_MERGE_READINESS_OUTCOME}" = "success" ]; then
+          auto_merge="true"
+          fi
+          if [ "${auto_merge_requested}" = "true" ] && [ "${AUTO_MERGE_READINESS_OUTCOME}" != "success" ]; then
+          echo "Guarded auto-merge was requested, but readiness did not pass; dispatching Codex feedback retry with auto_merge=false."
+          fi
+          gh workflow run codex_audit.yml \
+          --repo "${TARGET_REPOSITORY}" \
+          --ref "${CODEX_AUDIT_BRIDGE_REF}" \
+          --field source_repo="${GITHUB_REPOSITORY}" \
+          --field source_ref="${SOURCE_REF}" \
+          --field issue_number="${ISSUE_NUMBER}" \
+          --field mode="${REVIEW_MODE}" \
+          --field provider="${REVIEW_PROVIDER}" \
+          --field auto_merge="${auto_merge}" \
+          --field task="monthly_snapshot_audit"
+          echo "Dispatched CodexAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
+
+      - name: Upload Codex feedback diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-pr-feedback-ci-${{ github.run_id }}
+          path: data/output/codex_feedback/
+          if-no-files-found: warn
+
   review-feedback:
-    if: github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' && startsWith(github.event.pull_request.head.ref, 'codex/monthly-review-issue-')
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' && startsWith(github.event.pull_request.head.ref, 'codex/monthly-review-issue-') && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      contents: read
       issues: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Post review feedback back to Codex issue
+        id: feedback
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -129,8 +308,9 @@ jobs:
           REVIEW_URL: ${{ github.event.review.html_url }}
           REVIEW_AUTHOR: ${{ github.event.review.user.login }}
           REVIEW_BODY: ${{ github.event.review.body }}
-          MAX_CODEX_FEEDBACK_ROUNDS: "3"
+          MAX_CODEX_FEEDBACK_ROUNDS: ${{ vars.CODEX_AUDIT_MAX_FEEDBACK_ROUNDS || '3' }}
         run: |
+          set -euo pipefail
           mkdir -p data/output/codex_feedback
           python3 - <<'PY'
           import os
@@ -141,74 +321,222 @@ jobs:
           body = os.environ.get("PR_BODY") or ""
           match = re.search(r"<!--\s*codex-monthly-remediation:issue-(\d+)\s*-->", body)
           if not match:
-              Path("data/output/codex_feedback/skip.txt").write_text("No source issue marker found.\n", encoding="utf-8")
-              raise SystemExit(0)
+            Path("data/output/codex_feedback/skip.txt").write_text("No source issue marker found.\n", encoding="utf-8")
+            raise SystemExit(0)
 
           review_body = (os.environ.get("REVIEW_BODY") or "_No review body supplied._").strip()
           comment = textwrap.dedent(
-              f"""\
-              <!-- codex-pr-feedback:review:{os.environ['PR_NUMBER']} -->
-              ## Codex PR Review Feedback
+            f"""\
+            <!-- codex-pr-feedback:review:{os.environ['PR_NUMBER']} -->
+            ## Codex PR Review Feedback
 
-              A review requested changes on the Codex remediation PR.
+            A review requested changes on the Codex remediation PR.
 
-              - PR: {os.environ['PR_URL']}
-              - Reviewer: @{os.environ['REVIEW_AUTHOR']}
-              - Review: {os.environ['REVIEW_URL']}
+            - PR: {os.environ['PR_URL']}
+            - Reviewer: @{os.environ['REVIEW_AUTHOR']}
+            - Review: {os.environ['REVIEW_URL']}
 
-              ### Review Body
+            ### Review Body
 
-              {review_body}
+            {review_body}
 
-              Codex should update the same PR branch, address the requested changes, run targeted tests, and leave the PR draft until the fix is verified.
-              """
+            Codex should update the same PR branch, address the requested changes, run targeted tests, and leave the PR draft until the fix is verified.
+            """
           )
           Path("data/output/codex_feedback/issue_number.txt").write_text(match.group(1), encoding="utf-8")
           Path("data/output/codex_feedback/comment.md").write_text(comment.strip() + "\n", encoding="utf-8")
           PY
           if [ -f data/output/codex_feedback/issue_number.txt ]; then
             issue_number="$(cat data/output/codex_feedback/issue_number.txt)"
-            gh issue view "${issue_number}" --comments --json comments > data/output/codex_feedback/issue.json
-            python3 - <<'PY'
-            import json
-            import os
-            import textwrap
-            from pathlib import Path
+            policy_labels="$(python3 - <<'PY'
+          import sys
 
-            output_dir = Path("data/output/codex_feedback")
-            issue = json.loads((output_dir / "issue.json").read_text(encoding="utf-8"))
-            comments = [comment.get("body") or "" for comment in issue.get("comments", [])]
-            previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
-            max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
-            comment_path = output_dir / "comment.md"
-            if previous_rounds >= max_rounds:
-                comment = textwrap.dedent(
-                    f"""\
-                    <!-- codex-pr-feedback:limit -->
-                    ## Codex PR Retry Limit Reached
+          from scripts.check_codex_auto_merge_readiness import DEFAULT_POLICY_PATH, ReadinessError, load_policy_labels
 
-                    Automatic Codex feedback reached the retry limit.
-
-                    - Previous feedback rounds: `{previous_rounds}`
-                    - Maximum automatic rounds: `{max_rounds}`
-
-                    The workflow removed `codex-bridge` from this issue. Please inspect the PR and re-apply the label only if another automated Codex pass is still appropriate.
-                    """
-                )
-                comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
-                (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
-            else:
-                attempt = previous_rounds + 1
-                comment = comment_path.read_text(encoding="utf-8").rstrip()
-                comment_path.write_text(
-                    f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
-                    encoding="utf-8",
-                )
-            PY
-            if [ -f data/output/codex_feedback/limit_reached ]; then
-              gh issue edit "${issue_number}" --remove-label codex-bridge || true
+          try:
+              labels = load_policy_labels(DEFAULT_POLICY_PATH)
+          except ReadinessError as exc:
+              print(
+                  f"::warning::Skipping stale guarded auto-merge label cleanup because auto-merge policy labels are invalid: {exc}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(0)
+          print(labels["auto_merge_label"])
+          print(labels["human_review_label"])
+          PY
+          )"
+            guard_label="$(printf '%s\n' "${policy_labels}" | sed -n '1p')"
+            human_review_label="$(printf '%s\n' "${policy_labels}" | sed -n '2p')"
+            if [ -n "${guard_label}" ]; then
+              gh issue edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label "${guard_label}" || true
+              echo "Removed stale guarded auto-merge label ${guard_label} from PR #${PR_NUMBER} after requested changes if it existed."
+            else
+              echo "Skipped stale guarded auto-merge label cleanup after requested changes because policy labels are invalid."
             fi
-            gh issue comment "${issue_number}" --body-file data/output/codex_feedback/comment.md
+            gh api --paginate --slurp \
+            "/repos/${GITHUB_REPOSITORY}/issues/${issue_number}/comments?per_page=100" \
+            > data/output/codex_feedback/comment_pages.json
+            python3 - <<'PY'
+          import json
+          import os
+          import textwrap
+          from pathlib import Path
+
+          output_dir = Path("data/output/codex_feedback")
+          comment_pages = json.loads((output_dir / "comment_pages.json").read_text(encoding="utf-8"))
+          comments = []
+          for page in comment_pages:
+              if isinstance(page, list):
+                  comments.extend(comment.get("body") or "" for comment in page if isinstance(comment, dict))
+          previous_rounds = sum(body.startswith("<!-- codex-pr-feedback:") for body in comments)
+          try:
+              configured_max_rounds = int(os.environ.get("MAX_CODEX_FEEDBACK_ROUNDS", "3"))
+          except ValueError:
+              configured_max_rounds = 3
+          max_rounds = min(max(configured_max_rounds, 1), 10)
+          comment_path = output_dir / "comment.md"
+          if previous_rounds >= max_rounds:
+              comment = textwrap.dedent(
+                  f"""\
+                  <!-- codex-pr-feedback:limit -->
+                  ## Codex PR Retry Limit Reached
+
+                  Automatic Codex feedback reached the retry limit.
+
+                  - Previous feedback rounds: `{previous_rounds}`
+                  - Maximum automatic rounds: `{max_rounds}`
+
+                  The workflow removed `codex-bridge` from this issue and will try to mark the PR with the configured human-review label. Please inspect the PR and re-apply `codex-bridge` only if another automated Codex pass is still appropriate.
+                  """
+              )
+              comment_path.write_text(comment.strip() + "\n", encoding="utf-8")
+              (output_dir / "limit_reached").write_text("true\n", encoding="utf-8")
+          else:
+              attempt = previous_rounds + 1
+              comment = comment_path.read_text(encoding="utf-8").rstrip()
+              comment_path.write_text(
+                  f"{comment}\n\n- Feedback round: `{attempt}` of `{max_rounds}`\n",
+                  encoding="utf-8",
+              )
+          PY
+          if [ -f data/output/codex_feedback/limit_reached ]; then
+            gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label codex-bridge || true
+            if [ -n "${human_review_label}" ]; then
+              gh label create "${human_review_label}" --repo "${GITHUB_REPOSITORY}" --color d93f0b --description "Codex remediation PR requires human review before merge." || true
+              gh issue edit "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label "${human_review_label}" || true
+              echo "Marked PR #${PR_NUMBER} with human-review label ${human_review_label} after retry limit was reached."
+            else
+              echo "Skipped adding human-review label after retry limit because policy labels are invalid."
+            fi
+            echo "dispatch_feedback=false" >> "$GITHUB_OUTPUT"
           else
-            cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
+            echo "dispatch_feedback=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "issue_number=${issue_number}" >> "$GITHUB_OUTPUT"
+          gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" --body-file data/output/codex_feedback/comment.md
+          else
+          echo "dispatch_feedback=false" >> "$GITHUB_OUTPUT"
+          cat data/output/codex_feedback/skip.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Detect Codex Audit GitHub App Credentials
+        id: codex_review_app_credentials
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        env:
+          APP_ID: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ID:-}" ] && [ -n "${APP_PRIVATE_KEY:-}" ]; then
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App Token For Codex Audit
+        id: codex_review_app_token
+        if: steps.codex_review_app_credentials.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.CROSS_REPO_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            CodexAuditBridge
+          permission-actions: write
+
+      - name: Check guarded auto-merge readiness
+        id: auto_merge_readiness
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/check_codex_auto_merge_readiness.py \
+          --repo "${GITHUB_REPOSITORY}" \
+          --branch "${{ github.event.repository.default_branch || github.ref_name }}" \
+          --auto-merge "${CODEX_AUDIT_AUTO_MERGE}" \
+          --required-status-checks "${CODEX_AUDIT_REQUIRED_STATUS_CHECKS}" \
+          --summary-file data/output/codex_feedback/codex_auto_merge_readiness.md
+
+      - name: Dispatch Codex feedback retry
+        if: steps.feedback.outputs.dispatch_feedback == 'true' && contains(fromJSON('["true","True","TRUE"]'), env.CODEX_AUDIT_ENABLED)
+        env:
+          GH_TOKEN: ${{ steps.codex_review_app_token.outputs.token || secrets.CODEX_AUDIT_DISPATCH_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.feedback.outputs.issue_number }}
+          SOURCE_REF: ${{ github.event.repository.default_branch || github.ref_name }}
+          TARGET_REPOSITORY: ${{ env.CODEX_AUDIT_BRIDGE_REPOSITORY }}
+          REVIEW_MODE: ${{ env.CODEX_AUDIT_MODE }}
+          REVIEW_PROVIDER: ${{ env.CODEX_AUDIT_PROVIDER }}
+          AUTO_MERGE_REQUESTED: ${{ env.CODEX_AUDIT_AUTO_MERGE }}
+          AUTO_MERGE_READINESS_OUTCOME: ${{ steps.auto_merge_readiness.outcome || 'skipped' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+          echo "Codex audit feedback dispatch requires either a GitHub App token or CODEX_AUDIT_DISPATCH_TOKEN" >&2
+          exit 1
+          fi
+          if [[ ! "${TARGET_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "Invalid Codex audit repository: ${TARGET_REPOSITORY}" >&2
+          exit 1
+          fi
+          case "${REVIEW_MODE}" in
+          review_only|review_and_fix) ;;
+          *) echo "Unsupported Codex audit mode: ${REVIEW_MODE}" >&2; exit 1 ;;
+          esac
+          case "${REVIEW_PROVIDER}" in
+          auto|api|anthropic|codex|openai) ;;
+          *) echo "Unsupported Codex audit provider: ${REVIEW_PROVIDER}" >&2; exit 1 ;;
+          esac
+          auto_merge_requested="false"
+          if [ "${AUTO_MERGE_REQUESTED}" = "true" ] || [ "${AUTO_MERGE_REQUESTED}" = "True" ] || [ "${AUTO_MERGE_REQUESTED}" = "TRUE" ]; then
+          auto_merge_requested="true"
+          fi
+          auto_merge="false"
+          if [ "${auto_merge_requested}" = "true" ] && [ "${AUTO_MERGE_READINESS_OUTCOME}" = "success" ]; then
+          auto_merge="true"
+          fi
+          if [ "${auto_merge_requested}" = "true" ] && [ "${AUTO_MERGE_READINESS_OUTCOME}" != "success" ]; then
+          echo "Guarded auto-merge was requested, but readiness did not pass; dispatching Codex feedback retry with auto_merge=false."
+          fi
+          gh workflow run codex_audit.yml \
+          --repo "${TARGET_REPOSITORY}" \
+          --ref "${CODEX_AUDIT_BRIDGE_REF}" \
+          --field source_repo="${GITHUB_REPOSITORY}" \
+          --field source_ref="${SOURCE_REF}" \
+          --field issue_number="${ISSUE_NUMBER}" \
+          --field mode="${REVIEW_MODE}" \
+          --field provider="${REVIEW_PROVIDER}" \
+          --field auto_merge="${auto_merge}" \
+          --field task="monthly_snapshot_audit"
+          echo "Dispatched CodexAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
+
+      - name: Upload Codex feedback diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-pr-feedback-review-${{ github.run_id }}
+          path: data/output/codex_feedback/
+          if-no-files-found: warn

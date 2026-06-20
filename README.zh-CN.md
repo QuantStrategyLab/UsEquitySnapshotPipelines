@@ -55,8 +55,10 @@ python -m pytest -q
 - [`docs/crisis-response-v1.md`](docs/crisis-response-v1.md)
 - [`docs/global-etf-rotation-snapshot-management.md`](docs/global-etf-rotation-snapshot-management.md)
 - [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
+- [`docs/live-strategy-health-report.md`](docs/live-strategy-health-report.md)
 - [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
+- [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
 
 ## 安全和贡献说明
 

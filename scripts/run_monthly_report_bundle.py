@@ -96,6 +96,73 @@ def _ranking_preview(path: Path, limit: int, *, selected_symbols: set[str] | Non
     return rows
 
 
+def _discover_strategy_health_reports(artifact_root: Path) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    for summary_path in sorted(artifact_root.rglob("strategy_health_summary.csv")):
+        rows: list[dict[str, str]] = []
+        with summary_path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                rows.append(
+                    {
+                        "strategy": row.get("strategy", ""),
+                        "overall_health_state": row.get("overall_health_state", ""),
+                        "overall_reason": row.get("overall_reason", ""),
+                        "full_window_excess_cagr": row.get("full_window_excess_cagr", ""),
+                        "full_window_drawdown_advantage": row.get("full_window_drawdown_advantage", ""),
+                        "watch_windows": row.get("watch_windows", ""),
+                    }
+                )
+        report_dir = summary_path.parent
+        manifest_path = report_dir / "run_manifest.json"
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                manifest = load_json(manifest_path)
+            except Exception:
+                manifest = {}
+        reports.append(
+            {
+                "artifact_dir": str(report_dir),
+                "summary_path": str(summary_path),
+                "report_path": str(report_dir / "strategy_health_report.md")
+                if (report_dir / "strategy_health_report.md").exists()
+                else "",
+                "primary_benchmark": str(manifest.get("primary_benchmark", "") or ""),
+                "policy": manifest.get("policy") if isinstance(manifest.get("policy"), dict) else {},
+                "strategy_count": len(rows),
+                "review_for_retirement_count": sum(
+                    1 for row in rows if row["overall_health_state"] == "review_for_retirement"
+                ),
+                "watch_count": sum(1 for row in rows if row["overall_health_state"] == "watch"),
+                "strategies": rows,
+            }
+        )
+    return reports
+
+
+def _discover_strategy_health_errors(artifact_root: Path) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for error_path in sorted(artifact_root.rglob("strategy_health_error.json")):
+        try:
+            payload = load_json(error_path)
+        except Exception:
+            payload = {}
+        error_dir = error_path.parent
+        errors.append(
+            {
+                "artifact_dir": str(error_dir),
+                "error_path": str(error_path),
+                "report_path": str(error_dir / "strategy_health_error.md")
+                if (error_dir / "strategy_health_error.md").exists()
+                else "",
+                "source_returns": str(payload.get("source_returns", "") or ""),
+                "error_type": str(payload.get("error_type", "") or ""),
+                "error_message": str(payload.get("error_message", "") or ""),
+            }
+        )
+    return errors
+
+
 def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int) -> dict[str, Any]:
     contract = next(item for item in list_profile_contracts() if item.profile == profile)
     if summary_path is None:
@@ -148,11 +215,19 @@ def build_bundle(
 ) -> dict[str, Any]:
     root = Path(artifact_root)
     discovered = _discover_release_summaries(root)
+    strategy_health_reports = _discover_strategy_health_reports(root)
+    strategy_health_errors = _discover_strategy_health_errors(root)
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
         for contract in list_scheduled_profile_contracts()
     ]
-    status = "ok" if all(profile["status"] != "missing" and not profile["missing_files"] for profile in profiles) else "warning"
+    status = (
+        "ok"
+        if all(profile["status"] == "ready" and not profile["missing_files"] for profile in profiles)
+        and not any(report["review_for_retirement_count"] for report in strategy_health_reports)
+        and not strategy_health_errors
+        else "warning"
+    )
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})
     if not report_month:
         report_month = snapshot_dates[-1][:7] if snapshot_dates else datetime.now(UTC).strftime("%Y-%m")
@@ -165,7 +240,11 @@ def build_bundle(
         "artifact_root": str(root),
         "profile_count": len(profiles),
         "missing_profile_count": sum(1 for profile in profiles if profile["status"] == "missing"),
+        "non_ready_profile_count": sum(1 for profile in profiles if profile["status"] != "ready"),
         "profiles": profiles,
+        "strategy_health_reports": strategy_health_reports,
+        "strategy_health_error_count": len(strategy_health_errors),
+        "strategy_health_errors": strategy_health_errors,
     }
 
 
@@ -177,6 +256,9 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
         f"- Status: `{bundle['status']}`",
         f"- Profiles: `{bundle['profile_count']}`",
         f"- Missing profiles: `{bundle['missing_profile_count']}`",
+        f"- Non-ready profiles: `{bundle.get('non_ready_profile_count', 0)}`",
+        f"- Strategy health reports: `{len(bundle.get('strategy_health_reports', []))}`",
+        f"- Strategy health errors: `{bundle.get('strategy_health_error_count', 0)}`",
         "",
         "## Profiles",
         "",
@@ -189,6 +271,38 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
             f"| `{profile['profile']}` | `{profile['status']}` | "
             f"{profile['snapshot_as_of'] or 'n/a'} | {profile['row_count']} | {missing} |"
         )
+    health_reports = bundle.get("strategy_health_reports") or []
+    if health_reports:
+        lines.extend(
+            [
+                "",
+                "## Strategy Health Reports",
+                "",
+                "| Artifact | Strategies | Watch | Review for retirement |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for report in health_reports:
+            lines.append(
+                f"| `{report['artifact_dir']}` | {report['strategy_count']} | "
+                f"{report['watch_count']} | {report['review_for_retirement_count']} |"
+            )
+    health_errors = bundle.get("strategy_health_errors") or []
+    if health_errors:
+        lines.extend(
+            [
+                "",
+                "## Strategy Health Errors",
+                "",
+                "| Artifact | Source returns | Error |",
+                "| --- | --- | --- |",
+            ]
+        )
+        for error in health_errors:
+            lines.append(
+                f"| `{error['artifact_dir']}` | `{error['source_returns'] or 'n/a'}` | "
+                f"{error['error_type'] or 'Error'}: {error['error_message'] or 'n/a'} |"
+            )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -204,6 +318,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         "- Focus on artifact completeness, profile contract health, stale or missing snapshot evidence, and downstream impact.",
         "- Do not recommend production strategy changes from one monthly artifact alone.",
         "- Treat missing profile artifacts as review-blocking evidence gaps.",
+        "- Low-risk docs/tests/monthly-review reporting fixes may be automated; high-risk strategy, runtime, broker, dependency, secret, profile-contract, or live-allocation changes require human review.",
+        "- Treat live strategy `review_for_retirement` states as evidence for a human follow-up issue, not as permission to delete or disable a strategy automatically.",
         "",
         "## Bundle Metadata",
         "",
@@ -211,6 +327,10 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         f"- Status: `{bundle['status']}`",
         f"- Source project: `{bundle['source_project']}`",
         f"- Artifact root: `{bundle['artifact_root']}`",
+        f"- Missing profiles: `{bundle['missing_profile_count']}`",
+        f"- Non-ready profiles: `{bundle.get('non_ready_profile_count', 0)}`",
+        f"- Strategy health reports: `{len(bundle.get('strategy_health_reports', []))}`",
+        f"- Strategy health errors: `{bundle.get('strategy_health_error_count', 0)}`",
         "",
         "## Profile Summaries",
     ]
@@ -243,6 +363,56 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         else:
             lines.append("")
             lines.append("_No ranking preview available._")
+    health_reports = bundle.get("strategy_health_reports") or []
+    lines.extend(
+        [
+            "",
+            "## Live Strategy Health Evidence",
+            "",
+        ]
+    )
+    if not health_reports:
+        lines.append("_No live strategy health report artifacts were found in this bundle._")
+    for report in health_reports:
+        benchmark = report.get("primary_benchmark") or "n/a"
+        lines.extend(
+            [
+                f"### Health report `{report['artifact_dir']}`",
+                "",
+                f"- Primary benchmark: `{benchmark}`",
+                f"- Strategies: `{report['strategy_count']}`",
+                f"- Watch count: `{report['watch_count']}`",
+                f"- Review-for-retirement count: `{report['review_for_retirement_count']}`",
+                "",
+                "| Strategy | Health | Full excess CAGR | Full drawdown advantage | Watch windows | Reason |",
+                "| --- | --- | ---: | ---: | --- | --- |",
+            ]
+        )
+        for row in report["strategies"]:
+            lines.append(
+                f"| `{row['strategy']}` | `{row['overall_health_state']}` | "
+                f"{row['full_window_excess_cagr'] or 'n/a'} | "
+                f"{row['full_window_drawdown_advantage'] or 'n/a'} | "
+                f"{row['watch_windows'] or 'none'} | {row['overall_reason'] or 'n/a'} |"
+            )
+    health_errors = bundle.get("strategy_health_errors") or []
+    if health_errors:
+        lines.extend(
+            [
+                "",
+                "## Live Strategy Health Build Errors",
+                "",
+                "These errors are evidence gaps. They do not permit automated strategy removal or parameter changes.",
+                "",
+                "| Artifact | Source returns | Error |",
+                "| --- | --- | --- |",
+            ]
+        )
+        for error in health_errors:
+            lines.append(
+                f"| `{error['artifact_dir']}` | `{error['source_returns'] or 'n/a'}` | "
+                f"{error['error_type'] or 'Error'}: {error['error_message'] or 'n/a'} |"
+            )
     lines.extend(
         [
             "",
@@ -251,7 +421,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
             "1. Are all expected monthly snapshot profiles present and internally complete?",
             "2. Do snapshot dates, row counts, and contract versions look suitable for downstream runtimes?",
             "3. Are any missing artifacts, stale snapshots, or ranking previews review blockers?",
-            "4. What low-risk follow-up tasks should operators consider before enabling automated fixes?",
+            "4. Do live strategy health reports suggest watch or retirement-review follow-up without overfitting?",
+            "5. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
         ]
     )
     return "\n".join(lines).strip() + "\n"
