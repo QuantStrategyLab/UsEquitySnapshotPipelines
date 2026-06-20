@@ -74,6 +74,7 @@ jobs:
             event_set: full-plus-geopolitical-deescalation
             start_date: '2018-01-01'
             taco_enabled: 'true'
+            panic_reversal_enabled: 'true'
             volatility_delever_price_rebound_enabled: 'false'
           - strategy_profile: soxl_soxx_trend_income
             target_type: notification_target
@@ -84,6 +85,7 @@ jobs:
             event_set: full
             start_date: '2010-01-01'
             taco_enabled: 'false'
+            panic_reversal_enabled: 'true'
             volatility_delever_price_rebound_enabled: 'false'
           - strategy_profile: soxl_soxx_trend_income
             target_type: strategy
@@ -94,6 +96,7 @@ jobs:
             event_set: full
             start_date: '2010-01-01'
             taco_enabled: 'false'
+            panic_reversal_enabled: 'true'
             volatility_delever_price_rebound_enabled: 'true'
     permissions:
       contents: read
@@ -121,6 +124,7 @@ jobs:
       PLUGIN_EVENT_SET: ${{ matrix.event_set }}
       PLUGIN_START_DATE: ${{ matrix.start_date }}
       PLUGIN_TACO_ENABLED: ${{ matrix.taco_enabled }}
+      PLUGIN_PANIC_REVERSAL_ENABLED: ${{ matrix.panic_reversal_enabled }}
       PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED: ${{ matrix.volatility_delever_price_rebound_enabled }}
       PRICE_INPUT_DIR: data/input/strategy_plugins/${{ matrix.strategy_profile }}/market_regime_control
       PLUGIN_OUTPUT_DIR: data/output/${{ matrix.output_scope }}/plugins/market_regime_control
@@ -246,6 +250,7 @@ jobs:
           crisis_enabled = true
           macro_enabled = true
           taco_enabled = ${PLUGIN_TACO_ENABLED}
+          panic_reversal_enabled = ${PLUGIN_PANIC_REVERSAL_ENABLED}
           volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}
 
           [notification_targets.outputs]
@@ -280,6 +285,7 @@ jobs:
           crisis_enabled = true
           macro_enabled = true
           taco_enabled = ${PLUGIN_TACO_ENABLED}
+          panic_reversal_enabled = ${PLUGIN_PANIC_REVERSAL_ENABLED}
           volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}
 
           [strategy_plugins.outputs]
@@ -370,7 +376,7 @@ jobs:
 
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
-            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            relative_path="${source_path#"${PLUGIN_OUTPUT_DIR}/"}"
             destination="${normalized_prefix}/${relative_path}"
             if [ "${EXECUTE_PUBLISH}" = "true" ]; then
               gcloud storage cp "${source_path}" "${destination}"
@@ -378,134 +384,6 @@ jobs:
               echo "DRY-RUN gcloud storage cp ${source_path} ${destination}"
             fi
           done < <(find "${PLUGIN_OUTPUT_DIR}" -type f -print0 | sort -z)
-
-      - name: Publish unified notification-target alert
-        if: env.PLUGIN_TARGET_TYPE == 'notification_target' && env.EXECUTE_PUBLISH == 'true'
-        env:
-          STRATEGY_PLUGIN_ALERT_CHANNELS: ${{ vars.STRATEGY_PLUGIN_ALERT_CHANNELS || 'telegram' }}
-          STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}
-          STRATEGY_PLUGIN_ALERT_STATE_GCS_URI: ${{ vars.STRATEGY_PLUGIN_ALERT_STATE_GCS_URI || 'gs://qsl-runtime-logs-shared/strategy-plugin-alert-state/market_regime_control' }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY }}
-          STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD: ${{ secrets.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD }}
-          STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS }}
-          STRATEGY_PLUGIN_ALERT_SMS_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_PROVIDER }}
-          STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID }}
-          STRATEGY_PLUGIN_ALERT_SMS_SENDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_SENDER }}
-          STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID }}
-          STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL }}
-          STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS }}
-          STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN }}
-          STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS }}
-          STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER }}
-          STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL }}
-          STRATEGY_PLUGIN_ALERT_PUSH_DEVICE: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_DEVICE }}
-          STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY }}
-          STRATEGY_PLUGIN_ALERT_PUSH_TAGS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_TAGS }}
-          STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS }}
-          STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN }}
-          STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS }}
-          STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          from types import SimpleNamespace
-
-          from quant_platform_kit.common.notification_localization import STRATEGY_PLUGIN_I18N
-          from quant_platform_kit.common.strategy_plugins import load_strategy_plugin_signal
-          from quant_platform_kit.notifications.strategy_plugin_alerts import (
-              StrategyPluginAlertStateSettings,
-              publish_strategy_plugin_alerts,
-          )
-
-          def _translator(lang: str):
-              normalized = str(lang or "zh").strip().lower()
-              table = STRATEGY_PLUGIN_I18N["zh" if normalized.startswith("zh") else "en"]
-
-              def translate(key: str, **kwargs):
-                  template = table.get(key, key)
-                  return template.format(**kwargs) if kwargs else template
-
-              return translate
-
-          def _setting(name: str):
-              return os.environ.get(name) or None
-
-          signal = load_strategy_plugin_signal(
-              str(Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "latest_signal.json"),
-              expected_notification_target=os.environ["PLUGIN_NOTIFICATION_TARGET"],
-              expected_plugin=os.environ["PLUGIN_NAME"],
-              expected_schema_version="market_regime_control.v1",
-          )
-          settings = SimpleNamespace(
-              strategy_plugin_alert_channels=_setting("STRATEGY_PLUGIN_ALERT_CHANNELS") or "telegram",
-              strategy_plugin_alert_email_recipients=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS"),
-              strategy_plugin_alert_email_sender_email=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL"),
-              strategy_plugin_alert_email_sender_password=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD"),
-              strategy_plugin_alert_email_smtp_host=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST"),
-              strategy_plugin_alert_email_smtp_port=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT"),
-              strategy_plugin_alert_email_smtp_security=_setting("STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY"),
-              strategy_plugin_alert_sms_recipients=_setting("STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS"),
-              strategy_plugin_alert_sms_provider=_setting("STRATEGY_PLUGIN_ALERT_SMS_PROVIDER"),
-              strategy_plugin_alert_sms_account_id=_setting("STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID"),
-              strategy_plugin_alert_sms_auth_token=_setting("STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN"),
-              strategy_plugin_alert_sms_sender=_setting("STRATEGY_PLUGIN_ALERT_SMS_SENDER"),
-              strategy_plugin_alert_sms_messaging_service_id=_setting("STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID"),
-              strategy_plugin_alert_sms_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL"),
-              strategy_plugin_alert_sms_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS"),
-              strategy_plugin_alert_push_recipients=_setting("STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS"),
-              strategy_plugin_alert_push_provider=_setting("STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER"),
-              strategy_plugin_alert_push_app_token=_setting("STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN"),
-              strategy_plugin_alert_push_access_token=_setting("STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN"),
-              strategy_plugin_alert_push_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL"),
-              strategy_plugin_alert_push_device=_setting("STRATEGY_PLUGIN_ALERT_PUSH_DEVICE"),
-              strategy_plugin_alert_push_priority=_setting("STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY"),
-              strategy_plugin_alert_push_tags=_setting("STRATEGY_PLUGIN_ALERT_PUSH_TAGS"),
-              strategy_plugin_alert_push_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS"),
-              strategy_plugin_alert_telegram_chat_ids=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS"),
-              strategy_plugin_alert_telegram_bot_token=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN"),
-              strategy_plugin_alert_telegram_api_base_url=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL"),
-              strategy_plugin_alert_telegram_parse_mode=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE"),
-              strategy_plugin_alert_telegram_disable_web_page_preview=_setting(
-                  "STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW"
-              ),
-              strategy_plugin_alert_telegram_body_max_chars=_setting("STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS"),
-          )
-          result = publish_strategy_plugin_alerts(
-              [signal],
-              notification_settings=settings,
-              translator=_translator(os.environ.get("STRATEGY_PLUGIN_ALERT_LANG", "zh")),
-              context_label=f"strategy-plugin-publish / {os.environ['PLUGIN_NOTIFICATION_TARGET']}",
-              state_settings=StrategyPluginAlertStateSettings.from_env(
-                  gcp_project_id=os.environ.get("GCP_PROJECT_ID"),
-              ),
-              log_message=print,
-          )
-          output_path = Path(os.environ["PLUGIN_OUTPUT_DIR"]) / "unified_alert_result.json"
-          output_path.write_text(
-              json.dumps(result.to_report_fields(), ensure_ascii=False, indent=2, sort_keys=True),
-              encoding="utf-8",
-          )
-          print(f"wrote unified alert result -> {output_path}")
-          print(
-              "unified_alert_result "
-              f"attempted={result.attempted_count} sent={result.sent_count} "
-              f"skipped={result.skipped_count} failed={result.failed_count}"
-          )
-          if result.failed_count:
-              raise SystemExit("unified notification-target alert failed")
-          PY
 
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7
@@ -537,6 +415,148 @@ jobs:
             echo "Generated plugin files:"
             find "${PLUGIN_OUTPUT_DIR}" -type f -print | sort | sed 's/^/- /'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-market-regime-alerts:
+    needs: market-regime-control
+    if: ${{ github.event_name == 'schedule' || inputs.execute_publish == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
+      PLUGIN_NAME: market_regime_control
+      PLUGIN_ALERT_OUTPUT_DIR: data/output/market_regime_alerts
+      PLUGIN_ALERT_SIGNAL_GLOB: data/output/**/plugins/market_regime_control/latest_signal.json
+      STRATEGY_PLUGIN_ALERT_CHANNELS: ${{ vars.STRATEGY_PLUGIN_ALERT_CHANNELS || 'telegram' }}
+      STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}
+      STRATEGY_PLUGIN_ALERT_STATE_GCS_URI: ${{ vars.STRATEGY_PLUGIN_ALERT_STATE_GCS_URI || 'gs://qsl-runtime-logs-shared/strategy-plugin-alert-state/market_regime_control' }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_PORT }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_SECURITY }}
+      STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD: ${{ secrets.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_PASSWORD }}
+      STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_RECIPIENTS }}
+      STRATEGY_PLUGIN_ALERT_SMS_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_PROVIDER }}
+      STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_ACCOUNT_ID }}
+      STRATEGY_PLUGIN_ALERT_SMS_SENDER: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_SENDER }}
+      STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_MESSAGING_SERVICE_ID }}
+      STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_API_BASE_URL }}
+      STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_SMS_BODY_MAX_CHARS }}
+      STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_SMS_AUTH_TOKEN }}
+      STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_RECIPIENTS }}
+      STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PROVIDER }}
+      STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_API_BASE_URL }}
+      STRATEGY_PLUGIN_ALERT_PUSH_DEVICE: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_DEVICE }}
+      STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_PRIORITY }}
+      STRATEGY_PLUGIN_ALERT_PUSH_TAGS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_TAGS }}
+      STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_PUSH_BODY_MAX_CHARS }}
+      STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_APP_TOKEN }}
+      STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_PUSH_ACCESS_TOKEN }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_CHAT_IDS }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_API_BASE_URL }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_PARSE_MODE }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_DISABLE_WEB_PAGE_PREVIEW }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS: ${{ vars.STRATEGY_PLUGIN_ALERT_TELEGRAM_BODY_MAX_CHARS }}
+      STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN: ${{ secrets.STRATEGY_PLUGIN_ALERT_TELEGRAM_BOT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Download market-regime artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: strategy-plugin-market-regime-control-*-${{ github.run_id }}
+          path: data
+          merge-multiple: true
+
+      - name: Validate alert inputs
+        run: |
+          set -euo pipefail
+          mapfile -t signal_paths < <(find data/output -path '*/plugins/market_regime_control/latest_signal.json' -type f | sort)
+          if [ "${#signal_paths[@]}" -eq 0 ]; then
+            echo "No market_regime_control latest_signal.json files found after artifact download."
+            exit 1
+          fi
+          printf 'Market-regime alert input signals:\n'
+          printf -- '- %s\n' "${signal_paths[@]}"
+
+      - name: Check whether Google Cloud auth is needed
+        id: market-regime-alert-gcp-auth-check
+        run: |
+          set -euo pipefail
+          needed=false
+          if [ "${EXECUTE_PUBLISH}" = "true" ] && [ -n "${STRATEGY_PLUGIN_ALERT_STATE_GCS_URI:-}" ]; then
+            needed=true
+          fi
+          echo "needed=${needed}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: steps.market-regime-alert-gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.market-regime-alert-gcp-auth-check.outputs.needed == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          version: '>= 416.0.0'
+
+      - name: Publish consolidated market-regime alert
+        run: |
+          set -euo pipefail
+          python -m us_equity_snapshot_pipelines.strategy_plugin_alerts
+          test -f "${PLUGIN_ALERT_OUTPUT_DIR}/unified_alert_result.json"
+
+      - name: Upload alert result
+        uses: actions/upload-artifact@v7
+        with:
+          name: strategy-plugin-market-regime-alerts-${{ github.run_id }}
+          path: ${{ env.PLUGIN_ALERT_OUTPUT_DIR }}/unified_alert_result.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Append alert job summary
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result_path = Path(os.environ["PLUGIN_ALERT_OUTPUT_DIR"]) / "unified_alert_result.json"
+          payload = json.loads(result_path.read_text(encoding="utf-8"))
+          gates = payload.get("unified_alert_gates") or []
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary_path.open("a", encoding="utf-8") as handle:
+              handle.write("## Consolidated market-regime alert\n\n")
+              handle.write(f"- input_signal_count: `{len(gates)}`\n")
+              handle.write(f"- attempted: `{payload.get('strategy_plugin_alert_attempted_count', 0)}`\n")
+              handle.write(f"- sent: `{payload.get('strategy_plugin_alert_sent_count', 0)}`\n")
+              handle.write(f"- skipped: `{payload.get('strategy_plugin_alert_skipped_count', 0)}`\n")
+              handle.write(f"- failed: `{payload.get('strategy_plugin_alert_failed_count', 0)}`\n")
+              handle.write(f"- result: `{result_path}`\n")
+          PY
 
   ibit-zscore-exit:
     runs-on: ubuntu-latest
@@ -757,7 +777,7 @@ jobs:
 
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
-            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            relative_path="${source_path#"${PLUGIN_OUTPUT_DIR}/"}"
             destination="${normalized_prefix}/${relative_path}"
             if [ "${EXECUTE_PUBLISH}" = "true" ]; then
               gcloud storage cp "${source_path}" "${destination}"
@@ -980,7 +1000,7 @@ jobs:
 
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
-            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            relative_path="${source_path#"${PLUGIN_OUTPUT_DIR}/"}"
             destination="${normalized_prefix}/${relative_path}"
             if [ "${EXECUTE_PUBLISH}" = "true" ]; then
               gcloud storage cp "${source_path}" "${destination}"
@@ -1186,7 +1206,7 @@ jobs:
 
           normalized_prefix="${GCS_PREFIX%/}"
           while IFS= read -r -d '' source_path; do
-            relative_path="${source_path#${PLUGIN_OUTPUT_DIR}/}"
+            relative_path="${source_path#"${PLUGIN_OUTPUT_DIR}/"}"
             destination="${normalized_prefix}/${relative_path}"
             if [ "${EXECUTE_PUBLISH}" = "true" ]; then
               gcloud storage cp "${source_path}" "${destination}"

@@ -4,6 +4,7 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
+ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
 QUANT_PLATFORM_KIT_REF = "9d9682533578c7e5a9e02ea80040b7014898e4dd"
 MARKET_REGIME_PLUGIN_REF = "eedaa71de8472448c4665b8b7b3be679fe7db83d"
 US_EQUITY_STRATEGIES_REF = "bf10f1efceb8744298a039276d58543f8979f50b"
@@ -26,6 +27,8 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert (
         "PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED: ${{ matrix.volatility_delever_price_rebound_enabled }}"
     ) in workflow
+    assert "panic_reversal_enabled: 'true'" in workflow
+    assert "PLUGIN_PANIC_REVERSAL_ENABLED: ${{ matrix.panic_reversal_enabled }}" in workflow
     assert "INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}" in workflow
     assert "INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}" in workflow
     assert (
@@ -50,6 +53,7 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "realized_vol_requires_confirmation = true" in workflow
     assert "delever_risk_asset_scalar = 0.0" in workflow
     assert "taco_enabled = ${PLUGIN_TACO_ENABLED}" in workflow
+    assert "panic_reversal_enabled = ${PLUGIN_PANIC_REVERSAL_ENABLED}" in workflow
     assert "volatility_delever_price_rebound_enabled: 'true'" in workflow
     assert "volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}" in workflow
     assert "position_control" in workflow
@@ -63,12 +67,23 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "GITHUB_RUN_ID" in workflow
     assert "GITHUB_SHA" in workflow
     assert "release_manifest.json" in workflow
-    assert "Publish unified notification-target alert" in workflow
+    assert "Publish unified notification-target alert" not in workflow
+    assert "publish-market-regime-alerts:" in workflow
+    assert "needs: market-regime-control" in workflow
+    assert "Download market-regime artifacts" in workflow
+    assert "actions/download-artifact@v7" in workflow
+    assert "pattern: strategy-plugin-market-regime-control-*-${{ github.run_id }}" in workflow
+    assert "merge-multiple: true" in workflow
+    assert "PLUGIN_ALERT_OUTPUT_DIR: data/output/market_regime_alerts" in workflow
+    assert "PLUGIN_ALERT_SIGNAL_GLOB: data/output/**/plugins/market_regime_control/latest_signal.json" in workflow
+    assert "Publish consolidated market-regime alert" in workflow
+    assert "strategy-plugin-market-regime-alerts-${{ github.run_id }}" in workflow
     assert "STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}" in workflow
     assert "STRATEGY_PLUGIN_ALERT_STATE_GCS_URI" in workflow
-    assert "strategy-plugin-publish / {os.environ['PLUGIN_NOTIFICATION_TARGET']}" in workflow
-    assert "unified_alert_result.json" in workflow
-    assert "publish_strategy_plugin_alerts" in workflow
+    assert "python -m us_equity_snapshot_pipelines.strategy_plugin_alerts" in workflow
+    alert_module = ALERT_MODULE.read_text(encoding="utf-8")
+    assert "unified_alert_result.json" in alert_module
+    assert "PLUGIN_ALERT_SIGNAL_GLOB" in alert_module
 
 
 def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
