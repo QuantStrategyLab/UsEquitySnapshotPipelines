@@ -10,7 +10,7 @@ change runtime manifests, or approve any new default allocation.
 | --- | --- | --- |
 | Russell Top50 leader rotation | Best current offensive line. The fixed `Top4`, `25/75 Top2/Top4`, and `50/50 Top2/Top4` matrix already has promotion, stress, overfit, liquidity, and live-decay hooks. | Keep as the primary live-candidate line. Do not widen the parameter grid. |
 | Global ETF offensive sleeve | The small offensive sleeve improved some long-window metrics but failed walk-forward/OOS versus the current defensive baseline. | Keep defensive baseline live. Only test narrow, pre-registered sleeve variants. |
-| IBIT Smart DCA | Dynamic MVRV Z-Score exit/parking plugin and strategy-side DCA/BOXX replay now exist as research artifacts; the current z-score overlay failed long-history promotion gates. | Treat buy-only DCA as a separate asymmetric satellite idea, but keep the z-score overlay research-only/notification-only. |
+| IBIT Smart DCA | Dynamic MVRV Z-Score exit/parking plugin and strategy-side DCA/BOXX replay now exist as research artifacts; the new long-history replay did not justify changing the existing runtime default. | Treat buy-only DCA as a separate asymmetric satellite idea; this research note must not downgrade, disable, or newly broaden existing live z-score behavior without an explicit strategy-side change request. |
 | BOXX / cash-like sleeves | BOXX-like parking can improve idle-cash carry, but it is execution/cash management, not alpha. | Strategy must be able to sell parking sleeves to fund scheduled buys regardless of plugin status. |
 
 ## Web-expanded evidence map
@@ -322,7 +322,7 @@ raised in this thread:
   `ibit_dca_research_manifest.json`;
 - gate: plugin-on must show positive net value versus plugin-off buy-only DCA,
   must not lose to the parking-only baseline, and should be reviewed against
-  QQQ/SPY excess-CAGR columns before any default enablement.
+  QQQ/SPY excess-CAGR columns before any default expansion or parameter change.
 
 Command pattern with a prepared price CSV:
 
@@ -443,13 +443,10 @@ Key readout:
   value versus buy-only DCA, even if buy-only DCA itself beats parking-only and
   QQQ/SPY over this short window.
 
-Implication: keep `ibit_zscore_exit` as research/shadow evidence. Do not default
-enable the escape overlay until a longer or more stressful replay shows positive
-net value versus buy-only DCA or sufficient drawdown improvement after costs.
-The plugin registration is therefore kept `notification_only` with position
-control disabled; it may emit deterministic evidence, but it must not be
-consumed for automated IBIT allocation changes without a separate passing
-promotion artifact.
+Implication: this short replay does not justify expanding or retuning
+`ibit_zscore_exit`. It also must not be used to downgrade an already approved
+strategy-side live default. Any change to existing automated IBIT allocation
+behavior requires a separate strategy-side request and promotion artifact.
 
 ## 2026-06-20 long-history replay v2 smoke
 
@@ -497,10 +494,10 @@ Live-readiness summary:
 
 Implication: the long-history replay infrastructure is now good enough to
 evaluate BTC-era DCA and parking-proxy assumptions, but the current free-source
-z-score overlay still adds no value in this replay. The correct live stance
-remains unchanged: buy-only DCA/parking mechanics can be strategy behavior, but
-the z-score escape overlay stays research-only/notification-only until a
-separate promotion artifact proves positive net value.
+z-score overlay still adds no incremental value in this replay. The correct
+action from this evidence is **no runtime default change**: preserve existing
+strategy-side behavior unless a separate, explicit strategy change request
+approves disabling, retuning, or broadening the overlay.
 
 ## 2026-06-20 live-enable decision refresh
 
@@ -560,6 +557,7 @@ Fresh long-history replay using public MVRV Z-Score data and yfinance prices:
   `93` `zscore_unavailable` signals, available ratio about `34.04%` vs the
   `80%` minimum.
 
-Decision: **do not live-enable z-score position control for IBIT**. Keep
-`ibit_zscore_exit` `notification_only`; the DCA/parking replay remains useful
-research infrastructure but is not a promotion artifact.
+Decision: **do not change the existing IBIT z-score runtime default based on
+this replay**. The DCA/parking replay remains useful research infrastructure,
+but it is not a promotion artifact and must not be used as an implicit approval
+to disable, retune, or broaden existing live behavior.
