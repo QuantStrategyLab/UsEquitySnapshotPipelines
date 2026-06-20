@@ -142,17 +142,25 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert "IBIT_ZSCORE_METRICS_FALLBACK_CSV" in workflow
     assert "ibit_zscore_metrics_download.json" in workflow
     assert "IBIT zscore metrics used last-good fallback cache" in workflow
+    assert "YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}" in workflow
     assert "/inputs/ibit_zscore_metrics.csv" in workflow
     assert "https://api.bitcoin-data.com/v1/mvrv-zscore" in workflow
     assert "newhedge.io" not in workflow
     assert "scripts/download_ibit_zscore_metrics.py" in workflow
+    assert "Build IBIT DCA research artifact" in workflow
+    assert "scripts/build_scheduled_ibit_dca_research.py" in workflow
+    assert "RESEARCH_OUTPUT_DIR: data/output/ibit_smart_dca/research/ibit_dca" in workflow
+    assert "ibit_dca_research_manifest.json" in workflow
+    assert "ibit_dca_research_report.md" in workflow
+    assert "ibit_dca_live_readiness_summary.csv" in workflow
     assert 'zscore_metrics = "${zscore_path}"' in workflow
     assert "ibit_zscore_exit.v1" in workflow
-    assert "automation_approved" in workflow
+    assert "notification_only" in workflow
     assert (
         "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit"
     ) in workflow
     assert "name: strategy-plugin-ibit-zscore-exit-${{ github.run_id }}" in workflow
+    assert "${{ env.RESEARCH_OUTPUT_DIR }}" in workflow
 
 
 def test_strategy_plugin_publish_workflow_uses_artifact_mode_not_platform_mode() -> None:

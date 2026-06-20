@@ -16,10 +16,13 @@ IBIT_ZSCORE_EXIT_POLICY = _base.PluginConsumptionPolicy(
     plugin=PLUGIN_IBIT_ZSCORE_EXIT,
     strategy=IBIT_SMART_DCA_STRATEGY,
     notification_allowed=True,
-    position_control_allowed=True,
-    evidence_status=_base.EVIDENCE_AUTOMATION_APPROVED,
+    position_control_allowed=False,
+    evidence_status=_base.EVIDENCE_NOTIFICATION_ONLY,
     since_version="strategy_plugins.v1",
-    description="Backtested dynamic MVRV Z-Score exit/parking overlay for the IBIT Smart DCA strategy.",
+    description=(
+        "Research-only dynamic MVRV Z-Score exit/parking signal for the IBIT Smart DCA strategy; "
+        "position control requires a separate positive promotion artifact."
+    ),
 )
 IBIT_ZSCORE_EXIT_SPEC = _base.PluginExecutionSpec(
     default_plugin=PLUGIN_IBIT_ZSCORE_EXIT,
