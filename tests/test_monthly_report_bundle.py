@@ -414,3 +414,43 @@ def test_build_bundle_collects_capacity_stress_manifest(tmp_path: Path) -> None:
     assert "Capacity Stress Reports" in markdown
     assert "Summary rows: `27`" in markdown
     assert "Capacity stress reports: `1`" in summary
+
+
+def test_build_bundle_collects_live_decay_monitor_manifest(tmp_path: Path) -> None:
+    for contract in list_scheduled_profile_contracts():
+        _write_profile_artifacts(tmp_path, contract.profile)
+    manifest_path = tmp_path / "russell_live_decay" / "live_decay_monitor_manifest.json"
+    _write_json(
+        manifest_path,
+        {
+            "manifest_type": "live_decay_monitor",
+            "artifact_schema_version": "live_decay_monitor.v1",
+            "generated_at": "2026-06-20T13:00:00+00:00",
+            "input_format": "russell_daily",
+            "strategies": ["blend_top2_50_top4_50"],
+            "primary_benchmark": "QQQ",
+            "secondary_benchmark": "SPY",
+            "windows": [63, 126, 252],
+            "policy": {"min_observations": 60},
+            "expected_excess_cagr_by_strategy": {"blend_top2_50_top4_50": 0.05},
+            "artifacts": {
+                "live_decay_window_summary": {"path": "live_decay_window_summary.csv"},
+                "live_decay_strategy_summary": {"path": "live_decay_strategy_summary.csv"},
+            },
+            "row_counts": {
+                "live_decay_window_summary": 3,
+                "live_decay_strategy_summary": 1,
+            },
+        },
+    )
+
+    bundle = build_bundle(tmp_path, report_month="2026-06")
+    markdown = render_ai_review_input(bundle)
+    summary = render_job_summary(bundle)
+
+    assert bundle["live_decay_monitor_count"] == 1
+    assert bundle["live_decay_monitor_problem_count"] == 0
+    assert bundle["live_decay_monitors"][0]["strategies"] == ["blend_top2_50_top4_50"]
+    assert "Live Decay Monitors" in markdown
+    assert "Strategy summary rows: `1`" in markdown
+    assert "Live decay monitors: `1`" in summary

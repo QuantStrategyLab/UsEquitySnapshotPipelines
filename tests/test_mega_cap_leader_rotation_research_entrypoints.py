@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 EXPECTED_RUSSELL_PROMOTION_ENTRYPOINTS = {
+    "useq-build-live-decay-monitor": "us_equity_snapshot_pipelines.live_decay_monitor:main",
     "useq-build-russell-top50-shadow-live-ledger": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_live_ledger:main",
     "useq-research-russell-top50-leader-rotation-capacity-stress": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_capacity_stress:main",
     "useq-research-russell-top50-leader-rotation-overfit-diagnostics": "us_equity_snapshot_pipelines.mega_cap_leader_rotation_overfit_diagnostics:main",

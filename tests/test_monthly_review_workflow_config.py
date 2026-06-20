@@ -19,8 +19,11 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "Install monthly review dependencies" in workflow
     assert 'python -m pip install "pandas>=2.0"' in workflow
     assert workflow.index("Install monthly review dependencies") < workflow.index("Build live strategy health reports")
+    assert workflow.index("Build live strategy health reports") < workflow.index("Build live decay monitors")
+    assert workflow.index("Build live decay monitors") < workflow.index("Build monthly review bundle")
     assert "gh run download" in workflow
     assert "scripts/build_monthly_live_strategy_health_reports.py" in workflow
+    assert "scripts/build_monthly_live_decay_monitors.py" in workflow
     assert "--output-root \"${artifact_root}\"" in workflow
     assert "scripts/run_monthly_report_bundle.py" in workflow
     assert "scripts/post_monthly_ai_review_issue.py" in workflow
