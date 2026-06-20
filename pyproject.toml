@@ -61,6 +61,7 @@ useq-build-global-etf-rotation-snapshot = "us_equity_snapshot_pipelines.global_e
 useq-research-memory-semiconductor-momentum = "us_equity_snapshot_pipelines.memory_semiconductor_momentum_research:main"
 useq-build-live-strategy-health-report = "us_equity_snapshot_pipelines.live_strategy_health:main"
 useq-build-live-decay-monitor = "us_equity_snapshot_pipelines.live_decay_monitor:main"
+useq-research-ibit-smart-dca = "us_equity_snapshot_pipelines.ibit_smart_dca_research:main"
 useq-build-crisis-context-pack = "us_equity_snapshot_pipelines.crisis_context_research:main"
 useq-build-crisis-response-shadow-signal = "us_equity_snapshot_pipelines.crisis_response_shadow_plugin:main"
 useq-build-taco-rebound-shadow-signal = "us_equity_snapshot_pipelines.taco_rebound_shadow_plugin:main"

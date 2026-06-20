@@ -66,6 +66,15 @@ def parse_args() -> argparse.Namespace:
             "Can be supplied multiple times. When omitted, artifact-root is scanned."
         ),
     )
+    parser.add_argument(
+        "--ibit-dca-research-manifest",
+        action="append",
+        default=None,
+        help=(
+            "Optional ibit_dca_research_manifest.json path to include in the monthly review bundle. "
+            "Can be supplied multiple times. When omitted, artifact-root is scanned."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -108,6 +117,12 @@ def _discover_live_decay_monitor_manifests(artifact_root: Path, explicit_paths: 
     if explicit_paths:
         return [Path(path) for path in explicit_paths if str(path).strip()]
     return sorted(artifact_root.rglob("live_decay_monitor_manifest.json"))
+
+
+def _discover_ibit_dca_research_manifests(artifact_root: Path, explicit_paths: list[str] | None) -> list[Path]:
+    if explicit_paths:
+        return [Path(path) for path in explicit_paths if str(path).strip()]
+    return sorted(artifact_root.rglob("ibit_dca_research_manifest.json"))
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -456,6 +471,63 @@ def _collect_live_decay_monitor_manifest(path: Path) -> dict[str, Any]:
     }
 
 
+def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "ibit_symbol": "",
+        "parking_symbol": "",
+        "primary_benchmark": "",
+        "secondary_benchmark": "",
+        "btc_proxy_symbol": "",
+        "proxy_rows_filled": 0,
+        "proxy_scale_source": "",
+        "variants": [],
+        "row_counts": {},
+        "artifact_count": 0,
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == "ibit_smart_dca_research" else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    inputs = _safe_mapping(payload.get("inputs"))
+    config = _safe_mapping(inputs.get("config"))
+    proxy = _safe_mapping(inputs.get("proxy"))
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "ibit_symbol": str(config.get("ibit_symbol", "") or ""),
+        "parking_symbol": str(config.get("parking_symbol", "") or ""),
+        "primary_benchmark": str(config.get("primary_benchmark", "") or ""),
+        "secondary_benchmark": str(config.get("secondary_benchmark", "") or ""),
+        "btc_proxy_symbol": str(proxy.get("btc_proxy_symbol") or config.get("btc_proxy_symbol", "") or ""),
+        "proxy_rows_filled": int(proxy.get("proxy_rows_filled", 0) or 0),
+        "proxy_scale_source": str(proxy.get("proxy_scale_source", "") or ""),
+        "variants": _string_list(inputs.get("variants")),
+        "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
+        "artifact_count": len(artifacts),
+    }
+
+
 def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int) -> dict[str, Any]:
     contract = next(item for item in list_profile_contracts() if item.profile == profile)
     if summary_path is None:
@@ -509,6 +581,7 @@ def build_bundle(
     shadow_live_ledger_manifest_paths: list[str] | None = None,
     capacity_stress_manifest_paths: list[str] | None = None,
     live_decay_monitor_manifest_paths: list[str] | None = None,
+    ibit_dca_research_manifest_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     root = Path(artifact_root)
     discovered = _discover_release_summaries(root)
@@ -530,10 +603,15 @@ def build_bundle(
         _collect_live_decay_monitor_manifest(path)
         for path in _discover_live_decay_monitor_manifests(root, live_decay_monitor_manifest_paths)
     ]
+    ibit_dca_research_reports = [
+        _collect_ibit_dca_research_manifest(path)
+        for path in _discover_ibit_dca_research_manifests(root, ibit_dca_research_manifest_paths)
+    ]
     promotion_bundle_problem_count = sum(1 for bundle in promotion_bundles if bundle["status"] != "ok")
     shadow_live_ledger_problem_count = sum(1 for ledger in shadow_live_ledgers if ledger["status"] != "ok")
     capacity_stress_problem_count = sum(1 for stress in capacity_stresses if stress["status"] != "ok")
     live_decay_monitor_problem_count = sum(1 for monitor in live_decay_monitors if monitor["status"] != "ok")
+    ibit_dca_research_problem_count = sum(1 for report in ibit_dca_research_reports if report["status"] != "ok")
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
         for contract in list_scheduled_profile_contracts()
@@ -547,6 +625,7 @@ def build_bundle(
         and shadow_live_ledger_problem_count == 0
         and capacity_stress_problem_count == 0
         and live_decay_monitor_problem_count == 0
+        and ibit_dca_research_problem_count == 0
         else "warning"
     )
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})
@@ -578,6 +657,9 @@ def build_bundle(
         "live_decay_monitor_count": len(live_decay_monitors),
         "live_decay_monitor_problem_count": live_decay_monitor_problem_count,
         "live_decay_monitors": live_decay_monitors,
+        "ibit_dca_research_count": len(ibit_dca_research_reports),
+        "ibit_dca_research_problem_count": ibit_dca_research_problem_count,
+        "ibit_dca_research_reports": ibit_dca_research_reports,
     }
 
 
@@ -604,6 +686,8 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
         f"- Capacity stress issues: `{bundle.get('capacity_stress_problem_count', 0)}`",
         f"- Live decay monitors: `{bundle.get('live_decay_monitor_count', 0)}`",
         f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
+        f"- IBIT DCA research reports: `{bundle.get('ibit_dca_research_count', 0)}`",
+        f"- IBIT DCA research issues: `{bundle.get('ibit_dca_research_problem_count', 0)}`",
         "",
         "## Profiles",
         "",
@@ -720,6 +804,25 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
                 f"{_md(monitor['generated_at']) or 'n/a'} | "
                 f"{len(monitor['strategies'])} | {', '.join(monitor['windows']) or 'n/a'} |"
             )
+    if bundle.get("ibit_dca_research_reports"):
+        lines.extend(
+            [
+                "",
+                "## IBIT Smart DCA Research",
+                "",
+                "| Manifest | Status | Schema | Variants | Trade rows | Signal rows |",
+                "| --- | --- | --- | --- | ---: | ---: |",
+            ]
+        )
+        for report in bundle["ibit_dca_research_reports"]:
+            row_counts = report.get("row_counts") or {}
+            lines.append(
+                f"| `{_md(report['manifest_path'])}` | `{_md(report['status'])}` | "
+                f"`{_md(report['artifact_schema_version'])}` | "
+                f"{', '.join(report['variants']) or 'n/a'} | "
+                f"{row_counts.get('ibit_dca_trade_ledger', 0)} | "
+                f"{row_counts.get('ibit_dca_signal_consumption', 0)} |"
+            )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -750,6 +853,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         f"- Strategy health errors: `{bundle.get('strategy_health_error_count', 0)}`",
         f"- Live decay monitors: `{bundle.get('live_decay_monitor_count', 0)}`",
         f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
+        f"- IBIT DCA research reports: `{bundle.get('ibit_dca_research_count', 0)}`",
+        f"- IBIT DCA research issues: `{bundle.get('ibit_dca_research_problem_count', 0)}`",
         "",
         "## Profile Summaries",
     ]
@@ -985,6 +1090,44 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## IBIT Smart DCA Research",
+            "",
+            "These artifacts replay buy-only DCA, parking-only baseline, and optional deterministic z-score "
+            "plugin consumption. They are research-only and must not enable IBIT runtime changes by themselves.",
+        ]
+    )
+    if not bundle.get("ibit_dca_research_reports"):
+        lines.append("")
+        lines.append("_No IBIT Smart DCA research manifest found under the artifact root._")
+    for report in bundle.get("ibit_dca_research_reports", []):
+        row_counts = report.get("row_counts") or {}
+        status_note = report.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### IBIT DCA research `{_md(report['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(report['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Manifest type: `{_md(report['manifest_type'])}`",
+                f"- Artifact schema: `{_md(report['artifact_schema_version'])}`",
+                f"- IBIT symbol: `{_md(report['ibit_symbol']) or 'n/a'}`",
+                f"- Parking symbol: `{_md(report['parking_symbol']) or 'n/a'}`",
+                f"- Primary benchmark: `{_md(report['primary_benchmark']) or 'n/a'}`",
+                f"- Secondary benchmark: `{_md(report['secondary_benchmark']) or 'n/a'}`",
+                f"- BTC proxy: `{_md(report['btc_proxy_symbol']) or 'n/a'}`",
+                f"- Proxy rows filled: `{_md(report['proxy_rows_filled'])}`",
+                f"- Variants: `{', '.join(report['variants']) or 'n/a'}`",
+                f"- Period summary rows: `{row_counts.get('ibit_dca_period_summary', 0)}`",
+                f"- Trade ledger rows: `{row_counts.get('ibit_dca_trade_ledger', 0)}`",
+                f"- Signal consumption rows: `{row_counts.get('ibit_dca_signal_consumption', 0)}`",
+                f"- Live-readiness rows: `{row_counts.get('ibit_dca_live_readiness_summary', 0)}`",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
             "## Review Questions",
             "",
             "1. Are all expected monthly snapshot profiles present and internally complete?",
@@ -995,7 +1138,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
             "6. If shadow-live ledgers are present, do the trade deltas, slippage estimates, and forward returns support continuing toward paper/live promotion?",
             "7. If capacity stress reports are present, which NAV/slippage/split-day assumptions remain implementable?",
             "8. If live decay monitors are present, do recent QQQ/SPY or expected-edge gaps require human review without changing runtime automatically?",
-            "9. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
+            "9. If IBIT DCA research is present, does plugin-on beat buy-only DCA and parking-only baselines after cash-flow-adjusted returns and benchmark-relative review?",
+            "10. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
         ]
     )
     return "\n".join(lines).strip() + "\n"
@@ -1023,6 +1167,7 @@ def main() -> int:
         shadow_live_ledger_manifest_paths=args.shadow_live_ledger_manifest,
         capacity_stress_manifest_paths=args.capacity_stress_manifest,
         live_decay_monitor_manifest_paths=args.live_decay_monitor_manifest,
+        ibit_dca_research_manifest_paths=args.ibit_dca_research_manifest,
     )
     outputs = write_bundle(bundle, args.output_dir)
     print(f"status={bundle['status']}")
