@@ -71,6 +71,38 @@ def _summary_rows() -> pd.DataFrame:
                 "Broad Benchmark Total Return": 2.0,
                 "Turnover/Year": 5.1,
             },
+            {
+                "Run": "sector_cap1_blend_top2_25_top4_75",
+                "Variant Type": "sector_capped_fixed_blend",
+                "Universe Lag Trading Days": 21,
+                "Top2 Blend Weight": 0.25,
+                "Start": "2017-10-02",
+                "End": "2026-06-18",
+                "CAGR": 0.45,
+                "Max Drawdown": -0.28,
+                "Sharpe": 1.27,
+                "Calmar": 1.47,
+                "Total Return": 24.0,
+                "Benchmark Total Return": 4.0,
+                "Broad Benchmark Total Return": 2.0,
+                "Turnover/Year": 3.5,
+            },
+            {
+                "Run": "sector_penalty0p5_blend_top2_25_top4_75",
+                "Variant Type": "sector_soft_penalty_fixed_blend",
+                "Universe Lag Trading Days": 21,
+                "Top2 Blend Weight": 0.25,
+                "Start": "2017-10-02",
+                "End": "2026-06-18",
+                "CAGR": 0.45,
+                "Max Drawdown": -0.28,
+                "Sharpe": 1.27,
+                "Calmar": 1.47,
+                "Total Return": 24.0,
+                "Benchmark Total Return": 4.0,
+                "Broad Benchmark Total Return": 2.0,
+                "Turnover/Year": 3.5,
+            },
         ]
     )
 
@@ -82,6 +114,8 @@ def _rolling_rows() -> pd.DataFrame:
         "blend_top2_25_top4_75": -0.06,
         "blend_top2_50_top4_50": -0.04,
         "dynamic_top2_dd10_to_top4": -0.05,
+        "sector_cap1_blend_top2_25_top4_75": -0.04,
+        "sector_penalty0p5_blend_top2_25_top4_75": -0.04,
     }.items():
         rows.extend(
             [
@@ -122,6 +156,14 @@ def test_evaluate_live_readiness_promotes_fixed_blends_and_rejects_research_only
     assert "research_only_role" in by_run.loc["base_top2_cap50", "live_gate_reason"]
     assert bool(by_run.loc["dynamic_top2_dd10_to_top4", "live_gate_passed"]) is False
     assert "dynamic_or_daily_risk_candidate" in by_run.loc["dynamic_top2_dd10_to_top4", "live_gate_reason"]
+    assert bool(by_run.loc["sector_cap1_blend_top2_25_top4_75", "live_gate_passed"]) is False
+    assert by_run.loc["sector_cap1_blend_top2_25_top4_75", "Candidate Role"] == "sector_capped_research"
+    assert "research_only_role" in by_run.loc["sector_cap1_blend_top2_25_top4_75", "live_gate_reason"]
+    assert bool(by_run.loc["sector_penalty0p5_blend_top2_25_top4_75", "live_gate_passed"]) is False
+    assert by_run.loc["sector_penalty0p5_blend_top2_25_top4_75", "Candidate Role"] == (
+        "sector_soft_penalty_research"
+    )
+    assert "research_only_role" in by_run.loc["sector_penalty0p5_blend_top2_25_top4_75", "live_gate_reason"]
 
 
 def test_evaluate_live_readiness_fails_when_five_year_qqq_excess_is_negative() -> None:

@@ -110,6 +110,74 @@ def test_concentration_variant_research_builds_blend_and_dynamic_tables() -> Non
     assert not mode_history.empty
 
 
+def test_concentration_variant_research_can_build_sector_capped_variants() -> None:
+    result = run_concentration_variant_research(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-01-03",
+        end_date="2023-11-30",
+        universe_lag_trading_days=1,
+        blend_top2_weights=(0.50,),
+        dynamic_drawdown_thresholds=(),
+        rolling_window_years=(1,),
+        min_adv20_usd=1_000_000.0,
+        min_history_days=100,
+        turnover_cost_bps=0.0,
+        include_sector_capped_variants=True,
+        sector_cap_values=(1,),
+    )
+
+    summary = result["concentration_variant_summary"]
+    assert {
+        "sector_cap1_top2_cap50",
+        "sector_cap1_top4_cap25",
+        "sector_cap1_blend_top2_50_top4_50",
+    }.issubset(set(summary["Run"]))
+    sector_rows = summary.loc[summary["Run"].astype(str).str.startswith("sector_cap1_")]
+    assert set(sector_rows["Max Names Per Sector"].dropna().astype(int)) == {1}
+    assert set(sector_rows["Variant Type"]).issubset(
+        {
+            "sector_capped_base_top2",
+            "sector_capped_base_top4",
+            "sector_capped_fixed_blend",
+        }
+    )
+
+
+def test_concentration_variant_research_can_build_sector_soft_penalty_variants() -> None:
+    result = run_concentration_variant_research(
+        _sample_prices(),
+        _sample_dynamic_universe(),
+        start_date="2022-01-03",
+        end_date="2023-11-30",
+        universe_lag_trading_days=1,
+        blend_top2_weights=(0.50,),
+        dynamic_drawdown_thresholds=(),
+        rolling_window_years=(1,),
+        min_adv20_usd=1_000_000.0,
+        min_history_days=100,
+        turnover_cost_bps=0.0,
+        include_sector_soft_penalty_variants=True,
+        sector_score_penalty_values=(0.50,),
+    )
+
+    summary = result["concentration_variant_summary"]
+    assert {
+        "sector_penalty0p5_top2_cap50",
+        "sector_penalty0p5_top4_cap25",
+        "sector_penalty0p5_blend_top2_50_top4_50",
+    }.issubset(set(summary["Run"]))
+    penalty_rows = summary.loc[summary["Run"].astype(str).str.startswith("sector_penalty0p5_")]
+    assert set(penalty_rows["Sector Score Penalty"].dropna().astype(float)) == {0.50}
+    assert set(penalty_rows["Variant Type"]).issubset(
+        {
+            "sector_soft_penalty_base_top2",
+            "sector_soft_penalty_base_top4",
+            "sector_soft_penalty_fixed_blend",
+        }
+    )
+
+
 def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
     prices_path = tmp_path / "prices.csv"
     universe_path = tmp_path / "universe.csv"
@@ -143,6 +211,12 @@ def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
             "100",
             "--turnover-cost-bps",
             "0",
+            "--include-sector-capped-variants",
+            "--sector-cap-values",
+            "1",
+            "--include-sector-soft-penalty-variants",
+            "--sector-score-penalty-values",
+            "0.5",
         ]
     )
 
@@ -153,3 +227,5 @@ def test_concentration_variant_research_cli_writes_outputs(tmp_path) -> None:
     assert (output_dir / "concentration_variant_mode_history.csv").exists()
     summary = pd.read_csv(output_dir / "concentration_variant_summary.csv")
     assert "blend_top2_50_top4_50" in set(summary["Run"])
+    assert "sector_cap1_blend_top2_50_top4_50" in set(summary["Run"])
+    assert "sector_penalty0p5_blend_top2_50_top4_50" in set(summary["Run"])
