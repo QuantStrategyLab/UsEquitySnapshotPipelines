@@ -21,7 +21,7 @@ from .russell_1000_history import (
     collect_symbol_universe,
     download_companies_marketcap_iwb_holdings_snapshot,
     download_ishares_historical_universe_snapshots,
-    resolve_ishares_holdings_snapshot,
+    resolve_iwb_holdings_snapshot,
 )
 from .yfinance_prices import download_price_history
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
@@ -269,9 +269,7 @@ def load_symbol_alias_table(path: str | Path) -> dict[str, list[str]]:
     aliases: dict[str, list[str]] = {}
     for symbol, group in normalized.sort_values(["symbol", "priority", "download_candidate"]).groupby("symbol"):
         candidates = [
-            candidate
-            for candidate in group["download_candidate"].tolist()
-            if candidate and candidate.lower() != "nan"
+            candidate for candidate in group["download_candidate"].tolist() if candidate and candidate.lower() != "nan"
         ]
         if candidates:
             aliases[str(symbol)] = list(dict.fromkeys(candidates))
@@ -405,7 +403,7 @@ def _resolve_latest_holdings_snapshot(
     requested_dates = build_monthly_snapshot_request_dates(universe_start, universe_end)
     requested_date = max(requested_dates)
     try:
-        record = resolve_ishares_holdings_snapshot(
+        record = resolve_iwb_holdings_snapshot(
             requested_date,
             max_lookback_days=max_lookback_days,
         )

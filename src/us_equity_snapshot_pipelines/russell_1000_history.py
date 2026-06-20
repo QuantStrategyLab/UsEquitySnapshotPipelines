@@ -7,8 +7,10 @@ import io
 import json
 import re
 import ssl
+import time
 from pathlib import Path
-from urllib.parse import quote
+from typing import Iterable
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -19,13 +21,22 @@ SNAPSHOT_FILENAME_DATE_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})")
 UNIVERSE_HISTORY_COLUMNS = ("symbol", "sector", "start_date", "end_date")
 ISHARES_IWB_PRODUCT_URL = "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf"
 ISHARES_IWB_HOLDINGS_CSV_URL = (
-    f"{ISHARES_IWB_PRODUCT_URL}/1467271812596.ajax"
-    "?fileType=csv&fileName=IWB_holdings&dataType=fund"
+    f"{ISHARES_IWB_PRODUCT_URL}/1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
 )
 ISHARES_IWB_HOLDINGS_JSON_URL_TEMPLATE = (
-    f"{ISHARES_IWB_PRODUCT_URL}/1467271812596.ajax"
-    "?fileType=json&tab=all&asOfDate={as_of_date}"
+    f"{ISHARES_IWB_PRODUCT_URL}/1467271812596.ajax?fileType=json&tab=all&asOfDate={{as_of_date}}"
 )
+ISHARES_PRODUCT_DATA_API_URL = (
+    "https://www.ishares.com/varnish-api/blk-one01-product-data/product-data/api/v2/get-product-data"
+)
+BLACKROCK_PRODUCT_DATA_API_URL = (
+    "https://www.blackrock.com/varnish-api/blk-one01-product-data/product-data/api/v2/get-product-data"
+)
+BLACKROCK_PRODUCT_DATA_API_URLS = (ISHARES_PRODUCT_DATA_API_URL, BLACKROCK_PRODUCT_DATA_API_URL)
+BLACKROCK_IWB_PRODUCT_ID = "239707"
+BLACKROCK_PRODUCT_DATA_HOLDINGS_SOURCE_KIND = "blackrock_product_data_v2"
+ISHARES_OFFICIAL_JSON_SOURCE_KIND = "official_json"
+DEFAULT_IWB_HOLDINGS_SOURCE_ORDER = (BLACKROCK_PRODUCT_DATA_HOLDINGS_SOURCE_KIND, ISHARES_OFFICIAL_JSON_SOURCE_KIND)
 COMPANIES_MARKETCAP_IWB_HOLDINGS_URL = "https://companiesmarketcap.com/ishares-russell-1000-etf/holdings/"
 COMPANIES_MARKETCAP_TICKER_ALIASES = {
     "BRKA": "BRK.A",
@@ -83,7 +94,10 @@ def build_interval_universe_history(snapshot_tables: list[tuple[pd.Timestamp, pd
         raise ValueError("snapshot_tables must not be empty")
 
     normalized = [
-        (pd.Timestamp(snapshot_date).normalize(), _normalize_snapshot_frame(frame, snapshot_date=pd.Timestamp(snapshot_date).normalize()))
+        (
+            pd.Timestamp(snapshot_date).normalize(),
+            _normalize_snapshot_frame(frame, snapshot_date=pd.Timestamp(snapshot_date).normalize()),
+        )
         for snapshot_date, frame in snapshot_tables
     ]
     normalized.sort(key=lambda item: item[0])
@@ -164,7 +178,14 @@ def _build_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
-def _fetch_text(url: str, *, timeout: int = 60, user_agent: str = DEFAULT_HTTP_USER_AGENT) -> str:
+def _fetch_text(
+    url: str,
+    *,
+    timeout: int = 60,
+    user_agent: str = DEFAULT_HTTP_USER_AGENT,
+    attempts: int = 2,
+    retry_sleep_seconds: float = 0.5,
+) -> str:
     request = Request(
         url,
         headers={
@@ -172,9 +193,33 @@ def _fetch_text(url: str, *, timeout: int = 60, user_agent: str = DEFAULT_HTTP_U
             "Accept": "*/*",
         },
     )
-    with urlopen(request, timeout=timeout, context=_build_ssl_context()) as response:
-        encoding = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(encoding, errors="replace")
+    errors: list[str] = []
+    for attempt in range(max(int(attempts), 1)):
+        try:
+            with urlopen(request, timeout=timeout, context=_build_ssl_context()) as response:
+                encoding = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(encoding, errors="replace")
+        except OSError as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            if attempt + 1 >= max(int(attempts), 1):
+                raise
+            time.sleep(max(float(retry_sleep_seconds), 0.0))
+    raise RuntimeError(f"Could not fetch {url}: {'; '.join(errors)}")
+
+
+def _fetch_first_available_text(
+    urls: Iterable[str],
+    *,
+    timeout: int = 60,
+    user_agent: str = DEFAULT_HTTP_USER_AGENT,
+) -> str:
+    errors: list[str] = []
+    for url in urls:
+        try:
+            return _fetch_text(url, timeout=timeout, user_agent=user_agent)
+        except OSError as exc:
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+    raise OSError("; ".join(errors))
 
 
 def _normalize_ishares_numeric_value(value) -> float:
@@ -321,6 +366,103 @@ def parse_ishares_holdings_json_snapshot(json_text: str, *, as_of_date) -> tuple
     return pd.Timestamp(as_of_date).normalize(), _finalize_ishares_holdings_snapshot_frame(frame)
 
 
+def _parse_blackrock_product_data_date(value) -> pd.Timestamp:
+    if pd.isna(value):
+        raise ValueError("BlackRock product data holdings payload missing as-of date")
+    text = str(value).strip()
+    if re.fullmatch(r"\d{8}", text):
+        return pd.to_datetime(text, format="%Y%m%d").normalize()
+    return pd.Timestamp(text).normalize()
+
+
+def _blackrock_data_point_values(data_points: dict, name: str) -> list:
+    data_point = data_points.get(name) if isinstance(data_points, dict) else None
+    if not isinstance(data_point, dict):
+        return []
+    values = data_point.get("value")
+    if isinstance(values, list):
+        return values
+    formatted_values = data_point.get("formattedValue")
+    if isinstance(formatted_values, list):
+        return formatted_values
+    return []
+
+
+def _value_at(values: list, index: int):
+    return values[index] if index < len(values) else ""
+
+
+def parse_blackrock_product_data_holdings_snapshot(
+    json_text: str,
+    *,
+    requested_as_of_date=None,
+) -> tuple[pd.Timestamp, pd.DataFrame]:
+    if not str(json_text or "").strip():
+        raise ValueError("json_text must not be empty")
+
+    payload_text = str(json_text).lstrip("\ufeff").strip()
+    if payload_text.startswith("<"):
+        raise ValueError("BlackRock product data endpoint returned HTML instead of JSON")
+
+    payload = json.loads(payload_text)
+    try:
+        data_points = payload["componentsByNameMap"]["holdings"]["containersByNameMap"]["all"]["dataPointsByNameMap"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("BlackRock product data payload missing holdings data points") from exc
+
+    as_of_value = (data_points.get("asOfDate") or {}).get("value") or (data_points.get("asOfDate") or {}).get(
+        "formattedValue"
+    )
+    as_of_date = _parse_blackrock_product_data_date(as_of_value or requested_as_of_date)
+
+    tickers = _blackrock_data_point_values(data_points, "ticker")
+    if not tickers:
+        raise ValueError("BlackRock product data holdings payload contained no tickers")
+
+    issue_names = _blackrock_data_point_values(data_points, "issueName")
+    sectors = _blackrock_data_point_values(data_points, "sectorName")
+    asset_classes = _blackrock_data_point_values(data_points, "assetClass")
+    market_values = _blackrock_data_point_values(data_points, "marketValue")
+    weights = _blackrock_data_point_values(data_points, "holdingPercent")
+    notional_values = _blackrock_data_point_values(data_points, "notionalValue")
+    shares = _blackrock_data_point_values(data_points, "unitsHeld")
+    cusips = _blackrock_data_point_values(data_points, "cusip")
+    isins = _blackrock_data_point_values(data_points, "isin")
+    sedols = _blackrock_data_point_values(data_points, "sedol")
+    prices = _blackrock_data_point_values(data_points, "unitPrice")
+    countries = _blackrock_data_point_values(data_points, "countryOfRisk")
+    exchanges = _blackrock_data_point_values(data_points, "exchange")
+    currencies = _blackrock_data_point_values(data_points, "currencyCode")
+
+    frame = pd.DataFrame(
+        [
+            {
+                "Ticker": _value_at(tickers, index),
+                "Name": _value_at(issue_names, index),
+                "Sector": _value_at(sectors, index),
+                "Asset Class": _value_at(asset_classes, index) or "Equity",
+                "Market Value": _value_at(market_values, index),
+                "Weight (%)": _value_at(weights, index),
+                "Notional Value": _value_at(notional_values, index),
+                "Shares": _value_at(shares, index),
+                "CUSIP": _value_at(cusips, index),
+                "ISIN": _value_at(isins, index),
+                "SEDOL": _value_at(sedols, index),
+                "Price": _value_at(prices, index),
+                "Location": _value_at(countries, index),
+                "Exchange": _value_at(exchanges, index),
+                "Currency": _value_at(currencies, index),
+                "Market Currency": _value_at(currencies, index),
+            }
+            for index in range(len(tickers))
+        ]
+    )
+    snapshot = _finalize_ishares_holdings_snapshot_frame(frame)
+    if snapshot.empty:
+        raise ValueError("BlackRock product data holdings snapshot was empty after normalization")
+    return as_of_date, snapshot
+
+
 def _strip_html_text(value: str) -> str:
     text = re.sub(r"<[^>]*>", " ", str(value or ""))
     return re.sub(r"\s+", " ", unescape(text)).strip()
@@ -400,6 +542,44 @@ def build_ishares_holdings_json_url(
     return str(holdings_url_template).format(as_of_date=f"{normalized:%Y%m%d}")
 
 
+def build_blackrock_product_data_holdings_url(
+    as_of_date=None,
+    *,
+    product_id: str = BLACKROCK_IWB_PRODUCT_ID,
+    api_url: str = ISHARES_PRODUCT_DATA_API_URL,
+) -> str:
+    params = {
+        "appType": "PRODUCT_PAGE",
+        "appSubType": "ISHARES",
+        "targetSite": "us-ishares",
+        "locale": "en_US",
+        "portfolioId": str(product_id),
+        "userType": "individual",
+        "component": "holdings",
+    }
+    if as_of_date is not None and not pd.isna(as_of_date):
+        normalized = pd.Timestamp(as_of_date).tz_localize(None).normalize()
+        params["asOfDate"] = f"{normalized:%Y%m%d}"
+    return f"{api_url}?{urlencode(params)}"
+
+
+def download_blackrock_product_data_holdings_snapshot_for_date(
+    as_of_date,
+    *,
+    holdings_url_template: str | None = None,
+    api_urls: Iterable[str] = BLACKROCK_PRODUCT_DATA_API_URLS,
+) -> tuple[pd.Timestamp, pd.DataFrame]:
+    del holdings_url_template
+    snapshot_date = pd.Timestamp(as_of_date).tz_localize(None).normalize()
+    source_urls = [
+        build_blackrock_product_data_holdings_url(snapshot_date, api_url=str(api_url)) for api_url in api_urls
+    ]
+    return parse_blackrock_product_data_holdings_snapshot(
+        _fetch_first_available_text(source_urls),
+        requested_as_of_date=snapshot_date,
+    )
+
+
 def download_ishares_holdings_snapshot_for_date(
     as_of_date,
     *,
@@ -410,13 +590,22 @@ def download_ishares_holdings_snapshot_for_date(
     return parse_ishares_holdings_json_snapshot(_fetch_text(source_url), as_of_date=snapshot_date)
 
 
+def _build_snapshot_source_url(source_url_fn, as_of_date, holdings_url_template: str | None) -> str:
+    try:
+        return source_url_fn(as_of_date, holdings_url_template=holdings_url_template)
+    except TypeError:
+        return source_url_fn(as_of_date)
+
+
 def build_monthly_snapshot_request_dates(start_date, end_date=None) -> list[pd.Timestamp]:
     start = pd.Timestamp(start_date).tz_localize(None).normalize()
     end = pd.Timestamp(end_date or pd.Timestamp.utcnow()).tz_localize(None).normalize()
     if end < start:
         raise ValueError("end_date must be on or after start_date")
 
-    request_dates = [pd.Timestamp(timestamp).normalize() for timestamp in pd.date_range(start=start, end=end, freq="ME")]
+    request_dates = [
+        pd.Timestamp(timestamp).normalize() for timestamp in pd.date_range(start=start, end=end, freq="ME")
+    ]
     if not request_dates or request_dates[-1] != end:
         request_dates.append(end)
     return sorted(dict.fromkeys(request_dates))
@@ -428,6 +617,8 @@ def resolve_ishares_holdings_snapshot(
     max_lookback_days: int = 7,
     holdings_url_template: str = ISHARES_IWB_HOLDINGS_JSON_URL_TEMPLATE,
     download_fn=download_ishares_holdings_snapshot_for_date,
+    source_url_fn=build_ishares_holdings_json_url,
+    source_kind: str = ISHARES_OFFICIAL_JSON_SOURCE_KIND,
 ) -> dict[str, object]:
     requested = pd.Timestamp(requested_date).tz_localize(None).normalize()
     errors: list[str] = []
@@ -443,9 +634,11 @@ def resolve_ishares_holdings_snapshot(
                 "requested_date": requested,
                 "as_of_date": pd.Timestamp(as_of_date).normalize(),
                 "lookback_days": lookback_days,
-                "source_url": build_ishares_holdings_json_url(
+                "source_kind": source_kind,
+                "source_url": _build_snapshot_source_url(
+                    source_url_fn,
                     as_of_date,
-                    holdings_url_template=holdings_url_template,
+                    holdings_url_template,
                 ),
                 "snapshot": snapshot,
             }
@@ -453,6 +646,49 @@ def resolve_ishares_holdings_snapshot(
     detail = f"; attempts: {'; '.join(errors[-5:])}" if errors else ""
     raise RuntimeError(
         "Could not resolve a non-empty iShares holdings snapshot "
+        f"within {max_lookback_days} day(s) before {requested:%Y-%m-%d}{detail}"
+    )
+
+
+def resolve_iwb_holdings_snapshot(
+    requested_date,
+    *,
+    max_lookback_days: int = 7,
+    holdings_url_template: str = ISHARES_IWB_HOLDINGS_JSON_URL_TEMPLATE,
+    source_order: tuple[str, ...] = DEFAULT_IWB_HOLDINGS_SOURCE_ORDER,
+) -> dict[str, object]:
+    source_specs = {
+        BLACKROCK_PRODUCT_DATA_HOLDINGS_SOURCE_KIND: {
+            "download_fn": download_blackrock_product_data_holdings_snapshot_for_date,
+            "source_url_fn": build_blackrock_product_data_holdings_url,
+            "holdings_url_template": None,
+        },
+        ISHARES_OFFICIAL_JSON_SOURCE_KIND: {
+            "download_fn": download_ishares_holdings_snapshot_for_date,
+            "source_url_fn": build_ishares_holdings_json_url,
+            "holdings_url_template": holdings_url_template,
+        },
+    }
+    errors: list[str] = []
+    for source_kind in source_order:
+        if source_kind not in source_specs:
+            raise ValueError(f"unsupported IWB holdings source: {source_kind}")
+        source = source_specs[source_kind]
+        try:
+            return resolve_ishares_holdings_snapshot(
+                requested_date,
+                max_lookback_days=max_lookback_days,
+                holdings_url_template=source["holdings_url_template"],
+                download_fn=source["download_fn"],
+                source_url_fn=source["source_url_fn"],
+                source_kind=source_kind,
+            )
+        except RuntimeError as exc:
+            errors.append(f"{source_kind}: {exc}")
+    detail = f"; sources: {' | '.join(errors)}" if errors else ""
+    requested = pd.Timestamp(requested_date).tz_localize(None).normalize()
+    raise RuntimeError(
+        "Could not resolve a non-empty IWB holdings snapshot "
         f"within {max_lookback_days} day(s) before {requested:%Y-%m-%d}{detail}"
     )
 
@@ -466,12 +702,11 @@ def download_ishares_historical_universe_snapshots(
 ) -> tuple[list[tuple[pd.Timestamp, pd.DataFrame]], pd.DataFrame]:
     records: list[dict[str, object]] = []
     for requested_date in build_monthly_snapshot_request_dates(start_date, end_date):
-        record = resolve_ishares_holdings_snapshot(
+        record = resolve_iwb_holdings_snapshot(
             requested_date,
             max_lookback_days=max_lookback_days,
             holdings_url_template=holdings_url_template,
         )
-        record["source_kind"] = "official_json"
         record["row_count"] = int(len(record["snapshot"]))
         records.append(record)
 
@@ -740,9 +975,7 @@ def collect_symbol_universe(
     frame = pd.DataFrame(universe_history).copy()
     if "symbol" not in frame.columns:
         raise ValueError("universe_history missing required columns: symbol")
-    symbols = (
-        frame["symbol"].astype(str).str.upper().str.strip().replace("", pd.NA).dropna().drop_duplicates().tolist()
-    )
+    symbols = frame["symbol"].astype(str).str.upper().str.strip().replace("", pd.NA).dropna().drop_duplicates().tolist()
     for extra in (benchmark_symbol, safe_haven):
         symbol = str(extra or "").strip().upper()
         if symbol and symbol not in symbols:

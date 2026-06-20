@@ -5,11 +5,14 @@ import json
 import pandas as pd
 
 from us_equity_snapshot_pipelines.russell_1000_history import (
+    download_blackrock_product_data_holdings_snapshot_for_date,
+    parse_blackrock_product_data_holdings_snapshot,
     parse_companies_marketcap_iwb_holdings_html,
     parse_ishares_holdings_json_snapshot,
     resolve_ishares_holdings_snapshot,
+    resolve_iwb_holdings_snapshot,
 )
-from us_equity_snapshot_pipelines import russell_1000_inputs
+from us_equity_snapshot_pipelines import russell_1000_history, russell_1000_inputs
 from us_equity_snapshot_pipelines.russell_1000_inputs import (
     collect_download_symbols,
     incremental_start_date,
@@ -134,6 +137,98 @@ def test_ishares_json_parser_rejects_html_response() -> None:
         raise AssertionError("expected ValueError")
 
 
+def test_blackrock_product_data_parser_preserves_rank_metrics() -> None:
+    payload = {
+        "componentsByNameMap": {
+            "holdings": {
+                "containersByNameMap": {
+                    "all": {
+                        "dataPointsByNameMap": {
+                            "asOfDate": {"value": 20260618, "formattedValue": "Jun 18, 2026"},
+                            "ticker": {"value": ["NVDA", "BRKB"]},
+                            "issueName": {"value": ["NVIDIA CORP", "BERKSHIRE HATHAWAY INC CLASS B"]},
+                            "sectorName": {"value": ["Information Technology", "Financials"]},
+                            "assetClass": {"value": ["Equity", "Equity"]},
+                            "holdingPercent": {"value": [7.19512, 1.31]},
+                            "marketValue": {"value": [3500154413.73, 637000000.0]},
+                            "notionalValue": {"value": [3500154413.73, 637000000.0]},
+                            "unitsHeld": {"value": [16612817.0, 1296894.0]},
+                            "cusip": {"value": ["67066G104", "084670702"]},
+                            "isin": {"value": ["US67066G1040", "US0846707026"]},
+                            "sedol": {"value": ["2379504", "2073390"]},
+                            "unitPrice": {"value": [210.69, 491.18]},
+                            "countryOfRisk": {"value": ["United States", "United States"]},
+                            "exchange": {"value": ["NASDAQ", "NYSE"]},
+                            "currencyCode": {"value": ["USD", "USD"]},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    as_of, snapshot = parse_blackrock_product_data_holdings_snapshot(json.dumps(payload))
+
+    assert as_of == pd.Timestamp("2026-06-18")
+    assert list(snapshot["symbol"]) == ["BRKB", "NVDA"]
+    nvda = snapshot.loc[snapshot["symbol"] == "NVDA"].iloc[0]
+    assert nvda["sector"] == "Information Technology"
+    assert float(nvda["weight"]) == 7.19512
+    assert float(nvda["market_value"]) == 3500154413.73
+    assert float(nvda["shares"]) == 16612817.0
+    assert nvda["isin"] == "US67066G1040"
+
+
+def test_blackrock_product_data_parser_rejects_html_response() -> None:
+    try:
+        parse_blackrock_product_data_holdings_snapshot("<!DOCTYPE html><html></html>")
+    except ValueError as exc:
+        assert "returned HTML" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_blackrock_product_data_downloader_tries_alternate_hosts(monkeypatch) -> None:
+    payload = {
+        "componentsByNameMap": {
+            "holdings": {
+                "containersByNameMap": {
+                    "all": {
+                        "dataPointsByNameMap": {
+                            "asOfDate": {"value": 20241129},
+                            "ticker": {"value": ["AAPL"]},
+                            "issueName": {"value": ["APPLE INC"]},
+                            "sectorName": {"value": ["Information Technology"]},
+                            "assetClass": {"value": ["Equity"]},
+                            "holdingPercent": {"value": [7.0]},
+                        }
+                    }
+                }
+            }
+        }
+    }
+    calls: list[str] = []
+
+    def fake_fetch_first_available(urls, **_kwargs):
+        for url in urls:
+            calls.append(url)
+            if "primary.example" in url:
+                continue
+            return json.dumps(payload)
+        raise OSError("no reachable host")
+
+    monkeypatch.setattr(russell_1000_history, "_fetch_first_available_text", fake_fetch_first_available)
+
+    as_of, snapshot = download_blackrock_product_data_holdings_snapshot_for_date(
+        "2024-11-29",
+        api_urls=("https://primary.example/api", "https://backup.example/api"),
+    )
+
+    assert as_of == pd.Timestamp("2024-11-29")
+    assert list(snapshot["symbol"]) == ["AAPL"]
+    assert [url.split("?", 1)[0] for url in calls] == ["https://primary.example/api", "https://backup.example/api"]
+
+
 def test_resolve_ishares_holdings_snapshot_skips_failed_candidate() -> None:
     calls: list[pd.Timestamp] = []
 
@@ -154,6 +249,40 @@ def test_resolve_ishares_holdings_snapshot_skips_failed_candidate() -> None:
     assert record["lookback_days"] == 1
     assert record["as_of_date"] == pd.Timestamp("2026-05-30")
     assert [f"{date:%Y-%m-%d}" for date in calls] == ["2026-05-31", "2026-05-30"]
+
+
+def test_resolve_iwb_holdings_snapshot_falls_back_to_official_json(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fail_blackrock(as_of_date, *, holdings_url_template):
+        calls.append(f"blackrock:{pd.Timestamp(as_of_date):%Y-%m-%d}")
+        raise ValueError("product data empty")
+
+    def fake_official(as_of_date, *, holdings_url_template):
+        calls.append(f"official:{pd.Timestamp(as_of_date):%Y-%m-%d}:{holdings_url_template}")
+        return pd.Timestamp(as_of_date).normalize(), pd.DataFrame(
+            [{"symbol": "AAPL", "sector": "Information Technology"}]
+        )
+
+    monkeypatch.setattr(
+        russell_1000_history,
+        "download_blackrock_product_data_holdings_snapshot_for_date",
+        fail_blackrock,
+    )
+    monkeypatch.setattr(russell_1000_history, "download_ishares_holdings_snapshot_for_date", fake_official)
+
+    record = resolve_iwb_holdings_snapshot(
+        "2026-05-31",
+        max_lookback_days=0,
+        holdings_url_template="https://example.test/{as_of_date}.json",
+    )
+
+    assert record["source_kind"] == "official_json"
+    assert record["as_of_date"] == pd.Timestamp("2026-05-31")
+    assert calls == [
+        "blackrock:2026-05-31",
+        "official:2026-05-31:https://example.test/{as_of_date}.json",
+    ]
 
 
 def test_companies_marketcap_iwb_parser_builds_weighted_snapshot() -> None:
@@ -209,12 +338,7 @@ def test_prepare_russell_1000_input_data_writes_latest_weighted_snapshot(tmp_pat
         return snapshots, pd.DataFrame([{"snapshot_date": "2026-04-30", "status": "ok"}])
 
     def fake_download_prices(symbols, *, start, **_kwargs):
-        return pd.DataFrame(
-            [
-                {"symbol": symbol, "as_of": start, "close": 100.0, "volume": 1_000}
-                for symbol in symbols
-            ]
-        )
+        return pd.DataFrame([{"symbol": symbol, "as_of": start, "close": 100.0, "volume": 1_000} for symbol in symbols])
 
     monkeypatch.setattr(
         russell_1000_inputs,
@@ -312,7 +436,7 @@ def test_prepare_russell_1000_input_data_reuses_existing_universe_when_refresh_f
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
-    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(russell_1000_inputs, "resolve_iwb_holdings_snapshot", fail_latest_snapshot)
     monkeypatch.setattr(
         russell_1000_inputs,
         "download_companies_marketcap_iwb_holdings_snapshot",
@@ -430,7 +554,7 @@ def test_prepare_russell_1000_input_data_refreshes_latest_universe_after_history
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
-    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fake_latest_snapshot)
+    monkeypatch.setattr(russell_1000_inputs, "resolve_iwb_holdings_snapshot", fake_latest_snapshot)
     monkeypatch.setattr(russell_1000_inputs, "download_price_history", fake_download_prices)
 
     result = russell_1000_inputs.prepare_russell_1000_input_data(
@@ -513,10 +637,7 @@ def test_prepare_russell_1000_input_data_uses_secondary_latest_universe_source(
 
     def fake_download_prices(symbols, *, start, **_kwargs):
         return pd.DataFrame(
-            [
-                {"symbol": symbol, "as_of": "2026-06-01", "close": 100.0, "volume": 1_000}
-                for symbol in symbols
-            ]
+            [{"symbol": symbol, "as_of": "2026-06-01", "close": 100.0, "volume": 1_000} for symbol in symbols]
         )
 
     monkeypatch.setattr(
@@ -524,7 +645,7 @@ def test_prepare_russell_1000_input_data_uses_secondary_latest_universe_source(
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
-    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(russell_1000_inputs, "resolve_iwb_holdings_snapshot", fail_latest_snapshot)
     monkeypatch.setattr(
         russell_1000_inputs,
         "download_companies_marketcap_iwb_holdings_snapshot",
@@ -664,7 +785,7 @@ def test_prepare_russell_1000_input_data_blocks_stale_repeated_universe_fallback
         "download_ishares_historical_universe_snapshots",
         fail_download_snapshots,
     )
-    monkeypatch.setattr(russell_1000_inputs, "resolve_ishares_holdings_snapshot", fail_latest_snapshot)
+    monkeypatch.setattr(russell_1000_inputs, "resolve_iwb_holdings_snapshot", fail_latest_snapshot)
     monkeypatch.setattr(
         russell_1000_inputs,
         "download_companies_marketcap_iwb_holdings_snapshot",
