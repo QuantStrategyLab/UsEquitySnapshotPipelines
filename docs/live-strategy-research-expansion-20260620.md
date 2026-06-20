@@ -257,6 +257,11 @@ artifacts.
 
 Monthly review integration:
 
+- `scripts/build_scheduled_ibit_dca_research.py` builds a scheduled,
+  research-only artifact from the same normalized z-score metrics used by the
+  `ibit_zscore_exit` plugin publish job and a fresh yfinance price download.
+  The publish workflow uploads this research artifact for review, but it does
+  not publish the research output to the runtime plugin GCS prefix.
 - `scripts/run_monthly_report_bundle.py` auto-discovers
   `ibit_dca_research_manifest.json` under the artifact root, or accepts explicit
   `--ibit-dca-research-manifest` paths.
@@ -266,3 +271,27 @@ Monthly review integration:
 - These artifacts are research-only. They must not enable IBIT runtime changes
   unless a separate promotion artifact and human approval exist.
 
+## 2026-06-20 public-data smoke result
+
+Using the free `api.bitcoin-data.com/v1/mvrv-zscore` endpoint available in this
+environment and yfinance prices, the scheduled builder produced a valid artifact
+covering the BOXX-available window from 2022-12-28 through 2026-06-20. This is a
+smoke result, not a promotion artifact.
+
+Key readout:
+
+- `parking_only`: CAGR about 4.69%, max drawdown about -0.12%.
+- `buy_only_dca`: CAGR about 46.01%, max drawdown about -52.11%.
+- `plugin_on`: identical to `buy_only_dca` in this run.
+- Plugin route counts: `normal=42`; no `risk_reduced` or `risk_off` route fired.
+- Gate: `fail`, because an overlay that never changes allocation adds no net
+  value versus buy-only DCA, even if buy-only DCA itself beats parking-only and
+  QQQ/SPY over this short window.
+
+Implication: keep `ibit_zscore_exit` as research/shadow evidence. Do not default
+enable the escape overlay until a longer or more stressful replay shows positive
+net value versus buy-only DCA or sufficient drawdown improvement after costs.
+The plugin registration is therefore kept `notification_only` with position
+control disabled; it may emit deterministic evidence, but it must not be
+consumed for automated IBIT allocation changes without a separate passing
+promotion artifact.

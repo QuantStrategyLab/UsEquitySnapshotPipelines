@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from quant_strategy_plugins import strategy_plugin_runner as base_runner
 
 from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRISIS
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     GENERAL_MARKET_REGIME_NOTIFICATION_TARGET,
+    IBIT_SMART_DCA_STRATEGY,
+    IBIT_ZSCORE_EXIT_POLICY,
     PLUGIN_CRISIS_RESPONSE_SHADOW,
     PLUGIN_IBIT_ZSCORE_EXIT,
     PLUGIN_MARKET_REGIME_CONTROL,
@@ -22,6 +25,17 @@ STRATEGY_NAME = "tqqq_growth_income"
 SOXL_STRATEGY_NAME = "soxl_soxx_trend_income"
 LEFT_SIDE_STRATEGY_NAME = "russell_top50_leader_rotation"
 IBIT_STRATEGY_NAME = "ibit_smart_dca"
+
+
+def test_ibit_zscore_exit_policy_remains_notification_only_until_promotion() -> None:
+    assert IBIT_SMART_DCA_STRATEGY == IBIT_STRATEGY_NAME
+    assert IBIT_ZSCORE_EXIT_POLICY.notification_allowed is True
+    assert IBIT_ZSCORE_EXIT_POLICY.position_control_allowed is False
+    assert IBIT_ZSCORE_EXIT_POLICY.evidence_status == base_runner.EVIDENCE_NOTIFICATION_ONLY
+    assert (
+        base_runner.PLUGIN_CONSUMPTION_POLICY_REGISTRY[(PLUGIN_IBIT_ZSCORE_EXIT, IBIT_STRATEGY_NAME)]
+        == IBIT_ZSCORE_EXIT_POLICY
+    )
 
 
 def _quiet_prices() -> pd.DataFrame:
@@ -440,8 +454,8 @@ def test_strategy_plugin_runner_runs_ibit_zscore_exit_position_control(tmp_path)
     assert latest["suggested_action"] == "defend"
     assert latest["position_control"]["target_allocations"] == {"IBIT": 0.25, "BOXX": 0.75}
     assert latest["thresholds"]["threshold_mode"] == "rolling_percentile_hybrid"
-    assert latest["execution_controls"]["position_control_allowed"] is True
-    assert latest["execution_controls"]["consumption_evidence_status"] == "automation_approved"
+    assert latest["execution_controls"]["position_control_allowed"] is False
+    assert latest["execution_controls"]["consumption_evidence_status"] == "notification_only"
 
 
 def test_strategy_plugin_runner_builds_dynamic_ibit_zscore_risk_reduced_route(tmp_path) -> None:

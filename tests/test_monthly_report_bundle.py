@@ -106,6 +106,7 @@ def _write_strategy_health_error(root: Path) -> None:
 def _write_ibit_dca_research_manifest(root: Path) -> None:
     output_dir = root / "ibit_smart_dca_research"
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "ibit_dca_research_report.md").write_text("# IBIT Smart DCA Research Report\n", encoding="utf-8")
     _write_json(
         output_dir / "ibit_dca_research_manifest.json",
         {
@@ -127,6 +128,18 @@ def _write_ibit_dca_research_manifest(root: Path) -> None:
                 },
                 "variants": ["parking_only", "buy_only_dca", "plugin_on"],
             },
+            "review_summary": {
+                "review_status": "candidate_for_live_promotion_review",
+                "plugin_gate": "pass",
+                "plugin_reason": "plugin adds net value versus buy-only DCA and parking-only baseline",
+                "runtime_impact": "none",
+                "plugin_signal_count": 42,
+                "plugin_route_counts": {"normal": 40, "risk_off": 2},
+                "plugin_non_normal_signal_count": 2,
+                "zscore_history_rows": 1460,
+                "zscore_history_start": "2022-06-20",
+                "zscore_history_end": "2026-06-19",
+            },
             "row_counts": {
                 "ibit_dca_period_summary": 3,
                 "ibit_dca_trade_ledger": 24,
@@ -138,6 +151,7 @@ def _write_ibit_dca_research_manifest(root: Path) -> None:
                 "ibit_dca_trade_ledger": {"path": "ibit_dca_trade_ledger.csv"},
                 "ibit_dca_signal_consumption": {"path": "ibit_dca_signal_consumption.csv"},
                 "ibit_dca_live_readiness_summary": {"path": "ibit_dca_live_readiness_summary.csv"},
+                "ibit_dca_research_report": {"path": "ibit_dca_research_report.md"},
             },
         },
     )
@@ -267,8 +281,25 @@ def test_build_bundle_includes_ibit_dca_research_manifests(tmp_path: Path) -> No
     assert research["parking_symbol"] == "BOXX"
     assert research["btc_proxy_symbol"] == "BTC"
     assert research["proxy_rows_filled"] == 2500
+    assert research["research_report_path"] == "ibit_dca_research_report.md"
+    assert research["research_report_present"] is True
+    assert research["review_status"] == "candidate_for_live_promotion_review"
+    assert research["plugin_gate"] == "pass"
+    assert research["plugin_signal_count"] == 42
+    assert research["plugin_route_counts"] == {"normal": 40, "risk_off": 2}
+    assert research["plugin_non_normal_signal_count"] == 2
+    assert research["zscore_history_rows"] == 1460
+    assert research["zscore_history_start"] == "2022-06-20"
+    assert research["zscore_history_end"] == "2026-06-19"
     assert "IBIT Smart DCA Research" in markdown
     assert "`parking_only, buy_only_dca, plugin_on`" in markdown
+    assert "Plugin gate: `pass`" in markdown
+    assert "Plugin signal count: `42`" in markdown
+    assert "Plugin non-normal signal count: `2`" in markdown
+    assert "Z-score history: `2022-06-20` to `2026-06-19`" in markdown
+    assert "Plugin route counts:" in markdown
+    assert "Gate report: `ibit_dca_research_report.md` (present)" in markdown
+    assert "| Manifest | Status | Schema | Review | Plugin gate |" in summary
     assert "IBIT DCA research reports: `1`" in summary
 
 

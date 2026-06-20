@@ -595,7 +595,9 @@ jobs:
       PLUGIN_NAME: ibit_zscore_exit
       PRICE_INPUT_DIR: data/input/strategy_plugins/ibit_smart_dca/ibit_zscore_exit
       PLUGIN_OUTPUT_DIR: data/output/ibit_smart_dca/plugins/ibit_zscore_exit
+      RESEARCH_OUTPUT_DIR: data/output/ibit_smart_dca/research/ibit_dca
       RUNNER_OUTPUT_DIR: data/output/strategy_plugins
+      YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
 
     steps:
       - name: Checkout
@@ -764,10 +766,10 @@ jobs:
           controls = payload.get("execution_controls") or {}
           if controls.get("strategy_runtime_metadata_allowed") is not True:
               raise SystemExit("IBIT zscore artifact must be mountable as strategy metadata")
-          if controls.get("position_control_allowed") is not True:
-              raise SystemExit("IBIT zscore artifact must allow position control")
-          if controls.get("consumption_evidence_status") != "automation_approved":
-              raise SystemExit("IBIT zscore artifact must be automation approved")
+          if controls.get("position_control_allowed") is not False:
+              raise SystemExit("IBIT zscore artifact must remain notification-only until promotion evidence passes")
+          if controls.get("consumption_evidence_status") != "notification_only":
+              raise SystemExit("IBIT zscore artifact must remain notification_only until promotion evidence passes")
           target_allocations = (payload.get("position_control") or {}).get("target_allocations") or {}
           if "IBIT" not in target_allocations or "BOXX" not in target_allocations:
               raise SystemExit(f"unexpected target_allocations: {target_allocations!r}")
@@ -794,6 +796,47 @@ jobs:
           PY
           test -f "${PLUGIN_OUTPUT_DIR}/release_manifest.json"
           test -d "${PLUGIN_OUTPUT_DIR}/releases"
+
+      - name: Build IBIT DCA research artifact
+        run: |
+          set -euo pipefail
+          mkdir -p "${RESEARCH_OUTPUT_DIR}"
+          zscore_path="${PRICE_INPUT_DIR}/ibit_zscore_metrics.csv"
+          research_args=(
+            --zscore-metrics "${zscore_path}"
+            --output-dir "${RESEARCH_OUTPUT_DIR}"
+            --price-start "${PRICE_START}"
+            --initial-parking-value 10000
+            --contribution-amount 500
+            --parking-symbol BOXX
+            --btc-proxy-symbol BTC
+          )
+          if [ -n "${PRICE_END:-}" ]; then
+            research_args+=(--price-end "${PRICE_END}")
+          fi
+          if [ -n "${YFINANCE_PROXY:-}" ]; then
+            research_args+=(--download-proxy "${YFINANCE_PROXY}")
+          fi
+          python scripts/build_scheduled_ibit_dca_research.py "${research_args[@]}"
+          test -f "${RESEARCH_OUTPUT_DIR}/ibit_dca_research_manifest.json"
+          test -f "${RESEARCH_OUTPUT_DIR}/ibit_dca_research_report.md"
+          test -f "${RESEARCH_OUTPUT_DIR}/ibit_dca_live_readiness_summary.csv"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_path = Path(os.environ["RESEARCH_OUTPUT_DIR"]) / "ibit_dca_research_manifest.json"
+          payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+          variants = payload.get("inputs", {}).get("variants", [])
+          if "plugin_on" not in variants:
+              raise SystemExit(f"IBIT DCA research must include plugin_on variant: {variants!r}")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("## IBIT DCA research artifact\n\n")
+              summary.write(f"- manifest: `{manifest_path}`\n")
+              summary.write(f"- variants: `{', '.join(variants)}`\n")
+              summary.write(f"- row_counts: `{payload.get('row_counts')}`\n\n")
+          PY
 
       - name: Publish or print GCS plan
         run: |
@@ -842,6 +885,7 @@ jobs:
           path: |
             ${{ env.PRICE_INPUT_DIR }}
             ${{ env.PLUGIN_OUTPUT_DIR }}
+            ${{ env.RESEARCH_OUTPUT_DIR }}
             ${{ env.RUNNER_OUTPUT_DIR }}
           if-no-files-found: error
           retention-days: 7
@@ -856,6 +900,7 @@ jobs:
             echo "- plugin: \`${PLUGIN_NAME}\`"
             echo "- mode: \`shadow\`"
             echo "- plugin_output_dir: \`${PLUGIN_OUTPUT_DIR}\`"
+            echo "- research_output_dir: \`${RESEARCH_OUTPUT_DIR}\`"
             echo "- gcs_prefix: \`${GCS_PREFIX:-<not set>}\`"
             echo "- execute_publish: \`${EXECUTE_PUBLISH}\`"
             echo

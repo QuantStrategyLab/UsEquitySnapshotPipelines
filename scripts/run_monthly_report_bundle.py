@@ -488,6 +488,17 @@ def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
         "variants": [],
         "row_counts": {},
         "artifact_count": 0,
+        "research_report_path": "",
+        "research_report_present": False,
+        "review_status": "",
+        "plugin_gate": "",
+        "plugin_reason": "",
+        "plugin_signal_count": 0,
+        "plugin_route_counts": {},
+        "plugin_non_normal_signal_count": 0,
+        "zscore_history_rows": 0,
+        "zscore_history_start": "",
+        "zscore_history_end": "",
     }
     if not path.exists():
         return base
@@ -509,6 +520,12 @@ def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
     config = _safe_mapping(inputs.get("config"))
     proxy = _safe_mapping(inputs.get("proxy"))
     artifacts = _safe_mapping(payload.get("artifacts"))
+    review_summary = _safe_mapping(payload.get("review_summary"))
+    report_artifact = _safe_mapping(artifacts.get("ibit_dca_research_report"))
+    report_path = str(report_artifact.get("path", "") or "")
+    resolved_report_path = Path(report_path)
+    if report_path and not resolved_report_path.is_absolute():
+        resolved_report_path = path.parent / resolved_report_path
     return {
         **base,
         "status": status,
@@ -525,6 +542,17 @@ def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
         "variants": _string_list(inputs.get("variants")),
         "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
         "artifact_count": len(artifacts),
+        "research_report_path": report_path,
+        "research_report_present": bool(report_path and resolved_report_path.exists()),
+        "review_status": str(review_summary.get("review_status", "") or ""),
+        "plugin_gate": str(review_summary.get("plugin_gate", "") or ""),
+        "plugin_reason": str(review_summary.get("plugin_reason", "") or ""),
+        "plugin_signal_count": int(review_summary.get("plugin_signal_count", 0) or 0),
+        "plugin_route_counts": dict(_safe_mapping(review_summary.get("plugin_route_counts"))),
+        "plugin_non_normal_signal_count": int(review_summary.get("plugin_non_normal_signal_count", 0) or 0),
+        "zscore_history_rows": int(review_summary.get("zscore_history_rows", 0) or 0),
+        "zscore_history_start": str(review_summary.get("zscore_history_start", "") or ""),
+        "zscore_history_end": str(review_summary.get("zscore_history_end", "") or ""),
     }
 
 
@@ -810,16 +838,22 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
                 "",
                 "## IBIT Smart DCA Research",
                 "",
-                "| Manifest | Status | Schema | Variants | Trade rows | Signal rows |",
-                "| --- | --- | --- | --- | ---: | ---: |",
+                "| Manifest | Status | Schema | Review | Plugin gate | Variants | Gate report | Trade rows | Signal rows |",
+                "| --- | --- | --- | --- | --- | --- | --- | ---: | ---: |",
             ]
         )
         for report in bundle["ibit_dca_research_reports"]:
             row_counts = report.get("row_counts") or {}
+            report_state = "present" if report.get("research_report_present") else "missing"
+            if not report.get("research_report_path"):
+                report_state = "n/a"
             lines.append(
                 f"| `{_md(report['manifest_path'])}` | `{_md(report['status'])}` | "
                 f"`{_md(report['artifact_schema_version'])}` | "
+                f"`{_md(report.get('review_status') or 'n/a')}` | "
+                f"`{_md(report.get('plugin_gate') or 'n/a')}` | "
                 f"{', '.join(report['variants']) or 'n/a'} | "
+                f"{report_state} | "
                 f"{row_counts.get('ibit_dca_trade_ledger', 0)} | "
                 f"{row_counts.get('ibit_dca_signal_consumption', 0)} |"
             )
@@ -1118,6 +1152,17 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
                 f"- BTC proxy: `{_md(report['btc_proxy_symbol']) or 'n/a'}`",
                 f"- Proxy rows filled: `{_md(report['proxy_rows_filled'])}`",
                 f"- Variants: `{', '.join(report['variants']) or 'n/a'}`",
+                f"- Review status: `{_md(report.get('review_status') or 'n/a')}`",
+                f"- Plugin gate: `{_md(report.get('plugin_gate') or 'n/a')}`",
+                f"- Plugin reason: {_md(report.get('plugin_reason') or 'n/a')}",
+                f"- Z-score history: `{_md(report.get('zscore_history_start') or 'n/a')}` to "
+                f"`{_md(report.get('zscore_history_end') or 'n/a')}` "
+                f"(`{_md(report.get('zscore_history_rows', 0))}` rows)",
+                f"- Plugin signal count: `{_md(report.get('plugin_signal_count', 0))}`",
+                f"- Plugin non-normal signal count: `{_md(report.get('plugin_non_normal_signal_count', 0))}`",
+                f"- Plugin route counts: `{_md(report.get('plugin_route_counts') or {})}`",
+                f"- Gate report: `{_md(report.get('research_report_path') or 'n/a')}` "
+                f"({'present' if report.get('research_report_present') else 'missing' if report.get('research_report_path') else 'n/a'})",
                 f"- Period summary rows: `{row_counts.get('ibit_dca_period_summary', 0)}`",
                 f"- Trade ledger rows: `{row_counts.get('ibit_dca_trade_ledger', 0)}`",
                 f"- Signal consumption rows: `{row_counts.get('ibit_dca_signal_consumption', 0)}`",

@@ -238,6 +238,24 @@ def _benchmark_stats(price_matrix: pd.DataFrame, symbol: str) -> dict[str, float
     return {"cagr": float(stats["cagr"]), "max_drawdown": float(stats["max_drawdown"])}
 
 
+def _zscore_history_metadata(zscore_history: pd.DataFrame | None) -> dict[str, object]:
+    if zscore_history is None or pd.DataFrame(zscore_history).empty:
+        return {"rows": 0, "start": "", "end": ""}
+    frame = pd.DataFrame(zscore_history).copy()
+    normalized = {str(column).strip().lower(): column for column in frame.columns}
+    date_column = normalized.get("as_of") or normalized.get("date") or normalized.get("timestamp")
+    if date_column is None:
+        return {"rows": int(len(frame)), "start": "", "end": ""}
+    dates = pd.to_datetime(frame[date_column], errors="coerce").dropna().sort_values()
+    if dates.empty:
+        return {"rows": int(len(frame)), "start": "", "end": ""}
+    return {
+        "rows": int(len(dates)),
+        "start": str(pd.Timestamp(dates.iloc[0]).date()),
+        "end": str(pd.Timestamp(dates.iloc[-1]).date()),
+    }
+
+
 def _trade(
     *,
     rows: list[dict[str, object]],
@@ -300,7 +318,8 @@ def _simulate_variant(
         raise ValueError("price history does not contain rebalance dates")
 
     ibit_shares = 0.0
-    parking_shares = float(config.initial_parking_value) / float(prices.iloc[0][config.parking_symbol])
+    parking_shares = 0.0
+    pending_initial_parking_value = float(config.initial_parking_value)
     cash = 0.0
     trade_rows: list[dict[str, object]] = []
     holding_rows: list[dict[str, object]] = []
@@ -311,6 +330,9 @@ def _simulate_variant(
         parking_price = float(row[config.parking_symbol])
         if pd.isna(ibit_price) or pd.isna(parking_price) or ibit_price <= 0 or parking_price <= 0:
             continue
+        if pending_initial_parking_value > 0:
+            parking_shares = pending_initial_parking_value / parking_price
+            pending_initial_parking_value = 0.0
         external_cash_flow = 0.0
 
         if pd.Timestamp(as_of) in rebalances:
@@ -548,10 +570,10 @@ def build_ibit_smart_dca_research(
             cagr_delta = 0.0
             drawdown_delta = 0.0
         else:
-            improves_cagr = cagr_delta >= 0.0
-            improves_drawdown_enough = drawdown_delta >= float(config.min_drawdown_improvement)
+            improves_cagr = cagr_delta > 0.0
+            improves_drawdown_enough = drawdown_delta > float(config.min_drawdown_improvement)
             cagr_giveup_ok = cagr_delta >= -float(config.max_cagr_giveup_for_drawdown)
-            beats_parking = cagr_delta_vs_parking >= 0.0
+            beats_parking = cagr_delta_vs_parking > 0.0
             passes_buy_only_gate = improves_cagr or (improves_drawdown_enough and cagr_giveup_ok)
             gate = "pass" if beats_parking and passes_buy_only_gate else "fail"
             reason = (
@@ -590,6 +612,7 @@ def build_ibit_smart_dca_research(
             "config": config.to_dict(),
             "plugin_config": dict(plugin_config or {}),
             "proxy": proxy_metadata,
+            "zscore_history": _zscore_history_metadata(zscore_history),
             "variants": variants,
         },
     }
@@ -608,6 +631,162 @@ def _json_safe(value: Any) -> Any:
         except Exception:
             pass
     return value
+
+
+def _format_pct(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if pd.isna(number):
+        return "n/a"
+    return f"{number:.2%}"
+
+
+def _markdown_table(frame: pd.DataFrame, columns: tuple[str, ...]) -> list[str]:
+    if frame.empty:
+        return ["_No rows._"]
+    rows = ["| " + " | ".join(columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"]
+    for _, row in frame.iterrows():
+        values = []
+        for column in columns:
+            value = row.get(column, "")
+            if column in {
+                "cagr",
+                "max_drawdown",
+                "cagr_delta_vs_buy_only",
+                "drawdown_delta_vs_buy_only",
+                "cagr_delta_vs_parking_only",
+                "excess_cagr_vs_primary",
+                "excess_cagr_vs_secondary",
+            }:
+                values.append(_format_pct(value))
+            else:
+                values.append(str(value))
+        rows.append("| " + " | ".join(values) + " |")
+    return rows
+
+
+def build_ibit_dca_review_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    readiness = pd.DataFrame(result.get("ibit_dca_live_readiness_summary", pd.DataFrame()))
+    signals = pd.DataFrame(result.get("ibit_dca_signal_consumption", pd.DataFrame()))
+    plugin_signals = signals.loc[signals.get("variant", pd.Series(dtype=str)).eq(PLUGIN_ON_VARIANT)]
+    route_counts = {
+        str(route): int(count)
+        for route, count in plugin_signals.get("canonical_route", pd.Series(dtype=str)).value_counts().items()
+    }
+    non_normal_signal_count = int(sum(count for route, count in route_counts.items() if route != "normal"))
+    manifest_inputs = dict(result.get("manifest_inputs", {}))
+    zscore_metadata = dict(manifest_inputs.get("zscore_history", {}))
+    plugin_rows = readiness.loc[readiness.get("variant", pd.Series(dtype=str)).eq(PLUGIN_ON_VARIANT)]
+    if plugin_rows.empty:
+        return {
+            "review_status": "plugin_not_evaluated",
+            "plugin_gate": "n/a",
+            "plugin_reason": "plugin-on variant was not included",
+            "runtime_impact": "none",
+            "plugin_signal_count": int(len(plugin_signals)),
+            "plugin_route_counts": route_counts,
+            "plugin_non_normal_signal_count": non_normal_signal_count,
+            "zscore_history_rows": int(zscore_metadata.get("rows", 0) or 0),
+            "zscore_history_start": str(zscore_metadata.get("start", "") or ""),
+            "zscore_history_end": str(zscore_metadata.get("end", "") or ""),
+        }
+
+    plugin_row = plugin_rows.iloc[0]
+    plugin_gate = str(plugin_row.get("gate", "") or "")
+    return {
+        "review_status": (
+            "candidate_for_live_promotion_review" if plugin_gate == "pass" else "research_reject_or_continue"
+        ),
+        "plugin_gate": plugin_gate,
+        "plugin_reason": str(plugin_row.get("reason", "") or ""),
+        "runtime_impact": "none",
+        "plugin_signal_count": int(len(plugin_signals)),
+        "plugin_route_counts": route_counts,
+        "plugin_non_normal_signal_count": non_normal_signal_count,
+        "zscore_history_rows": int(zscore_metadata.get("rows", 0) or 0),
+        "zscore_history_start": str(zscore_metadata.get("start", "") or ""),
+        "zscore_history_end": str(zscore_metadata.get("end", "") or ""),
+        "cagr_delta_vs_buy_only": float(plugin_row.get("cagr_delta_vs_buy_only", float("nan"))),
+        "drawdown_delta_vs_buy_only": float(plugin_row.get("drawdown_delta_vs_buy_only", float("nan"))),
+        "cagr_delta_vs_parking_only": float(plugin_row.get("cagr_delta_vs_parking_only", float("nan"))),
+        "excess_cagr_vs_primary": float(plugin_row.get("excess_cagr_vs_primary", float("nan"))),
+        "excess_cagr_vs_secondary": float(plugin_row.get("excess_cagr_vs_secondary", float("nan"))),
+    }
+
+
+def render_ibit_dca_research_report(result: Mapping[str, Any]) -> str:
+    readiness = pd.DataFrame(result.get("ibit_dca_live_readiness_summary", pd.DataFrame()))
+    period_summary = pd.DataFrame(result.get("ibit_dca_period_summary", pd.DataFrame()))
+    manifest_inputs = dict(result.get("manifest_inputs", {}))
+    config = dict(manifest_inputs.get("config", {}))
+    proxy = dict(manifest_inputs.get("proxy", {}))
+    review_summary = build_ibit_dca_review_summary(result)
+
+    lines = [
+        "# IBIT Smart DCA Research Report",
+        "",
+        f"- Review status: `{review_summary['review_status']}`",
+        f"- Plugin gate: `{review_summary['plugin_gate']}`",
+        f"- Plugin reason: {review_summary['plugin_reason'] or 'n/a'}",
+        f"- Z-score history: `{review_summary.get('zscore_history_start') or 'n/a'}` to "
+        f"`{review_summary.get('zscore_history_end') or 'n/a'}` "
+        f"({review_summary.get('zscore_history_rows', 0)} rows)",
+        f"- Plugin non-normal signal count: `{review_summary.get('plugin_non_normal_signal_count', 0)}`",
+        f"- Plugin route counts: `{review_summary.get('plugin_route_counts') or {}}`",
+        "- Runtime impact: `none` — this is research evidence only and must not change live allocation by itself.",
+        "",
+        "## Configuration",
+        "",
+        f"- IBIT symbol: `{config.get('ibit_symbol', '') or 'n/a'}`",
+        f"- Parking symbol: `{config.get('parking_symbol', '') or 'n/a'}`",
+        f"- Primary benchmark: `{config.get('primary_benchmark', '') or 'n/a'}`",
+        f"- Secondary benchmark: `{config.get('secondary_benchmark', '') or 'n/a'}`",
+        f"- BTC proxy symbol: `{proxy.get('btc_proxy_symbol', '') or config.get('btc_proxy_symbol', '') or 'n/a'}`",
+        f"- Proxy rows filled: `{proxy.get('proxy_rows_filled', 0)}`",
+        f"- Contribution amount: `{config.get('contribution_amount', '')}`",
+        f"- Rebalance frequency: `{config.get('rebalance_frequency', '')}`",
+        "",
+        "## Live-readiness gate summary",
+        "",
+        *_markdown_table(
+            readiness,
+            (
+                "variant",
+                "gate",
+                "cagr",
+                "max_drawdown",
+                "cagr_delta_vs_buy_only",
+                "drawdown_delta_vs_buy_only",
+                "cagr_delta_vs_parking_only",
+                "excess_cagr_vs_primary",
+                "excess_cagr_vs_secondary",
+            ),
+        ),
+        "",
+        "## Period summary",
+        "",
+        *_markdown_table(
+            period_summary,
+            (
+                "variant",
+                "cagr",
+                "max_drawdown",
+                "ending_nav",
+                "excess_cagr_vs_primary",
+                "excess_cagr_vs_secondary",
+            ),
+        ),
+        "",
+        "## Promotion checklist",
+        "",
+        "- Plugin-on must beat the parking-only baseline after costs.",
+        "- Plugin-on must beat buy-only DCA on net CAGR, or provide enough drawdown improvement to justify CAGR give-up.",
+        "- QQQ/SPY excess-CAGR columns must be reviewed before any default enablement.",
+        "- A separate promotion artifact and human approval are required before live runtime changes.",
+    ]
+    return "\n".join(lines).strip() + "\n"
 
 
 def write_ibit_smart_dca_research_outputs(
@@ -629,15 +808,22 @@ def write_ibit_smart_dca_research_outputs(
         path = output_root / filename
         frame.to_csv(path, index=False)
         paths[key] = path
+    report_path = output_root / "ibit_dca_research_report.md"
+    report_path.write_text(render_ibit_dca_research_report(result), encoding="utf-8")
+    paths["ibit_dca_research_report"] = report_path
 
     manifest_inputs = dict(result.get("manifest_inputs", {}))
     manifest = {
         "manifest_type": MANIFEST_TYPE,
         "artifact_schema_version": SCHEMA_VERSION,
         "inputs": manifest_inputs,
+        "review_summary": build_ibit_dca_review_summary(result),
         "row_counts": {key: int(len(pd.DataFrame(result.get(key, pd.DataFrame())))) for key in artifacts},
-        "artifacts": {key: {"path": filename} for key, filename in artifacts.items()},
-        "outputs": [*artifacts.values(), "ibit_dca_research_manifest.json"],
+        "artifacts": {
+            **{key: {"path": filename} for key, filename in artifacts.items()},
+            "ibit_dca_research_report": {"path": "ibit_dca_research_report.md"},
+        },
+        "outputs": [*artifacts.values(), "ibit_dca_research_report.md", "ibit_dca_research_manifest.json"],
     }
     manifest_path = output_root / "ibit_dca_research_manifest.json"
     manifest_path.write_text(json.dumps(_json_safe(manifest), ensure_ascii=False, indent=2, sort_keys=True) + "\n")

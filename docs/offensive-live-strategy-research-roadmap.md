@@ -2049,6 +2049,11 @@ BOXX/parking-only baseline, buy-only DCA baseline, optional BTC-to-IBIT proxy
 backfill, optional yfinance price download with BTC-USD aliasing, plugin-on
 target-allocation replay, cash-flow adjusted unitized returns, QQQ/SPY
 benchmark-relative metrics, and monthly review bundle discovery.
+The scheduled plugin-publish job now also builds a research-only IBIT DCA
+artifact through `scripts/build_scheduled_ibit_dca_research.py`, uploading it as
+workflow evidence without publishing it to the runtime plugin GCS prefix.
+Because the current public-data smoke shows no positive overlay contribution,
+`ibit_zscore_exit` remains notification-only with position control disabled.
 
 
 ## Architecture recommendation

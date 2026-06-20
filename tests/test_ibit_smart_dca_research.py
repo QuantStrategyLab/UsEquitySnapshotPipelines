@@ -7,7 +7,9 @@ from pathlib import Path
 import pandas as pd
 
 from us_equity_snapshot_pipelines.ibit_smart_dca_research import (
+    build_ibit_dca_review_summary,
     build_ibit_smart_dca_research,
+    render_ibit_dca_research_report,
     write_ibit_smart_dca_research_outputs,
 )
 
@@ -107,6 +109,7 @@ def test_write_ibit_smart_dca_research_outputs_writes_manifest(tmp_path) -> None
     assert (tmp_path / "ibit_dca_trade_ledger.csv").exists()
     assert (tmp_path / "ibit_dca_signal_consumption.csv").exists()
     assert (tmp_path / "ibit_dca_live_readiness_summary.csv").exists()
+    assert (tmp_path / "ibit_dca_research_report.md").exists()
     manifest = json.loads((tmp_path / "ibit_dca_research_manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_type"] == "ibit_smart_dca_research"
     assert manifest["artifact_schema_version"] == "ibit_smart_dca_research.v1"
@@ -115,8 +118,54 @@ def test_write_ibit_smart_dca_research_outputs_writes_manifest(tmp_path) -> None
         "ibit_dca_trade_ledger",
         "ibit_dca_signal_consumption",
         "ibit_dca_live_readiness_summary",
+        "ibit_dca_research_report",
     }
+    assert manifest["review_summary"]["plugin_gate"] in {"pass", "fail"}
+    assert manifest["review_summary"]["runtime_impact"] == "none"
     assert outputs["manifest"].name == "ibit_dca_research_manifest.json"
+
+
+def test_render_ibit_dca_research_report_summarizes_plugin_gate() -> None:
+    result = build_ibit_smart_dca_research(
+        _price_rows(),
+        zscore_history=_zscore_history(high_last=True),
+        initial_parking_value=1_000.0,
+        contribution_amount=100.0,
+        plugin_enabled=True,
+        plugin_config={"dynamic_min_periods": 5},
+    )
+
+    markdown = render_ibit_dca_research_report(result)
+
+    assert "# IBIT Smart DCA Research Report" in markdown
+    assert "Runtime impact: `none`" in markdown
+    assert "plugin_on" in markdown
+    assert "buy_only_dca" in markdown
+    assert "Promotion checklist" in markdown
+
+
+def test_build_ibit_dca_review_summary_is_machine_readable() -> None:
+    result = build_ibit_smart_dca_research(
+        _price_rows(),
+        zscore_history=_zscore_history(high_last=True),
+        initial_parking_value=1_000.0,
+        contribution_amount=100.0,
+        plugin_enabled=True,
+        plugin_config={"dynamic_min_periods": 5},
+    )
+
+    summary = build_ibit_dca_review_summary(result)
+
+    assert summary["runtime_impact"] == "none"
+    assert summary["plugin_gate"] in {"pass", "fail"}
+    assert summary["review_status"] in {"candidate_for_live_promotion_review", "research_reject_or_continue"}
+    assert summary["plugin_signal_count"] > 0
+    assert isinstance(summary["plugin_route_counts"], dict)
+    assert summary["plugin_non_normal_signal_count"] >= 0
+    assert summary["zscore_history_rows"] == 80
+    assert summary["zscore_history_start"] == "2024-01-02"
+    assert summary["zscore_history_end"] == "2024-04-22"
+    assert "cagr_delta_vs_buy_only" in summary
 
 
 def test_contributions_do_not_create_fake_cagr_when_prices_are_flat() -> None:
@@ -192,6 +241,35 @@ def test_btc_proxy_backfills_ibit_before_fund_inception() -> None:
     assert manifest_inputs["proxy"]["proxy_rows_filled"] > 0
 
 
+def test_initial_parking_value_waits_for_first_valid_parking_price() -> None:
+    dates = pd.bdate_range("2022-06-01", periods=160)
+    rows: list[dict[str, object]] = []
+    for idx, as_of in enumerate(dates):
+        rows.append({"as_of": as_of, "symbol": "BTC", "close": 30_000.0 + idx * 50.0})
+        rows.append({"as_of": as_of, "symbol": "QQQ", "close": 300.0 + idx * 0.2})
+        rows.append({"as_of": as_of, "symbol": "SPY", "close": 400.0 + idx * 0.1})
+        if idx >= 60:
+            rows.append({"as_of": as_of, "symbol": "BOXX", "close": 100.0 + idx * 0.01})
+        if idx >= 120:
+            rows.append({"as_of": as_of, "symbol": "IBIT", "close": 25.0 + (idx - 120) * 0.2})
+
+    result = build_ibit_smart_dca_research(
+        pd.DataFrame(rows),
+        btc_proxy_symbol="BTC",
+        initial_parking_value=10_000.0,
+        contribution_amount=0.0,
+        rebalance_frequency="MS",
+        plugin_enabled=False,
+    )
+
+    holdings = result["ibit_dca_holdings_ledger"]
+    period_summary = result["ibit_dca_period_summary"]
+
+    assert holdings["nav"].notna().all()
+    assert holdings["parking_value"].notna().all()
+    assert period_summary.loc[period_summary["variant"].eq("buy_only_dca"), "observations"].iloc[0] > 0
+
+
 def test_plugin_live_gate_requires_beating_parking_only_baseline() -> None:
     prices = _price_rows()
     result = build_ibit_smart_dca_research(
@@ -219,6 +297,25 @@ def test_plugin_live_gate_requires_beating_parking_only_baseline() -> None:
     assert "cagr_delta_vs_parking_only" in readiness.columns
     if plugin_row["cagr_delta_vs_parking_only"] < 0:
         assert plugin_row["gate"] == "fail"
+
+
+def test_plugin_live_gate_rejects_no_value_overlay() -> None:
+    result = build_ibit_smart_dca_research(
+        _price_rows(),
+        zscore_history=_zscore_history(high_last=False),
+        initial_parking_value=10_000.0,
+        contribution_amount=0.0,
+        rebalance_frequency="MS",
+        plugin_enabled=True,
+        plugin_config={"dynamic_min_periods": 5},
+    )
+
+    readiness = result["ibit_dca_live_readiness_summary"]
+    plugin_row = readiness.loc[readiness["variant"].eq("plugin_on")].iloc[0]
+
+    assert plugin_row["cagr_delta_vs_buy_only"] == 0.0
+    assert plugin_row["drawdown_delta_vs_buy_only"] == 0.0
+    assert plugin_row["gate"] == "fail"
 
 
 def test_download_ibit_smart_dca_price_history_uses_btc_alias(monkeypatch) -> None:
