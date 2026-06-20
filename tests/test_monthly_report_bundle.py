@@ -116,6 +116,8 @@ def _write_ibit_dca_research_manifest(root: Path) -> None:
                 "config": {
                     "ibit_symbol": "IBIT",
                     "parking_symbol": "BOXX",
+                    "parking_proxy_symbol": "BIL",
+                    "price_field": "adjusted_close",
                     "primary_benchmark": "QQQ",
                     "secondary_benchmark": "SPY",
                     "btc_proxy_symbol": "BTC",
@@ -125,17 +127,26 @@ def _write_ibit_dca_research_manifest(root: Path) -> None:
                     "btc_proxy_symbol": "BTC",
                     "proxy_rows_filled": 2500,
                     "proxy_scale_source": "first_actual_ibit_close",
+                    "parking_proxy_symbol": "BIL",
+                    "parking_proxy_rows_filled": 1800,
+                    "parking_proxy_scale_source": "first_actual_parking_close",
                 },
                 "variants": ["parking_only", "buy_only_dca", "plugin_on"],
             },
             "review_summary": {
-                "review_status": "candidate_for_live_promotion_review",
+                "review_status": "research_reject_or_continue",
                 "plugin_gate": "pass",
                 "plugin_reason": "plugin adds net value versus buy-only DCA and parking-only baseline",
                 "runtime_impact": "none",
+                "promotion_blockers": ["zscore_coverage_below_minimum"],
                 "plugin_signal_count": 42,
                 "plugin_route_counts": {"normal": 40, "risk_off": 2},
+                "plugin_signal_data_status_counts": {"available": 30, "zscore_unavailable": 12},
+                "plugin_unavailable_signal_count": 12,
                 "plugin_non_normal_signal_count": 2,
+                "zscore_coverage_gate": "fail",
+                "zscore_available_signal_ratio": 0.7142857143,
+                "zscore_min_available_signal_ratio": 0.8,
                 "zscore_history_rows": 1460,
                 "zscore_history_start": "2022-06-20",
                 "zscore_history_end": "2026-06-19",
@@ -279,15 +290,23 @@ def test_build_bundle_includes_ibit_dca_research_manifests(tmp_path: Path) -> No
     assert research["manifest_type"] == "ibit_smart_dca_research"
     assert research["variants"] == ["parking_only", "buy_only_dca", "plugin_on"]
     assert research["parking_symbol"] == "BOXX"
+    assert research["price_field"] == "adjusted_close"
     assert research["btc_proxy_symbol"] == "BTC"
     assert research["proxy_rows_filled"] == 2500
+    assert research["parking_proxy_symbol"] == "BIL"
+    assert research["parking_proxy_rows_filled"] == 1800
     assert research["research_report_path"] == "ibit_dca_research_report.md"
     assert research["research_report_present"] is True
-    assert research["review_status"] == "candidate_for_live_promotion_review"
+    assert research["review_status"] == "research_reject_or_continue"
+    assert research["promotion_blockers"] == ["zscore_coverage_below_minimum"]
     assert research["plugin_gate"] == "pass"
     assert research["plugin_signal_count"] == 42
     assert research["plugin_route_counts"] == {"normal": 40, "risk_off": 2}
+    assert research["plugin_signal_data_status_counts"] == {"available": 30, "zscore_unavailable": 12}
+    assert research["plugin_unavailable_signal_count"] == 12
     assert research["plugin_non_normal_signal_count"] == 2
+    assert research["zscore_coverage_gate"] == "fail"
+    assert research["zscore_available_signal_ratio"] == 0.7142857143
     assert research["zscore_history_rows"] == 1460
     assert research["zscore_history_start"] == "2022-06-20"
     assert research["zscore_history_end"] == "2026-06-19"
@@ -295,7 +314,14 @@ def test_build_bundle_includes_ibit_dca_research_manifests(tmp_path: Path) -> No
     assert "`parking_only, buy_only_dca, plugin_on`" in markdown
     assert "Plugin gate: `pass`" in markdown
     assert "Plugin signal count: `42`" in markdown
+    assert "Parking proxy: `BIL`" in markdown
+    assert "Parking proxy rows filled: `1800`" in markdown
+    assert "Price field: `adjusted_close`" in markdown
     assert "Plugin non-normal signal count: `2`" in markdown
+    assert "Plugin unavailable z-score signal count: `12`" in markdown
+    assert "Plugin signal data-status counts:" in markdown
+    assert "Z-score coverage gate: `fail`" in markdown
+    assert "Promotion blockers: `zscore_coverage_below_minimum`" in markdown
     assert "Z-score history: `2022-06-20` to `2026-06-19`" in markdown
     assert "Plugin route counts:" in markdown
     assert "Gate report: `ibit_dca_research_report.md` (present)" in markdown

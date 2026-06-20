@@ -21,6 +21,7 @@ def _prices() -> pd.DataFrame:
         for symbol, base, step in (
             ("IBIT", 25.0, 0.10),
             ("BOXX", 100.0, 0.01),
+            ("BIL", 91.0, 0.01),
             ("QQQ", 400.0, 0.20),
             ("SPY", 450.0, 0.15),
             ("BTC", 40_000.0, 50.0),
@@ -58,6 +59,8 @@ def test_build_scheduled_ibit_dca_research_downloads_prices_and_writes_manifest(
             "end": "2024-05-01",
             "ibit_symbol": "IBIT",
             "parking_symbol": "BOXX",
+            "parking_proxy_symbol": "BIL",
+            "price_field": "adjusted_close",
             "primary_benchmark": "QQQ",
             "secondary_benchmark": "SPY",
             "btc_proxy_symbol": "BTC",
@@ -72,6 +75,8 @@ def test_build_scheduled_ibit_dca_research_downloads_prices_and_writes_manifest(
     assert manifest["inputs"]["variants"] == ["parking_only", "buy_only_dca", "plugin_on"]
     assert "ibit_dca_research_report" in manifest["artifacts"]
     assert manifest["inputs"]["config"]["parking_symbol"] == "BOXX"
+    assert manifest["inputs"]["config"]["parking_proxy_symbol"] == "BIL"
+    assert manifest["inputs"]["config"]["price_field"] == "adjusted_close"
     assert manifest["inputs"]["config"]["btc_proxy_symbol"] == "BTC"
 
 

@@ -809,6 +809,8 @@ jobs:
             --initial-parking-value 10000
             --contribution-amount 500
             --parking-symbol BOXX
+            --parking-proxy-symbol BIL
+            --price-field adjusted_close
             --btc-proxy-symbol BTC
           )
           if [ -n "${PRICE_END:-}" ]; then

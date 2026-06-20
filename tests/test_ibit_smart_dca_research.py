@@ -53,10 +53,7 @@ def test_buy_only_dca_sells_parking_asset_to_fund_ibit_buys() -> None:
     assert "plugin_on" not in set(signal_consumption["variant"])
     assert set(buy_only_signals["canonical_route"]) == {"plugin_disabled"}
     assert not trade_ledger.empty
-    assert {
-        (row["action"], row["symbol"])
-        for _, row in trade_ledger.iterrows()
-    } >= {("sell", "BOXX"), ("buy", "IBIT")}
+    assert {(row["action"], row["symbol"]) for _, row in trade_ledger.iterrows()} >= {("sell", "BOXX"), ("buy", "IBIT")}
     assert bool(summary.loc[summary["variant"].eq("buy_only_dca"), "plugin_enabled"].iloc[0]) is False
 
 
@@ -86,9 +83,9 @@ def test_plugin_enabled_consumes_zscore_signal_and_keeps_defensive_parking() -> 
     assert latest_plugin_signal["target_ibit_exposure"] == 0.25
     assert latest_plugin_signal["target_parking_exposure"] == 0.75
 
-    latest_holdings = result["ibit_dca_holdings_ledger"].loc[
-        result["ibit_dca_holdings_ledger"]["variant"].eq("plugin_on")
-    ].iloc[-1]
+    latest_holdings = (
+        result["ibit_dca_holdings_ledger"].loc[result["ibit_dca_holdings_ledger"]["variant"].eq("plugin_on")].iloc[-1]
+    )
     assert latest_holdings["parking_weight"] > 0.70
     assert latest_holdings["ibit_weight"] < 0.30
 
@@ -230,15 +227,105 @@ def test_btc_proxy_backfills_ibit_before_fund_inception() -> None:
     )
 
     holdings = result["ibit_dca_holdings_ledger"]
-    first_buy = result["ibit_dca_trade_ledger"].loc[
-        lambda frame: frame["symbol"].eq("IBIT") & frame["action"].eq("buy")
-    ].iloc[0]
+    first_buy = (
+        result["ibit_dca_trade_ledger"]
+        .loc[lambda frame: frame["symbol"].eq("IBIT") & frame["action"].eq("buy")]
+        .iloc[0]
+    )
     manifest_inputs = result["manifest_inputs"]
 
     assert first_buy["as_of"] < str(dates[25].date())
     assert holdings["nav"].notna().all()
     assert manifest_inputs["proxy"]["btc_proxy_symbol"] == "BTC"
     assert manifest_inputs["proxy"]["proxy_rows_filled"] > 0
+
+
+def test_parking_proxy_backfills_cash_like_asset_before_parking_inception() -> None:
+    dates = pd.bdate_range("2014-01-02", periods=160)
+    rows: list[dict[str, object]] = []
+    for idx, as_of in enumerate(dates):
+        rows.append({"as_of": as_of, "symbol": "BTC", "close": 800.0 + idx * 10.0})
+        rows.append({"as_of": as_of, "symbol": "BIL", "close": 91.0 + idx * 0.01})
+        rows.append({"as_of": as_of, "symbol": "QQQ", "close": 85.0 + idx * 0.2})
+        rows.append({"as_of": as_of, "symbol": "SPY", "close": 180.0 + idx * 0.1})
+        if idx >= 120:
+            rows.append({"as_of": as_of, "symbol": "BOXX", "close": 100.0 + (idx - 120) * 0.01})
+
+    result = build_ibit_smart_dca_research(
+        pd.DataFrame(rows),
+        btc_proxy_symbol="BTC",
+        parking_proxy_symbol="BIL",
+        initial_parking_value=10_000.0,
+        contribution_amount=0.0,
+        rebalance_frequency="MS",
+        plugin_enabled=False,
+    )
+
+    holdings = result["ibit_dca_holdings_ledger"]
+    manifest_inputs = result["manifest_inputs"]
+    first_holding_date = holdings.loc[holdings["variant"].eq("buy_only_dca"), "as_of"].iloc[0]
+
+    assert first_holding_date == str(dates[0].date())
+    assert manifest_inputs["proxy"]["parking_proxy_symbol"] == "BIL"
+    assert manifest_inputs["proxy"]["parking_proxy_rows_filled"] == 120
+    assert manifest_inputs["proxy"]["first_actual_parking_date"] == str(dates[120].date())
+
+
+def test_plugin_on_uses_normal_exposure_before_first_available_zscore() -> None:
+    dates = pd.bdate_range("2024-01-02", periods=80)
+    prices = _price_rows()
+    zscore_history = pd.DataFrame(
+        [{"as_of": as_of, "mvrv_zscore": 2.0 + idx * 0.01} for idx, as_of in enumerate(dates[40:])]
+    )
+
+    result = build_ibit_smart_dca_research(
+        prices,
+        zscore_history=zscore_history,
+        initial_parking_value=1_000.0,
+        contribution_amount=100.0,
+        rebalance_frequency="MS",
+        plugin_enabled=True,
+        plugin_config={"dynamic_min_periods": 5},
+    )
+
+    plugin_signals = result["ibit_dca_signal_consumption"].loc[lambda frame: frame["variant"].eq("plugin_on")]
+    unavailable = plugin_signals.loc[plugin_signals["signal_data_status"].eq("zscore_unavailable")]
+    summary = build_ibit_dca_review_summary(result)
+
+    assert not unavailable.empty
+    assert set(unavailable["canonical_route"]) == {"normal"}
+    assert set(unavailable["target_ibit_exposure"]) == {1.0}
+    assert summary["plugin_unavailable_signal_count"] == len(unavailable)
+    assert summary["plugin_signal_data_status_counts"]["zscore_unavailable"] == len(unavailable)
+    assert summary["zscore_available_signal_ratio"] < 1.0
+    assert summary["zscore_coverage_gate"] == "fail"
+    assert summary["review_status"] == "research_reject_or_continue"
+    assert "zscore_coverage_below_minimum" in summary["promotion_blockers"]
+
+
+def test_zscore_coverage_gate_blocks_promotion_when_plugin_metric_history_is_sparse() -> None:
+    result = build_ibit_smart_dca_research(
+        _price_rows(),
+        zscore_history=_zscore_history(high_last=True).iloc[-10:],
+        initial_parking_value=10_000.0,
+        contribution_amount=0.0,
+        rebalance_frequency="MS",
+        plugin_enabled=True,
+        plugin_config={
+            "dynamic_min_periods": 5,
+            "soft_exit_zscore_floor": 2.0,
+            "hard_exit_zscore_floor": 2.5,
+            "risk_off_ibit_exposure": 0.0,
+            "parking_symbol": "BOXX",
+        },
+    )
+
+    summary = build_ibit_dca_review_summary(result)
+
+    assert summary["zscore_coverage_gate"] == "fail"
+    assert summary["zscore_available_signal_ratio"] < summary["zscore_min_available_signal_ratio"]
+    assert summary["review_status"] == "research_reject_or_continue"
+    assert "zscore_coverage_below_minimum" in summary["promotion_blockers"]
 
 
 def test_initial_parking_value_waits_for_first_valid_parking_price() -> None:
@@ -339,6 +426,7 @@ def test_download_ibit_smart_dca_price_history_uses_btc_alias(monkeypatch) -> No
         end="2024-02-01",
         ibit_symbol="IBIT",
         parking_symbol="BOXX",
+        parking_proxy_symbol="BIL",
         primary_benchmark="QQQ",
         secondary_benchmark="SPY",
         btc_proxy_symbol="BTC",
@@ -346,19 +434,16 @@ def test_download_ibit_smart_dca_price_history_uses_btc_alias(monkeypatch) -> No
 
     assert calls == [
         {
-            "symbols": ("IBIT", "BOXX", "QQQ", "SPY", "BTC"),
+            "symbols": ("IBIT", "BOXX", "BIL", "QQQ", "SPY", "BTC"),
             "start": "2024-01-01",
             "end": "2024-02-01",
             "symbol_aliases": {"BTC": ("BTC-USD",)},
         }
     ]
-    assert set(prices["symbol"]) == {"IBIT", "BOXX", "QQQ", "SPY", "BTC"}
+    assert set(prices["symbol"]) == {"IBIT", "BOXX", "BIL", "QQQ", "SPY", "BTC"}
 
 
 def test_ibit_smart_dca_research_entrypoint_is_registered() -> None:
     scripts = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
 
-    assert (
-        scripts["useq-research-ibit-smart-dca"]
-        == "us_equity_snapshot_pipelines.ibit_smart_dca_research:main"
-    )
+    assert scripts["useq-research-ibit-smart-dca"] == "us_equity_snapshot_pipelines.ibit_smart_dca_research:main"

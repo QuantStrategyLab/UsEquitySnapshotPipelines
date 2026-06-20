@@ -480,22 +480,33 @@ def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
         "artifact_schema_version": "",
         "ibit_symbol": "",
         "parking_symbol": "",
+        "price_field": "",
         "primary_benchmark": "",
         "secondary_benchmark": "",
         "btc_proxy_symbol": "",
         "proxy_rows_filled": 0,
         "proxy_scale_source": "",
+        "parking_proxy_symbol": "",
+        "parking_proxy_rows_filled": 0,
+        "parking_proxy_scale_source": "",
         "variants": [],
         "row_counts": {},
         "artifact_count": 0,
         "research_report_path": "",
         "research_report_present": False,
         "review_status": "",
+        "promotion_blockers": [],
         "plugin_gate": "",
         "plugin_reason": "",
         "plugin_signal_count": 0,
+        "plugin_available_signal_count": 0,
         "plugin_route_counts": {},
+        "plugin_signal_data_status_counts": {},
+        "plugin_unavailable_signal_count": 0,
         "plugin_non_normal_signal_count": 0,
+        "zscore_coverage_gate": "",
+        "zscore_available_signal_ratio": 0.0,
+        "zscore_min_available_signal_ratio": 0.0,
         "zscore_history_rows": 0,
         "zscore_history_start": "",
         "zscore_history_end": "",
@@ -534,29 +545,42 @@ def _collect_ibit_dca_research_manifest(path: Path) -> dict[str, Any]:
         "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
         "ibit_symbol": str(config.get("ibit_symbol", "") or ""),
         "parking_symbol": str(config.get("parking_symbol", "") or ""),
+        "price_field": str(config.get("price_field", "") or ""),
         "primary_benchmark": str(config.get("primary_benchmark", "") or ""),
         "secondary_benchmark": str(config.get("secondary_benchmark", "") or ""),
         "btc_proxy_symbol": str(proxy.get("btc_proxy_symbol") or config.get("btc_proxy_symbol", "") or ""),
         "proxy_rows_filled": int(proxy.get("proxy_rows_filled", 0) or 0),
         "proxy_scale_source": str(proxy.get("proxy_scale_source", "") or ""),
+        "parking_proxy_symbol": str(proxy.get("parking_proxy_symbol") or config.get("parking_proxy_symbol", "") or ""),
+        "parking_proxy_rows_filled": int(proxy.get("parking_proxy_rows_filled", 0) or 0),
+        "parking_proxy_scale_source": str(proxy.get("parking_proxy_scale_source", "") or ""),
         "variants": _string_list(inputs.get("variants")),
         "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
         "artifact_count": len(artifacts),
         "research_report_path": report_path,
         "research_report_present": bool(report_path and resolved_report_path.exists()),
         "review_status": str(review_summary.get("review_status", "") or ""),
+        "promotion_blockers": _string_list(review_summary.get("promotion_blockers")),
         "plugin_gate": str(review_summary.get("plugin_gate", "") or ""),
         "plugin_reason": str(review_summary.get("plugin_reason", "") or ""),
         "plugin_signal_count": int(review_summary.get("plugin_signal_count", 0) or 0),
+        "plugin_available_signal_count": int(review_summary.get("plugin_available_signal_count", 0) or 0),
         "plugin_route_counts": dict(_safe_mapping(review_summary.get("plugin_route_counts"))),
+        "plugin_signal_data_status_counts": dict(_safe_mapping(review_summary.get("plugin_signal_data_status_counts"))),
+        "plugin_unavailable_signal_count": int(review_summary.get("plugin_unavailable_signal_count", 0) or 0),
         "plugin_non_normal_signal_count": int(review_summary.get("plugin_non_normal_signal_count", 0) or 0),
+        "zscore_coverage_gate": str(review_summary.get("zscore_coverage_gate", "") or ""),
+        "zscore_available_signal_ratio": float(review_summary.get("zscore_available_signal_ratio", 0.0) or 0.0),
+        "zscore_min_available_signal_ratio": float(review_summary.get("zscore_min_available_signal_ratio", 0.0) or 0.0),
         "zscore_history_rows": int(review_summary.get("zscore_history_rows", 0) or 0),
         "zscore_history_start": str(review_summary.get("zscore_history_start", "") or ""),
         "zscore_history_end": str(review_summary.get("zscore_history_end", "") or ""),
     }
 
 
-def _collect_profile(artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int) -> dict[str, Any]:
+def _collect_profile(
+    artifact_root: Path, profile: str, summary_path: Path | None, ranking_preview_size: int
+) -> dict[str, Any]:
     contract = next(item for item in list_profile_contracts() if item.profile == profile)
     if summary_path is None:
         expected_dir = artifact_root / profile
@@ -693,6 +717,13 @@ def build_bundle(
 
 def _md(value: Any) -> str:
     return str(value if value is not None else "").replace("\n", " ").replace("|", "\\|")
+
+
+def _format_percent(value: Any) -> str:
+    try:
+        return f"{float(value):.2%}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 def render_job_summary(bundle: dict[str, Any]) -> str:
@@ -1147,12 +1178,16 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
                 f"- Artifact schema: `{_md(report['artifact_schema_version'])}`",
                 f"- IBIT symbol: `{_md(report['ibit_symbol']) or 'n/a'}`",
                 f"- Parking symbol: `{_md(report['parking_symbol']) or 'n/a'}`",
+                f"- Price field: `{_md(report.get('price_field') or 'n/a')}`",
                 f"- Primary benchmark: `{_md(report['primary_benchmark']) or 'n/a'}`",
                 f"- Secondary benchmark: `{_md(report['secondary_benchmark']) or 'n/a'}`",
                 f"- BTC proxy: `{_md(report['btc_proxy_symbol']) or 'n/a'}`",
                 f"- Proxy rows filled: `{_md(report['proxy_rows_filled'])}`",
+                f"- Parking proxy: `{_md(report.get('parking_proxy_symbol') or 'n/a')}`",
+                f"- Parking proxy rows filled: `{_md(report.get('parking_proxy_rows_filled', 0))}`",
                 f"- Variants: `{', '.join(report['variants']) or 'n/a'}`",
                 f"- Review status: `{_md(report.get('review_status') or 'n/a')}`",
+                f"- Promotion blockers: `{_md(', '.join(report.get('promotion_blockers') or []) or 'none')}`",
                 f"- Plugin gate: `{_md(report.get('plugin_gate') or 'n/a')}`",
                 f"- Plugin reason: {_md(report.get('plugin_reason') or 'n/a')}",
                 f"- Z-score history: `{_md(report.get('zscore_history_start') or 'n/a')}` to "
@@ -1160,7 +1195,12 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
                 f"(`{_md(report.get('zscore_history_rows', 0))}` rows)",
                 f"- Plugin signal count: `{_md(report.get('plugin_signal_count', 0))}`",
                 f"- Plugin non-normal signal count: `{_md(report.get('plugin_non_normal_signal_count', 0))}`",
+                f"- Plugin unavailable z-score signal count: `{_md(report.get('plugin_unavailable_signal_count', 0))}`",
                 f"- Plugin route counts: `{_md(report.get('plugin_route_counts') or {})}`",
+                f"- Plugin signal data-status counts: `{_md(report.get('plugin_signal_data_status_counts') or {})}`",
+                f"- Z-score coverage gate: `{_md(report.get('zscore_coverage_gate') or 'n/a')}`",
+                f"- Z-score available signal ratio: `{_md(_format_percent(report.get('zscore_available_signal_ratio', 0.0)))}` "
+                f"(min `{_md(_format_percent(report.get('zscore_min_available_signal_ratio', 0.0)))}`)",
                 f"- Gate report: `{_md(report.get('research_report_path') or 'n/a')}` "
                 f"({'present' if report.get('research_report_present') else 'missing' if report.get('research_report_path') else 'n/a'})",
                 f"- Period summary rows: `{row_counts.get('ibit_dca_period_summary', 0)}`",

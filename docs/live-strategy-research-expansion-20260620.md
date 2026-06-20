@@ -10,7 +10,7 @@ change runtime manifests, or approve any new default allocation.
 | --- | --- | --- |
 | Russell Top50 leader rotation | Best current offensive line. The fixed `Top4`, `25/75 Top2/Top4`, and `50/50 Top2/Top4` matrix already has promotion, stress, overfit, liquidity, and live-decay hooks. | Keep as the primary live-candidate line. Do not widen the parameter grid. |
 | Global ETF offensive sleeve | The small offensive sleeve improved some long-window metrics but failed walk-forward/OOS versus the current defensive baseline. | Keep defensive baseline live. Only test narrow, pre-registered sleeve variants. |
-| IBIT Smart DCA | Dynamic MVRV Z-Score exit/parking plugin exists as deterministic signal production for `ibit_smart_dca`; strategy-side DCA/BOXX consumption still needs full backtest/live-design proof. | Treat as a separate asymmetric satellite, not a replacement for the equity offensive line. |
+| IBIT Smart DCA | Dynamic MVRV Z-Score exit/parking plugin and strategy-side DCA/BOXX replay now exist as research artifacts; the current z-score overlay failed long-history promotion gates. | Treat buy-only DCA as a separate asymmetric satellite idea, but keep the z-score overlay research-only/notification-only. |
 | BOXX / cash-like sleeves | BOXX-like parking can improve idle-cash carry, but it is execution/cash management, not alpha. | Strategy must be able to sell parking sleeves to fund scheduled buys regardless of plugin status. |
 
 ## Web-expanded evidence map
@@ -55,6 +55,107 @@ below is evidence that a repo-specific candidate is live-ready.
   backtests should keep it as a configurable parking asset. Sources:
   https://funds.alphaarchitect.com/boxetf/ and
   https://etfarchitect.com/wp-content/uploads/compliance/etf/summary_prospectus/BOXX_Summary_Prospectus.pdf
+- 10-month/200-day absolute trend is a useful low-parameter crash-control
+  hypothesis, but it should be tested as a deterministic risk gate rather than
+  tuned as an optimizer. Faber's tactical asset allocation paper reports
+  equity-like returns with materially lower volatility/drawdowns for simple
+  moving-average timing across asset classes. Source:
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=962461
+- Volatility-managed portfolios motivate scaling risky sleeves down when
+  realized volatility is high. Because later literature debates real-time
+  robustness, this repo should test volatility as a bounded sleeve budget, not
+  as a standalone alpha claim. Source:
+  https://www.nber.org/papers/w22208
+- Nasdaq and S&P overlays must respect what the wrappers actually represent:
+  QQQ seeks to track the Nasdaq-100 before fees/expenses and is not a defensive
+  manager, while SPY seeks to track the S&P 500 broad large-cap benchmark.
+  Sources:
+  https://fundcompli.rightprospectus.com/documents/Invesco/P-QQQ-PRO-1.pdf
+  and https://www.ssga.com/us/en/intermediary/etfs/state-street-spdr-sp-500-etf-trust-spy
+- IBIT is a bitcoin exposure wrapper with fund-specific fee, custody, and trust
+  structure constraints. Backtests should treat pre-IBIT spot BTC proxy history
+  as research-only lineage, not as proof that the ETF would have traded the same
+  way before inception. Source:
+  https://www.ishares.com/us/products/333011/ishares-bitcoin-trust-etf
+- Yahoo adjusted close is adjusted for splits and dividend distributions, which
+  is the right default for ETF total-return-style research, while raw close
+  remains useful for data-quality sensitivity checks. Source:
+  https://help.yahoo.com/kb/SLN28256.html
+- Crypto DCA can reduce entry-timing dependence but does not protect against
+  losses in falling markets. IBIT DCA promotion must therefore be based on
+  full-path drawdown, contribution-adjusted returns, and continued-buy
+  feasibility, not only ending NAV. Source:
+  https://www.fidelity.com/learning-center/trading-investing/crypto/dollar-cost-averaging
+- Buy-the-dip evidence is not enough for live promotion. AQR's "Hold the Dip"
+  framing is a useful warning that dip-buying often lags buy-and-hold because
+  buy-and-hold is always earning the risk premium. Source:
+  https://www.aqr.com/-/media/AQR/Documents/Alternative-Thinking/AQR-Alternative-Thinking---Hold-the-Dip.pdf
+
+## Expanded liveability design - IBIT and Nasdaq/S&P overlays
+
+This section is a pre-registration layer for the next research pass. It expands
+the idea space while keeping the live path narrow: plugins may emit bounded,
+deterministic signals, but strategy code owns allocation, funding, and
+promotion decisions.
+
+### IBIT liveable path
+
+The current long-history smoke says buy-only DCA is the only plausible live
+mechanic so far; the z-score escape overlay remains research-only until it
+adds value versus buy-only DCA.
+
+Candidate variants to test next:
+
+| Candidate | Rule | Liveability purpose | Promotion blocker |
+| --- | --- | --- | --- |
+| `ibit_buy_only_dca_live_candidate` | Scheduled IBIT buys funded by cash/parking; no z-score selling. | Establish the minimum deterministic satellite. | Fails if contribution-adjusted drawdown or cash needs are not acceptable. |
+| `ibit_zscore_soft_escape_v1` | Reduce to partial IBIT exposure only above rolling z-score soft threshold; re-enter only after hysteresis. | Test whether valuation exits reduce left-tail without killing compounding. | Fails if CAGR give-up is not compensated by drawdown reduction. |
+| `ibit_zscore_hard_escape_v1` | Move to defensive exposure only above hard threshold; return by explicit lower threshold or monthly re-entry schedule. | Test rare extreme-cycle escape only. | Fails if routes are too rare, stale, or data coverage is below gate. |
+| `ibit_vol_scaled_dca_v1` | Keep scheduled buys, but scale contribution size down when 63-day realized BTC/IBIT volatility is above rolling percentile. | Test volatility budgeting without discretionary timing. | Fails if it becomes hidden market timing or underperforms buy-only after costs. |
+| `ibit_trend_pause_v1` | Pause new buys only when BTC/IBIT is below long trend and short momentum is negative; do not liquidate existing IBIT. | Test whether avoiding falling-knife purchases helps without abandoning DCA. | Fails if it misses rebounds and lowers long-window excess. |
+
+IBIT gates:
+
+1. Use unitized, cash-flow-adjusted returns; ending NAV is reported separately.
+2. Compare every overlay against both `buy_only_dca` and `parking_only`.
+3. Require replayable signal lineage: source URL/path, freshness, coverage,
+   first available date, proxy rows filled, and adjusted/raw close setting.
+4. Require at least short/mid/long windows and era splits across BTC bull,
+   bear, sideways, and post-ETF regimes.
+5. No overlay can become live when z-score or proxy coverage gate fails; it may
+   remain `notification_only`.
+
+### Nasdaq/S&P deterministic overlay path
+
+The Nasdaq/S&P plugin should be a market-regime signal for compatible equity
+strategies, not a standalone allocation engine. QQQ is the growth/Nasdaq risk
+proxy; SPY is the broad-market anchor. The plugin should only answer:
+"how much offensive risk budget is allowed next rebalance?"
+
+Candidate variants to test next:
+
+| Candidate | Rule | Compatible consumers | Promotion blocker |
+| --- | --- | --- | --- |
+| `market_trend_gate_10m_v1` | Offensive sleeve allowed only when QQQ and/or SPY is above 10-month/200-day trend. | Russell Top2 sleeve, Global ETF fast sleeve. | Fails if it reduces 5Y excess versus QQQ without enough drawdown improvement. |
+| `qqq_spy_relative_budget_v1` | Scale Nasdaq/growth offensive sleeve by QQQ-vs-SPY 6/12M relative momentum. | Nasdaq-heavy sleeves only. | Fails if it simply chases QQQ and raises turnover/crowding. |
+| `vol_budget_v1` | Scale offensive sleeve down when 63-day QQQ/SPY realized volatility is above its rolling percentile. | Top2 sleeve, fast ETF sleeve. | Fails if high-vol de-risking misses recoveries enough to lower OOS Sharpe/excess. |
+| `panic_rebound_brake_v1` | Temporarily cap aggressive momentum sleeve after deep drawdown plus sharp rebound. | Momentum-heavy sleeves only. | Fails if it de-risks broad defensive baseline or creates whipsaw. |
+| `breadth_proxy_canary_v1` | Use QQQ/SPY plus a small fixed ETF canary set only as a fractional budget signal. | Global ETF offensive sleeve. | Fails if canary data availability or parameter count becomes too fragile. |
+
+Nasdaq/S&P gates:
+
+1. Monthly-only evaluation unless a separate intraday/circuit-breaker study is
+   explicitly scoped.
+2. Compare against current live baseline, QQQ buy-and-hold, and SPY
+   buy-and-hold. A strategy with QQQ-like drawdown must beat QQQ; a strategy
+   with lower drawdown may pass only with explicit drawdown-adjusted rationale.
+3. Require rolling 3Y/5Y windows, walk-forward/OOS splits, era splits, turnover
+   and slippage stress, and live-decay monitoring before promotion.
+4. Require plugin outputs to be bounded target budgets, for example
+   `offensive_budget_multiplier` in `[0, 1]`; plugins must not select symbols,
+   weights, or portfolio-level allocations across unrelated strategies.
+5. If a candidate only improves one historical crash but loses most other
+   windows, mark it `research_reject_or_continue`, not `live_candidate`.
 
 ## Pre-registered research candidates
 
@@ -271,6 +372,60 @@ Monthly review integration:
 - These artifacts are research-only. They must not enable IBIT runtime changes
   unless a separate promotion artifact and human approval exist.
 
+## IBIT long-history replay v2 design
+
+The first scheduled smoke artifact only covered the BOXX-available window,
+because simulated trades require both the IBIT/proxy asset and the parking
+asset to have valid prices. The v2 research path extends the replay window while
+keeping runtime behavior unchanged:
+
+- `BTC` remains the default IBIT pre-inception proxy, downloaded as `BTC-USD`
+  and normalized to symbol `BTC` in artifacts.
+- `BIL` is now the scheduled parking proxy for BOXX pre-inception history. It is
+  scaled to the first actual BOXX close and used only to backfill missing BOXX
+  rows before BOXX exists.
+- The scheduled research builder explicitly uses `price_field=adjusted_close`.
+  Yahoo's definition says adjusted close accounts for splits and dividend
+  distributions, which is the closer research proxy for ETF total-return-style
+  DCA/parking replay than raw close:
+  https://help.yahoo.com/kb/SLN28256.html
+- The manifest records both proxy lineages:
+  - `proxy_rows_filled` for IBIT/BTC proxy fill;
+  - `parking_proxy_rows_filled` for BOXX/cash-like proxy fill;
+  - `price_field` for adjusted-vs-raw close provenance;
+  - `first_actual_ibit_date` and `first_actual_parking_date` when available.
+- Strategy behavior is unchanged: scheduled IBIT buys still sell parking shares
+  first, regardless of whether the z-score plugin is enabled.
+- Promotion review also requires a z-score coverage gate. At least 80% of
+  monthly `plugin_on` rebalance signals must have z-score data available;
+  earlier price-history months before the first z-score metric are allowed in
+  the replay, but they are counted as `zscore_unavailable` and block promotion
+  if coverage is too low.
+
+Research rationale:
+
+- Bitcoin DCA should be judged through long and stressful regimes, not only the
+  post-IBIT ETF window. Fidelity's DCA primer highlights that scheduled crypto
+  purchases reduce timing dependence but do not guarantee profit or loss
+  protection: https://www.fidelity.com/learning-center/trading-investing/crypto/dollar-cost-averaging
+- MarketVector's 2026 Bitcoin drawdown study reinforces that a 50% Bitcoin
+  decline is not a reliable bottom signal and that DCA primarily changes
+  dispersion/downside behavior rather than solving timing:
+  https://www.marketvector.com/insights/mvis-onehundred/buying-bitcoin-after-a-50percent-crash-rarely-works
+- MVRV Z-Score is an on-chain valuation metric built from market value,
+  realised value, and a standardized deviation; it should therefore be treated
+  as a deterministic valuation signal, not an AI/discretionary plugin:
+  https://www.bitcoinmagazinepro.com/charts/mvrv-zscore/
+- BOXX remains the preferred live parking symbol, but its own prospectus notes
+  box-spread, cash-equivalent, liquidity, low-rate, and frequent-trading risks.
+  Backtests must keep it configurable and must not treat parking carry as alpha:
+  https://etfarchitect.com/wp-content/uploads/compliance/etf/summary_prospectus/BOXX_Summary_Prospectus.pdf
+- BIL/SGOV-style Treasury-bill ETFs are acceptable research proxies for
+  cash-like history, but they are proxy assumptions. For example, BlackRock
+  describes SGOV as tracking 0-3 month Treasury bills and lists a May 26, 2020
+  fund inception, so it is not sufficient for a 2014 replay by itself:
+  https://www.ishares.com/us/products/314116/ishares-0-3-month-treasury-bond-etf
+
 ## 2026-06-20 public-data smoke result
 
 Using the free `api.bitcoin-data.com/v1/mvrv-zscore` endpoint available in this
@@ -295,3 +450,116 @@ The plugin registration is therefore kept `notification_only` with position
 control disabled; it may emit deterministic evidence, but it must not be
 consumed for automated IBIT allocation changes without a separate passing
 promotion artifact.
+
+## 2026-06-20 long-history replay v2 smoke
+
+After adding the parking proxy path, the same free MVRV Z-Score endpoint and
+yfinance price downloader produced a valid long-history research artifact:
+
+```bash
+PYTHONPATH=. uv run python scripts/build_scheduled_ibit_dca_research.py \
+  --zscore-metrics /tmp/.../ibit_zscore_metrics.csv \
+  --output-dir /tmp/.../research \
+  --price-start 2014-01-01 \
+  --initial-parking-value 10000 \
+  --contribution-amount 500 \
+  --parking-symbol BOXX \
+  --parking-proxy-symbol BIL \
+  --price-field adjusted_close \
+  --btc-proxy-symbol BTC \
+  --plugin-config-json '{"dynamic_min_periods":365}'
+```
+
+Result summary:
+
+- Simulated artifact span: `2014-09-17` through `2026-06-20`, limited at the
+  start by available `BTC-USD` yfinance history.
+- IBIT/BTC proxy rows filled: `3403`; first actual IBIT date:
+  `2024-01-11`.
+- BOXX/BIL parking proxy rows filled: `3202`; first actual BOXX date:
+  `2022-12-28`.
+- Z-score history span: `2022-06-20` through `2026-06-19`, `1460` rows.
+- Monthly plugin signals: `141` total, all `normal`.
+- Signal data-status counts: `available=48`, `zscore_unavailable=93`. Early
+  price-history months before the first z-score metric keep normal IBIT
+  exposure and are explicitly counted rather than silently treated as valid
+  z-score evidence.
+- Z-score coverage gate: `fail`; available signal ratio is about `34.04%`,
+  below the `80%` minimum required for promotion review.
+
+Live-readiness summary:
+
+| Variant | CAGR | Max drawdown | Excess vs QQQ | Excess vs SPY | Gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `parking_only` | 1.88% | -0.23% | -17.78% | -11.97% | baseline |
+| `buy_only_dca` | 54.11% | -83.40% | +34.44% | +40.25% | baseline |
+| `plugin_on` | 54.11% | -83.40% | +34.44% | +40.25% | fail |
+
+Implication: the long-history replay infrastructure is now good enough to
+evaluate BTC-era DCA and parking-proxy assumptions, but the current free-source
+z-score overlay still adds no value in this replay. The correct live stance
+remains unchanged: buy-only DCA/parking mechanics can be strategy behavior, but
+the z-score escape overlay stays research-only/notification-only until a
+separate promotion artifact proves positive net value.
+
+## 2026-06-20 live-enable decision refresh
+
+This pass re-ran the narrow, pre-registered evidence gates instead of expanding
+the parameter search. The goal was to avoid selecting a backtest winner that
+only looks strong in-sample.
+
+### Global ETF narrow sleeve
+
+Command shape:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+  .venv/bin/python -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --download \
+  --price-start 2010-01-01 \
+  --variants live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly \
+  --liveable-composites liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10 \
+  --robustness-candidates liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10,live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly \
+  --walk-forward-candidates liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_blend_baseline90_fast10 \
+  --walk-forward-min-train-excess-cagr 0.005 \
+  --turnover-cost-bps 5 \
+  --cost-stress-bps 5,10,15,25 \
+  --dynamic-cost \
+  --dynamic-cost-navs 100000,250000,1000000 \
+  --output-dir data/output/global_etf_baseline_relative_decay_narrow_verify_20260620
+```
+
+Result:
+
+- `liveable_blend_baseline90_fast10` passed static live-readiness and dynamic
+  NAV stress at `$100k`, `$250k`, and `$1M`, with long-window excess CAGR
+  versus the current defensive baseline around `+0.33%`.
+- It still failed the walk-forward/OOS promotion gate:
+  `walk_forward_gate_passed=false`, reason `worst_oos_excess_too_low`.
+- The OOS selection kept the current baseline in 4 of 7 windows, promoted
+  `90/10` in 3 windows, had median OOS excess around `+1.57%`, but worst OOS
+  excess was about `-4.9%`, below the `-3%` hard floor.
+- The baseline-relative decay brake was worse than static `90/10`: it failed
+  long-excess, calendar win-rate, and rolling 5Y baseline win-rate gates.
+
+Decision: **do not replace the current live Global ETF defensive baseline**.
+The `90/10` sleeve remains a research candidate only. It is not live-enabled
+because the OOS downside gate failed.
+
+### IBIT Smart DCA / z-score plugin
+
+Fresh long-history replay using public MVRV Z-Score data and yfinance prices:
+
+- Simulated span: `2014-09-17` through `2026-06-20`.
+- IBIT/BTC proxy rows filled: `3403`; BOXX/BIL parking proxy rows filled:
+  `3202`.
+- `parking_only`: CAGR about `1.88%`, max drawdown about `-0.23%`.
+- `buy_only_dca`: CAGR about `54.11%`, max drawdown about `-83.40%`.
+- `plugin_on`: same CAGR and drawdown as `buy_only_dca`; gate `fail`.
+- Z-score signal coverage failed: `48` available monthly plugin signals vs
+  `93` `zscore_unavailable` signals, available ratio about `34.04%` vs the
+  `80%` minimum.
+
+Decision: **do not live-enable z-score position control for IBIT**. Keep
+`ibit_zscore_exit` `notification_only`; the DCA/parking replay remains useful
+research infrastructure but is not a promotion artifact.
