@@ -46,6 +46,7 @@ useq-research-russell-top50-leader-rotation-dsr-pbo = "us_equity_snapshot_pipeli
 useq-research-russell-top50-leader-rotation-promotion-review = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_promotion_review:main"
 useq-research-russell-top50-leader-rotation-promotion-bundle = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_promotion_bundle:main"
 useq-research-russell-1000-proxy-long-history = "us_equity_snapshot_pipelines.russell_1000_proxy_long_history:main"
+useq-research-index-leaps-growth-overlay = "us_equity_snapshot_pipelines.leaps_growth_overlay_research:main"
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest:main"
 useq-archive-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive:main"
