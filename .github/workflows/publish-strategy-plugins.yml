@@ -632,6 +632,7 @@ jobs:
             printf '%s\n' "${metrics_urls}"
             echo "EOF"
           } >> "$GITHUB_ENV"
+          export ZSCORE_METRICS_URLS="${metrics_urls}"
           echo "Resolved ${STRATEGY_PROFILE} ${PLUGIN_NAME} publish prefix: ${gcs_prefix}"
           python - <<'PY'
           import os
