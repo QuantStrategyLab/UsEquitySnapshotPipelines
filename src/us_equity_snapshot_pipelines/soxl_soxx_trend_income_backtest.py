@@ -414,6 +414,7 @@ def build_indicator_history(
 
 def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str, object]:
     config = soxl_soxx_trend_income_manifest.default_config
+    income_allocations = dict(config.get("income_layer_allocations", {}))
     kwargs = {
         "trend_ma_window": int(config["trend_ma_window"]),
         "cash_reserve_ratio": float(config["cash_reserve_ratio"]),
@@ -429,6 +430,33 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "income_layer_max_ratio": float(config["income_layer_max_ratio"]),
         "income_layer_activation_band_ratio": float(config.get("income_layer_activation_band_ratio", 0.0)),
         "income_layer_ratio_mode": str(config.get("income_layer_ratio_mode", "linear_cap")),
+        "income_layer_core_stress_drawdown_ratio": float(
+            config.get(
+                "income_layer_core_stress_drawdown_ratio",
+                config.get("income_layer_stress_drawdown_ratio", 0.45),
+            )
+        ),
+        "income_layer_income_stress_drawdown_ratio": float(
+            config.get("income_layer_income_stress_drawdown_ratio", 0.06)
+        ),
+        "income_layer_base_drawdown_budget_ratio": float(
+            config.get(
+                "income_layer_base_drawdown_budget_ratio",
+                config.get("income_layer_base_loss_budget_ratio", 0.45),
+            )
+        ),
+        "income_layer_min_drawdown_budget_ratio": float(
+            config.get(
+                "income_layer_min_drawdown_budget_ratio",
+                config.get("income_layer_min_loss_budget_ratio", 0.25),
+            )
+        ),
+        "income_layer_drawdown_budget_decay_per_double": float(
+            config.get(
+                "income_layer_drawdown_budget_decay_per_double",
+                config.get("income_layer_loss_budget_decay_per_double", 0.05),
+            )
+        ),
         "income_layer_log_growth_factor": float(config.get("income_layer_log_growth_factor", 0.70)),
         "income_layer_stress_drawdown_ratio": float(config.get("income_layer_stress_drawdown_ratio", 0.30)),
         "income_layer_base_loss_budget_ratio": float(config.get("income_layer_base_loss_budget_ratio", 0.08)),
@@ -436,9 +464,9 @@ def _strategy_kwargs(overrides: Mapping[str, object] | None = None) -> dict[str,
         "income_layer_loss_budget_decay_per_double": float(
             config.get("income_layer_loss_budget_decay_per_double", 0.01)
         ),
-        "income_layer_qqqi_weight": float(config["income_layer_qqqi_weight"]),
-        "income_layer_spyi_weight": float(config["income_layer_spyi_weight"]),
-        "income_layer_allocations": dict(config.get("income_layer_allocations", {})),
+        "income_layer_qqqi_weight": float(config.get("income_layer_qqqi_weight", income_allocations.get("QQQI", 0.0))),
+        "income_layer_spyi_weight": float(config.get("income_layer_spyi_weight", income_allocations.get("SPYI", 0.0))),
+        "income_layer_allocations": income_allocations,
         "trend_entry_buffer": float(config.get("trend_entry_buffer", 0.03)),
         "trend_mid_buffer": float(config.get("trend_mid_buffer", 0.06)),
         "trend_exit_buffer": float(config.get("trend_exit_buffer", 0.03)),

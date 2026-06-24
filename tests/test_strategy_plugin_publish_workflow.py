@@ -5,9 +5,9 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-QUANT_PLATFORM_KIT_REF = "9d9682533578c7e5a9e02ea80040b7014898e4dd"
+QUANT_PLATFORM_KIT_REF = "b821e8c318e15d40f925c84a007ae335a3415cd5"
 MARKET_REGIME_PLUGIN_REF = "eedaa71de8472448c4665b8b7b3be679fe7db83d"
-US_EQUITY_STRATEGIES_REF = "bf10f1efceb8744298a039276d58543f8979f50b"
+US_EQUITY_STRATEGIES_REF = "0cbdacc95fb9041f590472254aef8f1cea35adf8"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
