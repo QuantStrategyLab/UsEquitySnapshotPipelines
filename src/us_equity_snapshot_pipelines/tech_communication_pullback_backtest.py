@@ -10,7 +10,6 @@ import pandas as pd
 
 from us_equity_strategies.strategies import qqq_tech_enhancement as strategy
 
-from .russell_1000_multi_factor_backtest import _compute_turnover, build_monthly_rebalance_dates
 from .tech_communication_pullback_snapshot import (
     FEATURE_SNAPSHOT_COLUMNS,
     _lookup_features,
@@ -124,6 +123,17 @@ def _parse_periods(raw_periods: str | Sequence[tuple[str, str, str | None]] | No
     if not periods:
         raise ValueError("at least one period is required")
     return tuple(periods)
+
+
+def build_monthly_rebalance_dates(index: pd.DatetimeIndex) -> set[pd.Timestamp]:
+    series = pd.Series(index, index=index)
+    grouped = series.groupby(index.to_period("M")).max()
+    return set(pd.to_datetime(grouped.values))
+
+
+def _compute_turnover(previous_weights: dict[str, float], new_weights: dict[str, float]) -> float:
+    symbols = set(previous_weights) | set(new_weights)
+    return 0.5 * sum(abs(new_weights.get(symbol, 0.0) - previous_weights.get(symbol, 0.0)) for symbol in symbols)
 
 
 def _load_runtime_params(config_path: str | Path | None) -> dict[str, object]:
