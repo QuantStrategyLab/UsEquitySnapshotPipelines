@@ -104,5 +104,8 @@ def list_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
 def list_scheduled_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
     return tuple(
         _PROFILE_CONTRACTS[profile]
-        for profile in (RUSSELL_TOP50_LEADER_ROTATION_PROFILE,)
+        for profile in (
+            GLOBAL_ETF_ROTATION_PROFILE,
+            RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
+        )
     )
