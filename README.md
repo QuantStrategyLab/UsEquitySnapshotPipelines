@@ -59,6 +59,7 @@ python -m pytest -q
 - [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
+- [`docs/tecl-xlk-optimization-research.md`](docs/tecl-xlk-optimization-research.md) ([简体中文](docs/tecl-xlk-optimization-research.zh-CN.md))
 
 ## Safety and contribution notes
 

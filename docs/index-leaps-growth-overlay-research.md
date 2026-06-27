@@ -1,5 +1,9 @@
 # Index LEAPS Growth Overlay Research
 
+[简体中文](../../UsEquityStrategies/docs/research/index_leaps_growth_overlay.zh-CN.md)
+
+Design note (English summary): [UsEquityStrategies/docs/research/index_leaps_growth_overlay.md](../../UsEquityStrategies/docs/research/index_leaps_growth_overlay.md)
+
 This module is a lightweight proxy research scaffold for `QQQ` / `SPY` LEAPS call overlays. It is
 intentionally separate from runtime strategy code: strategy repositories generate option order intents,
 while this repository produces research artifacts and review evidence.

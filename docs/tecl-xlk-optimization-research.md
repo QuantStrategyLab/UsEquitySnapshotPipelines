@@ -1,5 +1,7 @@
 # TECL / XLK Optimization Research
 
+[简体中文](tecl-xlk-optimization-research.zh-CN.md)
+
 Research date: 2026-06-28
 
 Status: **research-only (archived)**. Do not promote `tecl_xlk_trend_income` to
