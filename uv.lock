@@ -748,7 +748,7 @@ source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=a
 [[package]]
 name = "quant-strategy-plugins"
 version = "0.1.7"
-source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=eedaa71de8472448c4665b8b7b3be679fe7db83d#eedaa71de8472448c4665b8b7b3be679fe7db83d" }
+source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=12d01a2fa7da75b6492af7b16f635d45adb322eb#12d01a2fa7da75b6492af7b16f635d45adb322eb" }
 dependencies = [
     { name = "pandas" },
     { name = "yfinance" },
@@ -857,17 +857,17 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=aee8121d530c2e92c72b68aee434bf174b3b9c85" },
-    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=eedaa71de8472448c4665b8b7b3be679fe7db83d" },
+    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=12d01a2fa7da75b6492af7b16f635d45adb322eb" },
     { name = "requests", extras = ["socks"], specifier = ">=2.31" },
-    { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=b2fa659304c02cc19f7c82e86b0ce36ef592846a" },
+    { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=c7793bab6d63a434338bfcfd997a7ae9195dcddb" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
 provides-extras = ["test"]
 
 [[package]]
 name = "us-equity-strategies"
-version = "0.7.55"
-source = { git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=b2fa659304c02cc19f7c82e86b0ce36ef592846a#b2fa659304c02cc19f7c82e86b0ce36ef592846a" }
+version = "0.7.57"
+source = { git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=c7793bab6d63a434338bfcfd997a7ae9195dcddb#c7793bab6d63a434338bfcfd997a7ae9195dcddb" }
 dependencies = [
     { name = "pandas" },
     { name = "pytz" },
