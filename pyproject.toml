@@ -50,6 +50,7 @@ useq-research-index-leaps-growth-overlay = "us_equity_snapshot_pipelines.leaps_g
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest:main"
 useq-archive-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive:main"
+useq-backtest-tecl-xlk-trend-income = "us_equity_snapshot_pipelines.tecl_xlk_trend_income_backtest:main"
 useq-archive-tqqq-growth-income = "us_equity_snapshot_pipelines.tqqq_growth_income_archive:main"
 useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
 useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_panic_rebound_backtest:main"
