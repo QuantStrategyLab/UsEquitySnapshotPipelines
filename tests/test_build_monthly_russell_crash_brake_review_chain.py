@@ -128,6 +128,7 @@ def test_build_crash_brake_review_chain_from_research_outputs(tmp_path: Path) ->
     assert (outputs["overfit_dir"] / "crash_brake_overfit_followup_manifest.json").exists()
     assert (outputs["stress_dir"] / "crash_brake_stress_followup_manifest.json").exists()
     assert (outputs["liquidity_dir"] / "crash_brake_liquidity_followup_manifest.json").exists()
+    assert (outputs["live_readiness_dir"] / "crash_brake_live_readiness_followup_manifest.json").exists()
     assert (outputs["promotion_dir"] / "crash_brake_promotion_review_manifest.json").exists()
     assert (outputs["shadow_dir"] / "russell_top50_leader_rotation_shadow_review_manifest.json").exists()
     assert (outputs["live_decay_dir"] / "live_decay_monitor_manifest.json").exists()
