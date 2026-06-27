@@ -22,19 +22,21 @@ The runner compares:
 5. `offensive_growth_top2_weak_canary_monthly` — disables daily all-BIL canary exits to measure the offensive trade-off.
 6. `offensive_growth_eaa_top2_monthly` — EAA-inspired generalized momentum score: high momentum, lower volatility, lower correlation to the offensive pool.
 7. `offensive_growth_fast_top2_monthly` — VAA-inspired fast 1/3/6-month momentum score with SMA eligibility.
-8. `offensive_growth_daa_cash_fraction_top2_monthly` — DAA-inspired canary breadth: each bad canary adds a proportional safe-haven sleeve.
-9. `offensive_growth_eaa_daa_cash_fraction_monthly` — combines EAA-style selection with DAA-style proportional canary cash fraction.
+8. `offensive_growth_dual_momentum_top2_monthly` — dual-momentum growth pool: rank by 1/3/6/12-month relative strength, but require positive absolute momentum and 200-day SMA eligibility.
+9. `offensive_growth_daa_cash_fraction_top2_monthly` — DAA-inspired canary breadth: each bad canary adds a proportional safe-haven sleeve.
+10. `offensive_growth_eaa_daa_cash_fraction_monthly` — combines EAA-style selection with DAA-style proportional canary cash fraction.
 
 Liveable composite candidates are generated only when both child strategies exist in the run:
 
-10. `liveable_blend_baseline90_fast10` — 90% current defensive baseline + 10% fast offensive sleeve.
-11. `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` — 90/10 sleeve that cuts the fast sleeve to 0% on the next monthly rebalance only when the fast sleeve underperforms the defensive baseline over both trailing 63 and 126 trading-day windows.
-12. `liveable_blend_baseline85_fast15` — 85% current defensive baseline + 15% fast offensive sleeve.
-13. `liveable_blend_baseline80_fast20` — 80% current defensive baseline + 20% fast offensive sleeve.
-14. `liveable_blend_baseline75_fast25` — 75% current defensive baseline + 25% fast offensive sleeve.
-15. `liveable_blend_baseline70_fast30` — 70% current defensive baseline + 30% fast offensive sleeve.
-16. `liveable_regime_qqqtrend_baseline70_fast30` — 30% fast offensive sleeve only when QQQ is above its 200-day trend and fast momentum is positive; otherwise 100% defensive baseline.
-17. `liveable_volmanaged_baseline70_fast30` — same QQQ trend gate, but scales the fast sleeve down when 63-day realized QQQ volatility is above 18%.
+11. `liveable_blend_baseline90_fast10` — 90% current defensive baseline + 10% fast offensive sleeve.
+12. `liveable_blend_baseline90_dual10` — 90% current defensive baseline + 10% dual-momentum offensive sleeve.
+13. `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` — 90/10 sleeve that cuts the fast sleeve to 0% on the next monthly rebalance only when the fast sleeve underperforms the defensive baseline over both trailing 63 and 126 trading-day windows.
+14. `liveable_blend_baseline85_fast15` — 85% current defensive baseline + 15% fast offensive sleeve.
+15. `liveable_blend_baseline80_fast20` — 80% current defensive baseline + 20% fast offensive sleeve.
+16. `liveable_blend_baseline75_fast25` — 75% current defensive baseline + 25% fast offensive sleeve.
+17. `liveable_blend_baseline70_fast30` — 70% current defensive baseline + 30% fast offensive sleeve.
+18. `liveable_regime_qqqtrend_baseline70_fast30` — 30% fast offensive sleeve only when QQQ is above its 200-day trend and fast momentum is positive; otherwise 100% defensive baseline.
+19. `liveable_volmanaged_baseline70_fast30` — same QQQ trend gate, but scales the fast sleeve down when 63-day realized QQQ volatility is above 18%.
 
 Composite returns are recomputed from combined daily weights and the raw asset return matrix, then transaction costs are applied to combined-weight turnover. This keeps the composite layer deterministic and avoids treating the child strategy returns as black boxes.
 
@@ -121,7 +123,46 @@ Outputs:
 - `weights_<candidate>.csv`
 - `downloaded_price_history.csv`
 - `recommendation.md`
+- `live_decision_summary.json`
 - `run_manifest.json`
+
+`live_decision_summary.json` is the automation-facing summary of the same gate
+logic used in `recommendation.md`. It records the decision state, preferred
+candidate, defensive baseline candidate, promotion blockers, and highest passing
+cost/NAV assumptions as strict JSON so monthly review jobs can consume it
+without parsing Markdown.
+
+## 2026-06-28 dual-momentum sleeve compare
+
+Command:
+
+```bash
+PYTHONPATH=src python3 -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_baseline_relative_decay_narrow_verify_20260620/downloaded_price_history.csv \
+  --output-dir data/output/global_etf_dual_momentum_compare_20260628 \
+  --variants live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly,offensive_growth_dual_momentum_top2_monthly \
+  --liveable-composites liveable_blend_baseline90_fast10,liveable_blend_baseline90_dual10 \
+  --cost-stress-bps 5,10,25 \
+  --dynamic-cost --dynamic-cost-nav 500000
+```
+
+Data range: reused 2010-01-04 through 2026-06-18 price history from the 2026-06-20 narrow verify run.
+
+| Rank | Candidate | Gate | Long CAGR | Long excess vs SPY | Long excess vs QQQ | Worst drawdown | Live readiness (NAV $500k) | Action |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | `offensive_growth_fast_top2_monthly` | pass | 15.98% | +2.17% | -3.70% | -28.07% | n/a (offensive only) | paper review only |
+| 2 | `liveable_blend_baseline90_fast10` | pass | 15.13% | +1.32% | -4.55% | -22.18% | pass (`candidate_for_live_promotion_review`) | live design review; walk-forward blocked |
+| 3 | `liveable_blend_baseline90_dual10` | pass | 14.75% | +0.93% | -4.93% | -23.48% | fail (`long_cagr_not_above_baseline`) | live design review only |
+| 4 | `live_global_etf_rotation_defensive_baseline` | pass | 14.81% | +0.99% | -4.88% | -23.31% | keep current live | keep current live |
+| 5 | `offensive_growth_dual_momentum_top2_monthly` | fail | 12.30% | -1.51% | -7.38% | -30.85% | reject | reject |
+
+Conclusion:
+
+- Dual-momentum as a **standalone offensive sleeve fails** the research gate on this ETF universe: long-window CAGR trails SPY and it is not QQQ-competitive on return or drawdown.
+- As a **10% composite sleeve**, dual-momentum passes the broad research gate but **loses to fast10** on long CAGR (+14.75% vs +15.13%), baseline-relative excess (+0.93% vs +1.32% vs SPY), and drawdown (-23.48% vs -22.18%).
+- Under dynamic-cost NAV $500k assumptions, only `liveable_blend_baseline90_fast10` clears the baseline-relative live gate; dual10 fails calendar/rolling baseline win-rate checks.
+- Walk-forward/OOS gate blocks both composites (`worst_oos_excess_too_low`); `live_decision_summary.json` records `decision_state=walk_forward_blocked`.
+- **Next step:** keep researching fast10-based sleeves and brakes; do not promote dual10. Dual-momentum remains a documented negative result, not a live replacement candidate.
 
 ## 2026-06-20 research run
 
