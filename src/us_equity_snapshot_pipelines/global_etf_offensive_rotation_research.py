@@ -59,7 +59,9 @@ MIN_TRADING_DAYS_PER_PERIOD = 60
 DRAWNDOWN_ADVANTAGE_VS_QQQ = 0.05
 DEFAULT_ROBUSTNESS_CANDIDATES = (
     "offensive_growth_fast_top2_monthly",
+    "offensive_growth_dual_momentum_top2_monthly",
     "liveable_blend_baseline90_fast10",
+    "liveable_blend_baseline90_dual10",
     "liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
     "liveable_blend_baseline85_fast15",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
@@ -75,6 +77,7 @@ DEFAULT_ROLLING_ROBUSTNESS_YEARS = (3, 5)
 DEFAULT_LIVE_BASELINE_CANDIDATE = "live_global_etf_rotation_defensive_baseline"
 DEFAULT_WALK_FORWARD_CANDIDATES = (
     "liveable_blend_baseline90_fast10",
+    "liveable_blend_baseline90_dual10",
     "liveable_baseline_relative_decay_brake_baseline90_fast10_floor0",
     "liveable_blend_baseline85_fast15",
     "liveable_trend_drawdown_brake_baseline85_fast15_floor10",
@@ -286,6 +289,20 @@ GLOBAL_ETF_OFFENSIVE_VARIANTS: tuple[GlobalEtfOffensiveVariantSpec, ...] = (
         notes="VAA-inspired fast momentum filter using 1/3/6-month weighted returns and SMA eligibility.",
     ),
     GlobalEtfOffensiveVariantSpec(
+        candidate_id="offensive_growth_dual_momentum_top2_monthly",
+        display_name="Offensive Growth Dual-Momentum Top2 Monthly",
+        candidate_group="offensive_candidate",
+        rule="monthly_top2_dual_momentum_13612w_growth_pool",
+        ranking_pool=DEFAULT_OFFENSIVE_POOL,
+        top_n=2,
+        sma_period=200,
+        score_mode="dual_momentum_13612w",
+        notes=(
+            "Dual-momentum candidate: rank the offensive pool by 1/3/6/12-month relative strength, "
+            "but require each selected ETF to have positive absolute momentum and be above its 200-day SMA."
+        ),
+    ),
+    GlobalEtfOffensiveVariantSpec(
         candidate_id="offensive_growth_daa_cash_fraction_top2_monthly",
         display_name="Offensive Growth DAA Cash-Fraction Top2 Monthly",
         candidate_group="offensive_candidate",
@@ -327,6 +344,18 @@ GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
         notes=(
             "Research-only sleeve-sensitivity candidate: keep 90% in current defensive baseline and allocate "
             "10% to the fast offensive sleeve."
+        ),
+    ),
+    GlobalEtfLiveableCompositeSpec(
+        candidate_id="liveable_blend_baseline90_dual10",
+        display_name="Liveable Blend Baseline 90 / Dual-Momentum 10",
+        rule="static_blend_baseline90_dual10",
+        base_candidate_id="live_global_etf_rotation_defensive_baseline",
+        overlay_candidate_id="offensive_growth_dual_momentum_top2_monthly",
+        overlay_weight=0.10,
+        notes=(
+            "Research-only dual-momentum sleeve: keep 90% in the current defensive baseline and allocate "
+            "10% to the dual-momentum offensive sleeve."
         ),
     ),
     GlobalEtfLiveableCompositeSpec(
@@ -906,6 +935,10 @@ def _candidate_scores(
             if pd.isna(fast_momentum) or fast_momentum <= 0.0:
                 continue
             rows[symbol] = {"momentum": momentum, "fast_momentum": fast_momentum}
+        elif score_mode == "dual_momentum_13612w":
+            if pd.isna(momentum) or momentum <= 0.0:
+                continue
+            rows[symbol] = {"momentum": momentum, "fast_momentum": fast_momentum}
         else:
             if pd.isna(momentum) or momentum <= 0.0:
                 continue
@@ -921,6 +954,11 @@ def _candidate_scores(
     if str(spec.score_mode) == "fast_136w":
         return {
             symbol: values["fast_momentum"] + (float(spec.hold_bonus) if symbol in current_set else 0.0)
+            for symbol, values in rows.items()
+        }
+    if str(spec.score_mode) == "dual_momentum_13612w":
+        return {
+            symbol: values["momentum"] + (float(spec.hold_bonus) if symbol in current_set else 0.0)
             for symbol, values in rows.items()
         }
     if str(spec.score_mode) == "eaa_generalized":
@@ -2941,6 +2979,233 @@ def build_portfolio_returns_with_benchmarks(
     return pd.concat([portfolio, benchmark_returns], axis=1)
 
 
+def _first_candidate(frame: pd.DataFrame) -> str:
+    if frame.empty or "Candidate" not in frame.columns:
+        return DEFAULT_LIVE_BASELINE_CANDIDATE
+    return str(frame.iloc[0]["Candidate"])
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float):
+        return None if pd.isna(value) else value
+    if hasattr(value, "item"):
+        try:
+            return _json_safe(value.item())
+        except Exception:
+            pass
+    return value
+
+
+def build_live_decision_summary(
+    *,
+    ranking: pd.DataFrame,
+    period_summary: pd.DataFrame,
+    live_readiness_summary: pd.DataFrame | None = None,
+    cost_stress_summary: pd.DataFrame | None = None,
+    dynamic_cost_summary: pd.DataFrame | None = None,
+    walk_forward_summary: pd.DataFrame | None = None,
+) -> dict[str, object]:
+    """Build a machine-readable live decision summary without changing runtime behavior."""
+    live_readiness = pd.DataFrame(live_readiness_summary) if live_readiness_summary is not None else pd.DataFrame()
+    cost_stress = pd.DataFrame(cost_stress_summary) if cost_stress_summary is not None else pd.DataFrame()
+    dynamic_cost = pd.DataFrame(dynamic_cost_summary) if dynamic_cost_summary is not None else pd.DataFrame()
+    walk_forward = pd.DataFrame(walk_forward_summary) if walk_forward_summary is not None else pd.DataFrame()
+    live_ready = (
+        live_readiness.loc[live_readiness["live_gate_passed"].astype(bool)].copy()
+        if "live_gate_passed" in live_readiness.columns
+        else pd.DataFrame()
+    )
+    live_mask = (
+        ranking["live_review_candidate"].astype(bool)
+        if "live_review_candidate" in ranking.columns
+        else pd.Series(False, index=ranking.index)
+    )
+    live_candidates = ranking.loc[live_mask].copy()
+    top_candidates = ranking.loc[ranking["paper_review_candidate"].astype(bool)].copy()
+    decision_state = "hold_baseline"
+    promotion_blockers: list[str] = []
+    preferred_candidates: list[str] = []
+    highest_passing_cost_assumptions: dict[str, object] | None = None
+    highest_passing_nav_assumptions: dict[str, object] | None = None
+    recommendation = "暂不迁移到 live；保留当前 defensive baseline，进攻型候选继续 paper review 或补充样本。"
+
+    if not dynamic_cost.empty and "live_gate_passed" in dynamic_cost.columns:
+        dynamic_cost_focus = dynamic_cost.copy()
+        dynamic_nav_note = ""
+        if "Estimated Portfolio NAV" in dynamic_cost_focus.columns:
+            dynamic_cost_focus["Estimated Portfolio NAV"] = pd.to_numeric(
+                dynamic_cost_focus["Estimated Portfolio NAV"], errors="coerce"
+            )
+            nav_values = sorted(float(value) for value in dynamic_cost_focus["Estimated Portfolio NAV"].dropna().unique())
+            if len(nav_values) > 1:
+                max_nav = max(nav_values)
+                max_nav_rows = dynamic_cost_focus.loc[dynamic_cost_focus["Estimated Portfolio NAV"].eq(max_nav)].copy()
+                max_nav_passed = max_nav_rows.loc[max_nav_rows["live_gate_passed"].astype(bool)].copy()
+                if not max_nav_passed.empty:
+                    dynamic_cost_focus = max_nav_rows
+                    dynamic_nav_note = f"最高 NAV ${max_nav:,.0f} 压力下"
+                else:
+                    dynamic_passed_all = dynamic_cost_focus.loc[
+                        dynamic_cost_focus["live_gate_passed"].astype(bool)
+                    ].copy()
+                    if not dynamic_passed_all.empty:
+                        highest_pass_nav = float(dynamic_passed_all["Estimated Portfolio NAV"].max())
+                        names = dynamic_passed_all.loc[
+                            dynamic_passed_all["Estimated Portfolio NAV"].eq(highest_pass_nav)
+                        ].head(3)["Candidate"].astype(str).tolist()
+                        preferred_candidates = names
+                        highest_passing_nav_assumptions = {"estimated_portfolio_nav": highest_pass_nav}
+                        decision_state = "dynamic_cost_partial_pass"
+                        promotion_blockers.append("dynamic_cost_nav_stress_not_fully_passed")
+                        recommendation = (
+                            f"动态成本 NAV 压力未全通过，不自动替换 live；最高通过 NAV ${highest_pass_nav:,.0f}，"
+                            f"该资金规模下候选：{', '.join(names)}。需要先确认实盘账户规模和执行方式。"
+                        )
+                    else:
+                        decision_state = "dynamic_cost_blocked"
+                        promotion_blockers.append("dynamic_cost_live_gate_not_passed")
+                        recommendation = (
+                            "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
+                        )
+                    dynamic_cost_focus = pd.DataFrame()
+        dynamic_passed = (
+            dynamic_cost_focus.loc[dynamic_cost_focus["live_gate_passed"].astype(bool)].copy()
+            if not dynamic_cost_focus.empty
+            else pd.DataFrame()
+        )
+        if not dynamic_passed.empty:
+            names = dynamic_passed.head(3)["Candidate"].astype(str).tolist()
+            preferred_candidates = names
+            decision_state = "live_promotion_review"
+            prefix = dynamic_nav_note or "动态成本模型下"
+            recommendation = f"{prefix}进入 live promotion review，但不自动替换 live；优先复核候选：{', '.join(names)}。"
+        elif dynamic_cost_focus.empty and decision_state == "hold_baseline":
+            pass
+        elif decision_state == "hold_baseline":
+            decision_state = "dynamic_cost_blocked"
+            promotion_blockers.append("dynamic_cost_live_gate_not_passed")
+            recommendation = "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
+    elif not cost_stress.empty and "turnover_cost_bps" in cost_stress.columns:
+        cost_stress["turnover_cost_bps"] = pd.to_numeric(cost_stress["turnover_cost_bps"], errors="coerce")
+        costs = sorted(float(value) for value in cost_stress["turnover_cost_bps"].dropna().unique())
+        passed = (
+            cost_stress.loc[cost_stress["live_gate_passed"].astype(bool)].copy()
+            if "live_gate_passed" in cost_stress.columns
+            else pd.DataFrame()
+        )
+        max_cost = max(costs) if costs else float("nan")
+        max_cost_passed = passed.loc[passed["turnover_cost_bps"].eq(max_cost)].copy() if not passed.empty else pd.DataFrame()
+        if not max_cost_passed.empty:
+            names = max_cost_passed.head(3)["Candidate"].astype(str).tolist()
+            preferred_candidates = names
+            decision_state = "live_promotion_review"
+            highest_passing_cost_assumptions = {"turnover_cost_bps": max_cost}
+            recommendation = (
+                f"进入 live promotion review，但不自动替换 live；"
+                f"在最高成本压力 {max_cost:.2f} bps 下优先复核候选：{', '.join(names)}。"
+            )
+        elif not passed.empty:
+            highest_pass_cost = float(passed["turnover_cost_bps"].max())
+            names = passed.loc[passed["turnover_cost_bps"].eq(highest_pass_cost)].head(3)["Candidate"].astype(str).tolist()
+            preferred_candidates = names
+            decision_state = "cost_partial_pass"
+            promotion_blockers.append("cost_stress_not_fully_passed")
+            highest_passing_cost_assumptions = {"turnover_cost_bps": highest_pass_cost}
+            recommendation = (
+                f"成本压力未全通过，不自动替换 live；最高通过成本 {highest_pass_cost:.2f} bps，"
+                f"该成本下候选：{', '.join(names)}。需要先确认实盘成本假设。"
+            )
+        else:
+            decision_state = "cost_blocked"
+            promotion_blockers.append("cost_stress_live_gate_not_passed")
+            recommendation = "成本压力下无候选通过 live gate；暂不迁移到 live，继续研究。"
+    elif not live_ready.empty:
+        names = live_ready.head(3)["Candidate"].astype(str).tolist()
+        preferred_candidates = names
+        decision_state = "live_promotion_review"
+        recommendation = f"进入 live promotion review，但不自动替换 live；优先复核候选：{', '.join(names)}。"
+    elif not live_candidates.empty:
+        names = live_candidates.head(3)["Candidate"].astype(str).tolist()
+        preferred_candidates = names
+        decision_state = "live_design_review"
+        promotion_blockers.append("baseline_relative_live_gate_not_passed")
+        recommendation = (
+            f"进入 live design review，但 baseline-relative live gate 未通过，不自动替换 live；优先复核候选：{', '.join(names)}。"
+        )
+    elif top_candidates.empty:
+        decision_state = "hold_baseline"
+        promotion_blockers.append("no_paper_review_candidate")
+        recommendation = "暂不迁移到 live；保留当前 defensive baseline，进攻型候选继续 paper review 或补充样本。"
+    else:
+        names = top_candidates.head(3)["Candidate"].astype(str).tolist()
+        preferred_candidates = names
+        decision_state = "paper_review"
+        recommendation = f"仅进入 paper review，不自动 live；优先复核候选：{', '.join(names)}。"
+
+    if not walk_forward.empty and "walk_forward_gate_passed" in walk_forward.columns:
+        walk_forward_focus = walk_forward.copy()
+        if "Estimated Portfolio NAV" in walk_forward_focus.columns:
+            walk_forward_focus["Estimated Portfolio NAV"] = pd.to_numeric(
+                walk_forward_focus["Estimated Portfolio NAV"], errors="coerce"
+            )
+            nav_values = sorted(float(value) for value in walk_forward_focus["Estimated Portfolio NAV"].dropna().unique())
+            if nav_values:
+                walk_forward_focus = walk_forward_focus.loc[
+                    walk_forward_focus["Estimated Portfolio NAV"].eq(max(nav_values))
+                ].copy()
+        walk_forward_passed = walk_forward_focus["walk_forward_gate_passed"].astype(bool)
+        if not bool(walk_forward_passed.any()):
+            reason = (
+                str(walk_forward_focus["walk_forward_gate_reason"].iloc[0])
+                if "walk_forward_gate_reason" in walk_forward_focus.columns and not walk_forward_focus.empty
+                else "unknown"
+            )
+            decision_state = "walk_forward_blocked"
+            promotion_blockers.append("walk_forward_gate_not_passed")
+            recommendation = f"walk-forward/OOS gate 未通过，不自动替换 live；先保留当前 baseline。失败原因：{reason}。"
+
+    return {
+        "manifest_type": "global_etf_offensive_live_decision_summary",
+        "decision_state": decision_state,
+        "recommendation": recommendation,
+        "defensive_baseline_candidate": DEFAULT_LIVE_BASELINE_CANDIDATE,
+        "preferred_candidate": _first_candidate(
+            pd.DataFrame({"Candidate": preferred_candidates}) if preferred_candidates else pd.DataFrame()
+        ),
+        "preferred_candidates": preferred_candidates,
+        "promotion_blockers": promotion_blockers,
+        "highest_passing_cost_assumptions": highest_passing_cost_assumptions,
+        "highest_passing_nav_assumptions": highest_passing_nav_assumptions,
+    }
+
+
+def write_live_decision_summary(
+    output_dir: Path,
+    *,
+    ranking: pd.DataFrame,
+    period_summary: pd.DataFrame,
+    live_readiness_summary: pd.DataFrame | None = None,
+    cost_stress_summary: pd.DataFrame | None = None,
+    dynamic_cost_summary: pd.DataFrame | None = None,
+    walk_forward_summary: pd.DataFrame | None = None,
+) -> Path:
+    summary = build_live_decision_summary(
+        ranking=ranking,
+        period_summary=period_summary,
+        live_readiness_summary=live_readiness_summary,
+        cost_stress_summary=cost_stress_summary,
+        dynamic_cost_summary=dynamic_cost_summary,
+        walk_forward_summary=walk_forward_summary,
+    )
+    path = output_dir / "live_decision_summary.json"
+    path.write_text(json.dumps(_json_safe(summary), indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
 def write_recommendation(
     output_dir: Path,
     *,
@@ -2958,133 +3223,15 @@ def write_recommendation(
     dynamic_cost = pd.DataFrame(dynamic_cost_summary) if dynamic_cost_summary is not None else pd.DataFrame()
     walk_forward = pd.DataFrame(walk_forward_summary) if walk_forward_summary is not None else pd.DataFrame()
     liquidity = pd.DataFrame(liquidity_summary) if liquidity_summary is not None else pd.DataFrame()
-    live_ready = (
-        live_readiness.loc[live_readiness["live_gate_passed"].astype(bool)].copy()
-        if "live_gate_passed" in live_readiness.columns
-        else pd.DataFrame()
+    decision_summary = build_live_decision_summary(
+        ranking=ranking,
+        period_summary=period_summary,
+        live_readiness_summary=live_readiness_summary,
+        cost_stress_summary=cost_stress_summary,
+        dynamic_cost_summary=dynamic_cost_summary,
+        walk_forward_summary=walk_forward_summary,
     )
-    live_mask = (
-        ranking["live_review_candidate"].astype(bool)
-        if "live_review_candidate" in ranking.columns
-        else pd.Series(False, index=ranking.index)
-    )
-    live_candidates = ranking.loc[live_mask].copy()
-    top_candidates = ranking.loc[ranking["paper_review_candidate"].astype(bool)].copy()
-    if not dynamic_cost.empty and "live_gate_passed" in dynamic_cost.columns:
-        dynamic_cost_focus = dynamic_cost.copy()
-        dynamic_nav_note = ""
-        if "Estimated Portfolio NAV" in dynamic_cost_focus.columns:
-            dynamic_cost_focus["Estimated Portfolio NAV"] = pd.to_numeric(
-                dynamic_cost_focus["Estimated Portfolio NAV"], errors="coerce"
-            )
-            nav_values = sorted(
-                float(value) for value in dynamic_cost_focus["Estimated Portfolio NAV"].dropna().unique()
-            )
-            if len(nav_values) > 1:
-                max_nav = max(nav_values)
-                max_nav_rows = dynamic_cost_focus.loc[dynamic_cost_focus["Estimated Portfolio NAV"].eq(max_nav)].copy()
-                max_nav_passed = max_nav_rows.loc[max_nav_rows["live_gate_passed"].astype(bool)].copy()
-                if not max_nav_passed.empty:
-                    dynamic_cost_focus = max_nav_rows
-                    dynamic_nav_note = f"最高 NAV ${max_nav:,.0f} 压力下"
-                else:
-                    dynamic_passed_all = dynamic_cost_focus.loc[
-                        dynamic_cost_focus["live_gate_passed"].astype(bool)
-                    ].copy()
-                    if not dynamic_passed_all.empty:
-                        highest_pass_nav = float(dynamic_passed_all["Estimated Portfolio NAV"].max())
-                        names = ", ".join(
-                            dynamic_passed_all.loc[dynamic_passed_all["Estimated Portfolio NAV"].eq(highest_pass_nav)]
-                            .head(3)["Candidate"]
-                            .astype(str)
-                            .tolist()
-                        )
-                        recommendation = (
-                            f"动态成本 NAV 压力未全通过，不自动替换 live；最高通过 NAV ${highest_pass_nav:,.0f}，"
-                            f"该资金规模下候选：{names}。需要先确认实盘账户规模和执行方式。"
-                        )
-                    else:
-                        recommendation = (
-                            "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
-                        )
-                    dynamic_cost_focus = pd.DataFrame()
-        dynamic_passed = (
-            dynamic_cost_focus.loc[dynamic_cost_focus["live_gate_passed"].astype(bool)].copy()
-            if not dynamic_cost_focus.empty
-            else pd.DataFrame()
-        )
-        if not dynamic_passed.empty:
-            names = ", ".join(dynamic_passed.head(3)["Candidate"].astype(str).tolist())
-            prefix = dynamic_nav_note or "动态成本模型下"
-            recommendation = f"{prefix}进入 live promotion review，但不自动替换 live；优先复核候选：{names}。"
-        elif dynamic_cost_focus.empty:
-            pass
-        else:
-            recommendation = "动态成本模型下无候选通过 live gate；暂不迁移到 live，继续研究成本/流动性假设。"
-    elif not cost_stress.empty and "turnover_cost_bps" in cost_stress.columns:
-        cost_stress["turnover_cost_bps"] = pd.to_numeric(cost_stress["turnover_cost_bps"], errors="coerce")
-        costs = sorted(float(value) for value in cost_stress["turnover_cost_bps"].dropna().unique())
-        passed = (
-            cost_stress.loc[cost_stress["live_gate_passed"].astype(bool)].copy()
-            if "live_gate_passed" in cost_stress.columns
-            else pd.DataFrame()
-        )
-        max_cost = max(costs) if costs else float("nan")
-        max_cost_passed = (
-            passed.loc[passed["turnover_cost_bps"].eq(max_cost)].copy() if not passed.empty else pd.DataFrame()
-        )
-        if not max_cost_passed.empty:
-            names = ", ".join(max_cost_passed.head(3)["Candidate"].astype(str).tolist())
-            recommendation = (
-                f"进入 live promotion review，但不自动替换 live；"
-                f"在最高成本压力 {max_cost:.2f} bps 下优先复核候选：{names}。"
-            )
-        elif not passed.empty:
-            highest_pass_cost = float(passed["turnover_cost_bps"].max())
-            names = ", ".join(
-                passed.loc[passed["turnover_cost_bps"].eq(highest_pass_cost)].head(3)["Candidate"].astype(str).tolist()
-            )
-            recommendation = (
-                f"成本压力未全通过，不自动替换 live；最高通过成本 {highest_pass_cost:.2f} bps，"
-                f"该成本下候选：{names}。需要先确认实盘成本假设。"
-            )
-        else:
-            recommendation = "成本压力下无候选通过 live gate；暂不迁移到 live，继续研究。"
-    elif not live_ready.empty:
-        names = ", ".join(live_ready.head(3)["Candidate"].astype(str).tolist())
-        recommendation = f"进入 live promotion review，但不自动替换 live；优先复核候选：{names}。"
-    elif not live_candidates.empty:
-        names = ", ".join(live_candidates.head(3)["Candidate"].astype(str).tolist())
-        recommendation = (
-            f"进入 live design review，但 baseline-relative live gate 未通过，不自动替换 live；优先复核候选：{names}。"
-        )
-    elif top_candidates.empty:
-        recommendation = "暂不迁移到 live；保留当前 defensive baseline，进攻型候选继续 paper review 或补充样本。"
-    else:
-        names = ", ".join(top_candidates.head(3)["Candidate"].astype(str).tolist())
-        recommendation = f"仅进入 paper review，不自动 live；优先复核候选：{names}。"
-
-    if not walk_forward.empty and "walk_forward_gate_passed" in walk_forward.columns:
-        walk_forward_focus = walk_forward.copy()
-        if "Estimated Portfolio NAV" in walk_forward_focus.columns:
-            walk_forward_focus["Estimated Portfolio NAV"] = pd.to_numeric(
-                walk_forward_focus["Estimated Portfolio NAV"], errors="coerce"
-            )
-            nav_values = sorted(
-                float(value) for value in walk_forward_focus["Estimated Portfolio NAV"].dropna().unique()
-            )
-            if nav_values:
-                walk_forward_focus = walk_forward_focus.loc[
-                    walk_forward_focus["Estimated Portfolio NAV"].eq(max(nav_values))
-                ].copy()
-        walk_forward_passed = walk_forward_focus["walk_forward_gate_passed"].astype(bool)
-        if not bool(walk_forward_passed.any()):
-            reason = (
-                str(walk_forward_focus["walk_forward_gate_reason"].iloc[0])
-                if "walk_forward_gate_reason" in walk_forward_focus.columns and not walk_forward_focus.empty
-                else "unknown"
-            )
-            recommendation = f"walk-forward/OOS gate 未通过，不自动替换 live；先保留当前 baseline。失败原因：{reason}。"
+    recommendation = str(decision_summary["recommendation"])
 
     baseline_rows = period_summary.loc[period_summary["Candidate"].eq("live_global_etf_rotation_defensive_baseline")]
     long_baseline = baseline_rows.loc[baseline_rows["Period"].eq("long")]
@@ -3411,6 +3558,17 @@ def main(argv: list[str] | None = None) -> int:
         if not dynamic_walk_forward_summary.empty
         else walk_forward["walk_forward_summary"],
         liquidity_summary=liquidity["liquidity_summary"],
+    )
+    write_live_decision_summary(
+        output_dir,
+        ranking=result["ranking"],
+        period_summary=result["period_summary"],
+        live_readiness_summary=live_readiness_summary,
+        cost_stress_summary=cost_stress,
+        dynamic_cost_summary=dynamic_cost_live_readiness,
+        walk_forward_summary=dynamic_walk_forward_summary
+        if not dynamic_walk_forward_summary.empty
+        else walk_forward["walk_forward_summary"],
     )
     manifest = {
         "research": "global_etf_offensive_rotation",
