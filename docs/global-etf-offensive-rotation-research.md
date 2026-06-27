@@ -205,6 +205,62 @@ Five sensitivity runs under `data/output/global_etf_wf_sensitivity_*`:
 
 Recommendation: keep live defensive baseline; continue shadow review of `liveable_trend_drawdown_brake_baseline85_fast15_floor10`. Do not auto-promote until walk-forward OOS gate clears.
 
+## 2026-06-28 worst OOS window diagnostics (2025 root cause)
+
+Command (built-in diagnostics module):
+
+```bash
+PYTHONPATH=src python3 -m us_equity_snapshot_pipelines.global_etf_oos_window_diagnostics \
+  --artifact-dir data/output/global_etf_wf_sensitivity_train5_min0_nav500k
+```
+
+Artifacts: `worst_oos_window_diagnostics/` under the research output dir.
+
+### Walk-forward context
+
+Train window `2020-01-01_2024-12-31` selected `liveable_trend_drawdown_brake_baseline85_fast15_floor10` for test year **2025** (train excess +1.06% vs baseline). OOS result:
+
+| Metric | floor10 composite | Defensive baseline |
+| --- | ---: | ---: |
+| 2025 calendar return | +50.4% | +57.0% |
+| Excess vs baseline | **-6.68%** | — |
+| Drawdown delta vs baseline | -0.17% (slightly worse) | — |
+
+This single window drives `worst_oos_excess_too_low` across all WF sensitivity configs.
+
+### Monthly excess return decomposition (2025)
+
+| Month | Excess vs baseline | Notes |
+| --- | ---: | --- |
+| Feb | -1.00% | Early underperformance |
+| Apr | -0.79% | Drawdown month; brake at 10% sleeve from Mar |
+| Sep | -1.09% | Strong rally; baseline defensive rotation captured more |
+| Nov | **-1.72%** | Worst month |
+| Dec | -1.26% | Continued lag |
+| Jul–Aug | 0.00% | Brake likely at floor; matched baseline |
+
+### Overlay changes in 2025
+
+| Effective date | Overlay weight | Signal |
+| --- | ---: | --- |
+| 2025-03-03 | 10% | QQQ trend/drawdown brake (floor10) |
+| 2025-06-02 | 15% | Brake released back to cap |
+
+### Candidate comparison within 2025 window
+
+| Candidate | 2025 return | Excess vs baseline |
+| --- | ---: | ---: |
+| `liveable_blend_baseline90_fast10` | +52.2% | -4.8% |
+| `liveable_trend_drawdown_brake_baseline85_fast15_floor0` | +51.5% | -5.6% |
+| `liveable_trend_drawdown_brake_baseline85_fast15_floor10` | +50.4% | **-6.7%** |
+
+### Root-cause interpretation
+
+1. **Not a drawdown-protection win:** floor10 did not improve 2025 drawdown versus baseline; the fast sleeve simply dragged return in a strong equity year.
+2. **Brake timing hurt in a bull regime:** the Mar–May brake cut the fast sleeve to 10% during recovery; baseline's quarterly defensive rotation outperformed without the overlay drag.
+3. **All fast-sleeve composites lost to baseline in 2025:** even plain 90/10 blend underperformed by -4.8%. The WF gate failure is not floor10-specific — any promoted offensive sleeve would likely fail the -3% worst-OOS threshold in 2025.
+4. **Implication:** raising `walk_forward_min_train_excess_cagr` or shortening train window does not fix 2025; the defensive baseline itself was the best choice that year. Continue shadow review of floor10 for in-sample edge, but do not expect WF clearance until a future OOS year shows positive sleeve contribution or the gate threshold is explicitly revised.
+
 ## 2026-06-20 research run
 
 Command used local downloaded Yahoo/yfinance data after the initial download completed:

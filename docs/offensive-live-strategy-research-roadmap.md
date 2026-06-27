@@ -364,6 +364,36 @@ the 42-day source-lag stress. Keep it as a research-only comparator unless a
 future pre-registered variant improves drawdown without degrading rolling excess
 and turnover.
 
+#### 2026-06-28 staging re-run (R1000 inputs + promotion chain)
+
+Staging artifact root: `data/output/russell_top50_leader_rotation_staging_20260628`.
+
+After wiring `mega_cap_leader_rotation_crash_brake_live_readiness_followup` into
+the monthly review chain, re-ran live readiness + promotion review on existing
+stress/overfit/liquidity follow-ups:
+
+```bash
+PYTHONPATH=src python3 scripts/build_monthly_russell_crash_brake_review_chain.py \
+  --artifact-root data/output/russell_top50_leader_rotation_staging_20260628
+```
+
+Promotion review result for `crash_brake_top2_50_floor25` (2018–2026, NAV $500k):
+
+| Field | Value |
+| --- | --- |
+| `live_gate_passed` | True (`acceptable_cagr_tradeoff_vs_reference`; CAGR -1.97pp, DD unchanged) |
+| `stress_gate` / `overfit_gate` / `liquidity_gate` | all pass |
+| `required_gates_passed` | **True** |
+| `promotion_decision` | **`live_design_review_crash_brake`** |
+| `Candidate Role` | `panic_rebound_guard_live_design` |
+| `Gate Profile` | `crash_brake_promotion_v1` |
+
+Interpretation: the promotion pipeline now correctly elevates the crash-brake
+candidate when all gates pass. This is **live design review**, not default live
+activation — max drawdown did not improve versus no-brake in the full R1000 run,
+and liquidity at $1M+ NAV still fails separately. Continue research-only for
+runtime until drawdown benefit is demonstrated.
+
 ### Phase 4: Global ETF stays defensive unless OOS improves
 
 Goal: avoid turning a weak OOS result into production complexity.
