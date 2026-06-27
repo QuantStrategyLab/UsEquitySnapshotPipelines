@@ -13,9 +13,9 @@ dependencies = [
   "google-cloud-storage>=2.18",
   "requests[socks]>=2.31",
   "yfinance>=0.2.40",
-  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@aee8121d530c2e92c72b68aee434bf174b3b9c85",
-  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@eedaa71de8472448c4665b8b7b3be679fe7db83d",
-  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@b2fa659304c02cc19f7c82e86b0ce36ef592846a",
+  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@7b6e3ce33e6563db4794fa7b865db9ec428dc478",
+  "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@12d01a2fa7da75b6492af7b16f635d45adb322eb",
+  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@c7793bab6d63a434338bfcfd997a7ae9195dcddb",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +50,7 @@ useq-research-index-leaps-growth-overlay = "us_equity_snapshot_pipelines.leaps_g
 useq-backtest-mag7-leveraged-pullback = "us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest:main"
 useq-backtest-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest:main"
 useq-archive-soxl-soxx-trend-income = "us_equity_snapshot_pipelines.soxl_soxx_trend_income_archive:main"
+useq-backtest-tecl-xlk-trend-income = "us_equity_snapshot_pipelines.tecl_xlk_trend_income_backtest:main"
 useq-archive-tqqq-growth-income = "us_equity_snapshot_pipelines.tqqq_growth_income_archive:main"
 useq-research-taco-panic-rebound = "us_equity_snapshot_pipelines.taco_panic_rebound_research:main"
 useq-backtest-taco-panic-rebound-portfolio = "us_equity_snapshot_pipelines.taco_panic_rebound_backtest:main"

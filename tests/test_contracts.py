@@ -23,7 +23,7 @@ def test_lists_snapshot_profile_contracts() -> None:
 
 def test_lists_scheduled_snapshot_profile_contracts_without_research_only_tech() -> None:
     profiles = {contract.profile for contract in list_scheduled_profile_contracts()}
-    assert profiles == {"russell_top50_leader_rotation"}
+    assert profiles == {"global_etf_rotation", "russell_top50_leader_rotation"}
 
 
 def test_global_etf_contract_requires_manifest_for_runtime() -> None:
