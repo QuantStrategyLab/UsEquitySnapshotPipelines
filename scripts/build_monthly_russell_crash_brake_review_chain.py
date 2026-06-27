@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_live_decay_followup import main as live_decay_main  # noqa: E402
+from us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_live_readiness_followup import main as live_readiness_main  # noqa: E402
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_liquidity_followup import main as liquidity_main  # noqa: E402
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_overfit_followup import main as overfit_main  # noqa: E402
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_crash_brake_promotion_review import main as promotion_review_main  # noqa: E402
@@ -62,6 +63,7 @@ def discover_crash_brake_research_runs(artifact_root: Path) -> list[dict[str, Pa
         universe_path = _resolve_path(artifact_dir, inputs.get("universe"))
         summary_path = artifact_dir / "crash_brake_summary.csv"
         rolling_path = artifact_dir / "crash_brake_rolling_summary.csv"
+        mode_path = artifact_dir / "crash_brake_mode_history.csv"
         trades_path = artifact_dir / "crash_brake_rebalance_trades.csv"
         returns_path = artifact_dir / "crash_brake_daily_returns.csv"
         required = [prices_path, universe_path, summary_path, rolling_path, trades_path, returns_path]
@@ -75,6 +77,7 @@ def discover_crash_brake_research_runs(artifact_root: Path) -> list[dict[str, Pa
                 "universe_path": universe_path,
                 "summary_path": summary_path,
                 "rolling_path": rolling_path,
+                "mode_path": mode_path,
                 "trades_path": trades_path,
                 "returns_path": returns_path,
             }
@@ -102,6 +105,9 @@ def build_crash_brake_review_chain(
     overfit_dir = _output_dir(base_root, artifact_dir, "crash_brake_overfit_followup", output_root_override=output_root_override)
     stress_dir = _output_dir(base_root, artifact_dir, "crash_brake_stress_followup", output_root_override=output_root_override)
     liquidity_dir = _output_dir(base_root, artifact_dir, "crash_brake_liquidity_followup", output_root_override=output_root_override)
+    live_readiness_dir = _output_dir(
+        base_root, artifact_dir, "crash_brake_live_readiness_followup", output_root_override=output_root_override
+    )
     promotion_dir = _output_dir(base_root, artifact_dir, "crash_brake_promotion_review", output_root_override=output_root_override)
     shadow_dir = _output_dir(base_root, artifact_dir, "crash_brake_shadow_review", output_root_override=output_root_override)
     live_decay_dir = _output_dir(base_root, artifact_dir, "live_decay_monitor_crash_brake", output_root_override=output_root_override)
@@ -148,12 +154,29 @@ def build_crash_brake_review_chain(
     ):
         raise RuntimeError(f"failed to build crash-brake liquidity follow-up for {artifact_dir}")
 
+    live_readiness_args = [
+        "--summary",
+        str(run["summary_path"]),
+        "--rolling",
+        str(run["rolling_path"]),
+        "--research-manifest",
+        str(manifest_path),
+        "--output-dir",
+        str(live_readiness_dir),
+    ]
+    if run.get("mode_path") is not None and Path(run["mode_path"]).exists():
+        live_readiness_args.extend(["--mode-history", str(run["mode_path"])])
+    if live_readiness_main(live_readiness_args):
+        raise RuntimeError(f"failed to build crash-brake live-readiness follow-up for {artifact_dir}")
+
     if promotion_review_main(
         [
             "--summary",
             str(run["summary_path"]),
             "--research-manifest",
             str(manifest_path),
+            "--live-readiness",
+            str(live_readiness_dir / "crash_brake_live_readiness_summary.csv"),
             "--overfit-promotion",
             str(overfit_dir / "overfit_promotion_gate_summary.csv"),
             "--stress-summary",
@@ -195,6 +218,7 @@ def build_crash_brake_review_chain(
         "overfit_dir": overfit_dir,
         "stress_dir": stress_dir,
         "liquidity_dir": liquidity_dir,
+        "live_readiness_dir": live_readiness_dir,
         "promotion_dir": promotion_dir,
         "shadow_dir": shadow_dir,
         "live_decay_dir": live_decay_dir,

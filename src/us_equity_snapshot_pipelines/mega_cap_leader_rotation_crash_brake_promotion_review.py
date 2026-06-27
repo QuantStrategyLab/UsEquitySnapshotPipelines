@@ -12,11 +12,15 @@ from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_PROMOTION_REVIEW_SCHEMA_VERSION = "russell_top50_crash_brake_promotion_review.v1"
+CRASH_BRAKE_PROMOTABLE_RUN = "crash_brake_top2_50_floor25"
+CRASH_BRAKE_PROMOTION_GATE_PROFILE = "crash_brake_promotion_v1"
 
 
-def _candidate_role_from_run(run: str) -> tuple[str, str]:
+def _candidate_role_from_run(run: str, *, promotable: bool = False) -> tuple[str, str]:
     normalized = str(run or "").strip()
-    if normalized == "crash_brake_top2_50_floor25":
+    if normalized == CRASH_BRAKE_PROMOTABLE_RUN:
+        if promotable:
+            return "panic_rebound_guard_live_design", CRASH_BRAKE_PROMOTION_GATE_PROFILE
         return "panic_rebound_guard_research", "research_only"
     if normalized == "blend_top2_50_top4_50_no_brake":
         return "balanced_offensive_live_design", "balanced_offensive_reference"
@@ -25,17 +29,31 @@ def _candidate_role_from_run(run: str) -> tuple[str, str]:
     return "research_only", "research_only"
 
 
-def _recommended_action(run: str) -> str:
+def _recommended_action(run: str, *, live_gate_passed: bool, required_gates_passed: bool) -> str:
     normalized = str(run or "").strip()
-    if normalized == "crash_brake_top2_50_floor25":
-        return "collect_live_stress_overfit_liquidity_for_crash_brake_candidate"
-    return "keep_as_crash_brake_reference_only"
+    if normalized != "crash_brake_top2_50_floor25":
+        return "keep_as_crash_brake_reference_only"
+    if required_gates_passed:
+        return "crash_brake_all_required_gates_passed_continue_review"
+    if live_gate_passed:
+        return "crash_brake_live_gate_passed_continue_gate_collection"
+    return "collect_live_stress_overfit_liquidity_for_crash_brake_candidate"
+
+
+def _promotion_decision(run: str, *, required_gates_passed: bool) -> str:
+    normalized = str(run or "").strip()
+    if normalized != CRASH_BRAKE_PROMOTABLE_RUN:
+        return "research_only"
+    if required_gates_passed:
+        return "live_design_review_crash_brake"
+    return "research_only"
 
 
 def build_crash_brake_promotion_review(
     summary: pd.DataFrame,
     *,
     candidate_runs: Iterable[str] | None = None,
+    live_readiness: pd.DataFrame | None = None,
     overfit_promotion: pd.DataFrame | None = None,
     stress_summary: pd.DataFrame | None = None,
     liquidity_summary: pd.DataFrame | None = None,
@@ -51,6 +69,9 @@ def build_crash_brake_promotion_review(
     if frame.empty:
         return pd.DataFrame(columns=PROMOTION_REVIEW_COLUMNS)
 
+    live_map: dict[str, dict[str, Any]] = {}
+    if live_readiness is not None and not pd.DataFrame(live_readiness).empty and "Run" in pd.DataFrame(live_readiness).columns:
+        live_map = pd.DataFrame(live_readiness).set_index("Run").to_dict(orient="index")
     overfit_map: dict[str, dict[str, Any]] = {}
     if overfit_promotion is not None and not pd.DataFrame(overfit_promotion).empty and "Run" in pd.DataFrame(overfit_promotion).columns:
         overfit_map = pd.DataFrame(overfit_promotion).set_index("Run").to_dict(orient="index")
@@ -69,10 +90,16 @@ def build_crash_brake_promotion_review(
     rows: list[dict[str, Any]] = []
     for row in frame.to_dict(orient="records"):
         run = str(row.get("Run") or "").strip()
-        candidate_role, gate_profile = _candidate_role_from_run(run)
+        is_promotable_run = run == CRASH_BRAKE_PROMOTABLE_RUN
+        candidate_role, gate_profile = _candidate_role_from_run(run, promotable=False)
+        live = live_map.get(run, {})
         overfit = overfit_map.get(run, {})
         stress = stress_map.get(run, {})
         liquidity = liquidity_map.get(run, {})
+        live_gate_passed = bool(live.get("live_gate_passed", False))
+        live_gate_reason = str(
+            live.get("live_gate_reason", "") or "research_only_crash_brake_requires_live_gate_followup"
+        )
         overfit_gate_passed = bool(overfit.get("overfit_gate_passed", False))
         overfit_gate_reason = str(
             overfit.get("overfit_gate_reason", "") or "research_only_crash_brake_requires_overfit_followup"
@@ -81,13 +108,17 @@ def build_crash_brake_promotion_review(
         stress_gate_reason = str(stress.get("stress_gate_reason", "") or "research_only_crash_brake_requires_stress_followup")
         liquidity_gate_passed = bool(liquidity.get("liquidity_gate_passed", False))
         liquidity_gate_reason = str(liquidity.get("liquidity_gate_reason", "") or "research_only_crash_brake_requires_liquidity_followup")
-        required_gate_parts = ["live_gate"]
-        if not stress_gate_passed:
-            required_gate_parts.append("stress_gate")
-        if not overfit_gate_passed:
-            required_gate_parts.append("overfit_gate")
-        if not liquidity_gate_passed:
-            required_gate_parts.append("liquidity_gate")
+        gate_checks = {
+            "live_gate": live_gate_passed if is_promotable_run else True,
+            "stress_gate": stress_gate_passed if is_promotable_run else True,
+            "overfit_gate": overfit_gate_passed if is_promotable_run else True,
+            "liquidity_gate": liquidity_gate_passed if is_promotable_run else True,
+        }
+        failed_gates = [name for name, passed in gate_checks.items() if not passed]
+        required_gates_passed = not failed_gates
+        required_gate_reason = "pass" if required_gates_passed else ";".join(failed_gates)
+        if is_promotable_run and required_gates_passed:
+            candidate_role, gate_profile = _candidate_role_from_run(run, promotable=True)
         review_row: dict[str, Any] = {column: pd.NA for column in PROMOTION_REVIEW_COLUMNS}
         review_row.update(
             {
@@ -98,23 +129,38 @@ def build_crash_brake_promotion_review(
                 "Max Drawdown": row.get("Max Drawdown"),
                 "Sharpe": row.get("Sharpe"),
                 "Turnover/Year": row.get("Turnover/Year"),
-                "live_gate_passed": False,
-                "live_gate_reason": "research_only_crash_brake_requires_live_gate_followup",
+                "live_gate_passed": live_gate_passed if is_promotable_run else False,
+                "live_gate_reason": (
+                    live_gate_reason
+                    if is_promotable_run
+                    else "reference_not_live_gate_candidate"
+                ),
                 "stress_gate_passed": stress_gate_passed,
                 "stress_gate_reason": stress_gate_reason,
                 "overfit_gate_passed": overfit_gate_passed,
                 "overfit_gate_reason": overfit_gate_reason,
                 "liquidity_gate_passed": liquidity_gate_passed,
                 "liquidity_gate_reason": liquidity_gate_reason,
-                "required_gates_passed": False,
-                "required_gate_reason": ";".join(required_gate_parts),
+                "required_gates_passed": required_gates_passed if is_promotable_run else False,
+                "required_gate_reason": required_gate_reason if is_promotable_run else "reference_not_promotable",
                 "statistical_support_level": (
-                    "research_only_pre_registered_experiment_with_gate_followups"
-                    if overfit_map or stress_map
-                    else "research_only_pre_registered_experiment"
+                    "crash_brake_pre_registered_experiment_all_required_gates_passed"
+                    if is_promotable_run and required_gates_passed
+                    else (
+                        "research_only_pre_registered_experiment_with_gate_followups"
+                        if live_map or overfit_map or stress_map or liquidity_map
+                        else "research_only_pre_registered_experiment"
+                    )
                 ),
-                "promotion_decision": "research_only",
-                "recommended_action": _recommended_action(run),
+                "promotion_decision": _promotion_decision(
+                    run,
+                    required_gates_passed=required_gates_passed if is_promotable_run else False,
+                ),
+                "recommended_action": _recommended_action(
+                    run,
+                    live_gate_passed=live_gate_passed,
+                    required_gates_passed=required_gates_passed if is_promotable_run else False,
+                ),
             }
         )
         rows.append(review_row)
@@ -128,6 +174,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--summary", required=True, help="Input crash_brake_summary.csv")
     parser.add_argument("--research-manifest", help="Optional crash_brake_research_manifest.json")
+    parser.add_argument(
+        "--live-readiness",
+        help="Optional crash_brake_live_readiness_summary.csv from crash-brake live-readiness follow-up",
+    )
     parser.add_argument("--overfit-promotion", help="Optional overfit_promotion_gate_summary.csv from crash-brake follow-up")
     parser.add_argument("--stress-summary", help="Optional crash_brake_stress_summary.csv from crash-brake follow-up")
     parser.add_argument("--liquidity-summary", help="Optional liquidity_summary.csv from crash-brake follow-up")
@@ -152,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     review = build_crash_brake_promotion_review(
         read_table(args.summary),
         candidate_runs=candidate_runs,
+        live_readiness=read_table(args.live_readiness) if args.live_readiness else None,
         overfit_promotion=read_table(args.overfit_promotion) if args.overfit_promotion else None,
         stress_summary=read_table(args.stress_summary) if args.stress_summary else None,
         liquidity_summary=read_table(args.liquidity_summary) if args.liquidity_summary else None,
@@ -167,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         "inputs": {
             "summary": str(args.summary),
             "research_manifest": str(args.research_manifest or ""),
+            "live_readiness": str(args.live_readiness or ""),
             "overfit_promotion": str(args.overfit_promotion or ""),
             "stress_summary": str(args.stress_summary or ""),
             "liquidity_summary": str(args.liquidity_summary or ""),

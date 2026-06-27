@@ -164,3 +164,82 @@ def test_build_crash_brake_promotion_review_uses_liquidity_followup_when_present
 
     assert bool(review.loc["crash_brake_top2_50_floor25", "liquidity_gate_passed"]) is True
     assert review.loc["crash_brake_top2_50_floor25", "liquidity_gate_reason"] == "pass"
+
+
+def test_build_crash_brake_promotion_review_uses_live_readiness_when_present() -> None:
+    summary = _summary()
+    live = pd.DataFrame(
+        [
+            {
+                "Run": "crash_brake_top2_50_floor25",
+                "live_gate_passed": True,
+                "live_gate_reason": "pass;acceptable_cagr_tradeoff_vs_reference",
+            }
+        ]
+    )
+
+    review = build_crash_brake_promotion_review(summary, live_readiness=live).set_index("Run")
+
+    assert bool(review.loc["crash_brake_top2_50_floor25", "live_gate_passed"]) is True
+    assert review.loc["crash_brake_top2_50_floor25", "live_gate_reason"] == (
+        "pass;acceptable_cagr_tradeoff_vs_reference"
+    )
+    assert review.loc["blend_top2_50_top4_50_no_brake", "live_gate_reason"] == "reference_not_live_gate_candidate"
+
+
+def test_build_crash_brake_promotion_review_all_required_gates_passed() -> None:
+    summary = _summary()
+    live = pd.DataFrame(
+        [
+            {
+                "Run": "crash_brake_top2_50_floor25",
+                "live_gate_passed": True,
+                "live_gate_reason": "pass;acceptable_cagr_tradeoff_vs_reference",
+            }
+        ]
+    )
+    overfit = pd.DataFrame(
+        [
+            {
+                "Run": "crash_brake_top2_50_floor25",
+                "overfit_gate_passed": True,
+                "overfit_gate_reason": "pass",
+            }
+        ]
+    )
+    stress = pd.DataFrame(
+        [
+            {
+                "Run": "crash_brake_top2_50_floor25",
+                "all_stress_gates_passed": True,
+                "stress_gate_reason": "pass",
+            }
+        ]
+    )
+    liquidity = pd.DataFrame(
+        [
+            {
+                "Run": "crash_brake_top2_50_floor25",
+                "Portfolio NAV": 500000.0,
+                "liquidity_gate_passed": True,
+                "liquidity_gate_reason": "pass",
+            }
+        ]
+    )
+
+    review = build_crash_brake_promotion_review(
+        summary,
+        live_readiness=live,
+        overfit_promotion=overfit,
+        stress_summary=stress,
+        liquidity_summary=liquidity,
+    ).set_index("Run")
+    row = review.loc["crash_brake_top2_50_floor25"]
+
+    assert bool(row["required_gates_passed"]) is True
+    assert row["required_gate_reason"] == "pass"
+    assert row["promotion_decision"] == "live_design_review_crash_brake"
+    assert row["Candidate Role"] == "panic_rebound_guard_live_design"
+    assert row["Gate Profile"] == "crash_brake_promotion_v1"
+    assert row["recommended_action"] == "crash_brake_all_required_gates_passed_continue_review"
+    assert row["statistical_support_level"] == "crash_brake_pre_registered_experiment_all_required_gates_passed"
