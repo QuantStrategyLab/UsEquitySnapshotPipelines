@@ -58,7 +58,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-main-ci:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.execute_publish == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify main CI succeeded before publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/verify_main_ci_success.sh
+
   market-regime-control:
+    needs: verify-main-ci
+    if: >
+      always() &&
+      (needs.verify-main-ci.result == 'success' || needs.verify-main-ci.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -559,6 +576,10 @@ jobs:
           PY
 
   ibit-zscore-exit:
+    needs: verify-main-ci
+    if: >
+      always() &&
+      (needs.verify-main-ci.result == 'success' || needs.verify-main-ci.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -912,6 +933,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   crisis-response-shadow:
+    needs: verify-main-ci
+    if: >
+      always() &&
+      (needs.verify-main-ci.result == 'success' || needs.verify-main-ci.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -1135,6 +1160,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   taco-rebound-shadow:
+    needs: verify-main-ci
+    if: >
+      always() &&
+      (needs.verify-main-ci.result == 'success' || needs.verify-main-ci.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

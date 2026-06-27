@@ -240,6 +240,8 @@ def test_codex_feedback_workflow_requeues_failed_ci_and_review_feedback() -> Non
 def test_automated_snapshot_publish_runs_after_source_input_refresh() -> None:
     workflow = PUBLISH_SNAPSHOT_ARTIFACTS.read_text(encoding="utf-8")
 
+    assert "Verify main CI succeeded before publish" in workflow
+    assert "bash .github/scripts/verify_main_ci_success.sh" in workflow
     assert "workflow_run:" in workflow
     assert 'workflows: ["Update Source Input Data"]' in workflow
     assert "cron: '45 0 1 * *'" not in workflow
