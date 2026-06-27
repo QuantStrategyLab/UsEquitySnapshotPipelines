@@ -8,6 +8,7 @@ SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
+NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE = "new_r1000_residual_strength_20"
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,15 @@ _PROFILE_CONTRACTS = {
             "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
             "global_etf_rotation"
         ),
+        manifest_required_by_runtime=True,
+    ),
+    NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE: SnapshotProfileContract(
+        profile=NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE,
+        display_name="R1000 Residual Strength 20",
+        contract_version="new_r1000_residual_strength_20.feature_snapshot.v1",
+        snapshot_filename="new_r1000_residual_strength_20_feature_snapshot_latest.csv",
+        manifest_filename="new_r1000_residual_strength_20_feature_snapshot_latest.csv.manifest.json",
+        ranking_filename="new_r1000_residual_strength_20_ranking_latest.csv",
         manifest_required_by_runtime=True,
     ),
 }

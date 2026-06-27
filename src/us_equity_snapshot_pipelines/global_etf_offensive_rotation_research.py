@@ -466,6 +466,41 @@ GLOBAL_ETF_LIVEABLE_COMPOSITES: tuple[GlobalEtfLiveableCompositeSpec, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class GlobalEtfExperimentProfile:
+    profile_id: str
+    liveable_composite_ids: tuple[str, ...]
+    description: str = ""
+
+
+GLOBAL_ETF_EXPERIMENT_PROFILES: dict[str, GlobalEtfExperimentProfile] = {
+    "live_replacement_shortlist_v1": GlobalEtfExperimentProfile(
+        profile_id="live_replacement_shortlist_v1",
+        liveable_composite_ids=(
+            "liveable_blend_baseline85_fast15",
+            "liveable_trend_drawdown_brake_baseline82_fast18_floor8",
+        ),
+        description="Narrow Global ETF live-replacement shortlist for monthly review bundles.",
+    ),
+    "dynamic_overlay_cap_v1": GlobalEtfExperimentProfile(
+        profile_id="dynamic_overlay_cap_v1",
+        liveable_composite_ids=(
+            "liveable_trend_drawdown_brake_baseline82_fast18_floor8",
+            "liveable_oos_tail_guard_baseline82_fast18_floor12",
+            "liveable_oos_tail_guard_baseline82_fast18_floor8",
+        ),
+        description="Dynamic overlay cap experiment candidates for promotion bundle scoping.",
+    ),
+}
+
+
+def resolve_experiment_profile(profile_id: str | None) -> GlobalEtfExperimentProfile | None:
+    cleaned = str(profile_id or "").strip()
+    if not cleaned:
+        return None
+    return GLOBAL_ETF_EXPERIMENT_PROFILES.get(cleaned)
+
+
 def _parse_periods(
     raw_periods: str | Sequence[tuple[str, str, str | None]] | None,
 ) -> tuple[tuple[str, str, str | None], ...]:
