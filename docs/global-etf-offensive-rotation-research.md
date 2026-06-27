@@ -164,6 +164,47 @@ Conclusion:
 - Walk-forward/OOS gate blocks both composites (`worst_oos_excess_too_low`); `live_decision_summary.json` records `decision_state=walk_forward_blocked`.
 - **Next step:** keep researching fast10-based sleeves and brakes; do not promote dual10. Dual-momentum remains a documented negative result, not a live replacement candidate.
 
+## 2026-06-28 fast10 brake compare
+
+Command:
+
+```bash
+PYTHONPATH=src python3 -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
+  --prices data/output/global_etf_baseline_relative_decay_narrow_verify_20260620/downloaded_price_history.csv \
+  --output-dir data/output/global_etf_fast10_brake_compare_20260628 \
+  --variants live_global_etf_rotation_defensive_baseline,offensive_growth_fast_top2_monthly \
+  --liveable-composites liveable_blend_baseline90_fast10,liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_trend_drawdown_brake_baseline85_fast15_floor10,liveable_trend_drawdown_brake_baseline85_fast15_floor0 \
+  --walk-forward-candidates liveable_blend_baseline90_fast10,liveable_baseline_relative_decay_brake_baseline90_fast10_floor0,liveable_trend_drawdown_brake_baseline85_fast15_floor10 \
+  --cost-stress-bps 5,10,25 \
+  --dynamic-cost --dynamic-cost-nav 500000
+```
+
+| Rank | Candidate | Long CAGR | Long excess vs SPY | Max DD | Live readiness (NAV $500k) | Action |
+| ---: | --- | ---: | ---: | ---: | --- | --- |
+| 1 | `liveable_trend_drawdown_brake_baseline85_fast15_floor10` | 15.27% | +1.46% | -22.30% | pass | live design review; walk-forward blocked |
+| 2 | `liveable_blend_baseline90_fast10` | 15.13% | +1.32% | -22.18% | pass | live design review; walk-forward blocked |
+| 3 | `liveable_baseline_relative_decay_brake_baseline90_fast10_floor0` | 14.91% | +1.10% | -22.18% | fail (calendar/5y win rate) | continue research |
+| 4 | `live_global_etf_rotation_defensive_baseline` | 14.81% | +0.99% | -23.31% | keep current live | keep current live |
+
+Conclusion:
+
+- **Best composite so far:** `liveable_trend_drawdown_brake_baseline85_fast15_floor10` — highest long CAGR (+0.46pp vs baseline) with modest drawdown improvement.
+- **Do not pursue:** `baseline_relative_decay_brake` (relative decay cuts sleeve too aggressively) and `floor0` trend brake (calendar baseline win-rate fails live gate).
+- Walk-forward still blocks all composites (`worst_oos_excess_too_low`, 2025 OOS window).
+
+## 2026-06-28 walk-forward sensitivity (trend_drawdown floor10)
+
+Five sensitivity runs under `data/output/global_etf_wf_sensitivity_*`:
+
+| Config | Live gate | WF gate | Notes |
+| --- | --- | --- | --- |
+| train5 / min0 / NAV $500k | pass | fail | Closest pass; only `worst_oos_excess_too_low` (-6.7% in 2025 test year) |
+| train5 / min25 / NAV $500k | pass | fail | Stricter train threshold worsens WF |
+| train7 / min0 / NAV $500k–$1M | pass | fail | Fewer OOS windows (4), 25% win rate — do not use 7y train |
+| NAV $300k / $1M | pass | fail | NAV has negligible effect on WF outcome |
+
+Recommendation: keep live defensive baseline; continue shadow review of `liveable_trend_drawdown_brake_baseline85_fast15_floor10`. Do not auto-promote until walk-forward OOS gate clears.
+
 ## 2026-06-20 research run
 
 Command used local downloaded Yahoo/yfinance data after the initial download completed:
