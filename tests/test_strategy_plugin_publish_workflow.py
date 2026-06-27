@@ -5,7 +5,7 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-QUANT_PLATFORM_KIT_REF = "aee8121d530c2e92c72b68aee434bf174b3b9c85"
+QUANT_PLATFORM_KIT_REF = "7b6e3ce33e6563db4794fa7b865db9ec428dc478"
 MARKET_REGIME_PLUGIN_REF = "12d01a2fa7da75b6492af7b16f635d45adb322eb"
 US_EQUITY_STRATEGIES_REF = "c7793bab6d63a434338bfcfd997a7ae9195dcddb"
 
