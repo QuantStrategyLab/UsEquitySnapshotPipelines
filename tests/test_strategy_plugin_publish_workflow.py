@@ -14,6 +14,7 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "Publish Strategy Plugins" in workflow
+    assert "verify-main-ci:" in workflow
     assert "cron: '30 22 * * 1-5'" in workflow
     assert "market-regime-control:" in workflow
     assert "strategy_profile: tqqq_growth_income" in workflow

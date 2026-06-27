@@ -82,6 +82,7 @@ jobs:
       matrix:
         profile: ${{ fromJSON(github.event_name == 'schedule' && '["global_etf_rotation"]' || (github.event_name != 'workflow_dispatch' && '["russell_top50_leader_rotation"]' || format('["{0}"]', inputs.profile || 'russell_top50_leader_rotation'))) }}
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -112,6 +113,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify main CI succeeded before publish
+        if: >-
+          github.event_name == 'schedule' ||
+          github.event_name == 'workflow_run' ||
+          (github.event_name == 'workflow_dispatch' && inputs.execute_publish == true)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/verify_main_ci_success.sh
 
       - name: Set up Python
         uses: actions/setup-python@v6
