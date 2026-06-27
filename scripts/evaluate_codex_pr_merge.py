@@ -40,6 +40,12 @@ DEFAULT_POLICY = {
         "medium": {
             "exact": [
                 "scripts/build_monthly_live_strategy_health_reports.py",
+                "scripts/build_monthly_russell_crash_brake_research.py",
+                "scripts/build_monthly_russell_crash_brake_review_chain.py",
+                "scripts/build_monthly_global_etf_promotion_bundles.py",
+                "scripts/build_monthly_live_replacement_reviews.py",
+                "scripts/build_monthly_plugin_promotion_reviews.py",
+                "scripts/build_promotion_readiness_report.py",
                 "scripts/run_monthly_report_bundle.py",
                 "scripts/post_monthly_ai_review_issue.py",
                 "scripts/post_codex_auto_merge_preflight_comment.py",

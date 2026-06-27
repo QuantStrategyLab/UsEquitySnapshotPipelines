@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -378,6 +379,7 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertEqual(
             {
                 "liveable_blend_baseline90_fast10": 0.10,
+                "liveable_blend_baseline90_dual10": 0.10,
                 "liveable_blend_baseline85_fast15": 0.15,
                 "liveable_blend_baseline80_fast20": 0.20,
                 "liveable_blend_baseline75_fast25": 0.25,
@@ -1079,6 +1081,78 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         weighted_events = events.loc[pd.to_numeric(events["weight_BIL"], errors="coerce").gt(0.0)]
         self.assertFalse(weighted_events.empty)
         self.assertAlmostEqual(float(weighted_events["weight_BIL"].max()), 1.0)
+
+    def test_dual_momentum_score_mode_runs_and_emits_new_candidate(self) -> None:
+        variant = research.GlobalEtfOffensiveVariantSpec(
+            candidate_id="offensive_test_dual_momentum",
+            display_name="Offensive Test Dual Momentum",
+            candidate_group="offensive_candidate",
+            rule="monthly_top2_dual_momentum_13612w_growth_pool",
+            ranking_pool=("AAA", "QQQ"),
+            primary_benchmark_symbol="SPY",
+            secondary_benchmark_symbol="QQQ",
+            safe_haven="BIL",
+            canary_assets=("SPY",),
+            top_n=2,
+            canary_bad_threshold=99,
+            score_mode="dual_momentum_13612w",
+            sma_period=200,
+        )
+        result = research.run_offensive_research(
+            price_history=_price_history(),
+            periods=(("long", "2024-01-02", None),),
+            variants=(variant,),
+            turnover_cost_bps=0.0,
+        )
+
+        self.assertEqual(result["ranking"]["Candidate"].iloc[0], "offensive_test_dual_momentum")
+        self.assertEqual(result["ranking"]["Score Mode"].iloc[0], "dual_momentum_13612w")
+        self.assertFalse(result["portfolio_returns"].empty)
+
+    def test_build_live_decision_summary_emits_structured_json_fields(self) -> None:
+        ranking = pd.DataFrame(
+            [
+                {
+                    "Candidate": "liveable_blend_baseline90_fast10",
+                    "paper_review_candidate": True,
+                    "live_review_candidate": False,
+                }
+            ]
+        )
+        period_summary = pd.DataFrame(
+            [
+                {
+                    "Candidate": "live_global_etf_rotation_defensive_baseline",
+                    "Period": "long",
+                    "CAGR": 0.12,
+                    "Excess CAGR vs Benchmark": 0.01,
+                    "Excess CAGR vs Secondary Benchmark": -0.02,
+                    "Max Drawdown": -0.20,
+                }
+            ]
+        )
+
+        summary = research.build_live_decision_summary(ranking=ranking, period_summary=period_summary)
+
+        self.assertEqual(summary["manifest_type"], "global_etf_offensive_live_decision_summary")
+        self.assertEqual(summary["decision_state"], "paper_review")
+        self.assertEqual(summary["preferred_candidates"], ["liveable_blend_baseline90_fast10"])
+        self.assertIn("paper review", str(summary["recommendation"]))
+
+    def test_write_live_decision_summary_writes_json_file(self) -> None:
+        ranking = pd.DataFrame([{"Candidate": "candidate", "paper_review_candidate": False, "live_review_candidate": False}])
+        period_summary = pd.DataFrame()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = research.write_live_decision_summary(
+                Path(tmpdir),
+                ranking=ranking,
+                period_summary=period_summary,
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(path.name, "live_decision_summary.json")
+        self.assertEqual(payload["decision_state"], "hold_baseline")
 
 
 if __name__ == "__main__":
