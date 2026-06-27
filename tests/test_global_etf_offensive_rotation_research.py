@@ -379,6 +379,7 @@ class GlobalEtfOffensiveRotationResearchTests(unittest.TestCase):
         self.assertEqual(
             {
                 "liveable_blend_baseline90_fast10": 0.10,
+                "liveable_blend_baseline90_dual10": 0.10,
                 "liveable_blend_baseline85_fast15": 0.15,
                 "liveable_blend_baseline80_fast20": 0.20,
                 "liveable_blend_baseline75_fast25": 0.25,
