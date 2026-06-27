@@ -69,12 +69,12 @@ def test_candidate_research_has_no_live_r1000_baseline_after_defensive_retiremen
 
     period_summary = result["period_summary"]
     ranking = result["ranking"]
-    assert len(ETF_CANDIDATES) + len(SNAPSHOT_CANDIDATES) == 0
-    assert len(SNAPSHOT_NEW_CANDIDATES) == 0
-    assert len(SNAPSHOT_OPTIMIZATION_CANDIDATES) == 0
-    assert len(SNAPSHOT_BASELINE_CANDIDATES) == 0
-    assert period_summary.empty
-    assert ranking.empty
+    assert len(ETF_CANDIDATES) + len(SNAPSHOT_BASELINE_CANDIDATES) + len(SNAPSHOT_OPTIMIZATION_CANDIDATES) == 0
+    assert len(SNAPSHOT_NEW_CANDIDATES) == 1
+    assert SNAPSHOT_NEW_CANDIDATES[0].candidate_id == "new_r1000_residual_strength_20"
+    assert not period_summary.empty
+    assert not ranking.empty
+    assert "new_r1000_residual_strength_20" in set(ranking["Candidate"].astype(str))
 
 
 def test_build_ranking_blocks_candidates_with_missing_periods() -> None:

@@ -125,6 +125,97 @@ def _discover_ibit_dca_research_manifests(artifact_root: Path, explicit_paths: l
     return sorted(artifact_root.rglob("ibit_dca_research_manifest.json"))
 
 
+def _discover_manifests_by_filename(artifact_root: Path, filename: str) -> list[Path]:
+    return sorted(artifact_root.rglob(filename))
+
+
+def _collect_named_manifest(path: Path, *, expected_manifest_type: str) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "manifest_path": str(path),
+        "status": "missing",
+        "status_reason": "manifest file not found",
+        "manifest_type": "",
+        "artifact_schema_version": "",
+        "experiment_profile": "",
+        "candidate_runs": [],
+        "row_count": 0,
+        "replace_live_now_count": 0,
+        "row_counts": {},
+        "artifact_count": 0,
+    }
+    if not path.exists():
+        return base
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "invalid",
+            "status_reason": f"failed to parse JSON: {exc.__class__.__name__}",
+        }
+    if not isinstance(payload, Mapping):
+        return {**base, "status": "invalid", "status_reason": "manifest root is not a JSON object"}
+
+    manifest_type = str(payload.get("manifest_type", "") or "")
+    status = "ok" if manifest_type == expected_manifest_type else "invalid"
+    status_reason = "" if status == "ok" else f"unsupported manifest_type: {manifest_type or 'missing'}"
+    artifacts = _safe_mapping(payload.get("artifacts"))
+    return {
+        **base,
+        "status": status,
+        "status_reason": status_reason,
+        "manifest_type": manifest_type,
+        "artifact_schema_version": str(payload.get("artifact_schema_version", "") or ""),
+        "experiment_profile": str(payload.get("experiment_profile", "") or ""),
+        "candidate_runs": _string_list(payload.get("candidate_runs")),
+        "row_count": int(payload.get("row_count", 0) or 0),
+        "replace_live_now_count": int(payload.get("replace_live_now_count", 0) or 0),
+        "row_counts": dict(_safe_mapping(payload.get("row_counts"))),
+        "artifact_count": len(artifacts),
+    }
+
+
+def _collect_plugin_promotion_review_manifest(path: Path) -> dict[str, Any]:
+    base = _collect_named_manifest(path, expected_manifest_type="strategy_plugin_promotion_review")
+    if base["status"] != "ok":
+        return {
+            **base,
+            "strategy": "",
+            "plugin": "",
+            "plugin_role": "",
+            "policy_evidence_status": "",
+            "replace_live_component_now_count": 0,
+            "review_rows": [],
+        }
+    try:
+        payload = load_json(path)
+    except Exception:
+        payload = {}
+    review_rows: list[dict[str, Any]] = []
+    for item in payload.get("review_rows") or ():
+        if not isinstance(item, Mapping):
+            continue
+        review_rows.append(
+            {
+                "strategy": str(item.get("strategy", "") or ""),
+                "plugin": str(item.get("plugin", "") or ""),
+                "required_gates_passed": bool(item.get("required_gates_passed", False)),
+                "replace_live_component_now": bool(item.get("replace_live_component_now", False)),
+                "blocking_reason": str(item.get("blocking_reason", "") or ""),
+                "recommended_action": str(item.get("recommended_action", "") or ""),
+            }
+        )
+    return {
+        **base,
+        "strategy": str(payload.get("strategy", "") or ""),
+        "plugin": str(payload.get("plugin", "") or ""),
+        "plugin_role": str(payload.get("plugin_role", "") or ""),
+        "policy_evidence_status": str(payload.get("policy_evidence_status", "") or ""),
+        "replace_live_component_now_count": int(payload.get("replace_live_component_now_count", 0) or 0),
+        "review_rows": review_rows,
+    }
+
+
 def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -659,11 +750,43 @@ def build_bundle(
         _collect_ibit_dca_research_manifest(path)
         for path in _discover_ibit_dca_research_manifests(root, ibit_dca_research_manifest_paths)
     ]
+    crash_brake_research_reports = [
+        _collect_named_manifest(path, expected_manifest_type="russell_top50_crash_brake_research")
+        for path in _discover_manifests_by_filename(root, "crash_brake_research_manifest.json")
+    ]
+    crash_brake_overfit_reports = [
+        _collect_named_manifest(path, expected_manifest_type="russell_top50_crash_brake_overfit_followup")
+        for path in _discover_manifests_by_filename(root, "crash_brake_overfit_followup_manifest.json")
+    ]
+    crash_brake_stress_reports = [
+        _collect_named_manifest(path, expected_manifest_type="russell_top50_crash_brake_stress_followup")
+        for path in _discover_manifests_by_filename(root, "crash_brake_stress_followup_manifest.json")
+    ]
+    crash_brake_liquidity_reports = [
+        _collect_named_manifest(path, expected_manifest_type="russell_top50_crash_brake_liquidity_followup")
+        for path in _discover_manifests_by_filename(root, "crash_brake_liquidity_followup_manifest.json")
+    ]
+    live_replacement_reviews = [
+        _collect_named_manifest(path, expected_manifest_type="live_replacement_review")
+        for path in _discover_manifests_by_filename(root, "live_replacement_manifest.json")
+    ]
+    plugin_promotion_reviews = [
+        _collect_plugin_promotion_review_manifest(path)
+        for path in _discover_manifests_by_filename(root, "plugin_promotion_review_manifest.json")
+    ]
     promotion_bundle_problem_count = sum(1 for bundle in promotion_bundles if bundle["status"] != "ok")
     shadow_live_ledger_problem_count = sum(1 for ledger in shadow_live_ledgers if ledger["status"] != "ok")
     capacity_stress_problem_count = sum(1 for stress in capacity_stresses if stress["status"] != "ok")
     live_decay_monitor_problem_count = sum(1 for monitor in live_decay_monitors if monitor["status"] != "ok")
     ibit_dca_research_problem_count = sum(1 for report in ibit_dca_research_reports if report["status"] != "ok")
+    crash_brake_research_problem_count = sum(1 for report in crash_brake_research_reports if report["status"] != "ok")
+    crash_brake_overfit_problem_count = sum(1 for report in crash_brake_overfit_reports if report["status"] != "ok")
+    crash_brake_stress_problem_count = sum(1 for report in crash_brake_stress_reports if report["status"] != "ok")
+    crash_brake_liquidity_problem_count = sum(1 for report in crash_brake_liquidity_reports if report["status"] != "ok")
+    live_replacement_review_problem_count = sum(1 for review in live_replacement_reviews if review["status"] != "ok")
+    plugin_promotion_review_problem_count = sum(
+        1 for review in plugin_promotion_reviews if review["status"] != "ok"
+    )
     profiles = [
         _collect_profile(root, contract.profile, discovered.get(contract.profile), ranking_preview_size)
         for contract in list_scheduled_profile_contracts()
@@ -678,6 +801,12 @@ def build_bundle(
         and capacity_stress_problem_count == 0
         and live_decay_monitor_problem_count == 0
         and ibit_dca_research_problem_count == 0
+        and crash_brake_research_problem_count == 0
+        and crash_brake_overfit_problem_count == 0
+        and crash_brake_stress_problem_count == 0
+        and crash_brake_liquidity_problem_count == 0
+        and live_replacement_review_problem_count == 0
+        and plugin_promotion_review_problem_count == 0
         else "warning"
     )
     snapshot_dates = sorted({profile["snapshot_as_of"] for profile in profiles if profile["snapshot_as_of"]})
@@ -712,6 +841,24 @@ def build_bundle(
         "ibit_dca_research_count": len(ibit_dca_research_reports),
         "ibit_dca_research_problem_count": ibit_dca_research_problem_count,
         "ibit_dca_research_reports": ibit_dca_research_reports,
+        "crash_brake_research_count": len(crash_brake_research_reports),
+        "crash_brake_research_problem_count": crash_brake_research_problem_count,
+        "crash_brake_research_reports": crash_brake_research_reports,
+        "crash_brake_overfit_count": len(crash_brake_overfit_reports),
+        "crash_brake_overfit_problem_count": crash_brake_overfit_problem_count,
+        "crash_brake_overfit_reports": crash_brake_overfit_reports,
+        "crash_brake_stress_count": len(crash_brake_stress_reports),
+        "crash_brake_stress_problem_count": crash_brake_stress_problem_count,
+        "crash_brake_stress_reports": crash_brake_stress_reports,
+        "crash_brake_liquidity_count": len(crash_brake_liquidity_reports),
+        "crash_brake_liquidity_problem_count": crash_brake_liquidity_problem_count,
+        "crash_brake_liquidity_reports": crash_brake_liquidity_reports,
+        "live_replacement_review_count": len(live_replacement_reviews),
+        "live_replacement_review_problem_count": live_replacement_review_problem_count,
+        "live_replacement_reviews": live_replacement_reviews,
+        "plugin_promotion_review_count": len(plugin_promotion_reviews),
+        "plugin_promotion_review_problem_count": plugin_promotion_review_problem_count,
+        "plugin_promotion_reviews": plugin_promotion_reviews,
     }
 
 
@@ -747,6 +894,8 @@ def render_job_summary(bundle: dict[str, Any]) -> str:
         f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
         f"- IBIT DCA research reports: `{bundle.get('ibit_dca_research_count', 0)}`",
         f"- IBIT DCA research issues: `{bundle.get('ibit_dca_research_problem_count', 0)}`",
+        f"- Plugin promotion reviews: `{bundle.get('plugin_promotion_review_count', 0)}`",
+        f"- Plugin promotion review issues: `{bundle.get('plugin_promotion_review_problem_count', 0)}`",
         "",
         "## Profiles",
         "",
@@ -920,6 +1069,8 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         f"- Live decay monitor issues: `{bundle.get('live_decay_monitor_problem_count', 0)}`",
         f"- IBIT DCA research reports: `{bundle.get('ibit_dca_research_count', 0)}`",
         f"- IBIT DCA research issues: `{bundle.get('ibit_dca_research_problem_count', 0)}`",
+        f"- Plugin promotion reviews: `{bundle.get('plugin_promotion_review_count', 0)}`",
+        f"- Plugin promotion review issues: `{bundle.get('plugin_promotion_review_problem_count', 0)}`",
         "",
         "## Profile Summaries",
     ]
@@ -1209,6 +1360,50 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
                 f"- Live-readiness rows: `{row_counts.get('ibit_dca_live_readiness_summary', 0)}`",
             ]
         )
+
+    lines.extend(
+        [
+            "",
+            "## Plugin Promotion Reviews",
+            "",
+            "These manifests summarize strategy-plugin promotion readiness. They are advisory evidence only "
+            "and must not enable live plugin position control by themselves.",
+        ]
+    )
+    if not bundle.get("plugin_promotion_reviews"):
+        lines.append("")
+        lines.append("_No plugin promotion review manifest found under the artifact root._")
+    for review in bundle.get("plugin_promotion_reviews", []):
+        status_note = review.get("status_reason") or "n/a"
+        lines.extend(
+            [
+                "",
+                f"### Plugin promotion review `{_md(review['manifest_path'])}`",
+                "",
+                f"- Status: `{_md(review['status'])}`",
+                f"- Status reason: {_md(status_note)}",
+                f"- Strategy: `{_md(review.get('strategy') or 'n/a')}`",
+                f"- Plugin: `{_md(review.get('plugin') or 'n/a')}`",
+                f"- Plugin role: `{_md(review.get('plugin_role') or 'n/a')}`",
+                f"- Policy evidence status: `{_md(review.get('policy_evidence_status') or 'n/a')}`",
+                f"- Replace live component now count: `{review.get('replace_live_component_now_count', 0)}`",
+                "",
+                "Review rows:",
+            ]
+        )
+        if review.get("review_rows"):
+            lines.append("")
+            lines.append("| Strategy | Plugin | Required gates | Replace live component now | Blocking reason | Recommended action |")
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for row in review["review_rows"]:
+                lines.append(
+                    f"| `{_md(row['strategy'])}` | `{_md(row['plugin'])}` | "
+                    f"`{row['required_gates_passed']}` | `{row['replace_live_component_now']}` | "
+                    f"{_md(row['blocking_reason'])} | {_md(row['recommended_action'])} |"
+                )
+        else:
+            lines.append("")
+            lines.append("_No review rows declared in manifest._")
 
     lines.extend(
         [

@@ -103,6 +103,74 @@ jobs:
             --artifact-root "${artifact_root}" \
             --output-root "${artifact_root}"
 
+      - name: Build Russell crash-brake research artifacts
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_russell_crash_brake_research.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
+      - name: Build Russell crash-brake review chain
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_russell_crash_brake_review_chain.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
+      - name: Build Global ETF promotion bundles
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_global_etf_promotion_bundles.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
+      - name: Build plugin promotion reviews
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_plugin_promotion_reviews.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
+      - name: Build live replacement reviews
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          python scripts/build_monthly_live_replacement_reviews.py \
+            --artifact-root "${artifact_root}" \
+            --output-root "${artifact_root}"
+
+      - name: Build promotion readiness report
+        run: |
+          set -euo pipefail
+          artifact_root="data/output/monthly_review_inputs"
+          if [ ! -d "${artifact_root}" ]; then
+            artifact_root="data/output"
+          fi
+          mkdir -p data/output/monthly_report_bundle/promotion_readiness
+          python scripts/build_promotion_readiness_report.py \
+            --artifact-root "${artifact_root}" \
+            --output-dir data/output/monthly_report_bundle/promotion_readiness \
+            --latest-only
+
       - name: Build monthly review bundle
         id: bundle
         run: |

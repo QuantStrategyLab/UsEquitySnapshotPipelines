@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 from typing import Iterable
@@ -16,7 +17,11 @@ from .mega_cap_leader_rotation_backtest import (
     run_backtest,
 )
 from .mega_cap_leader_rotation_concentration_variants import (
+    DAILY_RETURN_COLUMNS,
+    TRADE_COLUMNS,
     _align_weights,
+    _build_daily_return_rows,
+    _build_rebalance_trade_rows,
     _build_rolling_rows,
     _build_yearly_rows,
     _returns_from_weights,
@@ -37,6 +42,9 @@ DEFAULT_DRAWDOWN_WINDOW = 63
 DEFAULT_REBOUND_WINDOW = 21
 DEFAULT_VOL_WINDOW = 63
 DEFAULT_VOL_MEDIAN_WINDOW = 252
+CRASH_BRAKE_RESEARCH_SCHEMA_VERSION = "russell_top50_crash_brake_research.v1"
+DEFAULT_CRASH_BRAKE_EXPERIMENT_PROFILE = "panic_rebound_top2_sleeve_floor_v1"
+DEFAULT_CRASH_BRAKE_CANDIDATE_RUNS = ("crash_brake_top2_50_floor25",)
 SUMMARY_COLUMNS = (
     "Run",
     "Variant Type",
@@ -293,6 +301,8 @@ def run_crash_brake_research(
     summary_rows: list[dict[str, object]] = []
     yearly_rows: list[dict[str, object]] = []
     rolling_rows: list[dict[str, object]] = []
+    daily_return_rows: list[dict[str, object]] = []
+    trade_rows: list[dict[str, object]] = []
     rolling_values = parse_csv_ints(tuple(rolling_window_years), default=DEFAULT_ROLLING_WINDOW_YEARS)
     mode_share = float(mode_history["Mode"].eq("floor").mean()) if not mode_history.empty else 0.0
     for run_name, variant_type, weights, top2_weight, floor_weight in variants:
@@ -318,6 +328,23 @@ def run_crash_brake_research(
             }
         )
         summary_rows.append(summary)
+        trade_rows.extend(
+            _build_rebalance_trade_rows(
+                run_name=run_name,
+                variant_type=variant_type,
+                weights=weights,
+            )
+        )
+        daily_return_rows.extend(
+            _build_daily_return_rows(
+                run_name=run_name,
+                variant_type=variant_type,
+                portfolio_returns=returns,
+                reference_returns=reference_returns,
+                benchmark_symbol=benchmark_symbol,
+                broad_benchmark_symbol=broad_benchmark_symbol,
+            )
+        )
         yearly_rows.extend(
             _build_yearly_rows(
                 run_name=run_name,
@@ -345,6 +372,8 @@ def run_crash_brake_research(
         "crash_brake_yearly_summary": pd.DataFrame(yearly_rows),
         "crash_brake_rolling_summary": pd.DataFrame(rolling_rows),
         "crash_brake_mode_history": mode_history,
+        "crash_brake_daily_returns": pd.DataFrame(daily_return_rows, columns=DAILY_RETURN_COLUMNS),
+        "crash_brake_rebalance_trades": pd.DataFrame(trade_rows, columns=TRADE_COLUMNS),
     }
 
 
@@ -399,15 +428,56 @@ def main(argv: list[str] | None = None) -> int:
     yearly_path = output_dir / "crash_brake_yearly_summary.csv"
     rolling_path = output_dir / "crash_brake_rolling_summary.csv"
     mode_path = output_dir / "crash_brake_mode_history.csv"
+    trades_path = output_dir / "crash_brake_rebalance_trades.csv"
+    returns_path = output_dir / "crash_brake_daily_returns.csv"
     result["crash_brake_summary"].to_csv(summary_path, index=False)
     result["crash_brake_yearly_summary"].to_csv(yearly_path, index=False)
     result["crash_brake_rolling_summary"].to_csv(rolling_path, index=False)
     result["crash_brake_mode_history"].to_csv(mode_path, index=False)
+    result["crash_brake_rebalance_trades"].to_csv(trades_path, index=False)
+    result["crash_brake_daily_returns"].to_csv(returns_path, index=False)
+    candidate_runs = tuple(
+        str(row.get("Run", "")).strip()
+        for row in result["crash_brake_summary"].to_dict(orient="records")
+        if str(row.get("Run", "")).strip()
+    )
+    manifest = {
+        "manifest_type": "russell_top50_crash_brake_research",
+        "artifact_schema_version": CRASH_BRAKE_RESEARCH_SCHEMA_VERSION,
+        "experiment_profile": DEFAULT_CRASH_BRAKE_EXPERIMENT_PROFILE,
+        "candidate_runs": list(candidate_runs),
+        "inputs": {
+            "prices": str(args.prices),
+            "universe": str(args.universe),
+        },
+        "artifacts": {
+            "crash_brake_summary": {"path": summary_path.name},
+            "crash_brake_yearly_summary": {"path": yearly_path.name},
+            "crash_brake_rolling_summary": {"path": rolling_path.name},
+            "crash_brake_mode_history": {"path": mode_path.name},
+            "crash_brake_rebalance_trades": {"path": trades_path.name},
+            "crash_brake_daily_returns": {"path": returns_path.name},
+        },
+        "outputs": [
+            summary_path.name,
+            yearly_path.name,
+            rolling_path.name,
+            mode_path.name,
+            trades_path.name,
+            returns_path.name,
+            "crash_brake_research_manifest.json",
+        ],
+    }
+    manifest_path = output_dir / "crash_brake_research_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(result["crash_brake_summary"].head(max(int(args.print_top), 0)).to_string(index=False))
     print(f"wrote crash-brake summary -> {summary_path}")
     print(f"wrote crash-brake yearly summary -> {yearly_path}")
     print(f"wrote crash-brake rolling summary -> {rolling_path}")
     print(f"wrote crash-brake mode history -> {mode_path}")
+    print(f"wrote crash-brake rebalance trades -> {trades_path}")
+    print(f"wrote crash-brake daily returns -> {returns_path}")
+    print(f"wrote crash-brake research manifest -> {manifest_path}")
     return 0
 
 

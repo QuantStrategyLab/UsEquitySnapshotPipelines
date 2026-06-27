@@ -20,7 +20,22 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert 'python -m pip install "pandas>=2.0"' in workflow
     assert workflow.index("Install monthly review dependencies") < workflow.index("Build live strategy health reports")
     assert workflow.index("Build live strategy health reports") < workflow.index("Build live decay monitors")
-    assert workflow.index("Build live decay monitors") < workflow.index("Build monthly review bundle")
+    assert workflow.index("Build live decay monitors") < workflow.index("Build Russell crash-brake research artifacts")
+    assert workflow.index("Build Russell crash-brake research artifacts") < workflow.index(
+        "Build Russell crash-brake review chain"
+    )
+    assert workflow.index("Build Russell crash-brake review chain") < workflow.index("Build Global ETF promotion bundles")
+    assert workflow.index("Build Global ETF promotion bundles") < workflow.index("Build plugin promotion reviews")
+    assert workflow.index("Build plugin promotion reviews") < workflow.index("Build live replacement reviews")
+    assert workflow.index("Build live replacement reviews") < workflow.index("Build promotion readiness report")
+    assert workflow.index("Build promotion readiness report") < workflow.index("Build monthly review bundle")
+    assert "scripts/build_monthly_russell_crash_brake_research.py" in workflow
+    assert "scripts/build_monthly_russell_crash_brake_review_chain.py" in workflow
+    assert "scripts/build_monthly_global_etf_promotion_bundles.py" in workflow
+    assert "scripts/build_monthly_plugin_promotion_reviews.py" in workflow
+    assert "scripts/build_monthly_live_replacement_reviews.py" in workflow
+    assert "scripts/build_promotion_readiness_report.py" in workflow
+    assert "--latest-only" in workflow
     assert "gh run download" in workflow
     assert "scripts/build_monthly_live_strategy_health_reports.py" in workflow
     assert "scripts/build_monthly_live_decay_monitors.py" in workflow

@@ -76,7 +76,26 @@ SNAPSHOT_BASELINE_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
 SNAPSHOT_OPTIMIZATION_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
 
-SNAPSHOT_NEW_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = ()
+SNAPSHOT_NEW_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
+    SnapshotCandidateSpec(
+        candidate_id="new_r1000_residual_strength_20",
+        display_name="R1000 Residual Strength 20",
+        rule="sector_balanced_relative_strength",
+        candidate_group="new_snapshot_candidate",
+        benchmark_symbol="SPY",
+        safe_symbol="BOXX",
+        holdings_count=24,
+        single_name_cap=0.06,
+        sector_cap=0.20,
+        hold_bonus=0.10,
+        soft_defense_exposure=0.50,
+        hard_defense_exposure=0.10,
+        soft_breadth_threshold=0.55,
+        hard_breadth_threshold=0.35,
+        top_sectors=6,
+        notes="Sector-balanced relative-strength snapshot candidate with 20% sector cap.",
+    ),
+)
 
 SNAPSHOT_CANDIDATES: tuple[SnapshotCandidateSpec, ...] = (
     *SNAPSHOT_BASELINE_CANDIDATES,
@@ -508,6 +527,8 @@ def _build_new_snapshot_target_weights(
     safe_symbol = spec.safe_symbol.upper()
     frame["symbol"] = frame["symbol"].astype(str).str.upper().str.strip()
     frame["sector"] = frame["sector"].fillna("unknown").astype(str).str.strip().replace("", "unknown")
+    if "mom_6_1" not in frame.columns and "mom_6m" in frame.columns:
+        frame["mom_6_1"] = pd.to_numeric(frame["mom_6m"], errors="coerce")
     for column in ("mom_6_1", "mom_12_1", "sma200_gap", "vol_63", "maxdd_126"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     if "eligible" in frame.columns:
