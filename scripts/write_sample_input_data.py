@@ -6,7 +6,6 @@ from pathlib import Path
 import pandas as pd
 
 
-TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
 
@@ -26,32 +25,6 @@ def _price_rows(symbols: dict[str, tuple[float, float]], *, periods: int = 320) 
                 }
             )
     return rows
-
-
-def _tech_prices() -> pd.DataFrame:
-    symbols = {
-        "QQQ": (100.0, 0.0010),
-        "SPY": (100.0, 0.0007),
-        "BOXX": (100.0, 0.0002),
-        "AAPL": (120.0, 0.0012),
-        "MSFT": (110.0, 0.0011),
-        "META": (90.0, 0.0013),
-        "NVDA": (80.0, 0.0014),
-        "JPM": (80.0, 0.0003),
-    }
-    return pd.DataFrame(_price_rows(symbols))
-
-
-def _tech_universe() -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"symbol": "AAPL", "sector": "Information Technology"},
-            {"symbol": "MSFT", "sector": "Information Technology"},
-            {"symbol": "META", "sector": "Communication Services"},
-            {"symbol": "NVDA", "sector": "Information Technology"},
-            {"symbol": "JPM", "sector": "Financials"},
-        ]
-    )
 
 
 def _mega_prices() -> pd.DataFrame:
@@ -119,10 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if profile == TECH_COMMUNICATION_PULLBACK_PROFILE:
-        prices = _tech_prices()
-        universe = _tech_universe()
-    elif profile == RUSSELL_TOP50_LEADER_ROTATION_PROFILE:
+    if profile == RUSSELL_TOP50_LEADER_ROTATION_PROFILE:
         prices = _mega_prices()
         universe = _mega_universe()
     elif profile == GLOBAL_ETF_ROTATION_PROFILE:
