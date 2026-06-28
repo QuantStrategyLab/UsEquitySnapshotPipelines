@@ -6,9 +6,10 @@ This repo is the upstream artifact producer for snapshot-backed US equity strate
 
 ## Snapshot Profiles
 
-The only runtime-facing snapshot profile produced here is:
+Runtime-facing snapshot profiles:
 
 - `russell_top50_leader_rotation`
+- `global_etf_rotation`
 
 `russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement` and the retired dynamic/leveraged Russell Top50 research variants are archived research-only and are no longer exposed by publish or health workflows.
 
@@ -92,6 +93,7 @@ Default scheduled output prefix:
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
 | `russell_top50_leader_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
+| `global_etf_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/global_etf_rotation` |
 
 ## Russell Phase-1 Shadow Cycle (named variants + rollback review)
 
@@ -114,7 +116,7 @@ Paper or operator-review runtime config:
 }
 ```
 
-The publish workflow runs this automatically after a successful snapshot build. Outputs are included in the uploaded GitHub Actions artifact.
+The publish workflow runs this automatically after a successful Russell snapshot build. Outputs are included in the uploaded GitHub Actions artifact.
 
 Local shadow cycle from a published snapshot:
 
@@ -132,6 +134,7 @@ Outputs:
 - `russell_leader_rotation_variant_comparison.json`
 - `russell_top50_leader_rotation_shadow_review_rows.csv`
 - `russell_top50_leader_rotation_shadow_review_manifest.json`
+- `russell_top50_leader_rotation_rebalance_trades.csv`
 
 Rollback procedure (runtime config only; does not change research artifacts):
 
@@ -139,6 +142,60 @@ Rollback procedure (runtime config only; does not change research artifacts):
 2. To roll back live shape, set `leader_rotation_profile_variant` to `top4_baseline`.
 3. To use the conservative shape, set `leader_rotation_profile_variant` to `blend_top2_25_top4_75`.
 4. Keep `leader_rotation_shadow_variants=True` in paper/operator-review mode until one shadow cycle is archived for the month.
+
+### Russell Live Ledger
+
+After a rebalance executes in the broker, the shadow live ledger tracks forward performance,
+slippage, and position weights against the theoretical target.
+
+The publish workflow emits a `russell_top50_leader_rotation_rebalance_trades.csv` in the
+uploaded artifact. Download it and run the ledger:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_live_ledger \
+  --rebalance-trades data/output/russell_top50_shadow_cycle_YYYYMMDD/russell_top50_leader_rotation_rebalance_trades.csv \
+  --daily-returns path/to/daily_returns.csv \
+  --portfolio-nav 1234567.89 \
+  --output-dir data/output/russell_live_ledger_YYYYMMDD
+```
+
+Or use the `Run Russell Live Ledger` workflow dispatch in GitHub Actions.
+
+Outputs:
+
+- `shadow_live_trade_ledger.csv`
+- `shadow_live_holdings_ledger.csv`
+- `shadow_live_rebalance_summary.csv`
+- `shadow_live_ledger_manifest.json`
+
+## Global ETF Shadow Cycle (variant comparison)
+
+Evaluates the Global ETF rotation strategy with 4 runtime configurations against the published feature snapshot:
+
+| Variant | Effect |
+| --- | --- |
+| `active` | Current default (confidence-weighted top-2 with volatility gate) |
+| `equal_weight` | Equal-weight top-2 (disables confidence weighting) |
+| `no_vol_gate` | Top-2 without volatility gate |
+| `top_1` | Single-best pick (top_n=1) |
+
+Local shadow cycle from a published snapshot:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/run_global_etf_rotation_shadow_cycle.py \
+  --feature-snapshot data/output/global_etf_rotation_staging/global_etf_rotation_feature_snapshot_latest.csv \
+  --snapshot-as-of YYYY-MM-DD \
+  --output-dir data/output/global_etf_shadow_cycle_YYYYMMDD
+```
+
+Outputs:
+
+- `global_etf_rotation_runtime_diagnostics.json`
+- `global_etf_rotation_variant_comparison.json`
+
+The publish workflow runs this automatically after a successful Global ETF snapshot build.
 
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 

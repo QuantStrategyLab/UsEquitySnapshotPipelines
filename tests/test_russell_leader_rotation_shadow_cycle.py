@@ -60,3 +60,30 @@ def test_run_russell_leader_rotation_shadow_cycle_on_staging_snapshot(tmp_path: 
     assert len(review_rows) == 3
     active_row = review_rows.loc[review_rows["shadow_variant"].eq("blend_top2_50_top4_50")].iloc[0]
     assert float(active_row["turnover_delta_vs_active"]) == 0.0
+
+
+@pytest.mark.skipif(not STAGING_SNAPSHOT.exists(), reason="local staging snapshot not available")
+def test_shadow_cycle_emits_rebalance_trades(tmp_path: Path) -> None:
+    """Verify the shadow cycle emits a rebalance_trades CSV with variant-level trade rows."""
+    outputs = run_russell_leader_rotation_shadow_cycle(
+        feature_snapshot_path=STAGING_SNAPSHOT,
+        output_dir=tmp_path / "shadow_cycle",
+        snapshot_as_of="2026-04-01",
+    )
+    assert outputs.rebalance_trades_csv is not None
+    assert outputs.rebalance_trades_csv.exists()
+    trades = pd.read_csv(outputs.rebalance_trades_csv)
+    assert not trades.empty
+    assert set(trades.columns).issuperset({
+        "Date",
+        "Run",
+        "Variant Type",
+        "Symbol",
+        "Previous Weight",
+        "Target Weight",
+        "Trade Weight Delta",
+        "Abs Trade Weight Delta",
+        "Trade Side",
+    })
+    # Verify all 3 variant types are present
+    assert trades["Variant Type"].nunique() == 3
