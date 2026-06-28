@@ -93,6 +93,53 @@ Default scheduled output prefix:
 | --- | --- | --- |
 | `russell_top50_leader_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
 
+## Russell Phase-1 Shadow Cycle (named variants + rollback review)
+
+Runtime code lives in `UsEquityStrategies`. The pipeline repo archives operator-facing shadow review rows after a deterministic evaluation against the published feature snapshot.
+
+Named runtime variants:
+
+| `leader_rotation_profile_variant` | Role |
+| --- | --- |
+| `blend_top2_50_top4_50` | Current default balanced offensive shape |
+| `blend_top2_25_top4_75` | Conservative override |
+| `top4_baseline` | Rollback / fallback (no Top2 sleeve) |
+
+Paper or operator-review runtime config:
+
+```python
+{
+    "leader_rotation_profile_variant": "blend_top2_50_top4_50",
+    "leader_rotation_shadow_variants": True,
+}
+```
+
+The publish workflow runs this automatically after a successful snapshot build. Outputs are included in the uploaded GitHub Actions artifact.
+
+Local shadow cycle from a published snapshot:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/run_russell_leader_rotation_shadow_cycle.py \
+  --feature-snapshot data/output/russell_top50_leader_rotation_staging_YYYYMMDD/russell_top50_leader_rotation_feature_snapshot_latest.csv \
+  --snapshot-as-of YYYY-MM-DD \
+  --output-dir data/output/russell_top50_shadow_cycle_YYYYMMDD
+```
+
+Outputs:
+
+- `russell_leader_rotation_runtime_diagnostics.json`
+- `russell_leader_rotation_variant_comparison.json`
+- `russell_top50_leader_rotation_shadow_review_rows.csv`
+- `russell_top50_leader_rotation_shadow_review_manifest.json`
+
+Rollback procedure (runtime config only; does not change research artifacts):
+
+1. Keep actual positions on the approved active variant unless an operator explicitly approves a switch.
+2. To roll back live shape, set `leader_rotation_profile_variant` to `top4_baseline`.
+3. To use the conservative shape, set `leader_rotation_profile_variant` to `blend_top2_25_top4_75`.
+4. Keep `leader_rotation_shadow_variants=True` in paper/operator-review mode until one shadow cycle is archived for the month.
+
 The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 
 ## Monthly AI Review

@@ -376,6 +376,17 @@ jobs:
           fi
           python scripts/publish_snapshot_artifacts.py "${args[@]}"
 
+      - name: Run Russell shadow cycle
+        if: >-
+          env.PROFILE == 'russell_top50_leader_rotation' &&
+          steps.build.outputs.should_publish != 'false'
+        run: |
+          set -euo pipefail
+          python scripts/run_russell_leader_rotation_shadow_cycle.py \
+            --feature-snapshot "${{ steps.build.outputs.artifact_dir }}/russell_top50_leader_rotation_feature_snapshot_latest.csv" \
+            --snapshot-as-of "${{ steps.build.outputs.snapshot_as_of }}" \
+            --output-dir "${{ steps.build.outputs.artifact_dir }}"
+
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7
         with:

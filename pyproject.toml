@@ -27,6 +27,7 @@ useq-backtest-tech-communication-pullback = "us_equity_snapshot_pipelines.tech_c
 useq-build-russell-top50-leader-rotation-snapshot = "us_equity_snapshot_pipelines.russell_top50_leader_rotation:main"
 useq-build-russell-top50-shadow-review = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_review:main"
 useq-build-russell-top50-shadow-live-ledger = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_live_ledger:main"
+useq-run-russell-top50-shadow-cycle = "us_equity_snapshot_pipelines.russell_leader_rotation_shadow_cycle:main"
 useq-research-russell-top50-leader-rotation-capacity-stress = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_capacity_stress:main"
 useq-backtest-russell-top50-leader-rotation = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest:main"
 useq-backtest-russell-top50-leader-rotation-robustness = "us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness:main"
