@@ -100,3 +100,4 @@ def list_scheduled_profile_contracts() -> tuple[SnapshotProfileContract, ...]:
             RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
         )
     )
+# gate test comment
