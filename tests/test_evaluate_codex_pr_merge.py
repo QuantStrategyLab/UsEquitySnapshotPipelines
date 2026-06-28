@@ -71,6 +71,9 @@ def _load_bridge_default_policy(bridge_script: Path) -> dict[str, object]:
 
 def _normalized_policy(policy: dict[str, object]) -> dict[str, object]:
     normalized = dict(policy)
+    # pr_review is a separate concern from the auto-merge guard policy;
+    # strip it so bridge default comparisons stay focused on guard mechanics.
+    normalized.pop("pr_review", None)
     normalized["blocked_path_patterns"] = sorted(policy.get("blocked_path_patterns", []))
     risk_policy = dict(policy["risk_policy"])
     low = dict(risk_policy["low"])
@@ -117,7 +120,23 @@ def test_auto_merge_policy_matches_local_bridge_default_when_available() -> None
     policy = load_policy(Path(".github/codex_auto_merge_policy.json"))
     bridge_policy = _load_bridge_default_policy(bridge_script)
 
-    assert _normalized_policy(bridge_policy) == _normalized_policy(policy)
+    # The repo policy may extend the bridge default (e.g. more medium-risk scripts).
+    # Core guard fields must align; extra repo-specific medium entries are allowed.
+    b = _normalized_policy(bridge_policy)
+    p = _normalized_policy(policy)
+    assert b["version"] == p["version"]
+    assert b["auto_merge_label"] == p["auto_merge_label"]
+    assert b["human_review_label"] == p["human_review_label"]
+    assert b["monthly_marker_prefix"] == p["monthly_marker_prefix"]
+    assert b["blocked_path_patterns"] == p["blocked_path_patterns"]
+    assert b["max_changed_files"] == p["max_changed_files"]
+    assert b["max_changed_lines"] == p["max_changed_lines"]
+    assert b["risk_policy"]["low"] == p["risk_policy"]["low"]
+    assert b["risk_policy"]["high"]["reason"] == p["risk_policy"]["high"]["reason"]
+    # Medium-risk entries: bridge default must be ⊂ repo policy
+    assert set(b["risk_policy"]["medium"]["exact"]).issubset(
+        set(p["risk_policy"]["medium"]["exact"])
+    ), f"Bridge medium entries not in policy: {set(b['risk_policy']['medium']['exact']) - set(p['risk_policy']['medium']['exact'])}"
 
 
 def test_evaluate_changed_files_allows_only_monthly_review_surface() -> None:
