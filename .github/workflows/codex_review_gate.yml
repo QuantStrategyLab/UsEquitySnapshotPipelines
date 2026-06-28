@@ -19,7 +19,6 @@ on:
     types: [submitted]
 
 permissions:
-  checks: write
   contents: read
   pull-requests: read
 
