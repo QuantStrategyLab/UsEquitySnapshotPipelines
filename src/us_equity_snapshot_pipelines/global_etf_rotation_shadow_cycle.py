@@ -9,28 +9,25 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from .contracts import RUSSELL_TOP50_LEADER_ROTATION_PROFILE
-from .mega_cap_leader_rotation_shadow_review import build_shadow_review_artifacts
+from .contracts import GLOBAL_ETF_ROTATION_PROFILE
 
-DEFAULT_ACTIVE_VARIANT = "blend_top2_50_top4_50"
-NAMED_VARIANTS = (
-    "top4_baseline",
-    "blend_top2_25_top4_75",
-    "blend_top2_50_top4_50",
-)
+SHADOW_VARIANTS: dict[str, dict[str, object]] = {
+    "active": {},
+    "equal_weight": {"confidence_weighting_enabled": False, "confidence_top1_weight": 1.0},
+    "no_vol_gate": {"confidence_volatility_gate_enabled": False},
+    "top_1": {"top_n": 1},
+}
+DEFAULT_ACTIVE_VARIANT = "active"
 
 
 @dataclass(frozen=True)
 class ShadowCycleOutputs:
     diagnostics_json: Path
     variant_comparison_json: Path
-    shadow_review_csv: Path
-    shadow_review_json: Path
-    shadow_review_manifest: Path
-    rebalance_trades_csv: Path | None = None
 
 
 def _load_feature_snapshot(path: Path) -> pd.DataFrame:
+    """Load a feature snapshot CSV and validate the as_of column."""
     frame = pd.read_csv(path)
     if "as_of" not in frame.columns:
         raise ValueError(f"feature snapshot missing as_of column: {path}")
@@ -40,26 +37,8 @@ def _load_feature_snapshot(path: Path) -> pd.DataFrame:
     return frame
 
 
-def _resolve_run_as_of(feature_snapshot: pd.DataFrame, *, snapshot_as_of: str, run_as_of: str) -> str:
-    if run_as_of:
-        return str(run_as_of).strip()
-    from us_equity_strategies.strategies.mega_cap_leader_rotation import evaluate_execution_window
-
-    execution_window = evaluate_execution_window(
-        feature_snapshot,
-        run_as_of=pd.Timestamp(snapshot_as_of),
-    )
-    allowed_days = tuple(str(day) for day in execution_window.get("execution_window") or ())
-    if not allowed_days:
-        reason = str(execution_window.get("no_op_reason") or "unknown")
-        raise ValueError(
-            "no runtime execution window available for snapshot; "
-            f"snapshot_as_of={snapshot_as_of} reason={reason}"
-        )
-    return allowed_days[0]
-
-
 def _resolve_as_of(feature_snapshot: pd.DataFrame, snapshot_as_of: str) -> str:
+    """Resolve the snapshot as-of date from CLI override or the CSV contents."""
     if snapshot_as_of:
         return str(snapshot_as_of).strip()
     values = feature_snapshot["as_of"].dropna().dt.strftime("%Y-%m-%d").unique()
@@ -72,6 +51,7 @@ def _resolve_as_of(feature_snapshot: pd.DataFrame, snapshot_as_of: str) -> str:
 
 
 def _json_default(value: Any) -> Any:
+    """JSON serializer fallback for non-standard types (Timestamp, numpy scalars)."""
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if hasattr(value, "item"):
@@ -83,6 +63,7 @@ def _json_default(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Write a JSON payload to disk with consistent formatting."""
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default),
         encoding="utf-8",
@@ -90,6 +71,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _positions_to_weights(decision: Any) -> dict[str, float]:
+    """Extract target weights from a StrategyDecision's positions sequence."""
     weights: dict[str, float] = {}
     for position in getattr(decision, "positions", ()) or ():
         symbol = str(getattr(position, "symbol", "") or "").strip()
@@ -108,15 +90,12 @@ def _evaluate_variant(
     as_of: str,
     feature_snapshot: pd.DataFrame,
     portfolio_total_equity: float,
-    active_variant: str,
-    shadow_variants: bool,
+    runtime_overrides: dict[str, object],
 ) -> Any:
+    """Evaluate the strategy with a given set of runtime config overrides."""
     from quant_platform_kit.common.models import PortfolioSnapshot
     from quant_platform_kit.strategy_contracts import StrategyContext
 
-    runtime_config: dict[str, Any] = {"leader_rotation_profile_variant": active_variant}
-    if shadow_variants:
-        runtime_config["leader_rotation_shadow_variants"] = True
     return entrypoint.evaluate(
         StrategyContext(
             as_of=as_of,
@@ -128,9 +107,34 @@ def _evaluate_variant(
                 cash_balance=float(portfolio_total_equity),
                 positions=(),
             ),
-            runtime_config=runtime_config,
+            runtime_config=runtime_overrides,
         )
     )
+
+
+def _compute_turnover_delta(active_weights: dict[str, float], variant_weights: dict[str, float]) -> float:
+    """Compute the absolute weight difference / 2 (turnover) between two weight dicts."""
+    all_symbols = set(active_weights) | set(variant_weights)
+    total_diff = sum(
+        abs(active_weights.get(sym, 0.0) - variant_weights.get(sym, 0.0))
+        for sym in all_symbols
+    )
+    return total_diff / 2.0
+
+
+def _classify_weight(weights: dict[str, float], safe_haven: str, offensive_symbols: set[str]) -> tuple[float, float]:
+    """Split a weight dict into offensive and safe-haven buckets."""
+    offensive = 0.0
+    safe_haven_w = 0.0
+    for symbol, weight in weights.items():
+        if symbol == safe_haven:
+            safe_haven_w += weight
+        elif symbol in offensive_symbols:
+            offensive += weight
+        else:
+            # Symbols not in the offensive pool default to offensive
+            offensive += weight
+    return offensive, safe_haven_w
 
 
 def build_variant_comparison(
@@ -140,28 +144,50 @@ def build_variant_comparison(
     feature_snapshot: pd.DataFrame,
     portfolio_total_equity: float,
     active_variant: str = DEFAULT_ACTIVE_VARIANT,
+    safe_haven: str = "BIL",
 ) -> dict[str, Any]:
+    """Evaluate all shadow variants and build a side-by-side comparison."""
+    # Determine the set of offensive symbols from the active variant's weights
+    active_decision = _evaluate_variant(
+        entrypoint=entrypoint,
+        as_of=as_of,
+        feature_snapshot=feature_snapshot,
+        portfolio_total_equity=portfolio_total_equity,
+        runtime_overrides=SHADOW_VARIANTS.get(active_variant, {}),
+    )
+    active_weights = _positions_to_weights(active_decision)
+    offensive_symbols = set(active_weights.keys()) - {safe_haven}
+
     rows: list[dict[str, Any]] = []
-    for variant in NAMED_VARIANTS:
+    for variant_name, overrides in SHADOW_VARIANTS.items():
         decision = _evaluate_variant(
             entrypoint=entrypoint,
             as_of=as_of,
             feature_snapshot=feature_snapshot,
             portfolio_total_equity=portfolio_total_equity,
-            active_variant=variant,
-            shadow_variants=False,
+            runtime_overrides=overrides,
         )
         weights = _positions_to_weights(decision)
-        rows.append(
-            {
-                "variant": variant,
-                "is_active": variant == active_variant,
-                "selected_count": int(decision.diagnostics.get("selected_count") or 0),
-                "target_weights": weights,
-                "realized_stock_weight": float(decision.diagnostics.get("realized_stock_weight") or 0.0),
-                "safe_haven_weight": float(decision.diagnostics.get("safe_haven_weight") or 0.0),
-            }
-        )
+        diagnostics = dict(decision.diagnostics) if hasattr(decision, "diagnostics") else {}
+        selected_count = int(diagnostics.get("selected_count") or 0)
+        offensive_weight, safe_haven_weight = _classify_weight(weights, safe_haven, offensive_symbols)
+
+        row: dict[str, Any] = {
+            "variant": variant_name,
+            "is_active": variant_name == active_variant,
+            "selected_count": selected_count,
+            "offensive_weight": offensive_weight,
+            "safe_haven_weight": safe_haven_weight,
+            "target_weights": weights,
+        }
+
+        if variant_name == active_variant:
+            row["turnover_delta_vs_active"] = 0.0
+        else:
+            row["turnover_delta_vs_active"] = _compute_turnover_delta(active_weights, weights)
+
+        rows.append(row)
+
     return {
         "as_of": as_of,
         "active_variant": active_variant,
@@ -169,52 +195,39 @@ def build_variant_comparison(
     }
 
 
-def _build_rebalance_trades(
-    variant_comparison: dict[str, Any],
-    as_of: str,
-) -> pd.DataFrame:
-    """Convert variant comparison target-weights into a rebalance_trades CSV frame.
-
-    Each variant's target weights are flattened into trade rows, assuming
-    ``previous_weight=0`` (first rebalance or zero initial position).
-    """
-    rows: list[dict[str, Any]] = []
-    for variant_entry in variant_comparison.get("variants", ()):
-        variant_name: str = variant_entry["variant"]
-        target_weights: dict[str, float] = variant_entry.get("target_weights") or {}
-        for symbol, target_weight in sorted(target_weights.items()):
-            trade_weight_delta = target_weight - 0.0
-            if trade_weight_delta > 0:
-                side = "Buy"
-            elif trade_weight_delta < 0:
-                side = "Sell"
-            else:
-                side = "Hold"
-            rows.append(
-                {
-                    "Date": as_of,
-                    "Run": "snapshot",
-                    "Variant Type": variant_name,
-                    "Symbol": symbol,
-                    "Previous Weight": 0.0,
-                    "Target Weight": round(target_weight, 6),
-                    "Trade Weight Delta": round(trade_weight_delta, 6),
-                    "Abs Trade Weight Delta": round(abs(trade_weight_delta), 6),
-                    "Trade Side": side,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def run_russell_leader_rotation_shadow_cycle(
+def run_global_etf_rotation_shadow_cycle(
     *,
     feature_snapshot_path: str | Path,
     output_dir: str | Path,
     snapshot_as_of: str = "",
-    run_as_of: str = "",
     active_variant: str = DEFAULT_ACTIVE_VARIANT,
     portfolio_total_equity: float = 100_000.0,
 ) -> ShadowCycleOutputs:
+    """Run the Global ETF Rotation shadow cycle against a feature snapshot.
+
+    Evaluates the strategy with each shadow variant configuration, records
+    diagnostics for the active configuration, and writes both diagnostics and
+    variant comparison output to the specified output directory.
+
+    Parameters
+    ----------
+    feature_snapshot_path
+        Path to the feature snapshot CSV file.
+    output_dir
+        Directory for output JSON artifacts.
+    snapshot_as_of
+        Optional snapshot as-of override (YYYY-MM-DD). If omitted, inferred
+        from the CSV contents.
+    active_variant
+        Which variant to treat as the active (production) configuration.
+    portfolio_total_equity
+        Portfolio total equity used for deterministic runtime evaluation.
+
+    Returns
+    -------
+    ShadowCycleOutputs
+        Paths to the written diagnostics and variant comparison JSON files.
+    """
     feature_snapshot_path = Path(feature_snapshot_path).expanduser().resolve()
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,81 +236,58 @@ def run_russell_leader_rotation_shadow_cycle(
 
     feature_snapshot = _load_feature_snapshot(feature_snapshot_path)
     snapshot_as_of_resolved = _resolve_as_of(feature_snapshot, snapshot_as_of)
-    run_as_of_resolved = _resolve_run_as_of(
-        feature_snapshot,
-        snapshot_as_of=snapshot_as_of_resolved,
-        run_as_of=run_as_of,
-    )
-    entrypoint = get_strategy_entrypoint(RUSSELL_TOP50_LEADER_ROTATION_PROFILE)
+    entrypoint = get_strategy_entrypoint(GLOBAL_ETF_ROTATION_PROFILE)
 
+    active_overrides = SHADOW_VARIANTS.get(active_variant, {})
     active_decision = _evaluate_variant(
         entrypoint=entrypoint,
-        as_of=run_as_of_resolved,
+        as_of=snapshot_as_of_resolved,
         feature_snapshot=feature_snapshot,
         portfolio_total_equity=portfolio_total_equity,
-        active_variant=active_variant,
-        shadow_variants=True,
+        runtime_overrides=active_overrides,
     )
+
     variant_comparison = build_variant_comparison(
         entrypoint=entrypoint,
-        as_of=run_as_of_resolved,
+        as_of=snapshot_as_of_resolved,
         feature_snapshot=feature_snapshot,
         portfolio_total_equity=portfolio_total_equity,
         active_variant=active_variant,
     )
 
-    rebalance_trades = _build_rebalance_trades(variant_comparison, as_of=run_as_of_resolved)
-    rebalance_trades_csv = output_dir / "russell_top50_leader_rotation_rebalance_trades.csv"
-    rebalance_trades.to_csv(rebalance_trades_csv, index=False)
-
-    diagnostics_payload = {
-        "strategy_profile": RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
+    diagnostics_payload: dict[str, Any] = {
+        "strategy_profile": GLOBAL_ETF_ROTATION_PROFILE,
         "snapshot_as_of": snapshot_as_of_resolved,
-        "run_as_of": run_as_of_resolved,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "diagnostics": dict(active_decision.diagnostics),
+        "diagnostics": dict(active_decision.diagnostics) if hasattr(active_decision, "diagnostics") else {},
     }
-    diagnostics_json = output_dir / "russell_leader_rotation_runtime_diagnostics.json"
+    diagnostics_json = output_dir / "global_etf_rotation_runtime_diagnostics.json"
     _write_json(diagnostics_json, diagnostics_payload)
 
-    comparison_json = output_dir / "russell_leader_rotation_variant_comparison.json"
+    comparison_json = output_dir / "global_etf_rotation_variant_comparison.json"
     _write_json(comparison_json, variant_comparison)
 
-    shadow_outputs = build_shadow_review_artifacts(
-        diagnostics_json,
-        output_dir=output_dir,
-        profile=RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
-        snapshot_as_of=snapshot_as_of_resolved,
-    )
     return ShadowCycleOutputs(
         diagnostics_json=diagnostics_json,
         variant_comparison_json=comparison_json,
-        shadow_review_csv=shadow_outputs.csv_path,
-        shadow_review_json=shadow_outputs.json_path,
-        shadow_review_manifest=shadow_outputs.manifest_path,
-        rebalance_trades_csv=rebalance_trades_csv,
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run Russell Top50 Phase-1 shadow cycle: evaluate named runtime variants, "
-            "emit shadow review rows, and archive operator artifacts."
+            "Run Global ETF Rotation shadow cycle: evaluate named runtime variants, "
+            "emit variant comparison, and archive operator artifacts."
         )
     )
-    parser.add_argument("--feature-snapshot", required=True, help="Russell feature snapshot CSV path")
-    parser.add_argument("--output-dir", required=True, help="Directory for diagnostics and shadow review artifacts")
+    parser.add_argument("--feature-snapshot", required=True, help="Global ETF feature snapshot CSV path")
+    parser.add_argument("--output-dir", required=True, help="Directory for diagnostics and variant comparison artifacts")
     parser.add_argument("--snapshot-as-of", default="", help="Optional snapshot as-of override (YYYY-MM-DD)")
-    parser.add_argument(
-        "--run-as-of",
-        default="",
-        help="Optional runtime evaluation date inside the monthly execution window (defaults to first allowed day)",
-    )
     parser.add_argument(
         "--active-variant",
         default=DEFAULT_ACTIVE_VARIANT,
-        choices=NAMED_VARIANTS,
+        choices=tuple(SHADOW_VARIANTS),
         help="Active runtime variant used for returned positions and shadow deltas",
     )
     parser.add_argument(
@@ -310,20 +300,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for the Global ETF Rotation shadow cycle."""
     args = build_parser().parse_args(argv)
-    outputs = run_russell_leader_rotation_shadow_cycle(
+    outputs = run_global_etf_rotation_shadow_cycle(
         feature_snapshot_path=args.feature_snapshot,
         output_dir=args.output_dir,
         snapshot_as_of=str(args.snapshot_as_of or ""),
-        run_as_of=str(args.run_as_of or ""),
         active_variant=str(args.active_variant),
         portfolio_total_equity=float(args.portfolio_total_equity),
     )
     print(f"runtime_diagnostics_json={outputs.diagnostics_json}")
     print(f"variant_comparison_json={outputs.variant_comparison_json}")
-    print(f"shadow_review_csv={outputs.shadow_review_csv}")
-    print(f"shadow_review_manifest={outputs.shadow_review_manifest}")
-    print(f"rebalance_trades_csv={outputs.rebalance_trades_csv}")
     return 0
 
 

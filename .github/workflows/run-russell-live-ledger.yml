@@ -1,0 +1,62 @@
+name: Run Russell Live Ledger
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebalance_trades_path:
+        description: "Path to rebalance_trades CSV (artifact download or GCS)"
+        required: true
+        type: string
+      daily_returns_path:
+        description: "Path to daily_returns CSV"
+        required: true
+        type: string
+      portfolio_nav:
+        description: "Current portfolio NAV in USD"
+        required: true
+        type: string
+      prices_path:
+        description: "Optional price history CSV"
+        required: false
+        type: string
+      snapshot_as_of:
+        description: "Snapshot date (YYYY-MM-DD)"
+        required: true
+        type: string
+      slippage_bps:
+        description: "Slippage assumption in basis points"
+        required: false
+        default: "5.0"
+        type: string
+
+env:
+  LEDGER_OUTPUT_DIR: data/output/russell_live_ledger_${{ github.event.inputs.snapshot_as_of }}
+
+jobs:
+  run-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          pip install .
+
+      - name: Run shadow live ledger
+        run: |
+          python -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_shadow_live_ledger \
+            --rebalance-trades "${{ github.event.inputs.rebalance_trades_path }}" \
+            --daily-returns "${{ github.event.inputs.daily_returns_path }}" \
+            --portfolio-nav "${{ github.event.inputs.portfolio_nav }}" \
+            --slippage-bps "${{ github.event.inputs.slippage_bps }}" \
+            --output-dir "${{ env.LEDGER_OUTPUT_DIR }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: russell-live-ledger-${{ github.run_id }}
+          path: ${{ env.LEDGER_OUTPUT_DIR }}/
