@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
-TECH_COMMUNICATION_PULLBACK_PROFILE = "tech_communication_pullback_enhancement"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
 NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE = "new_r1000_residual_strength_20"
@@ -36,24 +35,6 @@ class SnapshotProfileContract:
 
 
 _PROFILE_CONTRACTS = {
-    TECH_COMMUNICATION_PULLBACK_PROFILE: SnapshotProfileContract(
-        profile=TECH_COMMUNICATION_PULLBACK_PROFILE,
-        display_name="Tech/Communication Pullback Enhancement",
-        contract_version="tech_communication_pullback_enhancement.feature_snapshot.v1",
-        snapshot_filename="tech_communication_pullback_enhancement_feature_snapshot_latest.csv",
-        manifest_filename="tech_communication_pullback_enhancement_feature_snapshot_latest.csv.manifest.json",
-        ranking_filename="tech_communication_pullback_enhancement_ranking_latest.csv",
-        legacy_aliases=("qqq_tech_enhancement",),
-        current_gcs_prefix_hint=(
-            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/interactive_brokers/"
-            "tech_communication_pullback_enhancement"
-        ),
-        neutral_gcs_prefix_hint=(
-            "gs://qsl-runtime-logs-interactivebrokersquant/strategy-artifacts/us_equity/"
-            "tech_communication_pullback_enhancement"
-        ),
-        manifest_required_by_runtime=True,
-    ),
     RUSSELL_TOP50_LEADER_ROTATION_PROFILE: SnapshotProfileContract(
         profile=RUSSELL_TOP50_LEADER_ROTATION_PROFILE,
         display_name="Russell Top50 Leader Rotation",

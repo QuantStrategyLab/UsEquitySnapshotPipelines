@@ -11,7 +11,7 @@ Runtime-facing snapshot profiles:
 - `russell_top50_leader_rotation`
 - `global_etf_rotation`
 
-`russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement` and the retired dynamic/leveraged Russell Top50 research variants are archived research-only and are no longer exposed by publish or health workflows.
+`russell_1000_multi_factor_defensive` is retired from this repository's runtime contract after failing to justify its complexity versus direct SPY exposure. `tech_communication_pullback_enhancement` profile contract and all its source modules have been removed (archived research-only; see git history for the last snapshot before cleanup).
 
 ## Manual Local Build
 
