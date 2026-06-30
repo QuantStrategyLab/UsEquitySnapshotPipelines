@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.us_equity_strategy_candidates import (
+from us_equity_snapshot_pipelines.research.us_equity_strategy_candidates import (
     ETF_CANDIDATES,
     SNAPSHOT_BASELINE_CANDIDATES,
-    SNAPSHOT_CANDIDATES,
     SNAPSHOT_NEW_CANDIDATES,
     SNAPSHOT_OPTIMIZATION_CANDIDATES,
     build_ranking,

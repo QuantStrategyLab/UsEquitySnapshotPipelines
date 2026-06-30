@@ -16,7 +16,6 @@ from scripts.check_codex_auto_merge_readiness import (
     DEFAULT_API_URL,
     DEFAULT_AUTO_MERGE_WORKFLOW,
     DEFAULT_POLICY_PATH,
-    DEFAULT_REQUIRED_STATUS_CHECKS,
     GitHubApiError,
     ReadinessError,
     evaluate_readiness,

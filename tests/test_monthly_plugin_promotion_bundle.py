@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from scripts.run_monthly_report_bundle import build_bundle, render_ai_review_input, render_job_summary

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.soxl_soxx_trend_income_backtest import build_indicator_history, run_backtest
+from us_equity_snapshot_pipelines.pipelines.soxl_soxx_trend_income_backtest import build_indicator_history, run_backtest
 
 
 def _build_synthetic_prices() -> pd.DataFrame:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.leveraged_strategy_candidates import (
+from us_equity_snapshot_pipelines.research.leveraged_strategy_candidates import (
     LEVERAGED_CANDIDATES,
     build_ranking,
     collect_required_symbols,

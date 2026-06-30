@@ -4,14 +4,14 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TRUE_CRISIS
-from us_equity_snapshot_pipelines.crisis_response_shadow_plugin import (
+from us_equity_snapshot_pipelines.research.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TRUE_CRISIS
+from us_equity_snapshot_pipelines.research.crisis_response_shadow_plugin import (
     SCHEMA_VERSION,
     build_crisis_response_shadow_signal,
     main,
     write_crisis_response_shadow_outputs,
 )
-from us_equity_snapshot_pipelines.taco_panic_rebound_research import EVENT_KIND_SHOCK, TradeWarEvent
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_research import EVENT_KIND_SHOCK, TradeWarEvent
 
 
 def _financial_crisis_prices() -> pd.DataFrame:

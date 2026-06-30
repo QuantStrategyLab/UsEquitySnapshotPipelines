@@ -9,27 +9,11 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from quant_platform_kit.common.artifacts import sha256_file, write_json
+
 from .contracts import SOURCE_PROJECT, SnapshotProfileContract
 
 STRATEGY_PLUGIN_GCS_PREFIX_ROOT = "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity"
-
-
-def sha256_file(path: str | Path) -> str:
-    hasher = hashlib.sha256()
-    with Path(path).open("rb") as fh:
-        while True:
-            chunk = fh.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-    return hasher.hexdigest()
-
-
-def write_json(path: str | Path, payload: Mapping[str, Any]) -> Path:
-    resolved = Path(path)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    return resolved
 
 
 def normalize_strategy_plugin_gcs_prefix(

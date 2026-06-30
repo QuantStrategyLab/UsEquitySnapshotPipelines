@@ -10,7 +10,7 @@ import pandas as pd
 from .global_etf_offensive_rotation_research import resolve_experiment_profile
 from .global_etf_oos_window_diagnostics import build_global_etf_oos_window_diagnostics
 from .live_replacement_review import _render_markdown, build_live_replacement_review
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 PROMOTION_BUNDLE_SCHEMA_VERSION = "global_etf_promotion_bundle.v1"
 

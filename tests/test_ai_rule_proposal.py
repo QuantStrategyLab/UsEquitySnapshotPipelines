@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from us_equity_snapshot_pipelines.ai_rule_proposal import build_rule_spec_from_ai_proposal
+from us_equity_snapshot_pipelines.research.ai_rule_proposal import build_rule_spec_from_ai_proposal
 
 
 def test_ai_rule_proposal_converts_only_to_transparent_rule_spec() -> None:

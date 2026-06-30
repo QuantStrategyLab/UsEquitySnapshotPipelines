@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.snapshot_promotion_bundle import build_snapshot_promotion_bundle, main
+from us_equity_snapshot_pipelines.pipelines.snapshot_promotion_bundle import build_snapshot_promotion_bundle, main
 
 
 def _write_inputs(root: Path) -> Path:

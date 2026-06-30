@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from ..pipelines.mega_cap_leader_rotation_backtest import (
     _normalize_price_history as _normalize_r1000_price_history,
     _normalize_universe as _normalize_universe_snapshot,
     _precompute_symbol_feature_history,
@@ -16,8 +16,8 @@ from .mega_cap_leader_rotation_backtest import (
     build_monthly_rebalance_dates,
     resolve_active_universe,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
-from .yfinance_prices import download_price_history
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
+from ..yfinance_prices import download_price_history
 
 DEFAULT_PERIODS = (
     ("short", "2025-06-01", None),

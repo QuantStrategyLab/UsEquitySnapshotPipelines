@@ -10,7 +10,7 @@ import pandas as pd
 
 from .artifacts import sha256_file, write_json
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_floats_no_percent
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CAPACITY_STRESS_SCHEMA_VERSION = "russell_top50_capacity_stress.v1"
 DIAGNOSTIC_SCOPE = "capacity_and_implementation_shortfall_stress_not_live_gate"

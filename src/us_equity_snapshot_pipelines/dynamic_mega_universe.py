@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     _dynamic_mega_issuer_key,
     _normalize_price_history,
     _normalize_universe,

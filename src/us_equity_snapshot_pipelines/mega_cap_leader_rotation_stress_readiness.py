@@ -9,7 +9,7 @@ import pandas as pd
 from .mega_cap_leader_rotation_concentration_variants import run_concentration_variant_research
 from .mega_cap_leader_rotation_dynamic_validation import DEFAULT_ROLLING_WINDOW_YEARS, parse_csv_ints
 from .mega_cap_leader_rotation_live_readiness import evaluate_live_readiness
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_FIXED_BLEND_TOP2_WEIGHTS = (0.25, 0.50)
 DEFAULT_STRESS_TURNOVER_COST_BPS = (5.0, 10.0, 15.0, 25.0)

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from .yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
+from .yfinance_prices import download_price_history_with_proxy_candidates
 
 DEFAULT_LONG_HISTORY_START = "2018-01-01"
 DEFAULT_SYNTHETIC_HISTORY_START = "1999-12-01"

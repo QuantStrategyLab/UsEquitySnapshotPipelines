@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.crisis_response_research import (
+from us_equity_snapshot_pipelines.research.crisis_response_research import (
     CRISIS_CONTEXT_MODE_V2_CONTEXT_PACK,
     EXTERNAL_VALUATION_MODE_PRICE_OR_EXTERNAL,
     ROUTE_NO_ACTION,
@@ -13,7 +13,7 @@ from us_equity_snapshot_pipelines.crisis_response_research import (
     build_event_response_decisions,
     run_crisis_response_research,
 )
-from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
+from us_equity_snapshot_pipelines.research.crisis_regime_guard_research import (
     CONTEXT_GATE_BUBBLE_OR_FINANCIAL,
     CONTEXT_GATE_RUBRIC,
     apply_context_gate_to_signal,
@@ -24,7 +24,7 @@ from us_equity_snapshot_pipelines.crisis_regime_guard_research import (
     build_guard_transition_events,
     run_crisis_guard_research,
 )
-from us_equity_snapshot_pipelines.taco_panic_rebound_research import (
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_research import (
     DEFAULT_SYMBOLS,
     EVENT_KIND_SHOCK,
     EVENT_KIND_SOFTENING,
@@ -39,8 +39,8 @@ from us_equity_snapshot_pipelines.taco_panic_rebound_research import (
     summarize_symbol_windows,
     split_symbols,
 )
-from us_equity_snapshot_pipelines.taco_panic_rebound_backtest import run_backtest as run_portfolio_backtest
-from us_equity_snapshot_pipelines.taco_panic_rebound_overlay_compare import (
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_backtest import run_backtest as run_portfolio_backtest
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_overlay_compare import (
     AUDIT_MODE_CRISIS_VETO,
     add_synthetic_attack_close,
     apply_price_crisis_guard_to_weights,

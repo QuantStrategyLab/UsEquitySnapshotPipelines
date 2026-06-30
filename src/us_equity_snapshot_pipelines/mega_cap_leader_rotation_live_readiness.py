@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_REQUIRED_UNIVERSE_LAG_DAYS = 21
 DEFAULT_MIN_5Y_EXCESS_CAGR_VS_QQQ = 0.0

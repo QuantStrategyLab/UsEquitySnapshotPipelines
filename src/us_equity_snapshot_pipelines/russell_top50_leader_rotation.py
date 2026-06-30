@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .contracts import RUSSELL_TOP50_LEADER_ROTATION_PROFILE
-from .mega_cap_leader_rotation_snapshot import main as _main
+from .pipelines.mega_cap_leader_rotation_snapshot import main as _main
 
 
 def main(argv: list[str] | None = None) -> int:

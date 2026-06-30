@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from quant_strategy_plugins import strategy_plugin_runner as base_runner
 
-from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_TRUE_CRISIS
+from us_equity_snapshot_pipelines.research.crisis_response_research import ROUTE_TRUE_CRISIS
 from us_equity_snapshot_pipelines.strategy_plugin_runner import (
     GENERAL_MARKET_REGIME_NOTIFICATION_TARGET,
     IBIT_SMART_DCA_STRATEGY,

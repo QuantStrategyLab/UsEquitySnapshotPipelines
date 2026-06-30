@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_floats_no_percent, parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_PORTFOLIO_NAV_VALUES = (100_000.0, 500_000.0, 1_000_000.0, 5_000_000.0)
 DEFAULT_ADV_WINDOW = 20

@@ -4,8 +4,8 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.taco_panic_rebound_research import EVENT_KIND_SOFTENING, TradeWarEvent
-from us_equity_snapshot_pipelines.taco_rebound_shadow_plugin import (
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_research import EVENT_KIND_SOFTENING, TradeWarEvent
+from us_equity_snapshot_pipelines.research.taco_rebound_shadow_plugin import (
     ACTION_NOTIFY_MANUAL_REVIEW,
     ROUTE_TACO_REBOUND,
     build_taco_rebound_shadow_signal,

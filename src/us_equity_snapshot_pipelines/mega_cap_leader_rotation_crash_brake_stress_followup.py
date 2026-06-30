@@ -18,7 +18,7 @@ from .mega_cap_leader_rotation_stress_readiness import (
     parse_csv_ints,
     parse_csv_strings,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_STRESS_FOLLOWUP_SCHEMA_VERSION = "russell_top50_crash_brake_stress_followup.v1"
 DEFAULT_TURNOVER_COST_BPS_VALUES = (5.0, 10.0, 15.0, 25.0)

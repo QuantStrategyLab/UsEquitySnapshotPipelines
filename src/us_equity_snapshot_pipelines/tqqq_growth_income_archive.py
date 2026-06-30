@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import inspect
-import json
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -27,7 +26,7 @@ from .soxl_soxx_trend_income_archive import (
     _sanitize_argv,
     _source_ranges,
 )
-from .soxl_soxx_trend_income_backtest import (
+from .pipelines.soxl_soxx_trend_income_backtest import (
     _build_close_matrix,
     _build_price_frame,
     _format_summary,

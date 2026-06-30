@@ -8,8 +8,8 @@ from typing import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .soxl_soxx_trend_income_backtest import _build_close_matrix, _build_price_frame
-from .soxl_soxx_trend_income_backtest import run_backtest as run_soxl_backtest
+from .pipelines.soxl_soxx_trend_income_backtest import _build_close_matrix, _build_price_frame
+from .pipelines.soxl_soxx_trend_income_backtest import run_backtest as run_soxl_backtest
 from .tqqq_growth_income_archive import _income_disabled_overrides
 from .tqqq_growth_income_archive import run_backtest as run_tqqq_backtest
 

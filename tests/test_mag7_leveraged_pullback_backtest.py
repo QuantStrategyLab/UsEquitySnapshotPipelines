@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.mag7_leveraged_pullback_backtest import (
+from us_equity_snapshot_pipelines.pipelines.mag7_leveraged_pullback_backtest import (
     BEAR_CANDIDATE_MODE_MARKET_SAFE,
     DYNAMIC_PROFILE,
     PROFILE,

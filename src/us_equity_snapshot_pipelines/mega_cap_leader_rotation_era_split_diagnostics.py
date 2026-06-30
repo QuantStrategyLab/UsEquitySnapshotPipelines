@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_ERA_SPECS = (
     "2017_2019_early_live_window:2017-10-02:2019-12-31,"

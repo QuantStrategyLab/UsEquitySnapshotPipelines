@@ -7,14 +7,14 @@ from typing import Iterable
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     SAFE_HAVEN,
     _normalize_price_history,
     run_backtest,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_LAG_TRADING_DAYS = (0, 1, 5, 21)
 DEFAULT_VALIDATION_CONFIGS = "top2_cap50:2:0.50,top3_cap35:3:0.35"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.crisis_context_research import (
+from us_equity_snapshot_pipelines.research.crisis_context_research import (
     CONTEXT_LABEL_EXOGENOUS_POLICY_RESCUE,
     CONTEXT_LABEL_EXOGENOUS_SHOCK,
     CONTEXT_LABEL_FINANCIAL_CRISIS,
@@ -17,8 +17,8 @@ from us_equity_snapshot_pipelines.crisis_context_research import (
     build_context_diagnostics,
     build_crisis_context_features,
 )
-from us_equity_snapshot_pipelines.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TACO, ROUTE_TRUE_CRISIS
-from us_equity_snapshot_pipelines.taco_panic_rebound_research import EVENT_KIND_SHOCK, TradeWarEvent
+from us_equity_snapshot_pipelines.research.crisis_response_research import ROUTE_NO_ACTION, ROUTE_TACO, ROUTE_TRUE_CRISIS
+from us_equity_snapshot_pipelines.research.taco_panic_rebound_research import EVENT_KIND_SHOCK, TradeWarEvent
 
 
 def test_crisis_context_features_detect_valuation_bubble_route() -> None:

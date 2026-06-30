@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 REVIEW_COLUMNS = (
     "strategy_line",

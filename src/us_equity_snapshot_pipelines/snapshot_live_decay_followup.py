@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from .live_decay_monitor import build_live_decay_monitor, build_markdown_report, DecayPolicy
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.live_decay_monitor import build_live_decay_monitor, build_markdown_report, DecayPolicy
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_MIN_REALIZED_EXPECTED_RATIO = 0.35
 DEFAULT_WINDOWS = (63, 126, 252)

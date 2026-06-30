@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.snapshot_shadow_review import build_snapshot_shadow_review_rows
+from us_equity_snapshot_pipelines.pipelines.snapshot_shadow_review import build_snapshot_shadow_review_rows
 
 
 def test_build_snapshot_shadow_review_rows_marks_candidate_pass_when_recent_excess_is_stable() -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.ibit_smart_dca_research import (
+from us_equity_snapshot_pipelines.research.ibit_smart_dca_research import (
     build_ibit_smart_dca_research,
     write_ibit_smart_dca_research_outputs,
 )

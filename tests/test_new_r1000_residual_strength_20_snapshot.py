@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.new_r1000_residual_strength_20_snapshot import build_artifacts
+from us_equity_snapshot_pipelines.pipelines.new_r1000_residual_strength_20_snapshot import build_artifacts
 
 
 def _sample_prices() -> pd.DataFrame:

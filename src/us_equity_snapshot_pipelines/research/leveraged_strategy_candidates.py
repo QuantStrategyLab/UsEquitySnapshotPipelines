@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
-from .yfinance_prices import download_price_history
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
+from ..yfinance_prices import download_price_history
 
 DEFAULT_PERIODS = (
     ("short", "2025-06-01", None),

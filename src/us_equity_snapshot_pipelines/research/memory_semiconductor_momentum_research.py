@@ -9,8 +9,8 @@ from typing import Sequence
 import pandas as pd
 
 from .ai_rule_proposal import build_rule_spec_from_ai_proposal
-from .russell_1000_multi_factor_defensive_snapshot import read_table
-from .universe_audit_contracts import (
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
+from ..universe_audit_contracts import (
     ELIGIBLE_FOR_RESEARCH_RANKING,
     ScoreTermSpec,
     SeasoningRule,
@@ -18,9 +18,9 @@ from .universe_audit_contracts import (
     SymbolSpec,
     WATCHLIST,
 )
-from .universe_audit_engine import normalize_symbols as _normalize_symbols
-from .universe_audit_engine import run_universe_audit
-from .yfinance_prices import download_yahoo_chart_price_history
+from ..universe_audit_engine import normalize_symbols as _normalize_symbols
+from ..universe_audit_engine import run_universe_audit
+from ..yfinance_prices import download_yahoo_chart_price_history
 
 DEFAULT_PRICE_START_DATE = "2024-01-01"
 DEFAULT_MEMORY_ETF_SYMBOLS = ("DRAM",)

@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     SAFE_HAVEN,
@@ -22,7 +22,7 @@ from .mega_cap_leader_rotation_dynamic_validation import (
     parse_validation_configs,
     run_dynamic_universe_validation,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_PROXY_UNIVERSE_SIZE = 1000
 DEFAULT_START_DELAY_TRADING_DAYS = 1

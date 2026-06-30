@@ -22,7 +22,7 @@ from .intraday_crash_circuit_breaker_research import (
     _run_core_backtest,
     _summarize_returns,
 )
-from .soxl_soxx_trend_income_backtest import _build_close_matrix
+from .pipelines.soxl_soxx_trend_income_backtest import _build_close_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = ROOT / "data/output/intraday_scheme_research"

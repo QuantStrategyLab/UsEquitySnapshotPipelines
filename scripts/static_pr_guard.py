@@ -242,7 +242,7 @@ def main() -> int:
     head_sha = (pr.get("head") or {}).get("sha")
 
     if not pr_number or not head_sha:
-        print(f"::warning::Cannot resolve PR context")
+        print("::warning::Cannot resolve PR context")
         return 0
 
     print(f"PR #{pr_number} sha={head_sha[:12]}")
@@ -326,7 +326,7 @@ def main() -> int:
     # and this is just the static guard adding info
     existing = get_existing_check_run(token, repo, head_sha)
     if existing and existing.get("conclusion") == "failure":
-        print(f"Check run already failed by App gate; not overwriting")
+        print("Check run already failed by App gate; not overwriting")
         return 0
 
     try:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest import EXPANDED_POOL
+from us_equity_snapshot_pipelines.pipelines.mega_cap_leader_rotation_backtest import EXPANDED_POOL
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_robustness import (
     main,
     rank_robustness_summary,

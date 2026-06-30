@@ -11,8 +11,8 @@ import pandas as pd
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 from us_equity_strategies.strategies.soxl_soxx_trend_income import build_rebalance_plan
 
-from .artifacts import write_json
-from .yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
+from ..artifacts import write_json
+from ..yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
 
 PROFILE = "soxl_soxx_trend_income"
 MANAGED_SYMBOLS = ("SOXL", "SOXX", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")

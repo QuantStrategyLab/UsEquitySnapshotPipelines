@@ -11,8 +11,8 @@ import pandas as pd
 from us_equity_strategies.manifests import tecl_xlk_trend_income_manifest
 from us_equity_strategies.strategies.tecl_xlk_trend_income import build_rebalance_plan
 
-from .artifacts import write_json
-from .yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
+from ..artifacts import write_json
+from ..yfinance_prices import download_price_history_with_proxy_candidates, load_proxy_candidates
 
 PROFILE = "tecl_xlk_trend_income"
 MANAGED_SYMBOLS = ("TECL", "XLK", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")

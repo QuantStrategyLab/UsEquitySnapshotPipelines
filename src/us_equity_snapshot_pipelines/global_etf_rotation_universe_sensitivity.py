@@ -9,9 +9,9 @@ import pandas as pd
 
 from us_equity_strategies.strategies import global_etf_rotation as strategy
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
-from .taco_panic_rebound_backtest import DEFAULT_TURNOVER_COST_BPS, summarize_returns
-from .taco_panic_rebound_research import price_history_to_close_matrix
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
+from .research.taco_panic_rebound_backtest import DEFAULT_TURNOVER_COST_BPS, summarize_returns
+from .research.taco_panic_rebound_research import price_history_to_close_matrix
 from .yfinance_prices import download_price_history
 
 DEFAULT_PRICE_START_DATE = "2015-01-01"
