@@ -9,7 +9,7 @@ import pandas as pd
 
 from .mega_cap_leader_rotation_crash_brake_research import DEFAULT_CRASH_BRAKE_CANDIDATE_RUNS
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_LIVE_READINESS_FOLLOWUP_SCHEMA_VERSION = "russell_top50_crash_brake_live_readiness_followup.v1"
 DEFAULT_REFERENCE_RUN = "blend_top2_50_top4_50_no_brake"

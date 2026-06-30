@@ -8,7 +8,7 @@ from typing import Any
 
 from . import live_decay_monitor as decay
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_ints, parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_LIVE_DECAY_FOLLOWUP_SCHEMA_VERSION = "russell_top50_crash_brake_live_decay_followup.v1"
 

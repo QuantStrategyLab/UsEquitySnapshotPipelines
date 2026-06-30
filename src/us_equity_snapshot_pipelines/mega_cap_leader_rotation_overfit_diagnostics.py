@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_TOP_QUANTILE = 0.25
 DEFAULT_MAX_PBO_PROXY_LOSS_RATE = 0.50

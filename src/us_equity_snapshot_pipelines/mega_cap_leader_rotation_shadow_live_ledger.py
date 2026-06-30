@@ -9,7 +9,7 @@ import pandas as pd
 
 from .artifacts import sha256_file, write_json
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 SHADOW_LIVE_LEDGER_SCHEMA_VERSION = "russell_top50_shadow_live_ledger.v1"
 DEFAULT_FORWARD_WINDOW_DAYS = 21

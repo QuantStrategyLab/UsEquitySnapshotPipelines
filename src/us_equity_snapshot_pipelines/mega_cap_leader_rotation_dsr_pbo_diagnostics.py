@@ -26,7 +26,7 @@ import pandas as pd
 
 from .mega_cap_leader_rotation_reality_check import DEFAULT_ALPHA, DEFAULT_BENCHMARK_COLUMN, _prepare_excess_returns
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_CSCV_GROUPS = 8
 DEFAULT_TRADING_DAYS = 252.0

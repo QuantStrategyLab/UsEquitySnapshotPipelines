@@ -1,37 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+
+from quant_platform_kit.common.contracts import SnapshotProfileContract
 
 
 SOURCE_PROJECT = "UsEquitySnapshotPipelines"
 RUSSELL_TOP50_LEADER_ROTATION_PROFILE = "russell_top50_leader_rotation"
 GLOBAL_ETF_ROTATION_PROFILE = "global_etf_rotation"
 NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE = "new_r1000_residual_strength_20"
-
-
-@dataclass(frozen=True)
-class SnapshotProfileContract:
-    profile: str
-    display_name: str
-    contract_version: str
-    snapshot_filename: str
-    manifest_filename: str
-    ranking_filename: str
-    release_summary_filename: str = "release_status_summary.json"
-    legacy_aliases: tuple[str, ...] = ()
-    current_gcs_prefix_hint: str | None = None
-    neutral_gcs_prefix_hint: str | None = None
-    manifest_required_by_runtime: bool = False
-
-    def artifact_paths(self, output_dir: str | Path) -> dict[str, Path]:
-        root = Path(output_dir)
-        return {
-            "snapshot": root / self.snapshot_filename,
-            "manifest": root / self.manifest_filename,
-            "ranking": root / self.ranking_filename,
-            "release_summary": root / self.release_summary_filename,
-        }
 
 
 _PROFILE_CONTRACTS = {

@@ -7,29 +7,21 @@ from typing import Mapping, Sequence
 import pandas as pd
 
 from .crisis_regime_guard_research import (
-    DEFAULT_BUBBLE_LOOKBACK_DAYS,
-    DEFAULT_BUBBLE_PERSISTENCE_DAYS,
-    DEFAULT_BUBBLE_RETURN_THRESHOLD,
-    DEFAULT_FINANCIAL_DRAWDOWN_THRESHOLD,
-    DEFAULT_FINANCIAL_RELATIVE_LOOKBACK_DAYS,
-    DEFAULT_FINANCIAL_RELATIVE_RETURN_THRESHOLD,
     DEFAULT_FINANCIAL_SYMBOL,
     DEFAULT_MARKET_SYMBOL,
     apply_context_gate_to_signal,
     build_crisis_context_opinions,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_backtest import DEFAULT_TURNOVER_COST_BPS
 from .taco_panic_rebound_overlay_compare import (
     DEFAULT_ATTACK_SYMBOL,
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_CASH_SYMBOL,
-    DEFAULT_COMPARISON_PERIODS,
     DEFAULT_OVERLAY_SLEEVE_RATIOS,
     DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN,
     DEFAULT_PRICE_CRISIS_GUARD_MA_DAYS,
     DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
-    DEFAULT_SAFE_SYMBOL,
     DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     add_synthetic_attack_close,
     apply_price_crisis_guard_to_weights,
@@ -47,7 +39,6 @@ from .taco_panic_rebound_overlay_compare import (
     _integrate_overlay_weights,
     _next_index_date,
     _parse_float_tuple,
-    _parse_str_tuple,
     _run_taco_overlay_backtest,
     _weights_to_returns,
 )
@@ -60,7 +51,7 @@ from .taco_panic_rebound_research import (
     price_history_to_close_matrix,
     resolve_trade_war_event_set,
 )
-from .yfinance_prices import download_price_history
+from ..yfinance_prices import download_price_history
 
 DEFAULT_START_DATE = "1999-03-10"
 DEFAULT_PRICE_START_DATE = "1999-03-10"

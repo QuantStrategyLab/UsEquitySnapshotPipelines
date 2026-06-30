@@ -9,7 +9,7 @@ import pandas as pd
 
 from .mega_cap_leader_rotation_promotion_review import PROMOTION_REVIEW_COLUMNS
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_PROMOTION_REVIEW_SCHEMA_VERSION = "russell_top50_crash_brake_promotion_review.v1"
 CRASH_BRAKE_PROMOTABLE_RUN = "crash_brake_top2_50_floor25"

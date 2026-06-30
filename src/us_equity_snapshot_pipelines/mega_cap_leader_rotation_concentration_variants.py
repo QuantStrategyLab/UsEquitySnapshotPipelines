@@ -7,7 +7,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     SAFE_HAVEN,
@@ -25,7 +25,7 @@ from .mega_cap_leader_rotation_dynamic_validation import (
     lag_universe_history,
     parse_csv_ints,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_BLEND_TOP2_WEIGHTS = (0.25, 0.50, 0.75)
 DEFAULT_DYNAMIC_DRAWDOWN_THRESHOLDS = (0.08, 0.10, 0.12)

@@ -7,7 +7,7 @@ from typing import Any
 
 from .mega_cap_leader_rotation_overfit_diagnostics import build_overfit_diagnostics
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_OVERFIT_FOLLOWUP_SCHEMA_VERSION = "russell_top50_crash_brake_overfit_followup.v1"
 

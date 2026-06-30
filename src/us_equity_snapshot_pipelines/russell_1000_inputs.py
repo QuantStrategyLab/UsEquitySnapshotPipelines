@@ -24,7 +24,7 @@ from .russell_1000_history import (
     resolve_iwb_holdings_snapshot,
 )
 from .yfinance_prices import download_price_history
-from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table, write_table
 
 DEFAULT_EXTRA_SYMBOLS = ("QQQ", "SPY", "BOXX")
 SOURCE_INPUT_MANIFEST_FILENAME = "r1000_source_input_manifest.json"

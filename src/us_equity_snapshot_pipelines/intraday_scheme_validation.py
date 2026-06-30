@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
-import numpy as np
 import pandas as pd
 
 from .intraday_crash_circuit_breaker_research import (

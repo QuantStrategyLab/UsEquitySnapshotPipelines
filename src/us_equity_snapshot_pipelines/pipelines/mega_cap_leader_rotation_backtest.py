@@ -9,12 +9,12 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .russell_1000_history import (
+from ..russell_1000_history import (
     build_symbol_alias_candidates,
     download_ishares_historical_universe_snapshots,
 )
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
-from .yfinance_prices import download_price_history
+from ..yfinance_prices import download_price_history
 
 PROFILE = "mega_cap_leader_rotation"
 BENCHMARK_SYMBOL = "QQQ"

@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table, write_table
 
 SNAPSHOT_FILENAME_DATE_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})")
 UNIVERSE_HISTORY_COLUMNS = ("symbol", "sector", "start_date", "end_date")

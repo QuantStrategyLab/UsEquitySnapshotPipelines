@@ -12,13 +12,13 @@ import pandas as pd
 from us_equity_strategies.manifests import global_etf_rotation_manifest
 from us_equity_strategies.strategies import global_etf_rotation as strategy
 
-from .artifacts import write_release_status_summary, write_snapshot_manifest
-from .contracts import GLOBAL_ETF_ROTATION_PROFILE, get_profile_contract
+from ..artifacts import write_release_status_summary, write_snapshot_manifest
+from ..contracts import GLOBAL_ETF_ROTATION_PROFILE, get_profile_contract
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
-from .universe_audit_contracts import ScoreTermSpec, SeasoningRule, SelectionRuleSpec, SymbolSpec, WATCHLIST
-from .universe_audit_engine import normalize_symbols as _normalize_symbols
-from .universe_audit_engine import run_universe_audit
-from .yfinance_prices import download_yahoo_chart_price_history
+from ..universe_audit_contracts import ScoreTermSpec, SeasoningRule, SelectionRuleSpec, SymbolSpec, WATCHLIST
+from ..universe_audit_engine import normalize_symbols as _normalize_symbols
+from ..universe_audit_engine import run_universe_audit
+from ..yfinance_prices import download_yahoo_chart_price_history
 
 DEFAULT_PRICE_START_DATE = "2023-01-01"
 DEFAULT_MIN_TRADING_DAYS = 252

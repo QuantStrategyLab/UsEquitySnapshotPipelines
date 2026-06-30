@@ -8,8 +8,8 @@ from typing import Iterable
 
 import pandas as pd
 
-from .artifacts import build_snapshot_input_metadata, write_release_status_summary, write_snapshot_manifest
-from .contracts import NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE, get_profile_contract
+from ..artifacts import build_snapshot_input_metadata, write_release_status_summary, write_snapshot_manifest
+from ..contracts import NEW_R1000_RESIDUAL_STRENGTH_20_PROFILE, get_profile_contract
 from .mega_cap_leader_rotation_backtest import (
     _normalize_price_history as _normalize_r1000_price_history,
     _normalize_universe as _normalize_universe_snapshot,
@@ -18,7 +18,7 @@ from .mega_cap_leader_rotation_backtest import (
     resolve_active_universe,
 )
 from .russell_1000_multi_factor_defensive_snapshot import read_table, write_table
-from .us_equity_strategy_candidates import SNAPSHOT_CANDIDATES, SnapshotCandidateSpec, _build_new_snapshot_target_weights
+from ..research.us_equity_strategy_candidates import SNAPSHOT_CANDIDATES, SnapshotCandidateSpec, _build_new_snapshot_target_weights
 
 DEFAULT_MIN_PRICE_USD = 10.0
 DEFAULT_MIN_ADV20_USD = 20_000_000.0

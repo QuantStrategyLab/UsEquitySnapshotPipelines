@@ -14,7 +14,7 @@ from .mega_cap_leader_rotation_liquidity_diagnostics import (
     build_liquidity_diagnostics,
 )
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_floats_no_percent, parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 CRASH_BRAKE_LIQUIDITY_FOLLOWUP_SCHEMA_VERSION = "russell_top50_crash_brake_liquidity_followup.v1"
 

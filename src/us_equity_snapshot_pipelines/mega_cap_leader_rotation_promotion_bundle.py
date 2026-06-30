@@ -15,7 +15,7 @@ from .mega_cap_leader_rotation_promotion_review import build_promotion_review
 from .mega_cap_leader_rotation_reality_check import build_reality_check_diagnostics
 from .mega_cap_leader_rotation_spa_check import build_spa_diagnostics
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_CANDIDATE_RUNS = "base_top4_cap25,blend_top2_25_top4_75,blend_top2_50_top4_50"
 DEFAULT_BOOTSTRAP_ITERATIONS = 1000

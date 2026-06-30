@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 
 def _price_history_to_close_matrix(price_history) -> pd.DataFrame:

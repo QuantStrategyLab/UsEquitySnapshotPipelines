@@ -7,7 +7,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     SAFE_HAVEN,
@@ -37,7 +37,7 @@ from .mega_cap_leader_rotation_stress_readiness import (
     DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
     parse_csv_floats_no_percent,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_WALK_FORWARD_TRAIN_YEARS = 3
 DEFAULT_WALK_FORWARD_MIN_TRAIN_EXCESS_CAGR = 0.0

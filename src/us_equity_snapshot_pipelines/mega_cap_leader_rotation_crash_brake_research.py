@@ -8,7 +8,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     SAFE_HAVEN,
@@ -32,7 +32,7 @@ from .mega_cap_leader_rotation_dynamic_validation import (
     lag_universe_history,
     parse_csv_ints,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_BASELINE_TOP2_WEIGHT = 0.50
 DEFAULT_FLOOR_TOP2_WEIGHT = 0.25

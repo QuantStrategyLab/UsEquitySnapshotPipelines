@@ -9,7 +9,7 @@ from scripts.build_monthly_plugin_promotion_reviews import (
     discover_plugin_promotion_review_inputs,
     main,
 )
-from us_equity_snapshot_pipelines.ibit_smart_dca_research import (
+from us_equity_snapshot_pipelines.research.ibit_smart_dca_research import (
     build_ibit_smart_dca_research,
     write_ibit_smart_dca_research_outputs,
 )

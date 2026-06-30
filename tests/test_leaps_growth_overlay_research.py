@@ -7,7 +7,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from us_equity_snapshot_pipelines.leaps_growth_overlay_research import (
+from us_equity_snapshot_pipelines.research.leaps_growth_overlay_research import (
     LeapsProxyConfig,
     run_leaps_growth_overlay_option_chain_backtest,
     run_leaps_growth_overlay_proxy,

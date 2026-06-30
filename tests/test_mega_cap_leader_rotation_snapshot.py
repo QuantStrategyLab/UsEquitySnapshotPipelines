@@ -4,7 +4,7 @@ import json
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.mega_cap_leader_rotation_snapshot import build_artifacts
+from us_equity_snapshot_pipelines.pipelines.mega_cap_leader_rotation_snapshot import build_artifacts
 
 
 PROFILE = "russell_top50_leader_rotation"

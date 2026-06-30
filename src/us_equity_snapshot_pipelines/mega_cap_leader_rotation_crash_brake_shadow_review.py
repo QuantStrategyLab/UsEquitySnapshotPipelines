@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -13,7 +12,7 @@ from .mega_cap_leader_rotation_shadow_review import (
     build_shadow_review_artifacts,
 )
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_strings
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 
 def _final_target_weights(trades: pd.DataFrame, *, safe_haven: str) -> tuple[int, float, float]:

@@ -5,8 +5,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .universe_audit_contracts import HardGateSpec, ScoreTermSpec, SelectionRuleSpec, WATCHLIST
-from .universe_audit_engine import DEFAULT_ALLOWED_METRICS
+from ..universe_audit_contracts import HardGateSpec, ScoreTermSpec, SelectionRuleSpec, WATCHLIST
+from ..universe_audit_engine import DEFAULT_ALLOWED_METRICS
 
 AI_HARD_GATE_KEY_TO_METRIC = {
     "min_trading_days": "trading_days",

@@ -7,15 +7,13 @@ from typing import Mapping, Sequence
 
 import pandas as pd
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_backtest import DEFAULT_TURNOVER_COST_BPS, summarize_returns
 from .taco_panic_rebound_overlay_compare import (
     DEFAULT_BENCHMARK_SYMBOL,
     DEFAULT_CASH_SYMBOL,
-    DEFAULT_PRICE_CRISIS_GUARD_DRAWDOWN,
     DEFAULT_PRICE_CRISIS_GUARD_MA_DAYS,
     DEFAULT_PRICE_CRISIS_GUARD_MA_SLOPE_DAYS,
-    DEFAULT_SAFE_SYMBOL,
     DEFAULT_SYNTHETIC_ATTACK_EXPENSE_RATE,
     add_synthetic_attack_close,
     apply_price_crisis_guard_to_weights,
@@ -23,7 +21,7 @@ from .taco_panic_rebound_overlay_compare import (
     build_tqqq_growth_income_base_weights,
 )
 from .taco_panic_rebound_research import price_history_to_close_matrix
-from .yfinance_prices import download_price_history
+from ..yfinance_prices import download_price_history
 
 DEFAULT_START_DATE = "1999-03-10"
 DEFAULT_PRICE_START_DATE = "1999-03-10"

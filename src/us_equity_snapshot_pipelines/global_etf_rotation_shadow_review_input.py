@@ -18,7 +18,7 @@ from .global_etf_rotation_shadow_review import (
     RUNTIME_SHADOW_REVIEW_SCHEMA_VERSION,
     SHADOW_REVIEW_ROW_FIELDS,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 
 @dataclass(frozen=True)

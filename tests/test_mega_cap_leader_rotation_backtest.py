@@ -4,7 +4,7 @@ import math
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest import (
+from us_equity_snapshot_pipelines.pipelines.mega_cap_leader_rotation_backtest import (
     BACKTEST_SUMMARY_COLUMNS,
     _normalize_price_history,
     _precompute_symbol_feature_history,

@@ -1,7 +1,6 @@
 """Tests for run_codex_pr_review.py — policy classification, findings evaluation, output parsing."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import sys
 

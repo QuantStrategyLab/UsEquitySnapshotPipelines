@@ -4,11 +4,10 @@ import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
-from .live_replacement_review import _render_markdown
+from ..live_replacement_review import _render_markdown
 from .russell_1000_multi_factor_defensive_snapshot import read_table
 
 PROMOTION_BUNDLE_SCHEMA_VERSION = "snapshot_us_equity_promotion_bundle.v1"

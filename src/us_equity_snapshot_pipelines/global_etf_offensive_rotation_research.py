@@ -13,7 +13,7 @@ import pandas as pd
 from us_equity_strategies.manifests import global_etf_rotation_manifest
 from us_equity_strategies.strategies import global_etf_rotation as strategy
 
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 from .yfinance_prices import download_price_history
 
 DEFAULT_PERIODS = (

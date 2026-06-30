@@ -14,7 +14,7 @@ import pandas as pd
 from .artifacts import sha256_file, write_json
 from .backtest_windows import build_benchmark_returns, build_window_summary
 from .contracts import SOURCE_PROJECT
-from .soxl_soxx_trend_income_backtest import (
+from .pipelines.soxl_soxx_trend_income_backtest import (
     DEFAULT_BACKTEST_START,
     DEFAULT_INITIAL_EQUITY_USD,
     DEFAULT_OUTPUT_COLUMNS,

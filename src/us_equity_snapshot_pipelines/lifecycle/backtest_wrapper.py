@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Mapping
 
-from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestRunner
 from quant_platform_kit.strategy_lifecycle.contracts import BacktestResult
 
 # Known backtest entrypoints for US equity strategies
@@ -24,7 +23,6 @@ class UsEquityBacktestRunner:
     """
 
     def __init__(self, *, scripts_dir: str | None = None):
-        import os
         from pathlib import Path
 
         self._scripts_dir = Path(scripts_dir) if scripts_dir else (

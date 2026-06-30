@@ -8,7 +8,7 @@ import pandas as pd
 
 from .crisis_regime_guard_research import CRISIS_COMPARISON_PERIODS
 from .crisis_response_research import ROUTE_NO_ACTION, ROUTE_TACO, ROUTE_TRUE_CRISIS
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from ..pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 from .taco_panic_rebound_research import (
     DEFAULT_EVENT_SET,
     EVENT_KIND_SHOCK,
@@ -19,7 +19,7 @@ from .taco_panic_rebound_research import (
     price_history_to_close_matrix,
     resolve_trade_war_event_set,
 )
-from .yfinance_prices import download_price_history
+from ..yfinance_prices import download_price_history
 
 DEFAULT_START_DATE = "1999-03-10"
 DEFAULT_PRICE_START_DATE = "1999-03-10"

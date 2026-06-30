@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .mega_cap_leader_rotation_backtest import (
+from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
     POOL_SYMBOLS,
@@ -25,7 +25,7 @@ from .mega_cap_leader_rotation_backtest import (
     _normalize_price_history,
     _precompute_symbol_feature_history,
 )
-from .russell_1000_multi_factor_defensive_snapshot import read_table
+from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
 DEFAULT_POOLS = ("mag7", "expanded")
 DEFAULT_TOP_N_VALUES = (3, 4, 5)
