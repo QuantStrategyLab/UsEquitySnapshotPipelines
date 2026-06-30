@@ -13,7 +13,7 @@ dependencies = [
   "google-cloud-storage>=2.18",
   "requests[socks]>=2.31",
   "yfinance>=0.2.40",
-  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@e86554b",
+  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@f10d571a15aa367cb693495abfac941c2e1f9c9a",
   "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@12d01a2fa7da75b6492af7b16f635d45adb322eb",
   "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@a9546362a27abdfc9cd5184b30ca8d26fd774187",
 ]
