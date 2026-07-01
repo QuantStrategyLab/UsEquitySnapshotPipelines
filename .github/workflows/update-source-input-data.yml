@@ -284,6 +284,11 @@ jobs:
       contents: read
     steps:
       - name: Re-run failed jobs once
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run rerun "${GITHUB_RUN_ID}" --failed --repo "${GITHUB_REPOSITORY}"
+        run: |
+          set -euo pipefail
+          if ! gh run rerun "${GITHUB_RUN_ID}" --failed --repo "${GITHUB_REPOSITORY}"; then
+            echo "::warning::Failed to request rerun for ${GITHUB_RUN_ID}; the run may still be active."
+          fi
