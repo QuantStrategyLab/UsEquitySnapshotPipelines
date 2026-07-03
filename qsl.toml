@@ -1,0 +1,11 @@
+[qsl]
+repo = "UsEquitySnapshotPipelines"
+tier = "pipeline"
+ring = 2
+allow_legacy = false
+enforce_bundle = false
+artifact_contract = "docs/artifact_contract.md"
+snapshot_contract = "docs/artifact_contract.md"
+
+[qsl.compat]
+bundle = "2026.07.0"
