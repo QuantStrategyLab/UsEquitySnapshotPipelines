@@ -113,9 +113,9 @@ def test_auto_merge_policy_file_is_machine_readable() -> None:
 
 
 def test_auto_merge_policy_matches_local_bridge_default_when_available() -> None:
-    bridge_script = Path(__file__).resolve().parents[2] / "CodexAuditBridge" / "scripts/run_monthly_codex_audit.py"
+    bridge_script = Path(__file__).resolve().parents[2] / "AIAuditBridge" / "scripts/run_monthly_codex_audit.py"
     if not bridge_script.exists():
-        pytest.skip("local CodexAuditBridge checkout is not available")
+        pytest.skip("local AIAuditBridge checkout is not available")
 
     policy = load_policy(Path(".github/codex_auto_merge_policy.json"))
     bridge_policy = _load_bridge_default_policy(bridge_script)

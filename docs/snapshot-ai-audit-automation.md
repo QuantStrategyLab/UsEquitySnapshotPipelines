@@ -8,8 +8,8 @@ while keeping high-risk operations behind human review.
 1. `Publish Snapshot Artifacts` succeeds on a scheduled source-input refresh.
 2. `Monthly Snapshot Review` downloads artifacts, builds live strategy health
    evidence, creates/updates the monthly review issue, and dispatches
-   `CodexAuditBridge`.
-3. `CodexAuditBridge` reviews the issue and may open a remediation PR for safe,
+   `AIAuditBridge`.
+3. `AIAuditBridge` reviews the issue and may open a remediation PR for safe,
    focused fixes.
 4. Source-repository CI must pass.
 5. `Auto Merge Codex Remediation PR` evaluates the PR marker, labels, file
@@ -50,8 +50,8 @@ artifacts first to see why the unattended merge stopped.
 
 The changed-file allowlist is stored in
 `.github/codex_auto_merge_policy.json`. The source merge guard reads this file,
-and CodexAuditBridge can read the same policy from its temporary source
-checkout before adding `auto-merge-ok`. CodexAuditBridge reads the baseline
+and AIAuditBridge can read the same policy from its temporary source
+checkout before adding `auto-merge-ok`. AIAuditBridge reads the baseline
 policy before Codex edits run, so a remediation PR cannot grant itself a broader
 auto-merge surface by editing the policy file. Keep this file in sync with any
 new monthly-review automation surface. `blocked_path_patterns` are evaluated
@@ -91,7 +91,7 @@ impact, and downstream broker behavior.
   `True`, or `TRUE`, the workflow skips even if a PR already has
   `auto-merge-ok`.
 - `Monthly Snapshot Review` runs `scripts/check_codex_auto_merge_readiness.py`
-  before dispatching CodexAuditBridge. When `CODEX_AUDIT_AUTO_MERGE=true`, the
+  before dispatching AIAuditBridge. When `CODEX_AUDIT_AUTO_MERGE=true`, the
   readiness gate requires the local auto-merge workflow/policy guard surface,
   the Codex feedback retry workflow, the configured source labels (`auto-merge-ok` and `human-review-required` by
   default), a protected source branch or active ruleset, and the required CI
@@ -99,7 +99,7 @@ impact, and downstream broker behavior.
   variable `CODEX_AUDIT_REQUIRED_STATUS_CHECKS` to a comma- or newline-separated
   list if branch protection uses different check names.
   If any check is missing or unreadable, the workflow fails closed for guarded
-  auto-merge by dispatching CodexAuditBridge with `auto_merge=false`; the AI
+  auto-merge by dispatching AIAuditBridge with `auto_merge=false`; the AI
   audit and PR creation path still runs.
 - When guarded auto-merge is requested, `Monthly Snapshot Review` first runs
   `scripts/sync_codex_auto_merge_labels.py` to create the configured source
@@ -117,7 +117,7 @@ impact, and downstream broker behavior.
   It uses the same `CODEX_AUDIT_REQUIRED_STATUS_CHECKS` value as readiness when
   rendering branch-protection and verification commands.
 - Ensure the bridge token can create/apply the configured auto-merge label
-  (`auto-merge-ok` by default). CodexAuditBridge creates the label on demand
+  (`auto-merge-ok` by default). AIAuditBridge creates the label on demand
   before applying it; if token permissions block label creation, create the
   label manually before enabling `CODEX_AUDIT_AUTO_MERGE=true`.
 - Ensure the bridge token can also create/apply the high-risk review label
@@ -138,7 +138,7 @@ impact, and downstream broker behavior.
   missing and permissions allow it, and leaves the issue for manual review.
   Feedback retries run
   the same readiness gate as the monthly review; if guarded auto-merge is not
-  ready, the retry still dispatches CodexAuditBridge with `auto_merge=false`.
+  ready, the retry still dispatches AIAuditBridge with `auto_merge=false`.
 - Automatic feedback retries default to `3` rounds. Set repository variable
   `CODEX_AUDIT_MAX_FEEDBACK_ROUNDS` to adjust this without editing the workflow;
   invalid values fall back to `3`, and values are clamped to the safe range
