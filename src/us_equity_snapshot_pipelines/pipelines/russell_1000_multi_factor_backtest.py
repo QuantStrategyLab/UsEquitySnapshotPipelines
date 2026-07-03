@@ -4,19 +4,39 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from us_equity_strategies.strategies.russell_1000_multi_factor_defensive import (
-    BENCHMARK_SYMBOL,
-    DEFAULT_HARD_BREADTH_THRESHOLD,
-    DEFAULT_HARD_DEFENSE_EXPOSURE,
-    DEFAULT_HOLD_BONUS,
-    DEFAULT_HOLDINGS_COUNT,
-    DEFAULT_SECTOR_CAP,
-    DEFAULT_SINGLE_NAME_CAP,
-    DEFAULT_SOFT_BREADTH_THRESHOLD,
-    DEFAULT_SOFT_DEFENSE_EXPOSURE,
-    SAFE_HAVEN,
-    build_target_weights,
-)
+try:
+    from us_equity_strategies.strategies.russell_1000_multi_factor_defensive import (
+        BENCHMARK_SYMBOL,
+        DEFAULT_HARD_BREADTH_THRESHOLD,
+        DEFAULT_HARD_DEFENSE_EXPOSURE,
+        DEFAULT_HOLD_BONUS,
+        DEFAULT_HOLDINGS_COUNT,
+        DEFAULT_SECTOR_CAP,
+        DEFAULT_SINGLE_NAME_CAP,
+        DEFAULT_SOFT_BREADTH_THRESHOLD,
+        DEFAULT_SOFT_DEFENSE_EXPOSURE,
+        SAFE_HAVEN,
+        build_target_weights,
+    )
+    _RETIRED_STRATEGY_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:
+    if exc.name not in {
+        "us_equity_strategies",
+        "us_equity_strategies.strategies.russell_1000_multi_factor_defensive",
+    }:
+        raise
+    BENCHMARK_SYMBOL = "SPY"
+    SAFE_HAVEN = "BOXX"
+    DEFAULT_HOLDINGS_COUNT = 24
+    DEFAULT_SINGLE_NAME_CAP = 0.06
+    DEFAULT_SECTOR_CAP = 0.20
+    DEFAULT_HOLD_BONUS = 0.15
+    DEFAULT_SOFT_DEFENSE_EXPOSURE = 0.50
+    DEFAULT_HARD_DEFENSE_EXPOSURE = 0.10
+    DEFAULT_SOFT_BREADTH_THRESHOLD = 0.55
+    DEFAULT_HARD_BREADTH_THRESHOLD = 0.35
+    build_target_weights = None
+    _RETIRED_STRATEGY_IMPORT_ERROR = exc
 
 BACKTEST_SUMMARY_COLUMNS = (
     "Start",
@@ -300,6 +320,12 @@ def run_backtest(
     hard_breadth_threshold: float = DEFAULT_HARD_BREADTH_THRESHOLD,
     turnover_cost_bps: float = 0.0,
 ):
+    if build_target_weights is None:
+        raise RuntimeError(
+            "russell_1000_multi_factor_defensive was retired from UsEquityStrategies; "
+            "use mega_cap_leader_rotation backtests for active Russell Top50 research."
+        ) from _RETIRED_STRATEGY_IMPORT_ERROR
+
     prices = _normalize_price_history(price_history)
     universe = _normalize_universe_snapshot(universe_snapshot)
 
