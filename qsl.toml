@@ -8,4 +8,4 @@ artifact_contract = "docs/artifact_contract.md"
 snapshot_contract = "docs/artifact_contract.md"
 
 [qsl.compat]
-bundle = "2026.07.0"
+bundle = "2026.07.1"
