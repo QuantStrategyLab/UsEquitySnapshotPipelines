@@ -60,3 +60,5 @@ jobs:
         with:
           name: russell-live-ledger-${{ github.run_id }}
           path: ${{ env.LEDGER_OUTPUT_DIR }}/
+          if-no-files-found: error
+          retention-days: 7

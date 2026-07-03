@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
+RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
 QUANT_PLATFORM_KIT_REF = "d786c1140967f0e96e35599d057f0655e5a9ba25"
@@ -15,7 +16,8 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
 
     assert "Publish Strategy Plugins" in workflow
     assert "verify-main-ci:" in workflow
-    assert "cron: '30 22 * * 1-5'" in workflow
+    assert "cron: '31 22 * * 1-5'" in workflow
+    assert "cron: '30 22 * * 1-5'" not in workflow
     assert "market-regime-control:" in workflow
     assert "strategy_profile: tqqq_growth_income" in workflow
     assert "strategy_profile: soxl_soxx_trend_income" in workflow
@@ -181,3 +183,11 @@ def test_strategy_plugin_alert_state_settings_uses_qpk_project_id_keyword() -> N
     assert "StrategyPluginAlertStateSettings.from_env(" in alert_module
     assert "project_id=resolved_env.get(\"GCP_PROJECT_ID\")" in alert_module
     assert "gcp_project_id=" not in alert_module
+
+
+def test_russell_live_ledger_workflow_upload_artifact_guard() -> None:
+    workflow = RUSSELL_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "uses: actions/upload-artifact@v4" in workflow
+    assert "if-no-files-found: error" in workflow
+    assert "retention-days: 7" in workflow
