@@ -159,6 +159,8 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert 'zscore_metrics = "${zscore_path}"' in workflow
     assert "ibit_zscore_exit.v1" in workflow
     assert "notification_only" in workflow
+    assert "IBIT zscore artifact must remain notification-only until promotion evidence passes" in workflow
+    assert "IBIT zscore artifact must be mountable as strategy metadata" not in workflow
     assert (
         "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit"
     ) in workflow
@@ -171,3 +173,11 @@ def test_strategy_plugin_publish_workflow_uses_artifact_mode_not_platform_mode()
 
     assert re.search(r"^\s+mode = ", workflow, flags=re.MULTILINE) is None
     assert "effective_mode" in workflow
+
+
+def test_strategy_plugin_alert_state_settings_uses_qpk_project_id_keyword() -> None:
+    alert_module = ALERT_MODULE.read_text(encoding="utf-8")
+
+    assert "StrategyPluginAlertStateSettings.from_env(" in alert_module
+    assert "project_id=resolved_env.get(\"GCP_PROJECT_ID\")" in alert_module
+    assert "gcp_project_id=" not in alert_module
