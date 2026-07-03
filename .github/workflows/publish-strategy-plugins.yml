@@ -786,8 +786,8 @@ jobs:
           if payload.get("effective_mode") != "shadow":
               raise SystemExit(f"unexpected effective_mode: {payload.get('effective_mode')!r}")
           controls = payload.get("execution_controls") or {}
-          if controls.get("strategy_runtime_metadata_allowed") is not True:
-              raise SystemExit("IBIT zscore artifact must be mountable as strategy metadata")
+          if controls.get("strategy_runtime_metadata_allowed") is not False:
+              raise SystemExit("IBIT zscore artifact must remain notification-only until promotion evidence passes")
           if controls.get("position_control_allowed") is not False:
               raise SystemExit("IBIT zscore artifact must remain notification-only until promotion evidence passes")
           if controls.get("consumption_evidence_status") != "notification_only":

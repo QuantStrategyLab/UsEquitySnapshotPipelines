@@ -1010,7 +1010,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
         translator=build_unified_market_regime_alert_translator(resolved_env.get("STRATEGY_PLUGIN_ALERT_LANG", "zh")),
         context_label=context_label,
         state_settings=StrategyPluginAlertStateSettings.from_env(
-            gcp_project_id=resolved_env.get("GCP_PROJECT_ID"),
+            project_id=resolved_env.get("GCP_PROJECT_ID"),
         ),
         log_message=print,
     )
