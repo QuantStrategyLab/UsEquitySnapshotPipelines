@@ -209,7 +209,7 @@ data/output/monthly_report_bundle/ai_review_input.md
 data/output/monthly_report_bundle/job_summary.md
 ```
 
-The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/CodexAuditBridge`, which calls the Quant HTTPS/443 service-backed Codex path and posts the audit result back to the issue. The review focuses on:
+The workflow creates or updates a GitHub issue labeled `monthly-review`. By default it dispatches `QuantStrategyLab/AIAuditBridge`, which calls the Quant HTTPS/443 service-backed Codex path and posts the audit result back to the issue. The review focuses on:
 
 - artifact completeness for the expected snapshot profile
 - contract version, snapshot date, row count, and ranking-preview health

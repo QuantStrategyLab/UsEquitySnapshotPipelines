@@ -103,7 +103,7 @@ data/output/monthly_report_bundle/ai_review_input.md
 data/output/monthly_report_bundle/job_summary.md
 ```
 
-workflow 会创建或更新一个带 `monthly-review` label 的 GitHub issue。默认会 dispatch `QuantStrategyLab/CodexAuditBridge`，由该桥接 workflow 调用 Quant HTTPS/443 服务端 Codex 路径，并把 audit 结果回写到 issue。review 重点包括：
+workflow 会创建或更新一个带 `monthly-review` label 的 GitHub issue。默认会 dispatch `QuantStrategyLab/AIAuditBridge`，由该桥接 workflow 调用 Quant HTTPS/443 服务端 Codex 路径，并把 audit 结果回写到 issue。review 重点包括：
 
 - 预期 snapshot profile 的 artifact 完整性；
 - contract version、snapshot date、row count 和 ranking-preview 健康度；
