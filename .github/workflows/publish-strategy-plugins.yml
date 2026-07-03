@@ -3,7 +3,7 @@ name: Publish Strategy Plugins
 on:
   schedule:
     # Weekdays after the regular US close. The plugin itself enforces freshness.
-    - cron: '30 22 * * 1-5'
+    - cron: '31 22 * * 1-5'
   workflow_dispatch:
     inputs:
       execute_publish:
