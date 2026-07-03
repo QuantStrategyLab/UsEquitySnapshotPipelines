@@ -208,7 +208,7 @@ jobs:
           private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
-            CodexAuditBridge
+            AIAuditBridge
           permission-actions: write
 
       - name: Check guarded auto-merge readiness
@@ -276,7 +276,7 @@ jobs:
           --field provider="${REVIEW_PROVIDER}" \
           --field auto_merge="${auto_merge}" \
           --field task="monthly_snapshot_audit"
-          echo "Dispatched CodexAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
+          echo "Dispatched AIAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
 
       - name: Upload Codex feedback diagnostics
         if: always()
@@ -463,7 +463,7 @@ jobs:
           private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
-            CodexAuditBridge
+            AIAuditBridge
           permission-actions: write
 
       - name: Check guarded auto-merge readiness
@@ -531,7 +531,7 @@ jobs:
           --field provider="${REVIEW_PROVIDER}" \
           --field auto_merge="${auto_merge}" \
           --field task="monthly_snapshot_audit"
-          echo "Dispatched CodexAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
+          echo "Dispatched AIAuditBridge feedback retry for issue #${ISSUE_NUMBER} to ${TARGET_REPOSITORY}"
 
       - name: Upload Codex feedback diagnostics
         if: always()

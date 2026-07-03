@@ -107,7 +107,7 @@ def build_preflight_comment(
     return (
         f"{marker}\n"
         "## Guarded Auto-Merge Preflight\n\n"
-        "This comment is updated by the monthly snapshot review workflow before dispatching CodexAuditBridge. "
+        "This comment is updated by the monthly snapshot review workflow before dispatching AIAuditBridge. "
         "It is informational only and does not approve or enable guarded auto-merge. "
         "The complete label-sync report, readiness report, and enablement plan are attached to the monthly review bundle artifact.\n\n"
         f"{label_sync_section}"

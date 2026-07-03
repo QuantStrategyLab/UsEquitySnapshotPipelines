@@ -75,7 +75,7 @@ def test_monthly_review_workflow_creates_issue_and_triggers_codex_first() -> Non
     assert "CODEX_AUDIT_ENABLED" in workflow
     assert "CODEX_AUDIT_BRIDGE_REF" in workflow
     assert '"ref": os.environ["CODEX_AUDIT_BRIDGE_REF"]' in workflow
-    assert "CodexAuditBridge" in workflow
+    assert "AIAuditBridge" in workflow
     assert "monthly-snapshot-review-${{ github.ref_name }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "CODEX_AUDIT_DISPATCH_TOKEN" in workflow

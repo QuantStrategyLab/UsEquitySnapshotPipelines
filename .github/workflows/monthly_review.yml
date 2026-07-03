@@ -280,7 +280,7 @@ jobs:
           private-key: ${{ secrets.CROSS_REPO_GITHUB_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
-            CodexAuditBridge
+            AIAuditBridge
           permission-actions: write
 
       - name: Trigger Monthly Review Automation
@@ -369,7 +369,7 @@ jobs:
               if status not in (201, 204):
                   raise RuntimeError(f"Unexpected Codex dispatch status: {status}")
               print(
-                  f"Dispatched CodexAuditBridge review for issue #{os.environ['ISSUE_NUMBER']} "
+                  f"Dispatched AIAuditBridge review for issue #{os.environ['ISSUE_NUMBER']} "
                   f"to {target_repository}"
               )
 
