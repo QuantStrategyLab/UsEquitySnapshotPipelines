@@ -10,7 +10,7 @@ name: Codex PR Feedback
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CODEX_AUDIT_ENABLED: ${{ vars.CODEX_AUDIT_ENABLED || 'true' }}
-  CODEX_AUDIT_BRIDGE_REPOSITORY: ${{ vars.CODEX_AUDIT_BRIDGE_REPOSITORY || 'QuantStrategyLab/CodexAuditBridge' }}
+  CODEX_AUDIT_BRIDGE_REPOSITORY: ${{ vars.CODEX_AUDIT_BRIDGE_REPOSITORY || 'QuantStrategyLab/AIAuditBridge' }}
   CODEX_AUDIT_BRIDGE_REF: ${{ vars.CODEX_AUDIT_BRIDGE_REF || 'main' }}
   CODEX_AUDIT_MODE: ${{ vars.CODEX_AUDIT_MODE || 'review_and_fix' }}
   CODEX_AUDIT_PROVIDER: ${{ vars.CODEX_AUDIT_PROVIDER || 'auto' }}
