@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from us_equity_snapshot_pipelines.backtest_windows import build_benchmark_returns, build_window_summary
-from us_equity_snapshot_pipelines.tecl_xlk_trend_income_backtest import run_backtest
+from us_equity_snapshot_pipelines.pipelines.tecl_xlk_trend_income_backtest import run_backtest
 from us_equity_snapshot_pipelines.tecl_xlk_trend_income_research_inputs import (
     DEFAULT_LONG_HISTORY_START,
     DEFAULT_SYNTHETIC_HISTORY_START,
