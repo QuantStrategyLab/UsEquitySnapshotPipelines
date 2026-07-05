@@ -1,6 +1,6 @@
 # Live Strategy Health Report
 
-This report is an evidence layer for deciding whether a live or research strategy should be kept, watched, or reviewed for retirement. It is intentionally separate from live manifests and broker settings.
+This report is an evidence layer for deciding whether a live or research strategy should be kept, watched, or reviewed for retirement. It is intentionally separate from live manifests and broker settings. It is background evidence about content or strategy health, not an AiGateway online service health signal and not an automatic trading or auto-approval basis.
 
 The report does **not**:
 
