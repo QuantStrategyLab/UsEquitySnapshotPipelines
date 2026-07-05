@@ -75,7 +75,7 @@ also fail-closed until the guard code is intentionally updated.
 
 ## Live strategy health evidence
 
-The live strategy health report is advisory evidence only. A
+The live strategy health report is advisory evidence only. It tracks artifact and content health for review workflows, not AiGateway online service health, and it must not be treated as an automatic trading, auto-merge, or auto-approval basis. A
 `review_for_retirement` state can justify a human review task, but it must not
 automatically remove, disable, or reallocate a strategy. Strategy retirement
 still requires a separate review of out-of-sample evidence, costs, runtime
