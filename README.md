@@ -1,5 +1,14 @@
 # UsEquitySnapshotPipelines
 
+
+## QSL architecture role
+
+- **Layer**: `pipeline`.
+- **Responsibility**: US equity snapshot and evidence pipeline.
+- **Owns**: feature snapshots, ranking pools, backtest summaries, promotion evidence.
+- **Consumes**: UsEquityStrategies, QuantStrategyPlugins, MarketSignalSources, QuantPlatformKit.
+- **Must not**: place trades or treat unvalidated artifacts as live-ready.
+
 [Chinese README](README.zh-CN.md)
 
 > Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.

@@ -1,5 +1,14 @@
 # UsEquitySnapshotPipelines
 
+
+## QSL 架构角色
+
+- **层级**：`快照/证据流水线`。
+- **职责**：美股快照与证据流水线。
+- **事实源/归属**：feature snapshots、ranking pools、backtest summaries、promotion evidence。
+- **消费对象**：UsEquityStrategies、QuantStrategyPlugins、MarketSignalSources、QuantPlatformKit。
+- **禁止事项**：下单或把未验证 artifacts 当作 live-ready。
+
 [English README](README.md)
 
 > 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
