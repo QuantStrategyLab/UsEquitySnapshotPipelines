@@ -86,7 +86,8 @@ class TestGetCodexReview:
 
 class TestScanDiff:
     def test_detects_hardcoded_secret(self):
-        diff = 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+api_key = "sk-abcdefghijklmnopqrstuvwxyz1234567890"'
+        fake_key = "sk-" + "abcdefghijklmnopqrstuvwxyz1234567890"
+        diff = f'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+api_key = "{fake_key}"'
         issues = scan_diff(diff, [])
         assert len(issues) == 1
         assert "Hardcoded secret" in issues[0]
