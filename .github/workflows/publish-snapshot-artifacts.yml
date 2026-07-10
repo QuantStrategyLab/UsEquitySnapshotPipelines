@@ -349,7 +349,9 @@ jobs:
               python scripts/build_russell_top50_leader_rotation_snapshot.py "${common_args[@]}"
               ;;
             global_etf_rotation)
-              python scripts/build_global_etf_rotation_snapshot.py "${common_args[@]}"
+              python scripts/build_global_etf_rotation_snapshot.py \
+                "${common_args[@]}" \
+                --extra-history-symbols "QQQ,AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2

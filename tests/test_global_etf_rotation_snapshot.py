@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from us_equity_snapshot_pipelines import global_etf_rotation_snapshot as snapshot
+from us_equity_snapshot_pipelines.pipelines import global_etf_rotation_snapshot as snapshot_impl
 
 
 def _prices(symbols: tuple[str, ...], *, periods: int = 280) -> pd.DataFrame:
@@ -102,3 +103,28 @@ def test_global_etf_snapshot_cli_writes_standard_artifacts(tmp_path: Path) -> No
     )
     assert feature_manifest["strategy_profile"] == "global_etf_rotation"
     assert feature_manifest["contract_version"] == "global_etf_rotation.feature_snapshot.v1"
+
+
+def test_global_etf_snapshot_downloads_extra_history_symbols(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "output"
+    requested_symbols: list[str] = []
+
+    def _download(symbols: list[str], **kwargs) -> pd.DataFrame:
+        requested_symbols.extend(symbols)
+        return _prices(tuple(symbols))
+
+    monkeypatch.setattr(snapshot_impl, "download_yahoo_chart_price_history", _download)
+
+    exit_code = snapshot.main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--extra-history-symbols",
+            "AAPL,MSFT",
+        ]
+    )
+
+    assert exit_code == 0
+    assert {"AAPL", "MSFT"} <= set(requested_symbols)
+    history = pd.read_csv(output_dir / "downloaded_price_history.csv")
+    assert {"AAPL", "MSFT"} <= set(history["symbol"])
