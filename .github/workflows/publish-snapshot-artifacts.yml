@@ -351,6 +351,7 @@ jobs:
             global_etf_rotation)
               python scripts/build_global_etf_rotation_snapshot.py \
                 "${common_args[@]}" \
+                --price-start "2022-01-01" \
                 --extra-history-symbols "QQQ,AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO"
               ;;
             *)
