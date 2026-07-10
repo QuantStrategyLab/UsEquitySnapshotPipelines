@@ -385,6 +385,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prices", help="Input price history file (.csv/.json/.jsonl/.parquet).")
     parser.add_argument("--price-start", default=DEFAULT_PRICE_START_DATE)
     parser.add_argument("--price-end", default=None)
+    parser.add_argument(
+        "--extra-history-symbols",
+        default="",
+        help="Comma-separated symbols to include only in downloaded_price_history.csv.",
+    )
     parser.add_argument("--as-of-date", "--as-of", dest="as_of_date", default=None)
     parser.add_argument("--min-trading-days", type=int, default=DEFAULT_MIN_TRADING_DAYS)
     parser.add_argument("--min-month-end-closes", type=int, default=DEFAULT_MIN_MONTH_END_CLOSES)
@@ -414,7 +419,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     specs = build_default_symbol_specs()
-    symbols = [spec.symbol for spec in specs]
+    extra_history_symbols = _normalize_symbols(args.extra_history_symbols)
+    symbols = list(dict.fromkeys([*(spec.symbol for spec in specs), *extra_history_symbols]))
     if args.prices:
         price_history = read_table(Path(args.prices))
     else:
