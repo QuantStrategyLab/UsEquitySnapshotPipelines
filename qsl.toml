@@ -1,7 +1,7 @@
 [qsl]
 repo = "UsEquitySnapshotPipelines"
 tier = "pipeline"
-ring = 2
+upgrade_ring = "ring_c"
 allow_legacy = false
 enforce_bundle = false
 owner = "pipeline"
