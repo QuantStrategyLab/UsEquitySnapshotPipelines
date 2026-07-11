@@ -360,6 +360,14 @@ jobs:
               ;;
           esac
 
+      - name: Validate lifecycle market history
+        if: >-
+          env.PROFILE == 'global_etf_rotation' &&
+          steps.build.outputs.should_publish != 'false'
+        run: |
+          set -euo pipefail
+          test -s "${{ steps.build.outputs.artifact_dir }}/downloaded_price_history.csv"
+
       - name: Publish or print GCS plan
         if: steps.build.outputs.should_publish != 'false'
         run: |
@@ -400,14 +408,6 @@ jobs:
             --feature-snapshot "${{ steps.build.outputs.artifact_dir }}/global_etf_rotation_feature_snapshot_latest.csv" \
             --snapshot-as-of "${{ steps.build.outputs.snapshot_as_of }}" \
             --output-dir "${{ steps.build.outputs.artifact_dir }}"
-
-      - name: Validate lifecycle market history
-        if: >-
-          env.PROFILE == 'global_etf_rotation' &&
-          steps.build.outputs.should_publish != 'false'
-        run: |
-          set -euo pipefail
-          test -s "${{ steps.build.outputs.artifact_dir }}/downloaded_price_history.csv"
 
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v7

@@ -23,7 +23,8 @@ def test_publish_snapshot_artifacts_requires_main_ci_before_publish() -> None:
     assert '--price-start "2022-01-01"' in workflow
     assert "Upload lifecycle market history" in workflow
     assert workflow.index("Validate lifecycle market history") < workflow.index("Upload generated artifacts")
-    assert "us-equity-market-history-${{ github.run_id }}" in workflow
+    assert workflow.index("Validate lifecycle market history") < workflow.index("Publish or print GCS plan")
+    assert "us-equity-market-history-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "downloaded_price_history.csv" in workflow
 
 
