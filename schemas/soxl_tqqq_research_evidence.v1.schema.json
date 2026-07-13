@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "soxl_tqqq_research_evidence.v1.schema.json",
+  "title": "Secret-free SOXL/TQQQ research evidence manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "profile",
+    "run_id",
+    "code_sha",
+    "config_sha256",
+    "plugin_sha256",
+    "data_sha256",
+    "data_revision",
+    "calendar",
+    "timezone",
+    "execution_timing",
+    "cost_model_id",
+    "random_seed",
+    "as_of",
+    "generated_at",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {"const": "soxl_tqqq_research_evidence.v1"},
+    "profile": {"enum": ["soxl_soxx_trend_income", "tqqq_growth_income"]},
+    "run_id": {"$ref": "#/$defs/safe_id"},
+    "code_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "config_sha256": {"$ref": "#/$defs/sha256"},
+    "plugin_sha256": {"$ref": "#/$defs/sha256"},
+    "data_sha256": {"$ref": "#/$defs/sha256"},
+    "data_revision": {"$ref": "#/$defs/safe_id"},
+    "calendar": {"enum": ["XNYS", "NYSE"]},
+    "timezone": {"const": "America/New_York"},
+    "execution_timing": {"type": "string", "pattern": "^(next_open|next_close|scheduled_vwap|other:[a-z0-9][a-z0-9._-]{1,63})$"},
+    "cost_model_id": {"$ref": "#/$defs/safe_id"},
+    "random_seed": {"type": "integer", "minimum": 0},
+    "as_of": {"$ref": "#/$defs/as_of"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "champion_identity.json",
+        "prices.parquet",
+        "data_quality.json",
+        "daily_returns.csv",
+        "targets.csv",
+        "trades.csv",
+        "costs.csv",
+        "metrics.json",
+        "walk_forward.json",
+        "trial_ledger.jsonl",
+        "robustness.json",
+        "risk_sleeve.json",
+        "strategy_performance.v2.json",
+        "checksums.sha256"
+      ],
+      "properties": {
+        "champion_identity.json": {"$ref": "#/$defs/sha256"},
+        "prices.parquet": {"$ref": "#/$defs/sha256"},
+        "data_quality.json": {"$ref": "#/$defs/sha256"},
+        "daily_returns.csv": {"$ref": "#/$defs/sha256"},
+        "targets.csv": {"$ref": "#/$defs/sha256"},
+        "trades.csv": {"$ref": "#/$defs/sha256"},
+        "costs.csv": {"$ref": "#/$defs/sha256"},
+        "metrics.json": {"$ref": "#/$defs/sha256"},
+        "walk_forward.json": {"$ref": "#/$defs/sha256"},
+        "trial_ledger.jsonl": {"$ref": "#/$defs/sha256"},
+        "robustness.json": {"$ref": "#/$defs/sha256"},
+        "risk_sleeve.json": {"$ref": "#/$defs/sha256"},
+        "strategy_performance.v2.json": {"$ref": "#/$defs/sha256"},
+        "checksums.sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "safe_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "as_of": {"oneOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, {"type": "string", "format": "date-time"}]}
+  }
+}
