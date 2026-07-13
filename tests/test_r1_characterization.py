@@ -24,9 +24,17 @@ def test_profiles_and_next_open_are_explicit(tmp_path):
     assert artifact["profile"] == "SOXL"
     assert artifact["execution_timing"] == "next_open"
     assert orchestrator.calls == [("SOXL", {"lookback": 20}, "next_open")]
-    assert json.loads((tmp_path / "soxl_next_open.json").read_text())["field_inventory"] == [
+    assert json.loads(next(tmp_path.glob("soxl_next_open_*.json")).read_text())["field_inventory"] == [
         "final_equity", "source", "trades"
     ]
+
+
+def test_same_run_does_not_overwrite_existing_artifact(tmp_path):
+    orchestrator = RealOrchestrator()
+    kwargs = dict(params={"lookback": 20}, execution_timing="next_open", ephemeral_dir=tmp_path)
+    characterize_profile(orchestrator, "SOXL", **kwargs)
+    with pytest.raises(FileExistsError, match="already exists"):
+        characterize_profile(orchestrator, "SOXL", **kwargs)
 
 
 def test_next_close_and_tqqq_are_explicit(tmp_path):

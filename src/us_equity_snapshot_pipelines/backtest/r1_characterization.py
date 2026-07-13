@@ -8,6 +8,7 @@ ephemeral output directory.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -50,7 +51,11 @@ def characterize_profile(
     }
     output_dir = Path(ephemeral_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{profile.lower()}_{execution_timing}.json"
+    run_key = json.dumps(dict(params), sort_keys=True, default=str).encode("utf-8")
+    run_digest = hashlib.sha256(run_key).hexdigest()[:16]
+    output_path = output_dir / f"{profile.lower()}_{execution_timing}_{run_digest}.json"
+    if output_path.exists():
+        raise FileExistsError(f"R1 artifact already exists: {output_path}")
     output_path.write_text(json.dumps(artifact, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     artifact["artifact_path"] = str(output_path)
     return artifact
