@@ -1,0 +1,1 @@
+"""Backtest characterization utilities."""
