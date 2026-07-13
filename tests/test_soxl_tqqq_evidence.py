@@ -232,6 +232,13 @@ def test_line_and_file_total_bounds(bundle: Path, monkeypatch: pytest.MonkeyPatc
     _reject(case, "trades.csv", "a,b\n1,2\n", False)
 
 
+def test_csv_rejects_unterminated_quote(bundle: Path) -> None:
+    (bundle / "trades.csv").write_text('a,b\n"unterminated,2\n')
+    _refresh(bundle)
+    with pytest.raises(EvidenceValidationError, match="trades\\.csv CSV"):
+        validate_evidence_bundle(bundle)
+
+
 def test_checksum_set_and_digest_edges(bundle: Path, tmp_path: Path) -> None:
     valid = (bundle / "checksums.sha256").read_text().splitlines()
     cases = [valid[:-1], valid + [valid[0]], valid[:1] + valid[:1] + valid[1:], list(reversed(valid)),

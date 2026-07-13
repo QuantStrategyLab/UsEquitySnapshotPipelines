@@ -255,7 +255,7 @@ def _parse_csv(stream: Any, name: str, state: dict[str, int]) -> str:
     rows = 0
     header: list[str] | None = None
     try:
-        for row in csv.reader(_physical_lines(stream, name, state, hasher)):
+        for row in csv.reader(_physical_lines(stream, name, state, hasher), strict=True):
             if header is None:
                 if not row or any(not column for column in row) or len(set(row)) != len(row):
                     _invalid(f"{name} header")
