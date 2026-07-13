@@ -18,6 +18,12 @@ import pandas as pd
 import numpy as np
 
 PROFILES = ("SOXL", "TQQQ")
+PROFILE_ALIASES = {
+    "SOXL": "SOXL",
+    "SOXL_SOXX_TREND_INCOME": "SOXL",
+    "TQQQ": "TQQQ",
+    "TQQQ_GROWTH_INCOME": "TQQQ",
+}
 EXECUTION_TIMINGS = ("next_open", "next_close")
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -104,9 +110,10 @@ def characterize_profile(
     source_sha: str,
 ) -> dict[str, Any]:
     """Run one profile and atomically emit a JSON-safe local artifact."""
-    profile = str(profile).strip().upper()
-    if profile not in PROFILES:
-        raise ValueError(f"unsupported R1 profile: {profile}")
+    requested_profile = str(profile).strip().upper()
+    profile = PROFILE_ALIASES.get(requested_profile)
+    if profile is None:
+        raise ValueError(f"unsupported R1 profile: {requested_profile}")
     if execution_timing not in EXECUTION_TIMINGS:
         raise ValueError(f"unsupported execution timing: {execution_timing}")
     if not SOURCE_SHA_PATTERN.fullmatch(str(source_sha)):

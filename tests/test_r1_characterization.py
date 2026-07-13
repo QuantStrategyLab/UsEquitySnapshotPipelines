@@ -113,9 +113,22 @@ def test_placeholder_result_is_rejected(tmp_path):
         _characterize(Placeholder(), tmp_path)
 
 
-@pytest.mark.parametrize("profile", ["", "SPY", "soxl_soxx_trend_income"])
+@pytest.mark.parametrize("profile", ["", "SPY"])
 def test_only_target_profiles_are_allowed(profile, tmp_path):
     with pytest.raises(ValueError, match="unsupported R1 profile"):
         characterize_profile(
             RealOrchestrator(), profile, params={}, execution_timing="next_open", ephemeral_dir=tmp_path, source_sha=SOURCE_SHA
         )
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [("soxl_soxx_trend_income", "SOXL"), ("tqqq_growth_income", "TQQQ"), ("SOXL", "SOXL"), ("TQQQ", "TQQQ")],
+)
+def test_canonical_repository_profile_ids_and_short_aliases_are_supported(profile, expected, tmp_path):
+    orchestrator = RealOrchestrator()
+    artifact = characterize_profile(
+        orchestrator, profile, params={}, execution_timing="next_open", ephemeral_dir=tmp_path, source_sha=SOURCE_SHA
+    )
+    assert artifact["profile"] == expected
+    assert orchestrator.calls[0][0] == expected
