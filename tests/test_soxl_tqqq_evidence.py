@@ -220,3 +220,31 @@ def test_text_artifacts_require_structural_records(tmp_path: Path, name: str, bo
     (root / name).write_text(body, encoding="utf-8")
     with pytest.raises(EvidenceValidationError, match=rule):
         validate_evidence_bundle(root)
+
+
+@pytest.mark.parametrize("key,accepted", [("api_key=redacted", False), ("https://user:pass@example.test", False), ("session_date", True)])
+def test_mapping_keys_use_string_rules(tmp_path: Path, key: str, accepted: bool) -> None:
+    if accepted:
+        _evidence._inspect({key: 1}, "data_quality.json")
+    else:
+        with pytest.raises(EvidenceValidationError, match="sensitive_value"):
+            _evidence._inspect({key: 1}, "data_quality.json")
+
+
+def test_bundle_root_requires_exact_regular_set(tmp_path: Path) -> None:
+    for extra in ("secret.txt", "subdir"):
+        path = (root := _bundle(tmp_path / extra)) / extra
+        path.mkdir() if extra == "subdir" else path.write_text("secret", encoding="utf-8")
+        with pytest.raises(EvidenceValidationError, match="bundle_root_entries"):
+            validate_evidence_bundle(root)
+
+
+def test_bundle_rejects_deep_json_and_jsonl(tmp_path: Path) -> None:
+    value: object = 1
+    for _ in range(_evidence.MAX_NESTING_DEPTH + 1):
+        value = {"nested": value}
+    for suffix, body in (("json", json.dumps(value)), ("jsonl", json.dumps(value) + "\n")):
+        root, name = _bundle(tmp_path / suffix), "data_quality.json" if suffix == "json" else "trial_ledger.jsonl"
+        (root / name).write_text(body, encoding="utf-8")
+        with pytest.raises(EvidenceValidationError, match="nesting_depth"):
+            validate_evidence_bundle(root)

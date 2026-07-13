@@ -141,9 +141,7 @@ def validate_metrics_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     return dict(payload)
 
 
-MAX_JSON_BYTES = 8 * 1024 * 1024
-MAX_TEXT_LINE_BYTES = 1 * 1024 * 1024
-HASH_CHUNK_BYTES = 1 * 1024 * 1024
+MAX_JSON_BYTES, MAX_TEXT_LINE_BYTES, HASH_CHUNK_BYTES, MAX_NESTING_DEPTH = 8 * 1024 * 1024, 1 * 1024 * 1024, 1 * 1024 * 1024, 32
 _CHAMPION_FIELDS = frozenset({"schema", "profile", "code_sha", "config_sha256", "plugin_sha256",
                               "execution_timing", "timezone", "calendar", "as_of"})
 _FORBIDDEN_KEYS = frozenset("""account account_id account_number broker_account_id account_balance
@@ -154,7 +152,7 @@ client_secret password passwd cookie set_cookie user_id email phone""".split())
 _VALUE_NAMES = frozenset("""api_key apikey access_token refresh_token token secret client_secret password
 passwd signature sig x-amz-credential x-amz-signature""".split())
 _ASSIGNMENT = re.compile(r"(?i)(?<![a-z0-9_])(?:api_key|apikey|access_token|refresh_token|token|secret|client_secret|password|passwd|signature|sig|x-amz-credential|x-amz-signature)\s*[:=]\s*\S+")
-_JWT = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+_JWT = re.compile(r"^[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}$")
 _DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 _PREFIXES = (("github_pat_", 20), ("ghp_", 20), ("gho_", 20), ("ghu_", 20), ("ghs_", 20),
              ("ghr_", 20), ("sk-", 20), ("AKIA", 16), ("ASIA", 16), ("xoxb-", 10),
@@ -193,14 +191,24 @@ def _inspect_string(value: str, artifact: str, location: str) -> None:
 
 
 def _inspect(value: Any, artifact: str, location: str = "$") -> None:
+    try:
+        _inspect_inner(value, artifact, location)
+    except RecursionError:
+        _invalid("nesting_depth", f"{artifact}:{location}")
+
+
+def _inspect_inner(value: Any, artifact: str, location: str = "$", depth: int = 0) -> None:
+    if depth > MAX_NESTING_DEPTH:
+        _invalid("nesting_depth", f"{artifact}:{location}")
     if isinstance(value, Mapping):
         for index, (key, item) in enumerate(value.items()):
+            _inspect_string(str(key), artifact, f"{location}[{index}].key")
             if _normalize_key(str(key)) in _FORBIDDEN_KEYS:
                 _invalid("sensitive_key", f"{artifact}:{location}[{index}]")
-            _inspect(item, artifact, f"{location}[{index}]")
+            _inspect_inner(item, artifact, f"{location}[{index}]", depth + 1)
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            _inspect(item, artifact, f"{location}[{index}]")
+            _inspect_inner(item, artifact, f"{location}[{index}]", depth + 1)
     elif isinstance(value, str):
         _inspect_string(value, artifact, location)
 
@@ -227,7 +235,7 @@ def _json_file(path: Path, artifact: str) -> dict[str, Any]:
     try:
         text = raw.decode("utf-8")
         value = json.loads(text, parse_constant=lambda _: _invalid("nonfinite_json", artifact))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         _invalid("json_structure", artifact)
     if not isinstance(value, dict):
         _invalid("json_object", artifact)
@@ -255,7 +263,7 @@ def _jsonl_file(path: Path, artifact: str) -> None:
             continue
         try:
             value = json.loads(line, parse_constant=lambda _: _invalid("nonfinite_json", artifact))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             _invalid("jsonl_structure", artifact)
         if not isinstance(value, dict):
             _invalid("jsonl_object", artifact)
@@ -322,6 +330,11 @@ def validate_evidence_bundle(bundle_root: str | Path) -> dict[str, Any]:
             _invalid("bundle_root", "bundle")
     except OSError:
         _invalid("bundle_root", "bundle")
+    try:
+        if (entries := list(root.iterdir())) and ({entry.name for entry in entries} != {"manifest.json", *REQUIRED_ARTIFACT_FILES} or any(not S_ISREG(entry.lstat().st_mode) for entry in entries)):
+            _invalid("bundle_root_entries", "bundle")
+    except OSError:
+        _invalid("bundle_root_entries", "bundle")
     manifest_path = root / "manifest.json"
     _regular(manifest_path, "artifact_file", "manifest.json")
     manifest = _json_file(manifest_path, "manifest.json")
