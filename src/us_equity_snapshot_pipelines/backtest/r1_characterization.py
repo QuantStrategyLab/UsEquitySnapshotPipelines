@@ -8,12 +8,14 @@ import math
 import os
 import re
 import tempfile
+from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 import pandas as pd
+import numpy as np
 
 PROFILES = ("SOXL", "TQQQ")
 EXECUTION_TIMINGS = ("next_open", "next_close")
@@ -51,6 +53,12 @@ def _json_safe(value: Any) -> Any:
             "dtype": str(value.dtype),
             "data": [_json_safe(item) for item in value.array],
         }
+    if isinstance(value, np.ndarray):
+        return {"type": "numpy.ndarray", "dtype": str(value.dtype), "shape": list(value.shape), "data": _json_safe(value.tolist())}
+    if isinstance(value, pd.MultiIndex):
+        return {"type": "pandas.MultiIndex", "names": _json_safe(list(value.names)), "data": _json_safe(value.tolist())}
+    if isinstance(value, pd.Index):
+        return {"type": "pandas.Index", "name": _json_safe(value.name), "dtype": str(value.dtype), "data": _json_safe(value.tolist())}
     if isinstance(value, Mapping):
         normalized: dict[str, Any] = {}
         for key, item in value.items():
@@ -104,8 +112,9 @@ def characterize_profile(
     if not SOURCE_SHA_PATTERN.fullmatch(str(source_sha)):
         raise ValueError("source_sha must be 40 lowercase hexadecimal characters")
 
-    raw_params = dict(params)
-    result = orchestrator.run(profile=profile, params=raw_params, execution_timing=execution_timing)
+    raw_params = deepcopy(dict(params))
+    frozen_params = _json_safe(raw_params)
+    result = orchestrator.run(profile=profile, params=deepcopy(raw_params), execution_timing=execution_timing)
     if not isinstance(result, Mapping) or not result:
         raise ValueError("BacktestOrchestrator returned no real result")
     if result.get("placeholder") is True:
@@ -116,24 +125,15 @@ def characterize_profile(
         "profile": profile,
         "execution_timing": execution_timing,
         "source_sha": source_sha,
-        "params": _json_safe(raw_params),
+        "params": frozen_params,
         "result": _json_safe(dict(result)),
         "field_inventory": sorted(str(key) for key in result),
     }
     content = json.dumps(artifact, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
-    run_identity = {
-        "profile": profile,
-        "execution_timing": execution_timing,
-        "source_sha": source_sha,
-        "params": artifact["params"],
-    }
+    run_identity = {"profile": profile, "execution_timing": execution_timing, "source_sha": source_sha, "params": artifact["params"]}
     run_key = json.dumps(run_identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     run_digest = hashlib.sha256(run_key).hexdigest()[:16]
     output_path = Path(ephemeral_dir) / f"{profile.lower()}_{execution_timing}_{run_digest}.json"
     _write_exclusive(output_path, content)
 
-    return {
-        **artifact,
-        "artifact_path": str(output_path),
-        "artifact_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
-    }
+    return {**artifact, "artifact_path": str(output_path), "artifact_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest()}

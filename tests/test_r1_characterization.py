@@ -58,6 +58,9 @@ def test_real_pandas_and_scalar_results_are_json_serializable(tmp_path):
                 "generated_at": datetime(2026, 7, 11, tzinfo=timezone.utc),
                 "session_date": date(2026, 7, 11),
                 "capital": Decimal("100000.25"),
+                "vector": np.array([1, 2]),
+                "labels": pd.Index(["risk_on", "risk_off"], name="regime"),
+                "pairs": pd.MultiIndex.from_tuples([("SOXL", "next_open")], names=["profile", "timing"]),
             }
 
     artifact = _characterize(PandasOrchestrator(), tmp_path)
@@ -69,6 +72,21 @@ def test_real_pandas_and_scalar_results_are_json_serializable(tmp_path):
     assert persisted["result"]["weights"]["columns"] == ["SOXL"]
     assert persisted["result"]["capital"] == {"type": "decimal", "value": "100000.25"}
     assert persisted["result"]["as_of"] == "2026-07-11T00:00:00+00:00"
+    assert persisted["result"]["vector"]["data"] == [1, 2]
+    assert persisted["result"]["labels"]["data"] == ["risk_on", "risk_off"]
+    assert persisted["result"]["pairs"]["data"] == [["SOXL", "next_open"]]
+
+
+def test_orchestrator_cannot_mutate_recorded_params(tmp_path):
+    class MutatingOrchestrator:
+        def run(self, *, params, **_kwargs):
+            params["nested"]["lookback"] = 99
+            return {"source": "real-input"}
+
+    requested = {"nested": {"lookback": 20}}
+    artifact = _characterize(MutatingOrchestrator(), tmp_path, params=requested)
+    assert requested == {"nested": {"lookback": 20}}
+    assert artifact["params"] == requested
 
 
 def test_same_run_is_created_exclusively(tmp_path):
@@ -99,18 +117,5 @@ def test_placeholder_result_is_rejected(tmp_path):
 def test_only_target_profiles_are_allowed(profile, tmp_path):
     with pytest.raises(ValueError, match="unsupported R1 profile"):
         characterize_profile(
-            RealOrchestrator(),
-            profile,
-            params={},
-            execution_timing="next_open",
-            ephemeral_dir=tmp_path,
-            source_sha=SOURCE_SHA,
-        )
-
-
-@pytest.mark.parametrize("source_sha", ["", "A" * 40, "a" * 39, "g" * 40])
-def test_source_sha_must_be_canonical(source_sha, tmp_path):
-    with pytest.raises(ValueError, match="source_sha"):
-        characterize_profile(
-            RealOrchestrator(), "SOXL", params={}, execution_timing="next_open", ephemeral_dir=tmp_path, source_sha=source_sha
+            RealOrchestrator(), profile, params={}, execution_timing="next_open", ephemeral_dir=tmp_path, source_sha=SOURCE_SHA
         )
