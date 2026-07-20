@@ -94,11 +94,18 @@ def _runtime_pin(project: str, expected: str) -> None:
 
 def _parse_inputs(csv_path: str | Path, as_of: str, session_id: str) -> tuple[bytes, list[tuple[str, float]]]:
     try:
-        parsed_as_of = date.fromisoformat(as_of)
         raw = Path(csv_path).read_bytes()
+    except OSError as exc:
+        raise _RunnerError("T2B1_INPUT_INVALID") from exc
+    return raw, _parse_market_bytes(raw, as_of, session_id)
+
+
+def _parse_market_bytes(raw: bytes, as_of: str, session_id: str) -> list[tuple[str, float]]:
+    try:
+        parsed_as_of = date.fromisoformat(as_of)
         text = raw.decode("utf-8")
         rows = list(csv.reader(text.splitlines()))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         raise _RunnerError("T2B1_INPUT_INVALID") from exc
     if session_id != f"XNAS:{parsed_as_of.isoformat()}" or not rows or rows[0] != ["session_date", "close"]:
         raise _RunnerError("T2B1_INPUT_INVALID")
@@ -118,7 +125,7 @@ def _parse_inputs(csv_path: str | Path, as_of: str, session_id: str) -> tuple[by
         values.append((session_date.isoformat(), close))
     if len(values) < 252 or not values or values[-1][0] != parsed_as_of.isoformat():
         raise _RunnerError("T2B1_INPUT_INVALID")
-    return raw, values
+    return values
 
 
 def _normalize(value: Any) -> Any:
@@ -147,7 +154,9 @@ def _read_canonical(path: Path) -> Any:
     return json.loads(path.read_bytes(), object_pairs_hook=no_duplicates, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
 
 
-def _strict_readback(stage: Path, envelope_bytes: bytes, decision_bytes: bytes) -> None:
+def _strict_readback(
+    stage: Path, envelope_bytes: bytes, decision_bytes: bytes, plugin_control: Mapping[str, Any]
+) -> None:
     files = tuple(stage.iterdir())
     expected = {"input_envelope.json", "decision.json"}
     if {item.name for item in files} != expected or any(not item.is_file() or item.is_symlink() for item in files):
@@ -163,7 +172,7 @@ def _strict_readback(stage: Path, envelope_bytes: bytes, decision_bytes: bytes) 
         raise _RunnerError("T2B1_READBACK_FAILED") from exc
     if set(envelope) != {
         "as_of", "code", "market", "merged_config", "mode", "plugin_control", "portfolio", "profile", "schema", "session_id"
-    } or envelope.get("schema") != ENVELOPE_SCHEMA or envelope.get("plugin_control") != {"status": "ABSENT"}:
+    } or envelope.get("schema") != ENVELOPE_SCHEMA or envelope.get("plugin_control") != plugin_control:
         raise _RunnerError("T2B1_READBACK_FAILED")
     if set(decision) != {"budgets", "diagnostics", "input_envelope_sha256", "positions", "risk_flags", "schema"}:
         raise _RunnerError("T2B1_READBACK_FAILED")
@@ -172,7 +181,11 @@ def _strict_readback(stage: Path, envelope_bytes: bytes, decision_bytes: bytes) 
 
 
 def _build_envelope_payload(
-    envelope: TqqqForwardInputEnvelope, market_rows: list[tuple[str, float]], config: Mapping[str, Any], portfolio: Mapping[str, Any]
+    envelope: TqqqForwardInputEnvelope,
+    market_rows: list[tuple[str, float]],
+    config: Mapping[str, Any],
+    portfolio: Mapping[str, Any],
+    plugin_control: Mapping[str, Any],
 ) -> tuple[bytes, str]:
     market = {
         "bytes_b64": base64.b64encode(envelope.market_csv_bytes).decode("ascii"),
@@ -191,7 +204,7 @@ def _build_envelope_payload(
         "market": market,
         "merged_config": {"sha256": _sha256(envelope.merged_config_json), "value": config},
         "mode": MODE,
-        "plugin_control": {"status": envelope.plugin_control_status},
+        "plugin_control": dict(plugin_control),
         "portfolio": {"sha256": _sha256(envelope.portfolio_json), "value": portfolio},
         "profile": PROFILE,
         "schema": envelope.schema,
@@ -201,16 +214,33 @@ def _build_envelope_payload(
     return encoded, _sha256(encoded)
 
 
-def run_tqqq_local_no_order(
-    *, benchmark_history_csv: str | Path, as_of: str, session_id: str, output_parent: str | Path
+def _run_tqqq_local_no_order(
+    *,
+    benchmark_history_csv: str | Path,
+    as_of: str,
+    session_id: str,
+    output_parent: str | Path,
+    plugin_control: Mapping[str, Any],
+    market_csv_bytes: bytes | None = None,
 ) -> tuple[Any, Path]:
+    """Compute and atomically publish evidence while preserving decision-bearing inputs.
+
+    ``plugin_control`` is evidence-only: callers must verify it before reaching this
+    core, and it is serialized only as ``input_envelope.plugin_control``. PRESENT
+    callers may provide one verified immutable market-byte snapshot, which is then
+    used for parsing, computation, and publication without a second path read.
+    """
     checkout, uesp_head = _source_identity()
     _runtime_pin("us-equity-strategies", UES_PIN)
     _runtime_pin("quant-platform-kit", QPK_PIN)
     parent = Path(output_parent).resolve()
     if not parent.is_dir() or checkout == parent or checkout in parent.parents:
         raise _RunnerError("T2B1_INPUT_INVALID")
-    market_bytes, market_rows = _parse_inputs(benchmark_history_csv, as_of, session_id)
+    if market_csv_bytes is None:
+        market_bytes, market_rows = _parse_inputs(benchmark_history_csv, as_of, session_id)
+    else:
+        market_bytes = market_csv_bytes
+        market_rows = _parse_market_bytes(market_bytes, as_of, session_id)
     try:
         import pandas as pd
         from quant_platform_kit.common.models import PortfolioSnapshot
@@ -238,7 +268,9 @@ def run_tqqq_local_no_order(
         portfolio_json=_canonical_json(portfolio_value),
         plugin_control_status="ABSENT",
     )
-    envelope_bytes, envelope_sha = _build_envelope_payload(envelope, market_rows, config, portfolio_value)
+    envelope_bytes, envelope_sha = _build_envelope_payload(
+        envelope, market_rows, config, portfolio_value, plugin_control
+    )
     destination = parent / f"tqqq-local-no-order-{as_of}-{envelope_sha}"
     if destination.exists():
         raise _RunnerError("T2B1_INPUT_INVALID")
@@ -280,7 +312,7 @@ def run_tqqq_local_no_order(
         shutil.rmtree(stage, ignore_errors=True)
         raise _RunnerError("T2B1_STAGE_FAILED", decision) from exc
     try:
-        _strict_readback(stage, envelope_bytes, decision_bytes)
+        _strict_readback(stage, envelope_bytes, decision_bytes, plugin_control)
     except _RunnerError as exc:
         shutil.rmtree(stage, ignore_errors=True)
         exc.decision = decision
@@ -291,6 +323,19 @@ def run_tqqq_local_no_order(
         shutil.rmtree(stage, ignore_errors=True)
         raise _RunnerError("T2B1_PUBLISH_FAILED", decision) from exc
     return decision, destination
+
+
+def run_tqqq_local_no_order(
+    *, benchmark_history_csv: str | Path, as_of: str, session_id: str, output_parent: str | Path
+) -> tuple[Any, Path]:
+    """Run the frozen ABSENT-only local no-order path without plugin-control inputs."""
+    return _run_tqqq_local_no_order(
+        benchmark_history_csv=benchmark_history_csv,
+        as_of=as_of,
+        session_id=session_id,
+        output_parent=output_parent,
+        plugin_control={"status": "ABSENT"},
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
