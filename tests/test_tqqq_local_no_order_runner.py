@@ -51,7 +51,9 @@ def _write_history(path: Path, *, as_of: str = "2026-07-17") -> None:
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
-def _write_present_package(path: Path, *, as_of: str = "2026-07-17", qsp_commit_sha: str = "b" * 40) -> str:
+def _write_present_package(
+    path: Path, *, as_of: str = "2026-07-17", qsp_commit_sha: str = "b" * 40, prices_bytes: bytes = b"prices"
+) -> str:
     payload = {
         "as_of": as_of,
         "audit_summary": {},
@@ -96,7 +98,7 @@ def _write_present_package(path: Path, *, as_of: str = "2026-07-17", qsp_commit_
         "config": {"sha256": runner._sha256(runner._canonical_json(config_value)), "value": config_value},
         "inputs": {
             "external_context": {"status": "ABSENT"},
-            "prices": {"format": "csv", "sha256": runner._sha256(b"prices"), "size_bytes": 6},
+            "prices": {"format": "csv", "sha256": runner._sha256(prices_bytes), "size_bytes": len(prices_bytes)},
         },
         "payload": {
             "bytes_b64": base64.b64encode(payload_bytes).decode("ascii"),
@@ -169,7 +171,7 @@ def test_present_consumer_binds_evidence_without_changing_decision_context(monke
     absent_parent.mkdir()
     present_parent.mkdir()
     _write_history(history)
-    digest = _write_present_package(package_path)
+    digest = _write_present_package(package_path, prices_bytes=history.read_bytes())
     package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
     package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
     contexts = _install_decision_spy(monkeypatch)
@@ -240,7 +242,7 @@ def test_present_publication_failure_retains_the_computed_decision(monkeypatch, 
     package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
     output_parent.mkdir()
     _write_history(history)
-    digest = _write_present_package(package_path)
+    digest = _write_present_package(package_path, prices_bytes=history.read_bytes())
     package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
     package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
     decision = SimpleNamespace(positions={}, budgets={}, risk_flags=(), diagnostics={})
@@ -270,4 +272,73 @@ def test_present_publication_failure_retains_the_computed_decision(monkeypatch, 
         assert error.decision is decision
     else:  # pragma: no cover - failure-boundary assertion
         raise AssertionError("staged readback failure must be preserved")
+    assert list(output_parent.iterdir()) == []
+
+
+def test_present_consumer_rejects_prices_not_bound_to_benchmark_before_compute(monkeypatch, tmp_path: Path) -> None:
+    history = tmp_path / "benchmark.csv"
+    output_parent = tmp_path / "output"
+    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
+    output_parent.mkdir()
+    _write_history(history)
+    digest = _write_present_package(package_path, prices_bytes=b"unrelated-prices")
+    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
+    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
+    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
+
+    def must_not_compute(_context):
+        raise AssertionError("unbound prices must fail before compute")
+
+    import us_equity_strategies.entrypoints as entrypoints
+
+    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute)
+    try:
+        run_tqqq_local_no_order_present(
+            benchmark_history_csv=history,
+            as_of="2026-07-17",
+            session_id="XNAS:2026-07-17",
+            output_parent=output_parent,
+            plugin_control_package=package_path,
+            plugin_control_package_sha256=digest,
+            qsp_commit_sha="b" * 40,
+        )
+    except runner._RunnerError as error:
+        assert error.code == "T2B2_PRESENT_INVALID"
+    else:  # pragma: no cover - integrity-boundary assertion
+        raise AssertionError("package prices must bind the exact benchmark bytes")
+    assert list(output_parent.iterdir()) == []
+
+
+def test_present_consumer_explicitly_rejects_noncanonical_as_of_before_compute(monkeypatch, tmp_path: Path) -> None:
+    history = tmp_path / "benchmark.csv"
+    output_parent = tmp_path / "output"
+    as_of = "20260717"
+    package_path = tmp_path / f"tqqq-market-regime-control-present-{as_of}.json"
+    output_parent.mkdir()
+    _write_history(history)
+    digest = _write_present_package(package_path, as_of=as_of, prices_bytes=history.read_bytes())
+    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-{as_of}-{digest}.json"))
+    package_path = package_path.with_name(f"tqqq-market-regime-control-present-{as_of}-{digest}.json")
+    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
+
+    def must_not_compute(_context):
+        raise AssertionError("noncanonical as_of must fail before compute")
+
+    import us_equity_strategies.entrypoints as entrypoints
+
+    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute)
+    try:
+        run_tqqq_local_no_order_present(
+            benchmark_history_csv=history,
+            as_of=as_of,
+            session_id=f"XNAS:{as_of}",
+            output_parent=output_parent,
+            plugin_control_package=package_path,
+            plugin_control_package_sha256=digest,
+            qsp_commit_sha="b" * 40,
+        )
+    except runner._RunnerError as error:
+        assert error.code == "T2B2_PRESENT_INVALID"
+    else:  # pragma: no cover - canonical-date assertion
+        raise AssertionError("noncanonical as_of must be rejected")
     assert list(output_parent.iterdir()) == []

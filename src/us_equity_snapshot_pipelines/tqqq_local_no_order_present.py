@@ -1,8 +1,9 @@
 """Verify one canonical PRESENT package as evidence without changing a TQQQ decision.
 
 This bounded consumer never imports QuantStrategyPlugins and never mounts payload
-fields into portfolio or strategy context.  Its only effect is to bind the exact,
-already-verified package at ``input_envelope.plugin_control``.
+fields into portfolio or strategy context. It first binds package ``inputs.prices``
+to the exact benchmark bytes, then embeds the exact verified package only at
+``input_envelope.plugin_control``.
 """
 
 from __future__ import annotations
@@ -109,13 +110,21 @@ def _validate_config_keys(value: Any) -> None:
 
 
 def _verify_present_package(
-    package_path: str | Path, *, as_of: str, session_id: str, expected_digest: str, expected_qsp_commit: str
+    package_path: str | Path,
+    *,
+    benchmark_history_csv: str | Path,
+    as_of: str,
+    session_id: str,
+    expected_digest: str,
+    expected_qsp_commit: str,
 ) -> Mapping[str, Any]:
     """Fail closed unless canonical bytes and every bounded identity match."""
     if not _is_hash(expected_digest) or not _is_commit(expected_qsp_commit):
         _invalid()
     try:
         parsed_as_of = date.fromisoformat(as_of)
+        if as_of != parsed_as_of.isoformat():
+            _invalid()
         path = Path(package_path)
         file_stat = path.lstat()
         if path.is_symlink() or not stat.S_ISREG(file_stat.st_mode):
@@ -188,6 +197,12 @@ def _verify_present_package(
         or type(external_context) is not dict
     ):
         _invalid()
+    try:
+        benchmark_bytes = Path(benchmark_history_csv).read_bytes()
+    except (OSError, TypeError):
+        _invalid()
+    if prices["sha256"] != runner._sha256(benchmark_bytes) or prices["size_bytes"] != len(benchmark_bytes):
+        _invalid()
     if external_context.get("status") == "ABSENT":
         if external_context != {"status": "ABSENT"}:
             _invalid()
@@ -255,6 +270,7 @@ def run_tqqq_local_no_order_present(
     """Verify PRESENT provenance before the shared no-order compute/publication core."""
     package = _verify_present_package(
         plugin_control_package,
+        benchmark_history_csv=benchmark_history_csv,
         as_of=as_of,
         session_id=session_id,
         expected_digest=plugin_control_package_sha256,
