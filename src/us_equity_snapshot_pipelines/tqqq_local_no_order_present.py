@@ -117,7 +117,7 @@ def _verify_present_package(
     session_id: str,
     expected_digest: str,
     expected_qsp_commit: str,
-) -> Mapping[str, Any]:
+) -> tuple[Mapping[str, Any], bytes]:
     """Fail closed unless canonical bytes and every bounded identity match."""
     if not _is_hash(expected_digest) or not _is_commit(expected_qsp_commit):
         _invalid()
@@ -254,7 +254,7 @@ def _verify_present_package(
         or policy.get("evidence_status") != "automation_approved"
     ):
         _invalid()
-    return package
+    return package, benchmark_bytes
 
 
 def run_tqqq_local_no_order_present(
@@ -268,7 +268,7 @@ def run_tqqq_local_no_order_present(
     qsp_commit_sha: str,
 ) -> tuple[Any, Path]:
     """Verify PRESENT provenance before the shared no-order compute/publication core."""
-    package = _verify_present_package(
+    package, benchmark_bytes = _verify_present_package(
         plugin_control_package,
         benchmark_history_csv=benchmark_history_csv,
         as_of=as_of,
@@ -282,6 +282,7 @@ def run_tqqq_local_no_order_present(
         session_id=session_id,
         output_parent=output_parent,
         plugin_control=package,
+        market_csv_bytes=benchmark_bytes,
     )
 
 

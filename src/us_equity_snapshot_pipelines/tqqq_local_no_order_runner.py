@@ -94,11 +94,18 @@ def _runtime_pin(project: str, expected: str) -> None:
 
 def _parse_inputs(csv_path: str | Path, as_of: str, session_id: str) -> tuple[bytes, list[tuple[str, float]]]:
     try:
-        parsed_as_of = date.fromisoformat(as_of)
         raw = Path(csv_path).read_bytes()
+    except OSError as exc:
+        raise _RunnerError("T2B1_INPUT_INVALID") from exc
+    return raw, _parse_market_bytes(raw, as_of, session_id)
+
+
+def _parse_market_bytes(raw: bytes, as_of: str, session_id: str) -> list[tuple[str, float]]:
+    try:
+        parsed_as_of = date.fromisoformat(as_of)
         text = raw.decode("utf-8")
         rows = list(csv.reader(text.splitlines()))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         raise _RunnerError("T2B1_INPUT_INVALID") from exc
     if session_id != f"XNAS:{parsed_as_of.isoformat()}" or not rows or rows[0] != ["session_date", "close"]:
         raise _RunnerError("T2B1_INPUT_INVALID")
@@ -118,7 +125,7 @@ def _parse_inputs(csv_path: str | Path, as_of: str, session_id: str) -> tuple[by
         values.append((session_date.isoformat(), close))
     if len(values) < 252 or not values or values[-1][0] != parsed_as_of.isoformat():
         raise _RunnerError("T2B1_INPUT_INVALID")
-    return raw, values
+    return values
 
 
 def _normalize(value: Any) -> Any:
@@ -214,11 +221,14 @@ def _run_tqqq_local_no_order(
     session_id: str,
     output_parent: str | Path,
     plugin_control: Mapping[str, Any],
+    market_csv_bytes: bytes | None = None,
 ) -> tuple[Any, Path]:
     """Compute and atomically publish evidence while preserving decision-bearing inputs.
 
     ``plugin_control`` is evidence-only: callers must verify it before reaching this
-    core, and it is serialized only as ``input_envelope.plugin_control``.
+    core, and it is serialized only as ``input_envelope.plugin_control``. PRESENT
+    callers may provide one verified immutable market-byte snapshot, which is then
+    used for parsing, computation, and publication without a second path read.
     """
     checkout, uesp_head = _source_identity()
     _runtime_pin("us-equity-strategies", UES_PIN)
@@ -226,7 +236,11 @@ def _run_tqqq_local_no_order(
     parent = Path(output_parent).resolve()
     if not parent.is_dir() or checkout == parent or checkout in parent.parents:
         raise _RunnerError("T2B1_INPUT_INVALID")
-    market_bytes, market_rows = _parse_inputs(benchmark_history_csv, as_of, session_id)
+    if market_csv_bytes is None:
+        market_bytes, market_rows = _parse_inputs(benchmark_history_csv, as_of, session_id)
+    else:
+        market_bytes = market_csv_bytes
+        market_rows = _parse_market_bytes(market_bytes, as_of, session_id)
     try:
         import pandas as pd
         from quant_platform_kit.common.models import PortfolioSnapshot

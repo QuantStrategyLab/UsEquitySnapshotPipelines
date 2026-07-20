@@ -342,3 +342,36 @@ def test_present_consumer_explicitly_rejects_noncanonical_as_of_before_compute(m
     else:  # pragma: no cover - canonical-date assertion
         raise AssertionError("noncanonical as_of must be rejected")
     assert list(output_parent.iterdir()) == []
+
+
+def test_present_consumer_uses_one_verified_benchmark_snapshot_for_compute_and_envelope(monkeypatch, tmp_path: Path) -> None:
+    history = tmp_path / "benchmark.csv"
+    output_parent = tmp_path / "output"
+    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
+    output_parent.mkdir()
+    _write_history(history)
+    verified_bytes = history.read_bytes()
+    digest = _write_present_package(package_path, prices_bytes=verified_bytes)
+    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
+    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
+    _install_decision_spy(monkeypatch)
+    original_parse_inputs = runner._parse_inputs
+
+    def mutate_between_reads(csv_path, as_of, session_id):
+        history.write_bytes(verified_bytes.replace(b"100.0", b"101.0", 1))
+        return original_parse_inputs(csv_path, as_of, session_id)
+
+    monkeypatch.setattr(runner, "_parse_inputs", mutate_between_reads)
+
+    _, output = run_tqqq_local_no_order_present(
+        benchmark_history_csv=history,
+        as_of="2026-07-17",
+        session_id="XNAS:2026-07-17",
+        output_parent=output_parent,
+        plugin_control_package=package_path,
+        plugin_control_package_sha256=digest,
+        qsp_commit_sha="b" * 40,
+    )
+
+    envelope = json.loads((output / "input_envelope.json").read_text(encoding="utf-8"))
+    assert envelope["market"]["sha256"] == runner._sha256(verified_bytes)
