@@ -101,6 +101,17 @@ def _strict_json(raw: bytes, error) -> Any:
         error()
 
 
+def _exact_json(value: Any, expected: Any) -> bool:
+    """Compare parsed JSON without Python's bool/int or int/float coercion."""
+    if type(value) is not type(expected):
+        return False
+    if type(value) is dict:
+        return set(value) == set(expected) and all(_exact_json(value[key], expected[key]) for key in value)
+    if type(value) is list:
+        return len(value) == len(expected) and all(_exact_json(item, wanted) for item, wanted in zip(value, expected))
+    return value == expected
+
+
 def _canonical_date(value: object) -> str:
     if type(value) is not str:
         _bundle_invalid()
@@ -229,7 +240,8 @@ def _read_bundle(path: str | Path, expected_digest: str, expected_commit: str) -
     if type(provider) is not dict:
         _bundle_invalid()
     end = provider.get("end_exclusive")
-    if _canonical_date(end) != end or as_of >= end or manifest != _expected_manifest(raw, benchmark, count, first_date, as_of, rows, end):
+    expected_manifest = _expected_manifest(raw, benchmark, count, first_date, as_of, rows, end)
+    if _canonical_date(end) != end or as_of >= end or not _exact_json(manifest, expected_manifest):
         _bundle_invalid()
     if bundle.name != f"qsp-t2b3-qqq-input-v1-{as_of}-{expected_digest}":
         _bundle_invalid()
@@ -260,7 +272,13 @@ def _verify_package(path_value: str | Path, *, as_of: str, session_id: str, dige
         _present_invalid()
     config = package.get("config")
     expected_config = _expected_package_config(as_of)
-    if type(config) is not dict or config != {"sha256": runner._sha256(runner._canonical_json(expected_config)), "value": expected_config}:
+    if type(config) is not dict or set(config) != {"sha256", "value"} or type(config["value"]) is not dict or type(config["sha256"]) is not str:
+        _present_invalid()
+    try:
+        received_config_digest = runner._sha256(runner._canonical_json(config["value"]))
+    except (TypeError, ValueError):
+        _present_invalid()
+    if config["sha256"] != received_config_digest or not _exact_json(config["value"], expected_config):
         _present_invalid()
     inputs = package.get("inputs")
     expected_prices = {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)}

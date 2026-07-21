@@ -297,6 +297,57 @@ def test_t2b3_snapshot_replay_two_file_output_and_persistence_identity(monkeypat
     assert error.value.decision is expected and list(parent.iterdir()) == [] and benchmark.startswith(b"session_date,close\n")
 
 
+def test_t2b3_rejects_package_config_bool_int_coercion_with_stale_value_digest(monkeypatch, tmp_path: Path) -> None:
+    bundle, manifest_digest, _ = _write_bundle(tmp_path)
+    package, _ = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    value = json.loads(package.read_text())
+    value["config"]["value"]["enabled"] = 1
+    package_bytes = _canonical(value)
+    package_digest = runner._sha256(package_bytes)
+    package = package.with_name(f"tqqq-market-regime-control-present-{MIN_AS_OF}-{package_digest}.json")
+    package.write_bytes(package_bytes)
+    parent = tmp_path / "output"
+    parent.mkdir()
+    contexts, _ = _spy(monkeypatch)
+
+    with pytest.raises(runner._RunnerError, match="T2B2_PRESENT_INVALID"):
+        present.run_tqqq_local_no_order_present(
+            input_bundle=bundle,
+            input_bundle_manifest_sha256=manifest_digest,
+            plugin_control_package=package,
+            plugin_control_package_sha256=package_digest,
+            qsp_commit_sha=QSP_COMMIT,
+            output_parent=parent,
+        )
+    assert contexts == [] and list(parent.iterdir()) == []
+
+
+def test_t2b3_rejects_manifest_bool_int_coercion_with_authenticated_bytes(monkeypatch, tmp_path: Path) -> None:
+    bundle, _, _ = _write_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest["provider"]["auto_adjust"] = 1
+    manifest_bytes = _canonical(manifest)
+    manifest_digest = runner._sha256(manifest_bytes)
+    (bundle / "manifest.json").write_bytes(manifest_bytes)
+    bundle = bundle.with_name(f"qsp-t2b3-qqq-input-v1-{MIN_AS_OF}-{manifest_digest}")
+    bundle.parent.joinpath(next(path.name for path in bundle.parent.iterdir() if path.name.startswith("qsp-t2b3-qqq-input-v1-"))).rename(bundle)
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    contexts, _ = _spy(monkeypatch)
+
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(
+            input_bundle=bundle,
+            input_bundle_manifest_sha256=manifest_digest,
+            plugin_control_package=package,
+            plugin_control_package_sha256=package_digest,
+            qsp_commit_sha=QSP_COMMIT,
+            output_parent=parent,
+        )
+    assert contexts == [] and list(parent.iterdir()) == []
+
+
 def test_t2b3_cli_rejects_old_caller_supplied_benchmark_as_of_and_session(capsys) -> None:
     assert present.main(["--benchmark-history-csv", "x", "--as-of", MIN_AS_OF, "--session-id", f"XNAS:{MIN_AS_OF}"]) == 2
     assert capsys.readouterr().err == "ERROR T2B2_PRESENT_INVALID\n"
