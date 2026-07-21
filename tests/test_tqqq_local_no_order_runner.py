@@ -1,377 +1,302 @@
 from __future__ import annotations
 
 import base64
-import inspect
-from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from us_equity_snapshot_pipelines import tqqq_local_no_order_present as present
 from us_equity_snapshot_pipelines import tqqq_local_no_order_runner as runner
-from us_equity_snapshot_pipelines.tqqq_local_no_order_runner import TqqqForwardInputEnvelope, run_tqqq_local_no_order
-from us_equity_snapshot_pipelines.tqqq_local_no_order_present import run_tqqq_local_no_order_present
+from us_equity_snapshot_pipelines.tqqq_local_no_order_runner import run_tqqq_local_no_order
 
 
-def test_tqqq_local_no_order_runner_exposes_only_the_frozen_inputs() -> None:
-    assert tuple(inspect.signature(run_tqqq_local_no_order).parameters) == (
-        "benchmark_history_csv",
-        "as_of",
-        "session_id",
-        "output_parent",
-    )
+QSP_COMMIT = "c798397d9ca9230e404673d7774bac3d478217dc"
+PROJECTION_CONTRACT_SHA256 = "22223aea8b94ab3157c7897eb883fb84c79fa4d6db271f6629bd47e4ca2b8e06"
+QSP_RECOVERY_CONTRACT_SHA256 = "dfeffa2ab9d6d4fa25f8b5ac5525912174910f85bd9ee61caf62b7a87b9172ce"
+STAGE2_RECOVERY_CONTRACT_SHA256 = "2b836bb1da2d2762e6851dc3097654998068806d9ff70e7e4924b5fdfbe13933"
+TRANSFORM_ID = "qsp.t2b3.qqq_session_date_close_csv"
+TRANSFORM_VERSION = "1"
+MIN_AS_OF = "2026-07-21"
+SYMBOLS = ("QQQ", "SPY", "TQQQ", "^VIX", "^VIX3M", "HYG", "IEF", "LQD", "XLF", "KRE", "TLT")
+CONFIG_BYTES = b'''default_mode = "shadow"
+
+[[strategy_plugins]]
+strategy = "tqqq_growth_income"
+plugin = "market_regime_control"
+enabled = true
+
+[strategy_plugins.inputs]
+prices = "prices.csv"
+event_set = "geopolitical-deescalation"
+benchmark_symbol = "QQQ"
+attack_symbol = "TQQQ"
+vix_symbols = ["VIX", "^VIX", "VIXCLS"]
+vix3m_symbols = ["VIX3M", "^VIX3M", "VXV", "^VXV"]
+credit_pairs = ["HYG:IEF", "LQD:IEF"]
+financial_symbols = ["XLF", "KRE"]
+rate_symbols = ["IEF", "TLT"]
+strategy_policy = "levered_growth_income_v1"
+realized_vol_threshold = 0.30
+realized_vol_requires_confirmation = true
+external_stress_actionable = false
+delever_risk_asset_scalar = 0.0
+crisis_enabled = true
+macro_enabled = true
+taco_enabled = true
+panic_reversal_enabled = false
+
+[strategy_plugins.outputs]
+output_dir = "data/output/tqqq_growth_income/plugins/market_regime_control"
+'''
 
 
-def test_tqqq_forward_envelope_is_immutable_and_absent_only() -> None:
-    envelope = TqqqForwardInputEnvelope(
-        schema="qsl.tqqq_forward_input_envelope.v1",
-        as_of="2026-07-17",
-        session_id="XNAS:2026-07-17",
-        uesp_commit_sha="a" * 40,
-        market_csv_bytes=b"session_date,close\n",
-        merged_config_json=b"{}",
-        portfolio_json=b"{}",
-        plugin_control_status="ABSENT",
-    )
-
-    assert envelope.plugin_control_status == "ABSENT"
-    try:
-        envelope.as_of = "2026-07-18"  # type: ignore[misc]
-    except FrozenInstanceError:
-        pass
-    else:  # pragma: no cover - defensive assertion for dataclass semantics
-        raise AssertionError("envelope must be frozen")
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def _write_history(path: Path, *, as_of: str = "2026-07-17") -> None:
-    rows = ["session_date,close"]
+def _raw_prices(as_of: str) -> bytes:
     start = date.fromisoformat(as_of) - timedelta(days=251)
+    lines = ["symbol,as_of,open,high,low,close,volume"]
     for offset in range(252):
-        rows.append(f"{start + timedelta(days=offset)},{100.0 + offset}")
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        session = (start + timedelta(days=offset)).isoformat()
+        for index, symbol in enumerate(sorted(SYMBOLS)):
+            value = str(100 + offset + index)
+            lines.append(f"{symbol},{session},{value},{value},{value},{value},1")
+    return ("\n".join(lines) + "\n").encode("ascii")
 
 
-def _write_present_package(
-    path: Path, *, as_of: str = "2026-07-17", qsp_commit_sha: str = "b" * 40, prices_bytes: bytes = b"prices"
-) -> str:
-    payload = {
-        "as_of": as_of,
-        "audit_summary": {},
-        "arbiter": {},
-        "canonical_route": {},
-        "component_signals": {},
-        "configured_mode": "shadow",
-        "consumption_policy": {
-            "evidence_status": "automation_approved",
-            "plugin": "market_regime_control",
-            "position_control_allowed": True,
-            "strategy": "tqqq_growth_income",
+def _benchmark(raw: bytes) -> bytes:
+    return b"session_date,close\n" + b"".join(
+        b",".join((fields[1], fields[5])) + b"\n"
+        for fields in (line.split(b",") for line in raw.splitlines()[1:])
+        if fields[0] == b"QQQ"
+    )
+
+
+def _manifest(raw: bytes, benchmark: bytes, as_of: str, *, end_exclusive: str | None = None) -> dict[str, object]:
+    first_date = (date.fromisoformat(as_of) - timedelta(days=251)).isoformat()
+    return {
+        "config": {"filename": "config.toml", "sha256": runner._sha256(CONFIG_BYTES), "size_bytes": len(CONFIG_BYTES)},
+        "external_context": {"status": "ABSENT"},
+        "prices": {
+            "filename": "prices.csv", "first_date": first_date, "format": "qsp.t2b3.long_price_csv.v1", "last_date": as_of,
+            "row_count": 252 * len(SYMBOLS), "sha256": runner._sha256(raw), "size_bytes": len(raw), "symbols": sorted(SYMBOLS),
         },
-        "effective_mode": "shadow",
-        "execution_controls": {},
-        "generated_at": "2026-07-17T00:00:00+00:00",
-        "localized_messages": {},
-        "log_record": {},
-        "mode": "shadow",
-        "notification": {},
-        "plugin": "market_regime_control",
-        "position_control": {},
-        "profile": "market_regime_control",
-        "schema_version": "market_regime_control.v1",
-        "strategy": "tqqq_growth_income",
-        "strategy_policy": {},
-        "suggested_action": {},
-        "target_type": "strategy",
-        "would_trade_if_enabled": False,
+        "producer": {"commit_sha": QSP_COMMIT, "entrypoint": "quant_strategy_plugins.tqqq_research_input_bundle", "repository": "QuantStrategyLab/QuantStrategyPlugins"},
+        "projection": {
+            "benchmark_sha256": runner._sha256(benchmark), "benchmark_size_bytes": len(benchmark), "first_date": first_date,
+            "last_date": as_of, "raw_sha256": runner._sha256(raw), "row_count": 252, "symbol": "QQQ",
+            "transform_id": TRANSFORM_ID, "transform_version": TRANSFORM_VERSION,
+        },
+        "provider": {
+            "auto_adjust": True, "credentials": "ABSENT", "end_exclusive": end_exclusive or (date.fromisoformat(as_of) + timedelta(days=1)).isoformat(),
+            "path": "quant_strategy_plugins.yfinance_prices:download_price_history", "provider_id": "yahoo_yfinance_public",
+            "requested_symbols": list(SYMBOLS), "start": "2010-01-01",
+        },
+        "schema": "qsl.t2b3.qqq_price_projection_bundle.v1",
+        "session": {"as_of": as_of, "claim": "PROVIDER_OBSERVED_ONLY_NOT_OFFICIAL_XNAS_PROOF", "session_id": f"XNAS:{as_of}", "source": "LAST_COMPLETE_QQQ_ROW"},
+        "status": "READY",
     }
-    payload_bytes = runner._canonical_json(payload)
-    config_value = {
-        "as_of": as_of,
-        "enabled": True,
-        "mode": "shadow",
-        "plugin": "market_regime_control",
-        "prices": "@input:prices",
-        "strategy": "tqqq_growth_income",
+
+
+def _package_config(as_of: str) -> dict[str, object]:
+    return {
+        "as_of": as_of, "attack_symbol": "TQQQ", "benchmark_symbol": "QQQ", "credit_pairs": ["HYG:IEF", "LQD:IEF"],
+        "crisis_enabled": True, "delever_risk_asset_scalar": 0.0, "enabled": True, "event_set": "geopolitical-deescalation",
+        "external_stress_actionable": False, "financial_symbols": ["XLF", "KRE"], "macro_enabled": True, "mode": "shadow",
+        "panic_reversal_enabled": False, "plugin": "market_regime_control", "prices": "@input:prices", "rate_symbols": ["IEF", "TLT"],
+        "realized_vol_requires_confirmation": True, "realized_vol_threshold": 0.30, "strategy": "tqqq_growth_income",
+        "strategy_policy": "levered_growth_income_v1", "taco_enabled": True, "taco_opportunity_size_scalar": 0.0,
+        "vix3m_symbols": ["VIX3M", "^VIX3M", "VXV", "^VXV"], "vix_symbols": ["VIX", "^VIX", "VIXCLS"],
     }
+
+
+def _payload(as_of: str) -> dict[str, object]:
+    return {
+        "as_of": as_of, "audit_summary": {}, "arbiter": {}, "canonical_route": {}, "component_signals": {},
+        "configured_mode": "shadow", "consumption_policy": {"evidence_status": "automation_approved", "plugin": "market_regime_control", "position_control_allowed": True, "strategy": "tqqq_growth_income"},
+        "effective_mode": "shadow", "execution_controls": {}, "generated_at": "2026-07-21T00:00:00+00:00", "localized_messages": {},
+        "log_record": {}, "mode": "shadow", "notification": {}, "plugin": "market_regime_control", "position_control": {},
+        "profile": "market_regime_control", "schema_version": "market_regime_control.v1", "strategy": "tqqq_growth_income",
+        "strategy_policy": {}, "suggested_action": {}, "target_type": "strategy", "would_trade_if_enabled": False,
+    }
+
+
+def _write_bundle(tmp_path: Path, *, as_of: str = MIN_AS_OF) -> tuple[Path, str, bytes]:
+    raw = _raw_prices(as_of)
+    benchmark = _benchmark(raw)
+    manifest_bytes = _canonical(_manifest(raw, benchmark, as_of))
+    digest = runner._sha256(manifest_bytes)
+    bundle = tmp_path / f"qsp-t2b3-qqq-input-v1-{as_of}-{digest}"
+    bundle.mkdir()
+    (bundle / "config.toml").write_bytes(CONFIG_BYTES)
+    (bundle / "prices.csv").write_bytes(raw)
+    (bundle / "manifest.json").write_bytes(manifest_bytes)
+    return bundle, digest, benchmark
+
+
+def _write_package(tmp_path: Path, *, as_of: str, raw: bytes, external_context: object = None) -> tuple[Path, str]:
+    payload_bytes = _canonical(_payload(as_of))
+    config = _package_config(as_of)
     package = {
-        "as_of": as_of,
-        "config": {"sha256": runner._sha256(runner._canonical_json(config_value)), "value": config_value},
-        "inputs": {
-            "external_context": {"status": "ABSENT"},
-            "prices": {"format": "csv", "sha256": runner._sha256(prices_bytes), "size_bytes": len(prices_bytes)},
-        },
-        "payload": {
-            "bytes_b64": base64.b64encode(payload_bytes).decode("ascii"),
-            "schema_version": "market_regime_control.v1",
-            "sha256": runner._sha256(payload_bytes),
-            "size_bytes": len(payload_bytes),
-        },
-        "producer": {
-            "commit_sha": qsp_commit_sha,
-            "entrypoint": "quant_strategy_plugins.strategy_plugin_runner:run_market_regime_control_plugin",
-            "repository": "QuantStrategyLab/QuantStrategyPlugins",
-        },
-        "schema": "qsl.tqqq_market_regime_control_present.v1",
-        "session_id": f"XNAS:{as_of}",
-        "status": "PRESENT",
+        "as_of": as_of, "config": {"sha256": runner._sha256(_canonical(config)), "value": config},
+        "inputs": {"external_context": {"status": "ABSENT"} if external_context is None else external_context, "prices": {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)}},
+        "payload": {"bytes_b64": base64.b64encode(payload_bytes).decode("ascii"), "schema_version": "market_regime_control.v1", "sha256": runner._sha256(payload_bytes), "size_bytes": len(payload_bytes)},
+        "producer": {"commit_sha": QSP_COMMIT, "entrypoint": "quant_strategy_plugins.strategy_plugin_runner:run_market_regime_control_plugin", "repository": "QuantStrategyLab/QuantStrategyPlugins"},
+        "schema": "qsl.tqqq_market_regime_control_present.v1", "session_id": f"XNAS:{as_of}", "status": "PRESENT",
         "subject": {"mode": "shadow", "plugin": "market_regime_control", "strategy": "tqqq_growth_income"},
     }
-    package_bytes = runner._canonical_json(package)
-    digest = runner._sha256(package_bytes)
-    path.write_bytes(package_bytes)
-    return digest
+    value = _canonical(package)
+    digest = runner._sha256(value)
+    path = tmp_path / f"tqqq-market-regime-control-present-{as_of}-{digest}.json"
+    path.write_bytes(value)
+    return path, digest
 
 
-def _install_decision_spy(monkeypatch) -> list[object]:
+def _spy(monkeypatch):
     import us_equity_strategies.entrypoints as entrypoints
 
     contexts: list[object] = []
-    decision = SimpleNamespace(positions={"TQQQ": 1.0}, budgets={"risk": 1.0}, risk_flags=("ok",), diagnostics={"source": "spy"})
-
-    def compute(context):
-        contexts.append(context)
-        return decision
-
-    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", compute)
+    decision = SimpleNamespace(positions={"TQQQ": 1.0}, budgets={}, risk_flags=(), diagnostics={})
+    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", lambda context: contexts.append(context) or decision, raising=False)
     monkeypatch.setattr(runner, "_runtime_pin", lambda *_: None)
     monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-    return contexts
+    return contexts, decision
 
 
-def test_runner_publishes_an_absent_only_two_file_package(monkeypatch, tmp_path: Path) -> None:
+def _run_present(monkeypatch, tmp_path: Path):
+    bundle, manifest_digest, benchmark = _write_bundle(tmp_path)
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    contexts, decision = _spy(monkeypatch)
+    result = present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=manifest_digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
+    return result, bundle, manifest_digest, benchmark, package, package_digest, contexts, decision
+
+
+def test_t2b3_cross_repo_golden_vector_pins_composite_contracts_transform_and_qsp_commit(monkeypatch, tmp_path: Path) -> None:
+    (decision, output), bundle, digest, benchmark, package, package_digest, _, _ = _run_present(monkeypatch, tmp_path)
+    assert (present.QSP_COMMIT, present.PROJECTION_CONTRACT_SHA256, present.QSP_RECOVERY_CONTRACT_SHA256, present.STAGE2_RECOVERY_CONTRACT_SHA256) == (QSP_COMMIT, PROJECTION_CONTRACT_SHA256, QSP_RECOVERY_CONTRACT_SHA256, STAGE2_RECOVERY_CONTRACT_SHA256)
+    assert (present.TRANSFORM_ID, present.TRANSFORM_VERSION, present.MIN_AS_OF) == (TRANSFORM_ID, TRANSFORM_VERSION, MIN_AS_OF)
+    envelope = json.loads((output / "input_envelope.json").read_text())
+    assert base64.b64decode(envelope["market"]["bytes_b64"]) == benchmark
+    assert decision.positions == {"TQQQ": 1.0}
+    assert bundle.name.endswith(digest) and package.name.endswith(f"{package_digest}.json")
+
+
+def test_t2b3_accepts_r_not_equal_b_only_when_present_package_binds_raw(monkeypatch, tmp_path: Path) -> None:
+    (_, output), bundle, manifest_digest, benchmark, _, package_digest, _, _ = _run_present(monkeypatch, tmp_path)
+    raw = (bundle / "prices.csv").read_bytes()
+    envelope = json.loads((output / "input_envelope.json").read_text())
+    assert raw != benchmark
+    assert envelope["plugin_control"] == {"input_bundle": {"manifest": json.loads((bundle / "manifest.json").read_text()), "manifest_sha256": manifest_digest}, "package": {"sha256": package_digest, "value": envelope["plugin_control"]["package"]["value"]}, "status": "PRESENT"}
+    assert envelope["plugin_control"]["package"]["value"]["inputs"]["prices"]["sha256"] == runner._sha256(raw)
+
+
+@pytest.mark.parametrize("token", [b"100.0", b"100.1", b"1e2"])
+def test_t2b3_accepts_only_qsp_canonical_binary64_tokens(monkeypatch, tmp_path: Path, token: bytes) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path)
+    raw = (bundle / "prices.csv").read_bytes().replace(b",100,100,100,100,1", b"," + token + b"," + token + b"," + token + b"," + token + b",1", 1)
+    (bundle / "prices.csv").write_bytes(raw)
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=raw)
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
+    assert list(parent.iterdir()) == []
+
+
+def test_t2b3_present_wrapper_is_intentional_opaque_evidence_contract(monkeypatch, tmp_path: Path) -> None:
+    (present_decision, _), _, _, benchmark, _, _, contexts, _ = _run_present(monkeypatch, tmp_path)
     history = tmp_path / "benchmark.csv"
-    _write_history(history)
-    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-
-    _, package = run_tqqq_local_no_order(
-        benchmark_history_csv=history,
-        as_of="2026-07-17",
-        session_id="XNAS:2026-07-17",
-        output_parent=tmp_path,
-    )
-
-    assert {path.name for path in package.iterdir()} == {"input_envelope.json", "decision.json"}
-    envelope = json.loads((package / "input_envelope.json").read_text(encoding="utf-8"))
-    decision = json.loads((package / "decision.json").read_text(encoding="utf-8"))
-    assert envelope["plugin_control"] == {"status": "ABSENT"}
-    assert envelope["portfolio"]["value"]["metadata"] == {}
-    assert decision["input_envelope_sha256"] == package.name.rsplit("-", 1)[-1]
-
-
-def test_cli_rejects_removed_plugin_control_option(capsys) -> None:
-    assert runner.main(["--plugin-control-json", "control.json"]) == 2
-    assert capsys.readouterr().err == "ERROR T2B1_INPUT_INVALID\n"
-
-
-def test_present_consumer_binds_evidence_without_changing_decision_context(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    absent_parent = tmp_path / "absent"
-    present_parent = tmp_path / "present"
-    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
-    absent_parent.mkdir()
-    present_parent.mkdir()
-    _write_history(history)
-    digest = _write_present_package(package_path, prices_bytes=history.read_bytes())
-    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
-    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
-    contexts = _install_decision_spy(monkeypatch)
-
-    absent_decision, _ = run_tqqq_local_no_order(
-        benchmark_history_csv=history,
-        as_of="2026-07-17",
-        session_id="XNAS:2026-07-17",
-        output_parent=absent_parent,
-    )
-    present_decision, present_output = run_tqqq_local_no_order_present(
-        benchmark_history_csv=history,
-        as_of="2026-07-17",
-        session_id="XNAS:2026-07-17",
-        output_parent=present_parent,
-        plugin_control_package=package_path,
-        plugin_control_package_sha256=digest,
-        qsp_commit_sha="b" * 40,
-    )
-
-    assert absent_decision is present_decision
-    assert len(contexts) == 2
+    history.write_bytes(benchmark)
+    parent = tmp_path / "absent"
+    parent.mkdir()
+    absent_decision, _ = run_tqqq_local_no_order(benchmark_history_csv=history, as_of=MIN_AS_OF, session_id=f"XNAS:{MIN_AS_OF}", output_parent=parent)
+    assert present_decision is absent_decision and len(contexts) == 2
     assert contexts[0].portfolio.metadata == contexts[1].portfolio.metadata == {}
-    assert contexts[0].market_data["benchmark_history"].equals(contexts[1].market_data["benchmark_history"])
-    assert contexts[0].state == contexts[1].state == {}
-    assert contexts[0].runtime_config == contexts[1].runtime_config == {}
-    assert contexts[0].capabilities == contexts[1].capabilities == {}
-    assert contexts[0].artifacts == contexts[1].artifacts == {}
-    envelope = json.loads((present_output / "input_envelope.json").read_text(encoding="utf-8"))
-    assert envelope["plugin_control"] == json.loads(package_path.read_text(encoding="utf-8"))
+    assert contexts[0].state == contexts[1].state == contexts[0].runtime_config == contexts[1].runtime_config == {}
 
 
-def test_present_consumer_rejects_untrusted_package_before_compute(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    output_parent = tmp_path / "output"
-    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17-invalid.json"
-    output_parent.mkdir()
-    _write_history(history)
-    _write_present_package(package_path)
-    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-
-    def must_not_compute(_context):
-        raise AssertionError("invalid package must fail before compute")
-
-    import us_equity_strategies.entrypoints as entrypoints
-
-    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute)
-    try:
-        run_tqqq_local_no_order_present(
-            benchmark_history_csv=history,
-            as_of="2026-07-17",
-            session_id="XNAS:2026-07-17",
-            output_parent=output_parent,
-            plugin_control_package=package_path,
-            plugin_control_package_sha256="c" * 64,
-            qsp_commit_sha="b" * 40,
-        )
-    except runner._RunnerError as error:
-        assert error.code == "T2B2_PRESENT_INVALID"
-    else:  # pragma: no cover - fail-closed assertion
-        raise AssertionError("invalid package must be rejected")
-    assert list(output_parent.iterdir()) == []
+def test_t2b3_requires_absolute_bundle_and_package_paths(monkeypatch, tmp_path: Path) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path)
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle.relative_to(tmp_path), input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
+    with pytest.raises(runner._RunnerError, match="T2B2_PRESENT_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package.relative_to(tmp_path), plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
 
 
-def test_present_publication_failure_retains_the_computed_decision(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    output_parent = tmp_path / "output"
-    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
-    output_parent.mkdir()
-    _write_history(history)
-    digest = _write_present_package(package_path, prices_bytes=history.read_bytes())
-    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
-    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
-    decision = SimpleNamespace(positions={}, budgets={}, risk_flags=(), diagnostics={})
-    import us_equity_strategies.entrypoints as entrypoints
-
-    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", lambda _context: decision)
-    monkeypatch.setattr(runner, "_runtime_pin", lambda *_: None)
-    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-    monkeypatch.setattr(
-        runner,
-        "_strict_readback",
-        lambda *_: (_ for _ in ()).throw(runner._RunnerError("T2B1_READBACK_FAILED")),
-    )
-
-    try:
-        run_tqqq_local_no_order_present(
-            benchmark_history_csv=history,
-            as_of="2026-07-17",
-            session_id="XNAS:2026-07-17",
-            output_parent=output_parent,
-            plugin_control_package=package_path,
-            plugin_control_package_sha256=digest,
-            qsp_commit_sha="b" * 40,
-        )
-    except runner._RunnerError as error:
-        assert error.code == "T2B1_READBACK_FAILED"
-        assert error.decision is decision
-    else:  # pragma: no cover - failure-boundary assertion
-        raise AssertionError("staged readback failure must be preserved")
-    assert list(output_parent.iterdir()) == []
+def test_t2b3_min_as_of_is_fixed_forward_cutover(monkeypatch, tmp_path: Path) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path, as_of="2026-07-20")
+    package, package_digest = _write_package(tmp_path, as_of="2026-07-20", raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
 
 
-def test_present_consumer_rejects_prices_not_bound_to_benchmark_before_compute(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    output_parent = tmp_path / "output"
-    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
-    output_parent.mkdir()
-    _write_history(history)
-    digest = _write_present_package(package_path, prices_bytes=b"unrelated-prices")
-    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
-    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
-    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-
-    def must_not_compute(_context):
-        raise AssertionError("unbound prices must fail before compute")
-
-    import us_equity_strategies.entrypoints as entrypoints
-
-    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute)
-    try:
-        run_tqqq_local_no_order_present(
-            benchmark_history_csv=history,
-            as_of="2026-07-17",
-            session_id="XNAS:2026-07-17",
-            output_parent=output_parent,
-            plugin_control_package=package_path,
-            plugin_control_package_sha256=digest,
-            qsp_commit_sha="b" * 40,
-        )
-    except runner._RunnerError as error:
-        assert error.code == "T2B2_PRESENT_INVALID"
-    else:  # pragma: no cover - integrity-boundary assertion
-        raise AssertionError("package prices must bind the exact benchmark bytes")
-    assert list(output_parent.iterdir()) == []
+def test_t2b3_manifest_end_exclusive_is_authenticated_by_independent_digest(monkeypatch, tmp_path: Path) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    manifest["provider"]["end_exclusive"] = MIN_AS_OF
+    (bundle / "manifest.json").write_bytes(_canonical(manifest))
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
 
 
-def test_present_consumer_explicitly_rejects_noncanonical_as_of_before_compute(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    output_parent = tmp_path / "output"
-    as_of = "20260717"
-    package_path = tmp_path / f"tqqq-market-regime-control-present-{as_of}.json"
-    output_parent.mkdir()
-    _write_history(history)
-    digest = _write_present_package(package_path, as_of=as_of, prices_bytes=history.read_bytes())
-    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-{as_of}-{digest}.json"))
-    package_path = package_path.with_name(f"tqqq-market-regime-control-present-{as_of}-{digest}.json")
-    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
-
-    def must_not_compute(_context):
-        raise AssertionError("noncanonical as_of must fail before compute")
-
-    import us_equity_strategies.entrypoints as entrypoints
-
-    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute)
-    try:
-        run_tqqq_local_no_order_present(
-            benchmark_history_csv=history,
-            as_of=as_of,
-            session_id=f"XNAS:{as_of}",
-            output_parent=output_parent,
-            plugin_control_package=package_path,
-            plugin_control_package_sha256=digest,
-            qsp_commit_sha="b" * 40,
-        )
-    except runner._RunnerError as error:
-        assert error.code == "T2B2_PRESENT_INVALID"
-    else:  # pragma: no cover - canonical-date assertion
-        raise AssertionError("noncanonical as_of must be rejected")
-    assert list(output_parent.iterdir()) == []
+@pytest.mark.parametrize("member", ["config.toml", "prices.csv", "manifest.json"])
+def test_t2b3_member_tamper_fails_before_compute(monkeypatch, tmp_path: Path, member: str) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path)
+    path = bundle / member
+    path.write_bytes(path.read_bytes() + b"x")
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes())
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B3_BUNDLE_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
+    assert list(parent.iterdir()) == []
 
 
-def test_present_consumer_uses_one_verified_benchmark_snapshot_for_compute_and_envelope(monkeypatch, tmp_path: Path) -> None:
-    history = tmp_path / "benchmark.csv"
-    output_parent = tmp_path / "output"
-    package_path = tmp_path / "tqqq-market-regime-control-present-2026-07-17.json"
-    output_parent.mkdir()
-    _write_history(history)
-    verified_bytes = history.read_bytes()
-    digest = _write_present_package(package_path, prices_bytes=verified_bytes)
-    package_path.rename(package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json"))
-    package_path = package_path.with_name(f"tqqq-market-regime-control-present-2026-07-17-{digest}.json")
-    _install_decision_spy(monkeypatch)
-    original_parse_inputs = runner._parse_inputs
+def test_t2b3_rejects_external_context_present_and_package_self_attestation(monkeypatch, tmp_path: Path) -> None:
+    bundle, digest, _ = _write_bundle(tmp_path)
+    package, package_digest = _write_package(tmp_path, as_of=MIN_AS_OF, raw=(bundle / "prices.csv").read_bytes(), external_context={"status": "PRESENT"})
+    parent = tmp_path / "output"
+    parent.mkdir()
+    _spy(monkeypatch)
+    with pytest.raises(runner._RunnerError, match="T2B2_PRESENT_INVALID"):
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
 
-    def mutate_between_reads(csv_path, as_of, session_id):
-        history.write_bytes(verified_bytes.replace(b"100.0", b"101.0", 1))
-        return original_parse_inputs(csv_path, as_of, session_id)
 
-    monkeypatch.setattr(runner, "_parse_inputs", mutate_between_reads)
+def test_t2b3_snapshot_replay_two_file_output_and_persistence_identity(monkeypatch, tmp_path: Path) -> None:
+    (decision, output), bundle, digest, benchmark, package, package_digest, _, expected = _run_present(monkeypatch, tmp_path)
+    assert decision is expected and {item.name for item in output.iterdir()} == {"input_envelope.json", "decision.json"}
+    parent = tmp_path / "fault"
+    parent.mkdir()
+    original = runner._parse_market_bytes
+    def mutate(raw: bytes, as_of: str, session_id: str):
+        (bundle / "prices.csv").write_bytes(b"changed")
+        return original(raw, as_of, session_id)
+    monkeypatch.setattr(runner, "_parse_market_bytes", mutate)
+    monkeypatch.setattr(runner, "_strict_readback", lambda *_: (_ for _ in ()).throw(runner._RunnerError("T2B1_READBACK_FAILED")))
+    with pytest.raises(runner._RunnerError, match="T2B1_READBACK_FAILED") as error:
+        present.run_tqqq_local_no_order_present(input_bundle=bundle, input_bundle_manifest_sha256=digest, plugin_control_package=package, plugin_control_package_sha256=package_digest, qsp_commit_sha=QSP_COMMIT, output_parent=parent)
+    assert error.value.decision is expected and list(parent.iterdir()) == [] and benchmark.startswith(b"session_date,close\n")
 
-    _, output = run_tqqq_local_no_order_present(
-        benchmark_history_csv=history,
-        as_of="2026-07-17",
-        session_id="XNAS:2026-07-17",
-        output_parent=output_parent,
-        plugin_control_package=package_path,
-        plugin_control_package_sha256=digest,
-        qsp_commit_sha="b" * 40,
-    )
 
-    envelope = json.loads((output / "input_envelope.json").read_text(encoding="utf-8"))
-    assert envelope["market"]["sha256"] == runner._sha256(verified_bytes)
+def test_t2b3_cli_rejects_old_caller_supplied_benchmark_as_of_and_session(capsys) -> None:
+    assert present.main(["--benchmark-history-csv", "x", "--as-of", MIN_AS_OF, "--session-id", f"XNAS:{MIN_AS_OF}"]) == 2
+    assert capsys.readouterr().err == "ERROR T2B2_PRESENT_INVALID\n"
