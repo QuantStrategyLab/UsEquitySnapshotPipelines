@@ -63,13 +63,58 @@ def _bundle(tmp_path: Path, *, raw: bytes | None = None, as_of: str = "2026-07-2
     return directory, runner._sha256(manifest_bytes), raw
 
 
-def _package(tmp_path: Path, raw: bytes, *, as_of: str = "2026-07-21", external_context: object = None) -> tuple[Path, str]:
+def _package(
+    tmp_path: Path,
+    raw: bytes,
+    *,
+    as_of: str = "2026-07-21",
+    external_context: object = None,
+    payload_bytes: bytes | None = None,
+    extra_input: bool = False,
+) -> tuple[Path, str]:
     config = {"as_of": as_of, "enabled": True, "mode": "shadow", "plugin": "market_regime_control", "prices": "@input:prices", "strategy": "tqqq_growth_income"}
-    payload = _canonical({})
+    payload = payload_bytes or _canonical(
+        {
+            "as_of": as_of,
+            "audit_summary": {},
+            "arbiter": {},
+            "canonical_route": {},
+            "component_signals": {},
+            "configured_mode": "shadow",
+            "consumption_policy": {
+                "evidence_status": "automation_approved",
+                "plugin": "market_regime_control",
+                "position_control_allowed": True,
+                "strategy": "tqqq_growth_income",
+            },
+            "effective_mode": "shadow",
+            "execution_controls": {},
+            "generated_at": "2026-07-21T00:00:00+00:00",
+            "localized_messages": {},
+            "log_record": {},
+            "mode": "shadow",
+            "notification": {},
+            "plugin": "market_regime_control",
+            "position_control": {},
+            "profile": "market_regime_control",
+            "schema_version": "market_regime_control.v1",
+            "strategy": "tqqq_growth_income",
+            "strategy_policy": {},
+            "suggested_action": {},
+            "target_type": "strategy",
+            "would_trade_if_enabled": False,
+        }
+    )
+    inputs = {
+        "external_context": {"status": "ABSENT"} if external_context is None else external_context,
+        "prices": {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)},
+    }
+    if extra_input:
+        inputs["auxiliary"] = {"status": "PRESENT"}
     package = {
         "as_of": as_of,
         "config": {"sha256": runner._sha256(_canonical(config)), "value": config},
-        "inputs": {"external_context": {"status": "ABSENT"} if external_context is None else external_context, "prices": {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)}},
+        "inputs": inputs,
         "payload": {"bytes_b64": base64.b64encode(payload).decode(), "schema_version": "market_regime_control.v1", "sha256": runner._sha256(payload), "size_bytes": len(payload)},
         "producer": {"commit_sha": present.QSP_COMMIT, "entrypoint": present.QSP_ENTRYPOINT, "repository": present.QSP_REPOSITORY},
         "schema": present.PRESENT_SCHEMA,
@@ -230,6 +275,27 @@ def test_t2b3_independent_qsp_commit_cannot_be_self_attested(monkeypatch, tmp_pa
             plugin_control_package=package,
             plugin_control_package_sha256=package_digest,
             qsp_commit_sha="a" * 40,
+            output_parent=output,
+        )
+    assert contexts == [] and list(output.iterdir()) == []
+
+
+@pytest.mark.parametrize("payload_bytes, extra_input", [(b"{}", False), (b'{"truncated":', False), (None, True)])
+def test_t2b3_payload_content_and_inputs_shape_fail_closed_before_compute(
+    monkeypatch, tmp_path: Path, payload_bytes: bytes | None, extra_input: bool
+) -> None:
+    bundle, manifest_digest, raw = _bundle(tmp_path)
+    package, package_digest = _package(tmp_path, raw, payload_bytes=payload_bytes, extra_input=extra_input)
+    contexts = _install_runner(monkeypatch)
+    output = tmp_path / "output"
+    output.mkdir()
+    with pytest.raises(runner._RunnerError):
+        run_tqqq_local_no_order_present(
+            input_bundle=bundle,
+            input_bundle_manifest_sha256=manifest_digest,
+            plugin_control_package=package,
+            plugin_control_package_sha256=package_digest,
+            qsp_commit_sha=present.QSP_COMMIT,
             output_parent=output,
         )
     assert contexts == [] and list(output.iterdir()) == []

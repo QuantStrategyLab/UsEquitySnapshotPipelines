@@ -36,6 +36,12 @@ MIN_AS_OF = "2026-07-21"
 REQUESTED_SYMBOLS = ("QQQ", "SPY", "TQQQ", "^VIX", "^VIX3M", "HYG", "IEF", "LQD", "XLF", "KRE", "TLT")
 RAW_HEADER = b"symbol,as_of,open,high,low,close,volume\n"
 MEMBERS = {"config.toml", "prices.csv", "manifest.json"}
+PAYLOAD_KEYS = {
+    "as_of", "audit_summary", "arbiter", "canonical_route", "component_signals", "configured_mode",
+    "consumption_policy", "effective_mode", "execution_controls", "generated_at", "localized_messages",
+    "log_record", "mode", "notification", "plugin", "position_control", "profile", "schema_version",
+    "strategy", "strategy_policy", "suggested_action", "target_type", "would_trade_if_enabled",
+}
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _CONFIG_BYTES = b'''default_mode = "shadow"
@@ -228,7 +234,7 @@ def _verify_package(path_value: str | Path, *, digest: str, commit: str, raw: by
     if package.get("subject") != {"mode": "shadow", "plugin": "market_regime_control", "strategy": "tqqq_growth_income"} or package.get("producer") != {"commit_sha": commit, "entrypoint": QSP_ENTRYPOINT, "repository": QSP_REPOSITORY}:
         _present_invalid()
     inputs = package.get("inputs")
-    if type(inputs) is not dict or inputs.get("external_context") != {"status": "ABSENT"} or inputs.get("prices") != {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)}:
+    if set(inputs) != {"external_context", "prices"} or inputs.get("external_context") != {"status": "ABSENT"} or inputs.get("prices") != {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(raw), "size_bytes": len(raw)}:
         _present_invalid()
     config, payload = package.get("config"), package.get("payload")
     if type(config) is not dict or set(config) != {"sha256", "value"} or type(config.get("value")) is not dict or config["sha256"] != runner._sha256(runner._canonical_json(config["value"])):
@@ -241,7 +247,37 @@ def _verify_package(path_value: str | Path, *, digest: str, commit: str, raw: by
         payload_bytes = base64.b64decode(payload["bytes_b64"], validate=True)
     except (binascii.Error, ValueError):
         _present_invalid()
-    if payload.get("sha256") != runner._sha256(payload_bytes) or payload.get("size_bytes") != len(payload_bytes):
+    payload_value = _strict_json(payload_bytes, _present_invalid)
+    if (
+        payload.get("sha256") != runner._sha256(payload_bytes)
+        or payload.get("size_bytes") != len(payload_bytes)
+        or type(payload_value) is not dict
+        or set(payload_value) != PAYLOAD_KEYS
+        or runner._canonical_json(payload_value) != payload_bytes
+        or any(
+            payload_value.get(key) != value
+            for key, value in {
+                "as_of": as_of,
+                "configured_mode": "shadow",
+                "effective_mode": "shadow",
+                "mode": "shadow",
+                "plugin": "market_regime_control",
+                "profile": "market_regime_control",
+                "schema_version": "market_regime_control.v1",
+                "strategy": "tqqq_growth_income",
+                "target_type": "strategy",
+            }.items()
+        )
+    ):
+        _present_invalid()
+    policy = payload_value.get("consumption_policy")
+    if (
+        type(policy) is not dict
+        or policy.get("evidence_status") != "automation_approved"
+        or policy.get("plugin") != "market_regime_control"
+        or policy.get("position_control_allowed") is not True
+        or policy.get("strategy") != "tqqq_growth_income"
+    ):
         _present_invalid()
     return package
 
