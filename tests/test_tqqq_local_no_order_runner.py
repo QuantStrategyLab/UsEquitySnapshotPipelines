@@ -6,9 +6,11 @@ from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 from us_equity_snapshot_pipelines import tqqq_local_no_order_runner as runner
+from us_equity_snapshot_pipelines import tqqq_local_no_order_present as present
 from us_equity_snapshot_pipelines.tqqq_local_no_order_runner import TqqqForwardInputEnvelope, run_tqqq_local_no_order
 from us_equity_snapshot_pipelines.tqqq_local_no_order_present import run_tqqq_local_no_order_present
 
@@ -408,6 +410,30 @@ def test_t2b3_consumer_rejects_every_non_dict_present_inputs(tmp_path: Path) -> 
     else:  # pragma: no cover - fail-closed assertion
         raise AssertionError("non-dict inputs must fail closed")
     assert list(output_parent.iterdir()) == []
+
+
+def test_t2b3_cli_rejects_malformed_bundle_manifests_as_present_invalid(monkeypatch, capsys, tmp_path: Path) -> None:
+    bundle_path, manifest_digest, package_path, package_digest, _ = _write_qsp_present_package(tmp_path)
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", present.__spec__)
+    arguments = [
+        "--output-parent",
+        str(tmp_path / "output"),
+        "--input-bundle",
+        str(bundle_path),
+        "--input-bundle-manifest-sha256",
+        manifest_digest,
+        "--plugin-control-package",
+        str(package_path),
+        "--plugin-control-package-sha256",
+        package_digest,
+        "--qsp-commit-sha",
+        QSP_COMMIT,
+    ]
+
+    for manifest in (b"{", b"\xff"):
+        (bundle_path / "manifest.json").write_bytes(manifest)
+        assert present.main(arguments) == 2
+        assert capsys.readouterr().err == "ERROR T2B2_PRESENT_INVALID\n"
 
 
 def test_t2b3_provider_observed_gap_is_preserved_without_calendar_inference(monkeypatch, tmp_path: Path) -> None:

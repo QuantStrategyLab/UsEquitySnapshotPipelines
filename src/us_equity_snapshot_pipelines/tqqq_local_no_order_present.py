@@ -209,7 +209,10 @@ def _verify_qsp_bundle(
     config_bytes = _read_member(path / "config.toml")
     raw = _read_member(path / "prices.csv")
     manifest_raw = _read_member(path / "manifest.json")
-    manifest = _strict_json(manifest_raw)
+    try:
+        manifest = _strict_json(manifest_raw)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        _invalid()
     try:
         if type(manifest) is not dict or runner._canonical_json(manifest) != manifest_raw:
             _invalid()
