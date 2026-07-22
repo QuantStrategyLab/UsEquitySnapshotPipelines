@@ -162,7 +162,7 @@ def _write_present_package(
         "config": {"sha256": runner._sha256(runner._canonical_json(config_value)), "value": config_value},
         "inputs": {
             "external_context": {"status": "ABSENT"},
-            "prices": {"format": "csv", "sha256": runner._sha256(prices_bytes), "size_bytes": len(prices_bytes)},
+            "prices": {"status": "PRESENT", "format": "csv", "sha256": runner._sha256(prices_bytes), "size_bytes": len(prices_bytes)},
         },
         "payload": {
             "bytes_b64": base64.b64encode(payload_bytes).decode("ascii"),
@@ -693,3 +693,41 @@ def test_present_consumer_uses_one_verified_benchmark_snapshot_for_compute_and_e
 
     envelope = json.loads((output / "input_envelope.json").read_text(encoding="utf-8"))
     assert envelope["market"]["sha256"] == runner._sha256(verified_bytes)
+
+
+def test_t2b3_present_consumer_rejects_invalid_prices_status_before_compute(monkeypatch, tmp_path: Path) -> None:
+    bundle_path, manifest_digest, package_path, _, _ = _write_qsp_present_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(runner, "_source_identity", lambda: (Path("/source"), "a" * 40))
+
+    def must_not_compute(_context):
+        raise AssertionError("invalid prices status must fail before compute")
+
+    import us_equity_strategies.entrypoints as entrypoints
+
+    monkeypatch.setattr(entrypoints, "compute_tqqq_growth_income_decision", must_not_compute, raising=False)
+    for name, prices in (
+        ("missing-status", {key: value for key, value in package["inputs"]["prices"].items() if key != "status"}),
+        ("non-present-status", {**package["inputs"]["prices"], "status": "ABSENT"}),
+        ("extra-key", {**package["inputs"]["prices"], "unexpected": True}),
+    ):
+        malformed_package = {**package, "inputs": {**package["inputs"], "prices": prices}}
+        malformed = runner._canonical_json(malformed_package)
+        digest = runner._sha256(malformed)
+        malformed_path = package_path.with_name(f"{name}-{digest}.json")
+        malformed_path.write_bytes(malformed)
+        output_parent = tmp_path / name
+        try:
+            run_tqqq_local_no_order_present(
+                output_parent=output_parent,
+                input_bundle=bundle_path,
+                input_bundle_manifest_sha256=manifest_digest,
+                plugin_control_package=malformed_path,
+                plugin_control_package_sha256=digest,
+                qsp_commit_sha=QSP_COMMIT,
+            )
+        except runner._RunnerError as error:
+            assert error.code == "T2B2_PRESENT_INVALID"
+        else:  # pragma: no cover - fail-closed assertion
+            raise AssertionError("invalid prices status must fail closed")
+        assert not output_parent.exists()

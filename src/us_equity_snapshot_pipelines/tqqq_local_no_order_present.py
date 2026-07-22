@@ -366,7 +366,8 @@ def _verify_present_package(
     external_context = inputs["external_context"]
     if (
         type(prices) is not dict
-        or set(prices) != {"format", "sha256", "size_bytes"}
+        or set(prices) != {"status", "format", "sha256", "size_bytes"}
+        or prices.get("status") != "PRESENT"
         or prices.get("format") != "csv"
         or not _is_hash(prices.get("sha256"))
         or not _is_size(prices.get("size_bytes"))
