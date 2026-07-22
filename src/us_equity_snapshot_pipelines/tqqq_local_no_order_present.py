@@ -22,6 +22,7 @@ from . import tqqq_local_no_order_runner as runner
 
 
 PRESENT_SCHEMA = "qsl.tqqq_market_regime_control_present.v1"
+MIN_AS_OF = date(2026, 7, 21)
 QSP_REPOSITORY = "QuantStrategyLab/QuantStrategyPlugins"
 QSP_ENTRYPOINT = "quant_strategy_plugins.strategy_plugin_runner:run_market_regime_control_plugin"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -123,7 +124,7 @@ def _verify_present_package(
         _invalid()
     try:
         parsed_as_of = date.fromisoformat(as_of)
-        if as_of != parsed_as_of.isoformat():
+        if as_of != parsed_as_of.isoformat() or parsed_as_of < MIN_AS_OF:
             _invalid()
         path = Path(package_path)
         file_stat = path.lstat()
@@ -257,6 +258,22 @@ def _verify_present_package(
     return package, benchmark_bytes
 
 
+def _provider_observed_control(package: Mapping[str, Any], expected_digest: str) -> Mapping[str, Any]:
+    """Wrap verified provider observations with forward-only deny markers."""
+    manifest = package["inputs"]
+    return {
+        "calendar_authority": "provider_observed_unverified",
+        "historical_backfill": False,
+        "input_bundle": {
+            "manifest": manifest,
+            "manifest_sha256": runner._sha256(runner._canonical_json(manifest)),
+        },
+        "optimization_eligible": False,
+        "package": {"sha256": expected_digest, "value": package},
+        "status": "PRESENT",
+    }
+
+
 def run_tqqq_local_no_order_present(
     *,
     benchmark_history_csv: str | Path,
@@ -276,12 +293,13 @@ def run_tqqq_local_no_order_present(
         expected_digest=plugin_control_package_sha256,
         expected_qsp_commit=qsp_commit_sha,
     )
+    plugin_control = _provider_observed_control(package, plugin_control_package_sha256)
     return runner._run_tqqq_local_no_order(
         benchmark_history_csv=benchmark_history_csv,
         as_of=as_of,
         session_id=session_id,
         output_parent=output_parent,
-        plugin_control=package,
+        plugin_control=plugin_control,
         market_csv_bytes=benchmark_bytes,
     )
 
