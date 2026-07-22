@@ -12,6 +12,7 @@ import base64
 import binascii
 from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 import stat
@@ -25,6 +26,13 @@ PRESENT_SCHEMA = "qsl.tqqq_market_regime_control_present.v1"
 MIN_AS_OF = date(2026, 7, 21)
 QSP_REPOSITORY = "QuantStrategyLab/QuantStrategyPlugins"
 QSP_ENTRYPOINT = "quant_strategy_plugins.strategy_plugin_runner:run_market_regime_control_plugin"
+QSP_BUNDLE_ENTRYPOINT = "quant_strategy_plugins.tqqq_research_input_bundle"
+QSP_COMMIT = "c798397d9ca9230e404673d7774bac3d478217dc"
+BUNDLE_SCHEMA = "qsl.t2b3.qqq_price_projection_bundle.v1"
+RAW_FORMAT = "qsp.t2b3.long_price_csv.v1"
+RAW_HEADER = b"symbol,as_of,open,high,low,close,volume\n"
+REQUESTED_SYMBOLS = ("QQQ", "SPY", "TQQQ", "^VIX", "^VIX3M", "HYG", "IEF", "LQD", "XLF", "KRE", "TLT")
+_BUNDLE_MEMBERS = {"config.toml", "prices.csv", "manifest.json"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _SENSITIVE_KEY_PARTS = ("token", "secret", "password", "cookie", "jwt", "api_key")
@@ -110,17 +118,182 @@ def _validate_config_keys(value: Any) -> None:
             _validate_config_keys(child)
 
 
+def _is_date(value: Any) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        return value == date.fromisoformat(value).isoformat()
+    except ValueError:
+        return False
+
+
+def _read_member(path: Path) -> bytes:
+    try:
+        member_stat = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(member_stat.st_mode):
+            _invalid()
+        return path.read_bytes()
+    except OSError:
+        _invalid()
+
+
+def _validate_qsp_number(token: str, *, positive: bool, optional: bool) -> None:
+    if token == "" and optional:
+        return
+    try:
+        numeric = float(token)
+    except ValueError:
+        _invalid()
+    if (
+        not token
+        or any(character.isspace() for character in token)
+        or not math.isfinite(numeric)
+        or (numeric == 0 and math.copysign(1.0, numeric) < 0)
+        or (positive and numeric <= 0)
+        or (not positive and numeric < 0)
+        or token != ("0" if numeric == 0 else format(numeric, ".17g"))
+    ):
+        _invalid()
+
+
+def _project_qsp_benchmark(raw: bytes) -> tuple[bytes, int, str, str, int, str]:
+    """Validate QSP canonical R and independently derive the QQQ-only B."""
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        _invalid()
+    if not text.startswith(RAW_HEADER.decode()) or "\r" in text or not text.endswith("\n") or text.endswith("\n\n"):
+        _invalid()
+    qqq_rows: list[tuple[str, str]] = []
+    dates: list[str] = []
+    counts = {symbol: 0 for symbol in REQUESTED_SYMBOLS}
+    previous: tuple[str, str] | None = None
+    for line in text.splitlines()[1:]:
+        fields = line.split(",")
+        if len(fields) != 7 or any('"' in field for field in fields):
+            _invalid()
+        symbol, observed, open_, high, low, close, volume = fields
+        current = (observed, symbol)
+        if symbol not in counts or not _is_date(observed) or (previous is not None and current <= previous):
+            _invalid()
+        previous = current
+        _validate_qsp_number(open_, positive=True, optional=True)
+        _validate_qsp_number(high, positive=True, optional=True)
+        _validate_qsp_number(low, positive=True, optional=True)
+        _validate_qsp_number(close, positive=True, optional=False)
+        _validate_qsp_number(volume, positive=False, optional=True)
+        counts[symbol] += 1
+        dates.append(observed)
+        if symbol == "QQQ":
+            qqq_rows.append((observed, close))
+    if any(count < 252 for count in counts.values()) or len(qqq_rows) < 252:
+        _invalid()
+    first, last = qqq_rows[0][0], qqq_rows[-1][0]
+    if last < MIN_AS_OF.isoformat() or any(observed > last for observed in dates):
+        _invalid()
+    benchmark = b"session_date,close\n" + b"".join(f"{observed},{close}\n".encode("ascii") for observed, close in qqq_rows)
+    return benchmark, len(qqq_rows), first, last, sum(counts.values()), dates[0]
+
+
+def _verify_qsp_bundle(
+    input_bundle: str | Path, *, expected_manifest_digest: str, expected_qsp_commit: str
+) -> tuple[Mapping[str, Any], bytes, bytes, str, str]:
+    if not _is_hash(expected_manifest_digest) or expected_qsp_commit != QSP_COMMIT:
+        _invalid()
+    path = Path(input_bundle)
+    try:
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir() or {entry.name for entry in path.iterdir()} != _BUNDLE_MEMBERS:
+            _invalid()
+    except OSError:
+        _invalid()
+    config_bytes = _read_member(path / "config.toml")
+    raw = _read_member(path / "prices.csv")
+    manifest_raw = _read_member(path / "manifest.json")
+    try:
+        manifest = _strict_json(manifest_raw)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        _invalid()
+    try:
+        if type(manifest) is not dict or runner._canonical_json(manifest) != manifest_raw:
+            _invalid()
+    except (TypeError, ValueError):
+        _invalid()
+    benchmark, count, first, last, raw_count, raw_first = _project_qsp_benchmark(raw)
+    expected_keys = {"config", "external_context", "prices", "producer", "projection", "provider", "schema", "session", "status"}
+    if (
+        runner._sha256(manifest_raw) != expected_manifest_digest
+        or set(manifest) != expected_keys
+        or manifest.get("schema") != BUNDLE_SCHEMA
+        or manifest.get("status") != "READY"
+        or manifest.get("external_context") != {"status": "ABSENT"}
+    ):
+        _invalid()
+    config, prices, producer, projection, provider, session = (
+        manifest[key] for key in ("config", "prices", "producer", "projection", "provider", "session")
+    )
+    if not all(type(value) is dict for value in (config, prices, producer, projection, provider, session)):
+        _invalid()
+    if (
+        config != {"filename": "config.toml", "sha256": runner._sha256(config_bytes), "size_bytes": len(config_bytes)}
+        or prices
+        != {
+            "filename": "prices.csv",
+            "first_date": raw_first,
+            "format": RAW_FORMAT,
+            "last_date": last,
+            "row_count": raw_count,
+            "sha256": runner._sha256(raw),
+            "size_bytes": len(raw),
+            "symbols": sorted(REQUESTED_SYMBOLS),
+        }
+        or producer != {"commit_sha": QSP_COMMIT, "entrypoint": QSP_BUNDLE_ENTRYPOINT, "repository": QSP_REPOSITORY}
+        or projection
+        != {
+            "benchmark_sha256": runner._sha256(benchmark),
+            "benchmark_size_bytes": len(benchmark),
+            "first_date": first,
+            "last_date": last,
+            "raw_sha256": runner._sha256(raw),
+            "row_count": count,
+            "symbol": "QQQ",
+            "transform_id": "qsp.t2b3.qqq_session_date_close_csv",
+            "transform_version": "1",
+        }
+        or provider
+        != {
+            "auto_adjust": True,
+            "credentials": "ABSENT",
+            "end_exclusive": provider.get("end_exclusive"),
+            "path": "quant_strategy_plugins.yfinance_prices:download_price_history",
+            "provider_id": "yahoo_yfinance_public",
+            "requested_symbols": list(REQUESTED_SYMBOLS),
+            "start": "2010-01-01",
+        }
+        or not _is_date(provider["end_exclusive"])
+        or last >= provider["end_exclusive"]
+        or session
+        != {
+            "as_of": last,
+            "claim": "PROVIDER_OBSERVED_ONLY_NOT_OFFICIAL_XNAS_PROOF",
+            "session_id": f"XNAS:{last}",
+            "source": "LAST_COMPLETE_QQQ_ROW",
+        }
+    ):
+        _invalid()
+    return manifest, raw, benchmark, last, f"XNAS:{last}"
+
+
 def _verify_present_package(
     package_path: str | Path,
     *,
-    benchmark_history_csv: str | Path,
     as_of: str,
     session_id: str,
     expected_digest: str,
     expected_qsp_commit: str,
-) -> tuple[Mapping[str, Any], bytes]:
+    expected_prices: bytes,
+) -> Mapping[str, Any]:
     """Fail closed unless canonical bytes and every bounded identity match."""
-    if not _is_hash(expected_digest) or not _is_commit(expected_qsp_commit):
+    if not _is_hash(expected_digest) or expected_qsp_commit != QSP_COMMIT:
         _invalid()
     try:
         parsed_as_of = date.fromisoformat(as_of)
@@ -185,7 +358,9 @@ def _verify_present_package(
     ):
         _invalid()
 
-    if type(inputs) is not dict or set(inputs) != {"external_context", "prices"}:
+    if type(inputs) is not dict:
+        _invalid()
+    if set(inputs) != {"external_context", "prices"}:
         _invalid()
     prices = inputs["prices"]
     external_context = inputs["external_context"]
@@ -198,11 +373,7 @@ def _verify_present_package(
         or type(external_context) is not dict
     ):
         _invalid()
-    try:
-        benchmark_bytes = Path(benchmark_history_csv).read_bytes()
-    except (OSError, TypeError):
-        _invalid()
-    if prices["sha256"] != runner._sha256(benchmark_bytes) or prices["size_bytes"] != len(benchmark_bytes):
+    if prices["sha256"] != runner._sha256(expected_prices) or prices["size_bytes"] != len(expected_prices):
         _invalid()
     if external_context.get("status") == "ABSENT":
         if external_context != {"status": "ABSENT"}:
@@ -255,10 +426,10 @@ def _verify_present_package(
         or policy.get("evidence_status") != "automation_approved"
     ):
         _invalid()
-    return package, benchmark_bytes
+    return package
 
 
-def _provider_observed_control(package: Mapping[str, Any], expected_digest: str) -> Mapping[str, Any]:
+def _provider_observed_control(package: Mapping[str, Any], expected_digest: str) -> dict[str, Any]:
     """Wrap verified provider observations with forward-only deny markers."""
     manifest = package["inputs"]
     return {
@@ -276,26 +447,34 @@ def _provider_observed_control(package: Mapping[str, Any], expected_digest: str)
 
 def run_tqqq_local_no_order_present(
     *,
-    benchmark_history_csv: str | Path,
-    as_of: str,
-    session_id: str,
     output_parent: str | Path,
+    input_bundle: str | Path,
+    input_bundle_manifest_sha256: str,
     plugin_control_package: str | Path,
     plugin_control_package_sha256: str,
     qsp_commit_sha: str,
 ) -> tuple[Any, Path]:
-    """Verify PRESENT provenance before the shared no-order compute/publication core."""
-    package, benchmark_bytes = _verify_present_package(
+    """Verify QSP R, derive B, and publish only evidence outside no-order compute."""
+    manifest, raw, benchmark_bytes, as_of, session_id = _verify_qsp_bundle(
+        input_bundle,
+        expected_manifest_digest=input_bundle_manifest_sha256,
+        expected_qsp_commit=qsp_commit_sha,
+    )
+    package = _verify_present_package(
         plugin_control_package,
-        benchmark_history_csv=benchmark_history_csv,
         as_of=as_of,
         session_id=session_id,
         expected_digest=plugin_control_package_sha256,
         expected_qsp_commit=qsp_commit_sha,
+        expected_prices=raw,
     )
     plugin_control = _provider_observed_control(package, plugin_control_package_sha256)
+    plugin_control["input_bundle"] = {
+        "manifest": manifest,
+        "manifest_sha256": input_bundle_manifest_sha256,
+    }
     return runner._run_tqqq_local_no_order(
-        benchmark_history_csv=benchmark_history_csv,
+        benchmark_history_csv="<verified-qsp-projection>",
         as_of=as_of,
         session_id=session_id,
         output_parent=output_parent,
@@ -307,15 +486,14 @@ def run_tqqq_local_no_order_present(
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     names = [
-        "--benchmark-history-csv",
-        "--as-of",
-        "--session-id",
         "--output-parent",
+        "--input-bundle",
+        "--input-bundle-manifest-sha256",
         "--plugin-control-package",
         "--plugin-control-package-sha256",
         "--qsp-commit-sha",
     ]
-    if len(args) != 14 or args[::2] != names:
+    if len(args) != 12 or args[::2] != names:
         print("ERROR T2B2_PRESENT_INVALID", file=sys.stderr)
         return 2
     main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
@@ -324,13 +502,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         _, destination = run_tqqq_local_no_order_present(
-            benchmark_history_csv=args[1],
-            as_of=args[3],
-            session_id=args[5],
-            output_parent=args[7],
-            plugin_control_package=args[9],
-            plugin_control_package_sha256=args[11],
-            qsp_commit_sha=args[13],
+            output_parent=args[1],
+            input_bundle=args[3],
+            input_bundle_manifest_sha256=args[5],
+            plugin_control_package=args[7],
+            plugin_control_package_sha256=args[9],
+            qsp_commit_sha=args[11],
         )
     except runner._RunnerError as exc:
         print(f"ERROR {exc.code}", file=sys.stderr)
