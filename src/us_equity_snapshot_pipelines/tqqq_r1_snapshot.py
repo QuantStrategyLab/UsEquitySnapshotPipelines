@@ -79,11 +79,17 @@ def _write_prices(path: Path, prices: pd.DataFrame) -> None:
     output.to_csv(path, index=False, lineterminator="\n", float_format="%.17g")
 
 
-def verify_tqqq_r1_snapshot(output_dir: str | Path) -> SnapshotResult:
+def verify_tqqq_r1_snapshot(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
     output = Path(output_dir)
     names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
     if names != tuple(sorted(OUTPUT_FILENAMES)):
         raise SnapshotValidationError(f"unexpected output files: {names}")
+    if not isinstance(expected_manifest_sha256, str) or _sha256(output / "manifest.json") != expected_manifest_sha256:
+        raise SnapshotValidationError("trusted manifest hash mismatch")
     try:
         sums = json.loads((output / "sha256sums.json").read_text(encoding="utf-8"))
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
@@ -159,4 +165,4 @@ def materialize_tqqq_r1_snapshot(
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return verify_tqqq_r1_snapshot(destination)
+    return verify_tqqq_r1_snapshot(destination, expected_manifest_sha256=_sha256(destination / "manifest.json"))

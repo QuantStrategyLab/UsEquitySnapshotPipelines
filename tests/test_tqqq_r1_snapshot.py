@@ -106,4 +106,27 @@ def test_materialize_rejects_non_core_mode_and_tampered_readback(tmp_path: Path)
     result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
     (tmp_path / "snapshot" / "prices.csv").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(snapshot.SnapshotValidationError, match="hash mismatch"):
-        snapshot.verify_tqqq_r1_snapshot(result.output_dir)
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_requires_external_manifest_digest_and_rejects_coordinated_tampering(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    (output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n2010-01-04,QQQ,99\n2010-01-04,TQQQ,99\n",
+        encoding="utf-8",
+    )
+    (output_dir / "manifest.json").write_text("{}\n", encoding="utf-8")
+    (output_dir / "sha256sums.json").write_text(
+        json.dumps(
+            {
+                "prices.csv": hashlib.sha256((output_dir / "prices.csv").read_bytes()).hexdigest(),
+                "manifest.json": hashlib.sha256((output_dir / "manifest.json").read_bytes()).hexdigest(),
+                "validation.json": hashlib.sha256((output_dir / "validation.json").read_bytes()).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="trusted manifest hash mismatch"):
+        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=result.manifest_sha256)
