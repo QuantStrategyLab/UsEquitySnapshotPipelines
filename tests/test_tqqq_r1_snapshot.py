@@ -109,6 +109,64 @@ def test_verify_rejects_symlinked_snapshot_member(tmp_path: Path) -> None:
         snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
 
 
+def test_materialize_rejects_mixed_boolean_adjusted_close(tmp_path: Path) -> None:
+    prices = _fixture_prices().astype({"adjusted_close": object})
+    prices.loc[0, "adjusted_close"] = True
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_verify_rejects_snapshot_root_symlink(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    linked_root = tmp_path / "linked-snapshot"
+    linked_root.symlink_to(result.output_dir, target_is_directory=True)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="root symlink"):
+        snapshot.verify_tqqq_r1_snapshot(linked_root, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_requires_exact_price_columns(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    prices = pd.read_csv(output_dir / "prices.csv").assign(unexpected="not allowed")
+    prices.to_csv(output_dir / "prices.csv", index=False, lineterminator="\n")
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["prices_sha256"] = hashlib.sha256((output_dir / "prices.csv").read_bytes()).hexdigest()
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    (output_dir / "sha256sums.json").write_text(
+        json.dumps(
+            {
+                name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+                for name in ("prices.csv", "manifest.json", "validation.json")
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="exact columns"):
+        snapshot.verify_tqqq_r1_snapshot(
+            output_dir,
+            expected_manifest_sha256=hashlib.sha256((output_dir / "manifest.json").read_bytes()).hexdigest(),
+        )
+
+
+def test_materialize_verifies_stage_before_publishing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_verification(*args, **kwargs):
+        raise snapshot.SnapshotValidationError("staged verification failed")
+
+    monkeypatch.setattr(snapshot, "verify_tqqq_r1_snapshot", fail_verification)
+    output_dir = tmp_path / "snapshot"
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="staged verification failed"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), output_dir)
+
+    assert not output_dir.exists()
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
