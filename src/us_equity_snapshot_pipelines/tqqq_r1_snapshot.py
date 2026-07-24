@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 
 
-CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v1"
+CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
 SYMBOLS = ("QQQ", "TQQQ")
 REQUESTED_LOWER_BOUND = "2010-01-01"
 PRICE_FIELD = "adjusted_close"
@@ -61,11 +61,24 @@ def _normalize_session(value: object) -> pd.Timestamp:
     return session.normalize()
 
 
+def _is_canonical_session(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 10
+        and value[4] == "-"
+        and value[7] == "-"
+        and value[:4].isdigit()
+        and value[5:7].isdigit()
+        and value[8:].isdigit()
+    )
+
+
 def _normalized_prices(
     prices: pd.DataFrame,
     *,
     require_exact_columns: bool = False,
     require_canonical_symbols: bool = False,
+    require_canonical_sessions: bool = False,
 ) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("prices must be a DataFrame")
@@ -88,7 +101,10 @@ def _normalized_prices(
         unexpected_symbols = sorted(received.difference(SYMBOLS))
         _invalid(f"missing required symbol or unexpected symbol: missing={missing_symbols}, unexpected={unexpected_symbols}")
 
-    normalized["session"] = normalized["session"].map(_normalize_session)
+    raw_sessions = normalized["session"]
+    normalized["session"] = raw_sessions.map(_normalize_session)
+    if require_canonical_sessions and not raw_sessions.map(_is_canonical_session).all():
+        _invalid("prices.csv contains noncanonical session")
     if (normalized["session"] < pd.Timestamp(REQUESTED_LOWER_BOUND)).any():
         _invalid("session precedes requested lower bound")
     if (normalized["session"].dt.dayofweek >= 5).any():
@@ -193,6 +209,7 @@ def verify_tqqq_r1_snapshot(
             pd.read_csv(BytesIO(members["prices.csv"])),
             require_exact_columns=True,
             require_canonical_symbols=True,
+            require_canonical_sessions=True,
         )
     except (UnicodeDecodeError, ValueError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         if isinstance(exc, SnapshotValidationError):

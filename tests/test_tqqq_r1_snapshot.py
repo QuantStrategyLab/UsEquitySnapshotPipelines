@@ -58,6 +58,9 @@ def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) ->
         "2010-01-05,QQQ,46\n"
         "2010-01-05,TQQQ,11\n"
     )
+    assert json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))["contract_version"] == (
+        "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
+    )
     assert snapshot.verify_tqqq_r1_snapshot(
         result.output_dir, expected_manifest_sha256=result.manifest_sha256
     ) == result
@@ -129,6 +132,22 @@ def test_verify_rejects_noncanonical_symbol_readback(tmp_path: Path) -> None:
     )
 
     with pytest.raises(snapshot.SnapshotValidationError, match="canonical symbol"):
+        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_verify_rejects_noncanonical_raw_session_encoding(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    (output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        "2010-01-04T00:00:00,QQQ,45.25\n"
+        "2010-01-04T00:00:00,TQQQ,10.5\n"
+        "2010-01-05T00:00:00,QQQ,46\n"
+        "2010-01-05T00:00:00,TQQQ,11\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="canonical session"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
 
 
