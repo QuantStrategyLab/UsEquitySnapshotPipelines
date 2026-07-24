@@ -59,6 +59,17 @@ def test_materialize_writes_only_deterministic_immutable_artifacts(tmp_path: Pat
     assert set(sums) == {"prices.csv", "manifest.json", "validation.json"}
 
 
+def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_path: Path) -> None:
+    prices = _fixture_prices()
+    prices.loc[prices["symbol"].eq("QQQ") & prices["session"].eq("2010-01-04"), "adjusted_close"] = 1.0000000000000002
+
+    result = snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+    readback = pd.read_csv(result.output_dir / "prices.csv")
+    actual = readback.loc[readback["symbol"].eq("QQQ"), "adjusted_close"].iloc[0]
+    assert actual == 1.0000000000000002
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [

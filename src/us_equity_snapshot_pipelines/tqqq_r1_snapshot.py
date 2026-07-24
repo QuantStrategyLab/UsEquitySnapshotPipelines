@@ -72,7 +72,7 @@ def _normalized_prices(prices: pd.DataFrame) -> pd.DataFrame:
 def _write_prices(path: Path, prices: pd.DataFrame) -> None:
     output = prices.copy()
     output["session"] = output["session"].dt.strftime("%Y-%m-%d")
-    output.to_csv(path, index=False, lineterminator="\n", float_format="%.15g")
+    output.to_csv(path, index=False, lineterminator="\n", float_format="%.17g")
 
 
 def verify_tqqq_r1_snapshot(output_dir: str | Path) -> SnapshotResult:
