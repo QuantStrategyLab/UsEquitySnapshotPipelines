@@ -56,6 +56,8 @@ def _normalized_prices(prices: pd.DataFrame) -> pd.DataFrame:
     normalized["session"] = pd.to_datetime(normalized["session"], errors="coerce")
     if normalized["session"].isna().any():
         raise SnapshotValidationError("invalid session")
+    if normalized["session"].dt.tz is not None:
+        raise SnapshotValidationError("timezone-aware session is not allowed")
     normalized["session"] = normalized["session"].dt.normalize()
     if (normalized["session"] < pd.Timestamp(REQUESTED_LOWER_BOUND)).any():
         raise SnapshotValidationError("session precedes requested lower bound")
@@ -63,6 +65,8 @@ def _normalized_prices(prices: pd.DataFrame) -> pd.DataFrame:
         raise SnapshotValidationError("observed session must be a weekday")
     if normalized.duplicated(["session", "symbol"]).any():
         raise SnapshotValidationError("duplicate session for symbol")
+    if not normalized.groupby("session")["symbol"].agg(set).eq(set(SYMBOLS)).all():
+        raise SnapshotValidationError("each session must contain exactly QQQ and TQQQ")
     normalized[PRICE_FIELD] = pd.to_numeric(normalized[PRICE_FIELD], errors="coerce")
     if normalized[PRICE_FIELD].isna().any() or not normalized[PRICE_FIELD].map(math.isfinite).all() or (normalized[PRICE_FIELD] <= 0).any():
         raise SnapshotValidationError("adjusted_close must be positive finite")

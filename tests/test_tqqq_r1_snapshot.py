@@ -70,6 +70,20 @@ def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_pat
     assert actual == 1.0000000000000002
 
 
+def test_materialize_requires_qqq_and_tqqq_for_each_session(tmp_path: Path) -> None:
+    prices = _fixture_prices().loc[lambda frame: ~((frame["session"] == "2010-01-05") & frame["symbol"].eq("TQQQ"))]
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="each session"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_materialize_rejects_timezone_aware_sessions(tmp_path: Path) -> None:
+    prices = _fixture_prices().assign(session=lambda frame: pd.to_datetime(frame["session"], utc=True))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="timezone-aware"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
