@@ -349,13 +349,24 @@ jobs:
               python scripts/build_russell_top50_leader_rotation_snapshot.py "${common_args[@]}"
               ;;
             global_etf_rotation)
-              python scripts/build_global_etf_rotation_snapshot.py "${common_args[@]}"
+              python scripts/build_global_etf_rotation_snapshot.py \
+                "${common_args[@]}" \
+                --price-start "2022-01-01" \
+                --extra-history-symbols "QQQ,AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO"
               ;;
             *)
               echo "Unsupported profile: ${PROFILE}" >&2
               exit 1
               ;;
           esac
+
+      - name: Validate lifecycle market history
+        if: >-
+          env.PROFILE == 'global_etf_rotation' &&
+          steps.build.outputs.should_publish != 'false'
+        run: |
+          set -euo pipefail
+          test -s "${{ steps.build.outputs.artifact_dir }}/downloaded_price_history.csv"
 
       - name: Publish or print GCS plan
         if: steps.build.outputs.should_publish != 'false'
@@ -405,6 +416,17 @@ jobs:
           path: ${{ steps.build.outputs.artifact_dir }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload lifecycle market history
+        if: >-
+          env.PROFILE == 'global_etf_rotation' &&
+          steps.build.outputs.should_publish != 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: us-equity-market-history-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.build.outputs.artifact_dir }}/downloaded_price_history.csv
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Append job summary
         run: |
