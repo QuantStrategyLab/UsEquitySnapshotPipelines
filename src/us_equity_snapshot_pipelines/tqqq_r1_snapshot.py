@@ -12,11 +12,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import pandas as pd
 
@@ -33,6 +34,10 @@ CLASSIFICATION = "RESEARCH_SNAPSHOT_CORE_ONLY_NON_PRODUCTION_EQUIVALENT"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+SOURCE_IDENTITY_PATHS = (
+    Path("src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py"),
+    Path("src/us_equity_snapshot_pipelines/yfinance_prices.py"),
+)
 
 
 class SnapshotValidationError(ValueError):
@@ -224,33 +229,72 @@ def _receipt_path(output_dir: Path) -> Path:
     return output_dir.parent / f"{output_dir.name}.tqqq_r1_retrieval_receipt.v1.json"
 
 
-def _source_identity() -> dict[str, str]:
-    module_root = Path(__file__).resolve().parents[2]
+def _candidate_source_roots(module_path: Path) -> list[Path]:
+    candidates = [module_path.parents[2]]
     try:
-        repository = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            cwd=module_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=module_root, check=True, capture_output=True, text=True
-        ).stdout.strip()
-        tree = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=module_root, check=True, capture_output=True, text=True
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise SnapshotValidationError("unable to resolve source identity") from exc
-    if not repository or not commit or not tree:
-        _invalid("unable to resolve source identity")
-    parsed_repository = urlsplit(repository)
-    if parsed_repository.scheme and parsed_repository.hostname:
-        host = parsed_repository.hostname
-        if parsed_repository.port:
-            host = f"{host}:{parsed_repository.port}"
-        repository = urlunsplit((parsed_repository.scheme, host, parsed_repository.path, "", ""))
-    return {"repository": repository, "commit": commit, "tree": tree}
+        direct_url = importlib.metadata.distribution("us-equity-snapshot-pipelines").read_text("direct_url.json")
+        source_url = json.loads(direct_url or "{}").get("url")
+        parsed = urlsplit(source_url) if type(source_url) is str else None
+        if parsed is not None and parsed.scheme == "file":
+            candidates.append(Path(unquote(parsed.path)))
+    except (importlib.metadata.PackageNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        pass
+    return list(dict.fromkeys(candidates))
+
+
+def _source_identity() -> dict[str, str]:
+    module_path = Path(__file__).resolve()
+    helper_module = sys.modules.get(download_price_history.__module__)
+    helper_file = getattr(helper_module, "__file__", None)
+    if not isinstance(helper_file, str):
+        _invalid("unable to resolve verified source identity")
+    executed_paths = (module_path, Path(helper_file).resolve())
+    for repository_root in _candidate_source_roots(module_path):
+        if not (repository_root / SOURCE_IDENTITY_PATHS[0]).is_file() or (
+            repository_root / SOURCE_IDENTITY_PATHS[0]
+        ).read_bytes() != executed_paths[0].read_bytes():
+            continue
+        try:
+            dirty_paths = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", *map(str, SOURCE_IDENTITY_PATHS)],
+                cwd=repository_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            if dirty_paths:
+                _invalid("dirty source identity paths are not allowed")
+            if any(
+                not (repository_root / relative_path).is_file()
+                or (repository_root / relative_path).read_bytes() != executed_path.read_bytes()
+                for relative_path, executed_path in zip(SOURCE_IDENTITY_PATHS, executed_paths)
+            ):
+                continue
+            repository = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=repository_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repository_root, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "rev-parse", "HEAD^{tree}"], cwd=repository_root, check=True, capture_output=True, text=True
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise SnapshotValidationError("unable to resolve verified source identity") from exc
+        if not repository or not commit or not tree:
+            _invalid("unable to resolve verified source identity")
+        parsed_repository = urlsplit(repository)
+        if parsed_repository.scheme and parsed_repository.hostname:
+            host = parsed_repository.hostname
+            if parsed_repository.port:
+                host = f"{host}:{parsed_repository.port}"
+            repository = urlunsplit((parsed_repository.scheme, host, parsed_repository.path, "", ""))
+        return {"repository": repository, "commit": commit, "tree": tree}
+    _invalid("unable to resolve verified source identity")
 
 
 def _yfinance_runtime_version() -> str:
@@ -329,6 +373,18 @@ def _validate_coverage(value: object, *, common: bool = False) -> None:
             _invalid("invalid receipt")
 
 
+def _coverage_session(value: object) -> pd.Timestamp:
+    if not _is_canonical_session(value):
+        _invalid("receipt coverage mismatch")
+    try:
+        session = pd.Timestamp(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SnapshotValidationError("receipt coverage mismatch") from exc
+    if pd.isna(session) or session.dayofweek >= 5:
+        _invalid("receipt coverage mismatch")
+    return session
+
+
 def _validate_receipt(receipt: object) -> dict[str, Any]:
     if type(receipt) is not dict:
         _invalid("invalid receipt")
@@ -363,6 +419,7 @@ def _validate_receipt(receipt: object) -> dict[str, Any]:
         or receipt["adjusted_price"] is not True
         or receipt["classification"] != CLASSIFICATION
         or receipt["plugin"] != PLUGIN
+        or type(receipt["size"]) is not int
         or receipt["size"] != 0
         or receipt["provider_observed_weekdays"] is not True
         or receipt["cross_symbol_alignment"] is not True
@@ -432,8 +489,17 @@ def _expected_validation(prices: pd.DataFrame, receipt: dict[str, Any]) -> dict[
 def _assert_receipt_matches_prices(receipt: dict[str, Any], prices: pd.DataFrame) -> None:
     if receipt["common_session_coverage"] != _common_session_coverage(prices):
         _invalid("receipt common-session coverage mismatch")
+    common_coverage = receipt["common_session_coverage"]
+    common_first = _coverage_session(common_coverage["first_session"])
+    common_last = _coverage_session(common_coverage["last_session"])
+    if common_first > common_last:
+        _invalid("receipt coverage mismatch")
     coverage = receipt["observed_coverage"]
     for symbol in SYMBOLS:
+        observed_first = _coverage_session(coverage[symbol]["first_session"])
+        observed_last = _coverage_session(coverage[symbol]["last_session"])
+        if observed_first > observed_last or observed_first > common_first or observed_last < common_last:
+            _invalid("receipt coverage mismatch")
         if coverage[symbol]["row_count"] < int(prices["symbol"].eq(symbol).sum()):
             _invalid("receipt coverage mismatch")
 
@@ -543,13 +609,14 @@ def materialize_tqqq_r1_snapshot(
             expected_receipt_path=staged_receipt,
             expected_receipt_bytes=receipt_bytes,
         )
-        os.replace(staged_receipt, actual_receipt_path)
+        os.link(staged_receipt, actual_receipt_path)
+        staged_receipt.unlink()
         receipt_published = True
         os.replace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         staged_receipt.unlink(missing_ok=True)
-        if receipt_published:
+        if receipt_published and actual_receipt_path.is_file() and _sha256(actual_receipt_path) == receipt_sha256:
             actual_receipt_path.unlink(missing_ok=True)
         raise
     return SnapshotResult(destination, manifest_sha256, actual_receipt_path, receipt_sha256)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,14 +31,18 @@ def _write_json(path: Path, value: object) -> None:
 
 def _materialize(prices: pd.DataFrame, output_dir: Path, **kwargs: object) -> snapshot.SnapshotResult:
     normalized = snapshot._normalize_prices(prices)
-    receipt = snapshot._build_receipt(
+    receipt = _receipt_for(normalized)
+    return snapshot.materialize_tqqq_r1_snapshot(prices, output_dir, retrieval_receipt=receipt, **kwargs)
+
+
+def _receipt_for(normalized: pd.DataFrame) -> dict[str, object]:
+    return snapshot._build_receipt(
         coverage=snapshot._coverage(normalized),
         common_sessions=snapshot._common_session_coverage(normalized),
         source={"repository": "test/repository", "commit": "test-commit", "tree": "test-tree"},
         yfinance_version="test-yfinance",
         retrieval_utc="2026-07-25T00:00:00Z",
     )
-    return snapshot.materialize_tqqq_r1_snapshot(prices, output_dir, retrieval_receipt=receipt, **kwargs)
 
 
 def _verify(output_dir: Path, manifest_sha256: str, receipt_path: Path) -> snapshot.SnapshotResult:
@@ -266,6 +272,9 @@ def test_runner_invokes_exact_yfinance_download_contract(monkeypatch: pytest.Mon
         )
 
     monkeypatch.setattr(snapshot, "download_price_history", fake_download)
+    monkeypatch.setattr(snapshot, "_source_identity", lambda: {"repository": "test/repo", "commit": "abc", "tree": "def"})
+    monkeypatch.setattr(snapshot, "_yfinance_runtime_version", lambda: "0.test")
+    monkeypatch.setattr(snapshot, "_retrieval_utc", lambda: "2026-07-25T00:00:00Z")
 
     snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot")
 
@@ -431,3 +440,139 @@ def test_failed_stage_does_not_publish_destination_or_receipt(monkeypatch: pytes
 
     assert not (tmp_path / "snapshot").exists()
     assert not (tmp_path / "snapshot.tqqq_r1_retrieval_receipt.v1.json").exists()
+
+
+def _init_source_checkout(tmp_path: Path) -> Path:
+    source_root = tmp_path / "source"
+    package = source_root / "src" / "us_equity_snapshot_pipelines"
+    package.mkdir(parents=True)
+    module_path = Path(snapshot.__file__)
+    (package / "tqqq_r1_snapshot.py").write_bytes(module_path.read_bytes())
+    (package / "yfinance_prices.py").write_bytes((module_path.parent / "yfinance_prices.py").read_bytes())
+    subprocess.run(["git", "init", "-q"], cwd=source_root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source_root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=source_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=source_root, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines.git"],
+        cwd=source_root,
+        check=True,
+    )
+    return source_root
+
+
+class _DirectUrlDistribution:
+    def __init__(self, source_root: Path) -> None:
+        self._source_root = source_root
+
+    def read_text(self, name: str) -> str | None:
+        return json.dumps({"url": self._source_root.as_uri()}) if name == "direct_url.json" else None
+
+
+def test_source_identity_uses_verified_direct_url_checkout_for_non_editable_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source_root = _init_source_checkout(tmp_path)
+    installed_module = tmp_path / "site-packages" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_bytes((source_root / "src" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py").read_bytes())
+    installed_helper = installed_module.with_name("yfinance_prices.py")
+    installed_helper.write_bytes((source_root / "src" / "us_equity_snapshot_pipelines" / "yfinance_prices.py").read_bytes())
+    monkeypatch.setattr(snapshot, "__file__", str(installed_module))
+    monkeypatch.setattr(sys.modules[snapshot.download_price_history.__module__], "__file__", str(installed_helper))
+    monkeypatch.setattr(snapshot.importlib.metadata, "distribution", lambda _name: _DirectUrlDistribution(source_root))
+
+    identity = snapshot._source_identity()
+
+    assert identity["repository"] == "https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines.git"
+    assert identity["commit"] == subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source_root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_source_identity_rejects_dirty_executed_download_helper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source_root = _init_source_checkout(tmp_path)
+    installed_module = tmp_path / "site-packages" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_bytes((source_root / "src" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py").read_bytes())
+    installed_helper = installed_module.with_name("yfinance_prices.py")
+    installed_helper.write_bytes((source_root / "src" / "us_equity_snapshot_pipelines" / "yfinance_prices.py").read_bytes())
+    (source_root / "src" / "us_equity_snapshot_pipelines" / "yfinance_prices.py").write_text("# dirty\n", encoding="utf-8")
+    monkeypatch.setattr(snapshot, "__file__", str(installed_module))
+    monkeypatch.setattr(sys.modules[snapshot.download_price_history.__module__], "__file__", str(installed_helper))
+    monkeypatch.setattr(snapshot.importlib.metadata, "distribution", lambda _name: _DirectUrlDistribution(source_root))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="dirty source"):
+        snapshot._source_identity()
+
+
+def test_source_identity_rejects_checkout_with_different_executed_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source_root = _init_source_checkout(tmp_path)
+    installed_module = tmp_path / "site-packages" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.write_bytes((source_root / "src" / "us_equity_snapshot_pipelines" / "tqqq_r1_snapshot.py").read_bytes())
+    installed_helper = installed_module.with_name("yfinance_prices.py")
+    installed_helper.write_text("# different helper\n", encoding="utf-8")
+    monkeypatch.setattr(snapshot, "__file__", str(installed_module))
+    monkeypatch.setattr(sys.modules[snapshot.download_price_history.__module__], "__file__", str(installed_helper))
+    monkeypatch.setattr(snapshot.importlib.metadata, "distribution", lambda _name: _DirectUrlDistribution(source_root))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unable to resolve verified source identity"):
+        snapshot._source_identity()
+
+
+def test_materialize_rejects_receipt_coverage_outside_common_session(tmp_path: Path) -> None:
+    normalized = snapshot._normalize_prices(_fixture_prices())
+    receipt = _receipt_for(normalized)
+    receipt["observed_coverage"]["QQQ"]["first_session"] = "2010-01-05"
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="coverage"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot", retrieval_receipt=receipt)
+
+
+def test_materialize_never_replaces_an_external_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output_dir = tmp_path / "snapshot"
+    receipt_path = tmp_path / "snapshot.tqqq_r1_retrieval_receipt.v1.json"
+    original_replace = snapshot.os.replace
+
+    def guarded_replace(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == receipt_path:
+            raise AssertionError("external receipt must be published without replacement")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(snapshot.os, "replace", guarded_replace)
+
+    result = _materialize(_fixture_prices(), output_dir)
+
+    assert result.receipt_path == receipt_path
+    assert _verify(result.output_dir, result.manifest_sha256, result.receipt_path) == result
+
+
+def test_losing_receipt_publication_preserves_winner_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    output_dir = tmp_path / "snapshot"
+    receipt_path = tmp_path / "snapshot.tqqq_r1_retrieval_receipt.v1.json"
+    winner_receipt = b"winner receipt"
+
+    def lose_link(_source: str | Path, destination: str | Path) -> None:
+        Path(destination).write_bytes(winner_receipt)
+        raise FileExistsError
+
+    monkeypatch.setattr(snapshot.os, "link", lose_link)
+
+    with pytest.raises(FileExistsError):
+        _materialize(_fixture_prices(), output_dir)
+
+    assert receipt_path.read_bytes() == winner_receipt
+    assert not output_dir.exists()
+
+
+def test_materialize_rejects_boolean_receipt_size(tmp_path: Path) -> None:
+    normalized = snapshot._normalize_prices(_fixture_prices())
+    receipt = _receipt_for(normalized)
+    receipt["size"] = False
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid receipt"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot", retrieval_receipt=receipt)
