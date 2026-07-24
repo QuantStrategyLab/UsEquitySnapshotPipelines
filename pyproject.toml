@@ -75,6 +75,7 @@ useq-backtest-us-equity-strategy-candidates = "us_equity_snapshot_pipelines.rese
 useq-backtest-leveraged-strategy-candidates = "us_equity_snapshot_pipelines.research.leveraged_strategy_candidates:main"
 useq-publish-snapshot-artifacts = "us_equity_snapshot_pipelines.publish:main"
 useq-update-russell-1000-input-data = "us_equity_snapshot_pipelines.russell_1000_inputs:main"
+useq-materialize-tqqq-r1-snapshot = "us_equity_snapshot_pipelines.tqqq_r1_snapshot:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
