@@ -84,6 +84,31 @@ def test_materialize_rejects_timezone_aware_sessions(tmp_path: Path) -> None:
         snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
 
 
+def test_materialize_rejects_boolean_adjusted_close(tmp_path: Path) -> None:
+    with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices().assign(adjusted_close=True), tmp_path / "snapshot")
+
+
+def test_materialize_preserves_dangling_output_symlink(tmp_path: Path) -> None:
+    output_dir = tmp_path / "snapshot"
+    output_dir.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="immutable output already exists"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), output_dir)
+
+
+def test_verify_rejects_symlinked_snapshot_member(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    manifest_path = result.output_dir / "manifest.json"
+    manifest_target = tmp_path / "manifest-target.json"
+    manifest_target.write_bytes(manifest_path.read_bytes())
+    manifest_path.unlink()
+    manifest_path.symlink_to(manifest_target)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="symlink"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [

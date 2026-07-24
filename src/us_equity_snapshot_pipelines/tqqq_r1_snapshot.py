@@ -67,6 +67,8 @@ def _normalized_prices(prices: pd.DataFrame) -> pd.DataFrame:
         raise SnapshotValidationError("duplicate session for symbol")
     if not normalized.groupby("session")["symbol"].agg(set).eq(set(SYMBOLS)).all():
         raise SnapshotValidationError("each session must contain exactly QQQ and TQQQ")
+    if pd.api.types.is_bool_dtype(normalized[PRICE_FIELD]):
+        raise SnapshotValidationError("boolean adjusted_close is not allowed")
     normalized[PRICE_FIELD] = pd.to_numeric(normalized[PRICE_FIELD], errors="coerce")
     if normalized[PRICE_FIELD].isna().any() or not normalized[PRICE_FIELD].map(math.isfinite).all() or (normalized[PRICE_FIELD] <= 0).any():
         raise SnapshotValidationError("adjusted_close must be positive finite")
@@ -88,6 +90,8 @@ def verify_tqqq_r1_snapshot(
     names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
     if names != tuple(sorted(OUTPUT_FILENAMES)):
         raise SnapshotValidationError(f"unexpected output files: {names}")
+    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
+        raise SnapshotValidationError("snapshot members must be regular non-symlink files")
     if not isinstance(expected_manifest_sha256, str) or _sha256(output / "manifest.json") != expected_manifest_sha256:
         raise SnapshotValidationError("trusted manifest hash mismatch")
     try:
@@ -136,7 +140,7 @@ def materialize_tqqq_r1_snapshot(
         raise SnapshotValidationError("size must be zero")
     normalized = _normalized_prices(prices)
     destination = Path(output_dir)
-    if destination.exists():
+    if destination.exists() or destination.is_symlink():
         raise SnapshotValidationError(f"immutable output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
