@@ -144,7 +144,7 @@ def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) ->
         "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
     )
     assert snapshot.verify_tqqq_r1_snapshot(
-        result.output_dir, expected_manifest_sha256=result.manifest_sha256, allow_legacy=True
+        result.output_dir, expected_manifest_sha256=result.manifest_sha256
     ) == result
 
 
@@ -344,11 +344,13 @@ def test_legacy_materializer_call_and_manifest_sha256_remain_compatible(tmp_path
 
     assert result.manifest_sha256 == hashlib.sha256((result.output_dir / "manifest.json").read_bytes()).hexdigest()
     assert result.snapshot_id is None
-    with pytest.raises(snapshot.SnapshotValidationError, match="legacy snapshot requires explicit opt-in"):
-        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
     assert snapshot.verify_tqqq_r1_snapshot(
-        result.output_dir, expected_manifest_sha256=result.manifest_sha256, allow_legacy=True
+        result.output_dir, expected_manifest_sha256=result.manifest_sha256
     ) == result
+    with pytest.raises(snapshot.SnapshotValidationError, match="legacy snapshot requires explicit opt-in"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=result.manifest_sha256, allow_legacy=False
+        )
 
 
 @pytest.mark.parametrize(

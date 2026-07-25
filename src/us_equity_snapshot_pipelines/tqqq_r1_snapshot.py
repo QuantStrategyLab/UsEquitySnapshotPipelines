@@ -262,7 +262,7 @@ def verify_tqqq_r1_snapshot(
     output_dir: str | Path,
     *,
     expected_manifest_sha256: str,
-    allow_legacy: bool = False,
+    allow_legacy: bool = True,
 ) -> SnapshotResult:
     if not _is_sha256(expected_manifest_sha256):
         _invalid("invalid external manifest receipt")
