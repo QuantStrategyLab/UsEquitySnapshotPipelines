@@ -2,27 +2,40 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 from io import BytesIO
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from . import yfinance_prices
+from .yfinance_prices import download_price_history
+
 
 CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
+RETRIEVAL_CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v3"
 SYMBOLS = ("QQQ", "TQQQ")
 REQUESTED_LOWER_BOUND = "2010-01-01"
 PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+RETRIEVAL_OUTPUT_FILENAMES = (*OUTPUT_FILENAMES, "retrieval_receipt.json")
+IDENTITY_REPOSITORY = "QuantStrategyLab/UsEquitySnapshotPipelines"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OBJECT_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 class SnapshotValidationError(ValueError):
@@ -40,7 +53,10 @@ def _sha256(path: Path) -> str:
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _invalid(message: str) -> None:
@@ -171,6 +187,105 @@ def _has_exact_type(value: object, expected: object) -> bool:
     return value == expected
 
 
+def _source_identity_reference(value: object) -> dict[str, object]:
+    if type(value) is not dict or set(value) != {"artifact_sha256", "repository", "commit", "tree", "files"}:
+        _invalid("invalid source identity")
+    files = value["files"]
+    if (
+        type(value["artifact_sha256"]) is not str
+        or not _SHA256_RE.fullmatch(value["artifact_sha256"])
+        or value["repository"] != IDENTITY_REPOSITORY
+        or type(value["commit"]) is not str
+        or not _GIT_OBJECT_RE.fullmatch(value["commit"])
+        or type(value["tree"]) is not str
+        or not _GIT_OBJECT_RE.fullmatch(value["tree"])
+        or type(files) is not dict
+        or set(files) != {"tqqq_r1_snapshot.py", "yfinance_prices.py"}
+        or any(type(digest) is not str or not _SHA256_RE.fullmatch(digest) for digest in files.values())
+    ):
+        _invalid("invalid source identity")
+    return {
+        "artifact_sha256": value["artifact_sha256"],
+        "repository": value["repository"],
+        "commit": value["commit"],
+        "tree": value["tree"],
+        "files": dict(files),
+    }
+
+
+def _load_verified_source_identity(path: str | Path) -> dict[str, object]:
+    artifact = Path(path)
+    try:
+        metadata = artifact.stat()
+        if artifact.is_symlink() or not artifact.is_file() or metadata.st_mode & 0o222:
+            _invalid("invalid source identity")
+        raw = artifact.read_bytes()
+    except OSError as exc:
+        raise SnapshotValidationError("invalid source identity") from exc
+    identity = _parse_json_object(raw, "source identity")
+    if set(identity) != {"repository", "commit", "tree", "files"}:
+        _invalid("invalid source identity")
+    reference = _source_identity_reference(
+        {
+            "artifact_sha256": hashlib.sha256(raw).hexdigest(),
+            **identity,
+        }
+    )
+    executed_paths = {
+        "tqqq_r1_snapshot.py": Path(__file__),
+        "yfinance_prices.py": Path(yfinance_prices.__file__),
+    }
+    try:
+        actual = {name: _sha256(file_path) for name, file_path in executed_paths.items()}
+    except (OSError, TypeError) as exc:
+        raise SnapshotValidationError("invalid source identity") from exc
+    if actual != reference["files"]:
+        _invalid("source identity hash mismatch")
+    return reference
+
+
+def _normalized_observed_prices(prices: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(prices, pd.DataFrame):
+        _invalid("downloaded prices must be a DataFrame")
+    required = ("as_of", "symbol", PRICE_FIELD)
+    if any(list(prices.columns).count(column) != 1 for column in required):
+        _invalid("downloaded prices require exact columns")
+    observed = prices.loc[:, list(required)].rename(columns={"as_of": "session"}).copy()
+    if not observed["symbol"].map(lambda value: type(value) is str and value in SYMBOLS).all():
+        _invalid("downloaded prices contain noncanonical symbol")
+    observed["session"] = observed["session"].map(_normalize_session)
+    if (observed["session"] < pd.Timestamp(REQUESTED_LOWER_BOUND)).any() or (observed["session"].dt.dayofweek >= 5).any():
+        _invalid("downloaded prices contain invalid session")
+    if observed.duplicated(["session", "symbol"]).any():
+        _invalid("downloaded prices contain duplicate session")
+    return observed.sort_values(["session", "symbol"], kind="stable").reset_index(drop=True)
+
+
+def _observed_coverage(prices: pd.DataFrame) -> dict[str, list[str]]:
+    return {
+        symbol: prices.loc[prices["symbol"].eq(symbol), "session"].dt.strftime("%Y-%m-%d").tolist()
+        for symbol in SYMBOLS
+    }
+
+
+def _reject_unclosed_trading_session(prices: pd.DataFrame, *, observed_at: datetime) -> None:
+    if observed_at.tzinfo is None:
+        _invalid("observed_at must be timezone-aware")
+    new_york = observed_at.astimezone(_NEW_YORK)
+    if new_york.weekday() < 5 and new_york.time() < time(16):
+        current_session = pd.Timestamp(new_york.date())
+        if prices["session"].eq(current_session).any():
+            _invalid("unclosed trading session")
+
+
+def _common_prices(observed: pd.DataFrame) -> pd.DataFrame:
+    common_sessions = set(observed.loc[observed["symbol"].eq(SYMBOLS[0]), "session"])
+    common_sessions &= set(observed.loc[observed["symbol"].eq(SYMBOLS[1]), "session"])
+    if not common_sessions:
+        _invalid("no common observed sessions")
+    return _normalized_prices(observed.loc[observed["session"].isin(common_sessions)].copy())
+
+
 def verify_tqqq_r1_snapshot(
     output_dir: str | Path,
     *,
@@ -183,12 +298,13 @@ def verify_tqqq_r1_snapshot(
         names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
     except OSError as exc:
         raise SnapshotValidationError("unable to read snapshot members") from exc
-    if names != tuple(sorted(OUTPUT_FILENAMES)):
+    if names not in {tuple(sorted(OUTPUT_FILENAMES)), tuple(sorted(RETRIEVAL_OUTPUT_FILENAMES))}:
         _invalid(f"unexpected output files: {names}")
-    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
+    filenames = RETRIEVAL_OUTPUT_FILENAMES if "retrieval_receipt.json" in names else OUTPUT_FILENAMES
+    if any(not (output / name).is_file() or (output / name).is_symlink() for name in filenames):
         _invalid("snapshot members must be regular non-symlink files")
     try:
-        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
+        members = {name: (output / name).read_bytes() for name in filenames}
     except OSError as exc:
         raise SnapshotValidationError("unable to read snapshot members") from exc
 
@@ -199,7 +315,8 @@ def verify_tqqq_r1_snapshot(
     sums = _parse_json_object(members["sha256sums.json"], "sha256sums")
     manifest = _parse_json_object(members["manifest.json"], "manifest")
     validation = _parse_json_object(members["validation.json"], "validation")
-    if set(sums) != {"prices.csv", "manifest.json", "validation.json"}:
+    summed_files = tuple(name for name in filenames if name != "sha256sums.json")
+    if set(sums) != set(summed_files):
         _invalid("invalid sha256sums")
     for name, expected in sums.items():
         if type(expected) is not str or member_hashes[name] != expected:
@@ -217,7 +334,7 @@ def verify_tqqq_r1_snapshot(
             raise
         raise SnapshotValidationError("invalid prices.csv") from exc
 
-    expected_manifest = {
+    expected_manifest: dict[str, object] = {
         "contract_version": CONTRACT_VERSION,
         "symbols": list(SYMBOLS),
         "requested_lower_bound": REQUESTED_LOWER_BOUND,
@@ -228,6 +345,38 @@ def verify_tqqq_r1_snapshot(
         "row_count": len(prices),
         "prices_sha256": member_hashes["prices.csv"],
     }
+    if "retrieval_receipt.json" in members:
+        receipt = _parse_json_object(members["retrieval_receipt.json"], "retrieval receipt")
+        identity = _source_identity_reference(manifest.get("source_identity"))
+        coverage = receipt.get("observed_coverage")
+        if type(coverage) is not dict or set(coverage) != set(SYMBOLS):
+            _invalid("invalid retrieval receipt")
+        if any(
+            type(sessions) is not list
+            or sessions != sorted(set(sessions))
+            or any(not _is_canonical_session(session) for session in sessions)
+            for sessions in coverage.values()
+        ):
+            _invalid("invalid retrieval receipt")
+        common_sessions = sorted(set(coverage[SYMBOLS[0]]) & set(coverage[SYMBOLS[1]]))
+        if common_sessions != prices["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
+            _invalid("invalid retrieval receipt")
+        expected_receipt = {
+            "contract_version": RETRIEVAL_CONTRACT_VERSION,
+            "symbols": list(SYMBOLS),
+            "source_identity": identity,
+            "observed_coverage": coverage,
+            "prices_sha256": member_hashes["prices.csv"],
+        }
+        if not _has_exact_type(receipt, expected_receipt):
+            _invalid("invalid retrieval receipt")
+        expected_manifest.update(
+            {
+                "contract_version": RETRIEVAL_CONTRACT_VERSION,
+                "source_identity": identity,
+                "retrieval_receipt_sha256": member_hashes["retrieval_receipt.json"],
+            }
+        )
     if not _has_exact_type(manifest, expected_manifest):
         _invalid("invalid manifest")
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
@@ -243,8 +392,10 @@ def materialize_tqqq_r1_snapshot(
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
+    source_identity: dict[str, object] | None = None,
+    observed_coverage: dict[str, list[str]] | None = None,
 ) -> SnapshotResult:
-    """Validate fixture/local input and atomically write the four immutable contract files."""
+    """Validate fixture/local input and atomically write immutable contract files."""
     if mode != MODE:
         _invalid("mode must be core_only")
     if plugin != PLUGIN:
@@ -252,6 +403,22 @@ def materialize_tqqq_r1_snapshot(
     if size != 0:
         _invalid("size must be zero")
     normalized = _normalized_prices(prices)
+    if (source_identity is None) != (observed_coverage is None):
+        _invalid("source identity and observed coverage are required together")
+    if source_identity is not None:
+        source_identity = _source_identity_reference(source_identity)
+        if type(observed_coverage) is not dict or set(observed_coverage) != set(SYMBOLS):
+            _invalid("invalid observed coverage")
+        if any(
+            type(sessions) is not list
+            or sessions != sorted(set(sessions))
+            or any(not _is_canonical_session(session) for session in sessions)
+            for sessions in observed_coverage.values()
+        ):
+            _invalid("invalid observed coverage")
+        common_sessions = sorted(set(observed_coverage[SYMBOLS[0]]) & set(observed_coverage[SYMBOLS[1]]))
+        if common_sessions != normalized["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
+            _invalid("invalid observed coverage")
     destination = Path(output_dir)
     if destination.exists() or destination.is_symlink():
         _invalid(f"immutable output already exists: {destination}")
@@ -273,10 +440,27 @@ def materialize_tqqq_r1_snapshot(
             "row_count": len(normalized),
             "prices_sha256": _sha256(prices_path),
         }
+        if source_identity is not None:
+            manifest["contract_version"] = RETRIEVAL_CONTRACT_VERSION
+            manifest["source_identity"] = source_identity
+            _write_json(
+                temporary / "retrieval_receipt.json",
+                {
+                    "contract_version": RETRIEVAL_CONTRACT_VERSION,
+                    "symbols": list(SYMBOLS),
+                    "source_identity": source_identity,
+                    "observed_coverage": observed_coverage,
+                    "prices_sha256": _sha256(prices_path),
+                },
+            )
+            manifest["retrieval_receipt_sha256"] = _sha256(temporary / "retrieval_receipt.json")
         _write_json(temporary / "manifest.json", manifest)
         _write_json(
             temporary / "sha256sums.json",
-            {name: _sha256(temporary / name) for name in ("prices.csv", "manifest.json", "validation.json")},
+            {
+                name: _sha256(temporary / name)
+                for name in ("prices.csv", "manifest.json", "validation.json", *(() if source_identity is None else ("retrieval_receipt.json",)))
+            },
         )
         manifest_sha256 = _sha256(temporary / "manifest.json")
         verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=manifest_sha256)
@@ -285,3 +469,45 @@ def materialize_tqqq_r1_snapshot(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return SnapshotResult(output_dir=destination, manifest_sha256=manifest_sha256)
+
+
+def run_tqqq_r1_snapshot(
+    output_dir: str | Path,
+    *,
+    source_identity_path: str | Path,
+    observed_at: datetime | None = None,
+    download_fn: Any = None,
+) -> SnapshotResult:
+    """Build one receipt-bound snapshot from mocked or explicitly supplied yfinance retrieval."""
+    destination = Path(output_dir)
+    if destination.exists() or destination.is_symlink():
+        _invalid(f"immutable output already exists: {destination}")
+    observed_at = observed_at or datetime.now(timezone.utc)
+    identity = _load_verified_source_identity(source_identity_path)
+    raw_prices = download_price_history(
+        list(SYMBOLS),
+        start=REQUESTED_LOWER_BOUND,
+        download_fn=download_fn,
+        price_field=PRICE_FIELD,
+    )
+    observed = _normalized_observed_prices(raw_prices)
+    _reject_unclosed_trading_session(observed, observed_at=observed_at)
+    return materialize_tqqq_r1_snapshot(
+        _common_prices(observed),
+        destination,
+        source_identity=identity,
+        observed_coverage=_observed_coverage(observed),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Materialize one receipt-bound TQQQ R1 snapshot.")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--source-identity", required=True)
+    args = parser.parse_args(argv)
+    run_tqqq_r1_snapshot(args.output_dir, source_identity_path=args.source_identity)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

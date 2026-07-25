@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from us_equity_snapshot_pipelines import tqqq_r1_snapshot as snapshot
+from us_equity_snapshot_pipelines import yfinance_prices
 
 
 def _fixture_prices() -> pd.DataFrame:
@@ -40,6 +41,31 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
         },
     )
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def _source_identity_artifact(tmp_path: Path, *, snapshot_sha256: str | None = None) -> Path:
+    artifact = tmp_path / "source-identity.json"
+    _write_json(
+        artifact,
+        {
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit": "a" * 40,
+            "tree": "b" * 40,
+            "files": {
+                "tqqq_r1_snapshot.py": snapshot_sha256 or hashlib.sha256(Path(snapshot.__file__).read_bytes()).hexdigest(),
+                "yfinance_prices.py": hashlib.sha256(Path(yfinance_prices.__file__).read_bytes()).hexdigest(),
+            },
+        },
+    )
+    artifact.chmod(0o444)
+    return artifact
+
+
+def _raw_downloaded_prices(*, qqq_sessions: list[str], tqqq_sessions: list[str]) -> pd.DataFrame:
+    rows = []
+    for symbol, sessions in (("QQQ", qqq_sessions), ("TQQQ", tqqq_sessions)):
+        rows.extend({"as_of": session, "symbol": symbol, "adjusted_close": 10.0} for session in sessions)
+    return pd.DataFrame(rows)
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
@@ -232,3 +258,62 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_runner_accepts_external_identity_in_non_git_install_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    installed = tmp_path / "site-packages"
+    installed.mkdir()
+    installed_snapshot = installed / "tqqq_r1_snapshot.py"
+    installed_yfinance = installed / "yfinance_prices.py"
+    installed_snapshot.write_bytes(Path(snapshot.__file__).read_bytes())
+    installed_yfinance.write_bytes(Path(yfinance_prices.__file__).read_bytes())
+    monkeypatch.setattr(snapshot, "__file__", str(installed_snapshot))
+    monkeypatch.setattr(yfinance_prices, "__file__", str(installed_yfinance))
+    identity = _source_identity_artifact(tmp_path)
+    raw_prices = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2010-01-05"],
+        tqqq_sessions=["2010-01-04", "2010-01-05"],
+    )
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: raw_prices)
+
+    result = snapshot.run_tqqq_r1_snapshot(
+        tmp_path / "snapshot",
+        source_identity_path=identity,
+        observed_at=datetime(2026, 7, 24, 21, tzinfo=timezone.utc),
+    )
+
+    manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
+    receipt = json.loads((result.output_dir / "retrieval_receipt.json").read_text(encoding="utf-8"))
+    identity_sha256 = hashlib.sha256(identity.read_bytes()).hexdigest()
+    assert manifest["source_identity"]["artifact_sha256"] == identity_sha256
+    assert receipt["source_identity"]["artifact_sha256"] == identity_sha256
+    assert manifest["source_identity"]["repository"] == "QuantStrategyLab/UsEquitySnapshotPipelines"
+    assert manifest["retrieval_receipt_sha256"] == hashlib.sha256(
+        (result.output_dir / "retrieval_receipt.json").read_bytes()
+    ).hexdigest()
+
+
+def test_runner_rejects_identity_hash_mismatch_before_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = _source_identity_artifact(tmp_path, snapshot_sha256="0" * 64)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="source identity"):
+        snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot", source_identity_path=identity)
+
+
+def test_runner_rejects_partial_unclosed_raw_session_before_common_intersection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    raw_prices = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2026-07-24"],
+        tqqq_sessions=["2010-01-04"],
+    )
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: raw_prices)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unclosed trading session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=identity,
+            observed_at=datetime(2026, 7, 24, 19, tzinfo=timezone.utc),
+        )
