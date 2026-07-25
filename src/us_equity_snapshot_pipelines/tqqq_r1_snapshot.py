@@ -535,9 +535,13 @@ def materialize_tqqq_r1_snapshot(
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
-    source_identity: _LoadedSourceIdentity | None = None,
-    calendar: _LoadedXNYSCalendar | None = None,
+    source_identity: object | None = None,
+    calendar: object | None = None,
     observed_coverage: dict[str, list[str]] | None = None,
+    source_identity_path: str | Path | None = None,
+    expected_source_identity_sha256: str | None = None,
+    calendar_path: str | Path | None = None,
+    expected_calendar_sha256: str | None = None,
 ) -> SnapshotResult:
     """Validate fixture/local input and atomically write the four immutable contract files."""
     if mode != MODE:
@@ -547,13 +551,30 @@ def materialize_tqqq_r1_snapshot(
     if size != 0:
         _invalid("size must be zero")
     normalized = _normalized_prices(prices)
-    if (source_identity is None) != (calendar is None) or (source_identity is None) != (observed_coverage is None):
+    if source_identity is not None or calendar is not None:
+        _invalid("anchored materialization requires external artifact paths")
+    anchor_arguments = (
+        source_identity_path,
+        expected_source_identity_sha256,
+        calendar_path,
+        expected_calendar_sha256,
+    )
+    if any(value is not None for value in anchor_arguments) and not all(value is not None for value in anchor_arguments):
         _invalid("source identity, calendar, and observed coverage are required together")
-    if source_identity is not None:
-        if not isinstance(source_identity, _LoadedSourceIdentity) or not isinstance(calendar, _LoadedXNYSCalendar):
-            _invalid("anchored materialization requires loader-validated anchors")
-        source_identity = source_identity.reference
-        calendar = calendar.reference
+    if source_identity_path is None:
+        if observed_coverage is not None:
+            _invalid("source identity, calendar, and observed coverage are required together")
+    else:
+        if observed_coverage is None:
+            _invalid("source identity, calendar, and observed coverage are required together")
+        source_identity = _load_external_source_identity(
+            source_identity_path,
+            expected_source_identity_sha256=str(expected_source_identity_sha256),
+        ).reference
+        calendar = _load_external_xnys_calendar(
+            calendar_path,
+            expected_calendar_sha256=str(expected_calendar_sha256),
+        ).reference
         observed_coverage = _canonical_coverage(observed_coverage, error="invalid observed coverage")
         common_sessions = sorted(set(observed_coverage[SYMBOLS[0]]) & set(observed_coverage[SYMBOLS[1]]))
         if common_sessions != normalized["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
@@ -631,7 +652,10 @@ def run_tqqq_r1_snapshot(
     destination = Path(output_dir)
     if destination.exists() or destination.is_symlink():
         _invalid(f"immutable output already exists: {destination}")
-    source_identity = _load_external_source_identity(
+    observation_time = observed_at or datetime.now(timezone.utc)
+    if download_fn is not None:
+        _invalid("unanchored download callback is not allowed")
+    _load_external_source_identity(
         source_identity_path,
         expected_source_identity_sha256=expected_source_identity_sha256,
     )
@@ -647,13 +671,15 @@ def run_tqqq_r1_snapshot(
             price_field=PRICE_FIELD,
         )
     )
-    _require_xnys_sessions(observed, calendar.closes, observed_at=observed_at or datetime.now(timezone.utc))
+    _require_xnys_sessions(observed, calendar.closes, observed_at=observation_time)
     return materialize_tqqq_r1_snapshot(
         _common_prices(observed),
         destination,
-        source_identity=source_identity,
-        calendar=calendar,
         observed_coverage=_observed_coverage(observed),
+        source_identity_path=source_identity_path,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+        calendar_path=calendar_path,
+        expected_calendar_sha256=expected_calendar_sha256,
     )
 
 

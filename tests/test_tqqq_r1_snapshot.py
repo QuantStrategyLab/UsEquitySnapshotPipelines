@@ -405,7 +405,7 @@ def test_materialize_rejects_shape_valid_unloaded_anchor_dictionaries(tmp_path: 
         "coverage": {"first_session": "2010-01-04", "last_session": "2026-07-24", "session_count": 3},
     }
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="loader-validated"):
+    with pytest.raises(snapshot.SnapshotValidationError, match="external artifact paths"):
         snapshot.materialize_tqqq_r1_snapshot(
             _fixture_prices(),
             tmp_path / "snapshot",
@@ -432,4 +432,94 @@ def test_runner_rejects_calendar_timestamps_from_another_declared_session(
             expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
             calendar_path=calendar,
             expected_calendar_sha256=_MISMATCHED_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_materialize_rejects_constructed_loader_wrappers(tmp_path: Path) -> None:
+    source_identity = snapshot._LoadedSourceIdentity(
+        reference={
+            "artifact_sha256": _FIXTURE_SOURCE_IDENTITY_SHA256,
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit": "a" * 40,
+            "tree": "c" * 40,
+            "files": {
+                "src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py": "6e718635b05352ee98ee205eac73289e35d22b2ae735821aee3bcac844a90f33",
+                "src/us_equity_snapshot_pipelines/yfinance_prices.py": "849b731e0f6bd17283bb01f598463934fbcf6eab68d82cd02b03091538a1b3b8",
+            },
+        }
+    )
+    calendar = snapshot._LoadedXNYSCalendar(
+        reference={
+            "artifact_sha256": _FIXTURE_XNYS_CALENDAR_SHA256,
+            "schema": "qsl.r1.xnys.session.v1",
+            "coverage": {"first_session": "2010-01-04", "last_session": "2026-07-24", "session_count": 3},
+        },
+        closes={},
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="external artifact paths"):
+        snapshot.materialize_tqqq_r1_snapshot(
+            _fixture_prices(),
+            tmp_path / "snapshot",
+            source_identity=source_identity,
+            calendar=calendar,
+            observed_coverage={"QQQ": ["2010-01-04", "2010-01-05"], "TQQQ": ["2010-01-04", "2010-01-05"]},
+        )
+
+
+def test_runner_uses_observation_time_captured_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+
+    class BeforeDownload(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return datetime(2026, 7, 24, 19, tzinfo=timezone.utc)
+
+    class AfterDownload(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return datetime(2026, 7, 24, 21, tzinfo=timezone.utc)
+
+    def delayed_download(*_args: object, **_kwargs: object) -> pd.DataFrame:
+        monkeypatch.setattr(snapshot, "datetime", AfterDownload)
+        prices = _fixture_downloaded_prices()
+        current_session = pd.DataFrame(
+            [
+                {"as_of": "2026-07-24", "symbol": "QQQ", "adjusted_close": 10.0},
+                {"as_of": "2026-07-24", "symbol": "TQQQ", "adjusted_close": 10.0},
+            ]
+        )
+        return pd.concat([prices, current_session], ignore_index=True)
+
+    monkeypatch.setattr(snapshot, "datetime", BeforeDownload)
+    monkeypatch.setattr(snapshot, "download_price_history", delayed_download)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unclosed trading session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_unanchored_download_callback_before_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unanchored download callback"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+            download_fn=lambda *_args, **_kwargs: pytest.fail("callback must not run"),
         )
