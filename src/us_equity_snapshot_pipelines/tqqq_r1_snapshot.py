@@ -267,9 +267,12 @@ def verify_tqqq_r1_snapshot(
     output_dir: str | Path,
     *,
     expected_manifest_sha256: str,
+    allow_legacy: bool = False,
 ) -> SnapshotResult:
     if not _is_sha256(expected_manifest_sha256):
         _invalid("invalid external manifest receipt")
+    if type(allow_legacy) is not bool:
+        _invalid("invalid legacy opt-in")
     output = Path(output_dir)
     if output.is_symlink():
         _invalid("snapshot root symlink is not allowed")
@@ -327,6 +330,8 @@ def verify_tqqq_r1_snapshot(
         "prices_sha256": member_hashes["prices.csv"],
     }
     if contract_version == LEGACY_CONTRACT_VERSION:
+        if not allow_legacy:
+            _invalid("legacy snapshot requires explicit opt-in")
         expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
         if not _has_exact_type(manifest, expected_manifest) or not _has_exact_type(validation, expected_validation):
             _invalid("invalid legacy snapshot")
@@ -356,6 +361,7 @@ def materialize_tqqq_r1_snapshot(
     *,
     expected_manifest_sha256: str | None = None,
     source_identity: dict[str, object] | None = None,
+    allow_legacy: bool = False,
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
@@ -367,9 +373,15 @@ def materialize_tqqq_r1_snapshot(
         _invalid("plugin must be ABSENT_DISABLED")
     if size != 0:
         _invalid("size must be zero")
+    if type(allow_legacy) is not bool:
+        _invalid("invalid legacy opt-in")
     receipt_bound = expected_manifest_sha256 is not None or source_identity is not None
     if receipt_bound and (not _is_sha256(expected_manifest_sha256) or source_identity is None):
         _invalid("receipt-bound snapshots require external manifest receipt and source identity")
+    if receipt_bound and allow_legacy:
+        _invalid("legacy opt-in is incompatible with receipt-bound snapshots")
+    if not receipt_bound and not allow_legacy:
+        _invalid("legacy materialization requires explicit opt-in")
     normalized = _normalized_prices(prices)
     validated_source_identity = _validate_source_identity(source_identity, normalized) if receipt_bound else None
     destination = Path(output_dir)
@@ -404,7 +416,9 @@ def materialize_tqqq_r1_snapshot(
         )
         manifest_sha256 = _sha256(temporary / "manifest.json")
         verify_tqqq_r1_snapshot(
-            temporary, expected_manifest_sha256=expected_manifest_sha256 if receipt_bound else manifest_sha256
+            temporary,
+            expected_manifest_sha256=expected_manifest_sha256 if receipt_bound else manifest_sha256,
+            allow_legacy=not receipt_bound,
         )
         os.replace(temporary, destination)
     except Exception:
