@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -23,8 +23,65 @@ def _fixture_prices() -> pd.DataFrame:
     )
 
 
+SOURCE_IDENTITY = {
+    "route": "R1_STATIC_RESEARCH",
+    "provider": "external-control-plane-receipt",
+    "retrieval_library": "local-fixture",
+    "source_version": "fixture.v1",
+    "symbols": ["QQQ", "TQQQ"],
+    "price_field": "adjusted_close",
+    "adjustment": "split-and-dividend-adjusted",
+    "calendar_sha256": "a" * 64,
+    "timezone": "America/New_York",
+    "coverage_start": "2010-01-04",
+    "coverage_end": "2010-01-05",
+    "as_of": "2010-01-05",
+    "payload_schema": "prices.csv.v1",
+    "sort_order": "session,symbol",
+    "missing_data_policy": "reject-missing-or-duplicate",
+}
+
+
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _external_manifest_sha256(prices: pd.DataFrame, source_identity: dict[str, object] = SOURCE_IDENTITY) -> str:
+    normalized = prices.loc[:, ["session", "symbol", "adjusted_close"]].copy()
+    normalized["session"] = pd.to_datetime(normalized["session"]).dt.strftime("%Y-%m-%d")
+    normalized = normalized.sort_values(["session", "symbol"], kind="stable")
+    prices_bytes = normalized.to_csv(index=False, lineterminator="\n", float_format="%.17g").encode()
+    manifest = {
+        "contract_version": snapshot.CONTRACT_VERSION,
+        "symbols": list(snapshot.SYMBOLS),
+        "requested_lower_bound": snapshot.REQUESTED_LOWER_BOUND,
+        "price_field": snapshot.PRICE_FIELD,
+        "plugin": snapshot.PLUGIN,
+        "mode": snapshot.MODE,
+        "size": 0,
+        "row_count": len(normalized),
+        "prices_sha256": hashlib.sha256(prices_bytes).hexdigest(),
+        "source_identity": source_identity,
+    }
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n").hexdigest()
+
+
+def _materialize(
+    prices: pd.DataFrame,
+    output_dir: Path,
+    *,
+    expected_manifest_sha256: str | None = None,
+    source_identity: dict[str, object] = SOURCE_IDENTITY,
+) -> snapshot.SnapshotResult:
+    return snapshot.materialize_tqqq_r1_snapshot(
+        prices,
+        output_dir,
+        expected_manifest_sha256=expected_manifest_sha256 or ("0" * 64),
+        source_identity=source_identity,
+    )
+
+
+FIXTURE_MANIFEST_SHA256 = _external_manifest_sha256(_fixture_prices())
 
 
 def _refresh_trusted_metadata(output_dir: Path) -> str:
@@ -32,6 +89,11 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["prices_sha256"] = hashlib.sha256((output_dir / "prices.csv").read_bytes()).hexdigest()
     _write_json(manifest_path, manifest)
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    validation_path = output_dir / "validation.json"
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation["snapshot_id"] = f"sha256-{manifest_sha256}"
+    _write_json(validation_path, validation)
     _write_json(
         output_dir / "sha256sums.json",
         {
@@ -39,11 +101,11 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
             for name in ("prices.csv", "manifest.json", "validation.json")
         },
     )
-    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    return manifest_sha256
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
 
     assert tuple(sorted(path.name for path in result.output_dir.iterdir())) == (
         "manifest.json",
@@ -62,17 +124,69 @@ def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) ->
         "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
     )
     assert snapshot.verify_tqqq_r1_snapshot(
-        result.output_dir, expected_manifest_sha256=result.manifest_sha256
+        result.output_dir, expected_manifest_sha256=FIXTURE_MANIFEST_SHA256
     ) == result
+    assert result.snapshot_id == f"sha256-{FIXTURE_MANIFEST_SHA256}"
+
+
+def test_materialize_rejects_nonmatching_external_manifest_receipt(tmp_path: Path) -> None:
+    with pytest.raises(snapshot.SnapshotValidationError, match="trusted manifest hash mismatch"):
+        _materialize(_fixture_prices(), tmp_path / "snapshot")
+
+    assert not (tmp_path / "snapshot").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("route", "R2", "invalid R1 route"),
+        ("retrieval_library", "", "invalid R1 source identity"),
+        ("symbols", ["QQQ", "SPY"], "invalid R1 source identity"),
+        ("adjustment", "raw-close", "invalid adjusted-price semantics"),
+        ("calendar_sha256", "a" * 63, "invalid R1 calendar digest"),
+        ("coverage_end", "2010-01-04", "R1 coverage identity does not match prices"),
+    ],
+)
+def test_materialize_rejects_incomplete_or_inconsistent_r1_source_identity(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    source_identity = {**SOURCE_IDENTITY, field: value}
+
+    with pytest.raises(snapshot.SnapshotValidationError, match=message):
+        _materialize(_fixture_prices(), tmp_path / "snapshot", source_identity=source_identity)
+
+
+def test_verify_rejects_snapshot_id_not_bound_to_external_manifest_receipt(tmp_path: Path) -> None:
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
+    validation_path = result.output_dir / "validation.json"
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation["snapshot_id"] = "sha256-" + ("0" * 64)
+    _write_json(validation_path, validation)
+    _write_json(
+        result.output_dir / "sha256sums.json",
+        {
+            name: hashlib.sha256((result.output_dir / name).read_bytes()).hexdigest()
+            for name in ("prices.csv", "manifest.json", "validation.json")
+        },
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="snapshot id does not bind external manifest receipt"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
 
 
 def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_path: Path) -> None:
     prices = _fixture_prices()
     prices.loc[prices["symbol"].eq("QQQ") & prices["session"].eq("2010-01-04"), "adjusted_close"] = 1.0000000000000002
 
-    result = snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    result = _materialize(
+        prices, tmp_path / "snapshot", expected_manifest_sha256=_external_manifest_sha256(prices)
+    )
 
-    actual = pd.read_csv(result.output_dir / "prices.csv").loc[lambda frame: frame["symbol"].eq("QQQ"), "adjusted_close"].iloc[0]
+    actual = (
+        pd.read_csv(result.output_dir / "prices.csv")
+        .loc[lambda frame: frame["symbol"].eq("QQQ"), "adjusted_close"]
+        .iloc[0]
+    )
     assert actual == 1.0000000000000002
 
 
@@ -82,7 +196,7 @@ def test_materialize_rejects_duplicate_required_column_labels(tmp_path: Path, co
     prices = pd.concat([prices, prices[[column]]], axis=1)
 
     with pytest.raises(snapshot.SnapshotValidationError, match="required columns must appear exactly once"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 @pytest.mark.parametrize(
@@ -95,7 +209,7 @@ def test_materialize_rejects_native_and_numpy_boolean_adjusted_close(tmp_path: P
     prices.loc[0, "adjusted_close"] = value
 
     with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 def test_materialize_rejects_mixed_boolean_adjusted_close(tmp_path: Path) -> None:
@@ -103,7 +217,7 @@ def test_materialize_rejects_mixed_boolean_adjusted_close(tmp_path: Path) -> Non
     prices.loc[0, "adjusted_close"] = np.bool_(True)
 
     with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 @pytest.mark.parametrize(
@@ -122,19 +236,24 @@ def test_materialize_rejects_native_numpy_dtype_and_object_complex_adjusted_clos
     tmp_path: Path, prices: pd.DataFrame
 ) -> None:
     with pytest.raises(snapshot.SnapshotValidationError, match="complex adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 @pytest.mark.parametrize(
     "sessions",
     [
         [
-            datetime(2010, 1, 4),
-            datetime(2010, 1, 4, tzinfo=timezone.utc),
-            datetime(2010, 1, 5),
-            datetime(2010, 1, 5, tzinfo=timezone.utc),
+            datetime(2010, 1, 4),  # noqa: DTZ001
+            datetime(2010, 1, 4, tzinfo=UTC),
+            datetime(2010, 1, 5),  # noqa: DTZ001
+            datetime(2010, 1, 5, tzinfo=UTC),
         ],
-        ["2010-01-04T00:00:00+00:00", "2010-01-04T00:00:00-05:00", "2010-01-05T00:00:00+00:00", "2010-01-05T00:00:00-05:00"],
+        [
+            "2010-01-04T00:00:00+00:00",
+            "2010-01-04T00:00:00-05:00",
+            "2010-01-05T00:00:00+00:00",
+            "2010-01-05T00:00:00-05:00",
+        ],
     ],
     ids=["mixed-naive-aware", "mixed-offsets"],
 )
@@ -142,18 +261,18 @@ def test_materialize_rejects_mixed_timezone_session_inputs(tmp_path: Path, sessi
     prices = _fixture_prices().assign(session=sessions)
 
     with pytest.raises(snapshot.SnapshotValidationError, match="timezone-aware session"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 def test_materialize_rejects_datetime_adjusted_close(tmp_path: Path) -> None:
     prices = _fixture_prices().assign(adjusted_close=pd.Timestamp("2026-07-25"))
 
     with pytest.raises(snapshot.SnapshotValidationError, match="datetime-like adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+        _materialize(prices, tmp_path / "snapshot")
 
 
 def test_verify_rejects_noncanonical_symbol_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     (output_dir / "prices.csv").write_text(
         "session,symbol,adjusted_close\n"
@@ -169,7 +288,7 @@ def test_verify_rejects_noncanonical_symbol_readback(tmp_path: Path) -> None:
 
 
 def test_verify_rejects_noncanonical_raw_session_encoding(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     (output_dir / "prices.csv").write_text(
         "session,symbol,adjusted_close\n"
@@ -185,7 +304,7 @@ def test_verify_rejects_noncanonical_raw_session_encoding(tmp_path: Path) -> Non
 
 
 def test_verify_rejects_boolean_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     (output_dir / "prices.csv").write_text(
         "session,symbol,adjusted_close\n"
@@ -201,7 +320,7 @@ def test_verify_rejects_boolean_readback(tmp_path: Path) -> None:
 
 
 def test_verify_rejects_mixed_offset_session_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     (output_dir / "prices.csv").write_text(
         "session,symbol,adjusted_close\n"
@@ -217,7 +336,7 @@ def test_verify_rejects_mixed_offset_session_readback(tmp_path: Path) -> None:
 
 
 def test_verify_rejects_invalid_metadata_scalar_types(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     _write_json(output_dir / "validation.json", {"valid": 1, "row_count": 4.0, "symbols": ["QQQ", "TQQQ"]})
 
@@ -226,7 +345,7 @@ def test_verify_rejects_invalid_metadata_scalar_types(tmp_path: Path) -> None:
 
 
 def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
     output_dir = result.output_dir
     (output_dir / "prices.csv").write_bytes(b"\xff")
 

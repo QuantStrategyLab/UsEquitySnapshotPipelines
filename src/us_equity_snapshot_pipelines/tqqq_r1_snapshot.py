@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-from io import BytesIO
 import json
 import math
 import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
 
 CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
 SYMBOLS = ("QQQ", "TQQQ")
@@ -23,6 +22,23 @@ PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+SOURCE_IDENTITY_KEYS = {
+    "route",
+    "provider",
+    "retrieval_library",
+    "source_version",
+    "symbols",
+    "price_field",
+    "adjustment",
+    "calendar_sha256",
+    "timezone",
+    "coverage_start",
+    "coverage_end",
+    "as_of",
+    "payload_schema",
+    "sort_order",
+    "missing_data_policy",
+}
 
 
 class SnapshotValidationError(ValueError):
@@ -32,7 +48,7 @@ class SnapshotValidationError(ValueError):
 @dataclass(frozen=True)
 class SnapshotResult:
     output_dir: Path
-    manifest_sha256: str
+    snapshot_id: str
 
 
 def _sha256(path: Path) -> str:
@@ -40,7 +56,9 @@ def _sha256(path: Path) -> str:
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
 
 
 def _invalid(message: str) -> None:
@@ -73,6 +91,54 @@ def _is_canonical_session(value: object) -> bool:
     )
 
 
+def _is_sha256(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _validate_source_identity(source_identity: object, prices: pd.DataFrame) -> dict[str, object]:
+    if type(source_identity) is not dict or set(source_identity) != SOURCE_IDENTITY_KEYS:
+        _invalid("invalid R1 source identity")
+    string_fields = {
+        "route",
+        "provider",
+        "retrieval_library",
+        "source_version",
+        "adjustment",
+        "timezone",
+        "payload_schema",
+        "sort_order",
+        "missing_data_policy",
+    }
+    if any(type(source_identity[field]) is not str or not source_identity[field] for field in string_fields):
+        _invalid("invalid R1 source identity")
+    if source_identity["route"] != "R1_STATIC_RESEARCH":
+        _invalid("invalid R1 route")
+    if source_identity["symbols"] != list(SYMBOLS) or source_identity["price_field"] != PRICE_FIELD:
+        _invalid("invalid R1 source identity")
+    if source_identity["adjustment"] != "split-and-dividend-adjusted":
+        _invalid("invalid adjusted-price semantics")
+    if source_identity["timezone"] != "America/New_York":
+        _invalid("invalid R1 timezone")
+    if source_identity["payload_schema"] != "prices.csv.v1" or source_identity["sort_order"] != "session,symbol":
+        _invalid("invalid R1 payload identity")
+    if source_identity["missing_data_policy"] != "reject-missing-or-duplicate":
+        _invalid("invalid R1 missing-data policy")
+    if not _is_sha256(source_identity["calendar_sha256"]):
+        _invalid("invalid R1 calendar digest")
+    coverage = ("coverage_start", "coverage_end", "as_of")
+    if any(not _is_canonical_session(source_identity[field]) for field in coverage):
+        _invalid("invalid R1 coverage identity")
+    first_session = prices["session"].iloc[0].strftime("%Y-%m-%d")
+    last_session = prices["session"].iloc[-1].strftime("%Y-%m-%d")
+    if (
+        source_identity["coverage_start"] != first_session
+        or source_identity["coverage_end"] != last_session
+        or source_identity["as_of"] != last_session
+    ):
+        _invalid("R1 coverage identity does not match prices")
+    return source_identity
+
+
 def _normalized_prices(
     prices: pd.DataFrame,
     *,
@@ -101,7 +167,9 @@ def _normalized_prices(
     if received != set(SYMBOLS):
         missing_symbols = sorted(set(SYMBOLS).difference(received))
         unexpected_symbols = sorted(received.difference(SYMBOLS))
-        _invalid(f"missing required symbol or unexpected symbol: missing={missing_symbols}, unexpected={unexpected_symbols}")
+        _invalid(
+            f"missing required symbol or unexpected symbol: missing={missing_symbols}, unexpected={unexpected_symbols}"
+        )
 
     raw_sessions = normalized["session"]
     normalized["session"] = raw_sessions.map(_normalize_session)
@@ -167,7 +235,9 @@ def _has_exact_type(value: object, expected: object) -> bool:
     if type(expected) is dict:
         return set(value) == set(expected) and all(_has_exact_type(value[key], expected[key]) for key in expected)
     if type(expected) is list:
-        return len(value) == len(expected) and all(_has_exact_type(actual, wanted) for actual, wanted in zip(value, expected))
+        return len(value) == len(expected) and all(
+            _has_exact_type(actual, wanted) for actual, wanted in zip(value, expected)
+        )
     return value == expected
 
 
@@ -176,6 +246,8 @@ def verify_tqqq_r1_snapshot(
     *,
     expected_manifest_sha256: str,
 ) -> SnapshotResult:
+    if not _is_sha256(expected_manifest_sha256):
+        _invalid("invalid external manifest receipt")
     output = Path(output_dir)
     if output.is_symlink():
         _invalid("snapshot root symlink is not allowed")
@@ -193,7 +265,7 @@ def verify_tqqq_r1_snapshot(
         raise SnapshotValidationError("unable to read snapshot members") from exc
 
     member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
-    if type(expected_manifest_sha256) is not str or member_hashes["manifest.json"] != expected_manifest_sha256:
+    if member_hashes["manifest.json"] != expected_manifest_sha256:
         _invalid("trusted manifest hash mismatch")
 
     sums = _parse_json_object(members["sha256sums.json"], "sha256sums")
@@ -217,6 +289,7 @@ def verify_tqqq_r1_snapshot(
             raise
         raise SnapshotValidationError("invalid prices.csv") from exc
 
+    source_identity = _validate_source_identity(manifest.get("source_identity"), prices)
     expected_manifest = {
         "contract_version": CONTRACT_VERSION,
         "symbols": list(SYMBOLS),
@@ -227,19 +300,30 @@ def verify_tqqq_r1_snapshot(
         "size": 0,
         "row_count": len(prices),
         "prices_sha256": member_hashes["prices.csv"],
+        "source_identity": source_identity,
     }
     if not _has_exact_type(manifest, expected_manifest):
         _invalid("invalid manifest")
-    expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
+    snapshot_id = f"sha256-{expected_manifest_sha256}"
+    expected_validation = {
+        "valid": True,
+        "row_count": len(prices),
+        "symbols": list(SYMBOLS),
+        "snapshot_id": snapshot_id,
+    }
+    if validation.get("snapshot_id") != snapshot_id:
+        _invalid("snapshot id does not bind external manifest receipt")
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
+    return SnapshotResult(output_dir=output, snapshot_id=snapshot_id)
 
 
 def materialize_tqqq_r1_snapshot(
     prices: pd.DataFrame,
     output_dir: str | Path,
     *,
+    expected_manifest_sha256: str,
+    source_identity: dict[str, object],
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
@@ -251,7 +335,10 @@ def materialize_tqqq_r1_snapshot(
         _invalid("plugin must be ABSENT_DISABLED")
     if size != 0:
         _invalid("size must be zero")
+    if not _is_sha256(expected_manifest_sha256):
+        _invalid("invalid external manifest receipt")
     normalized = _normalized_prices(prices)
+    validated_source_identity = _validate_source_identity(source_identity, normalized)
     destination = Path(output_dir)
     if destination.exists() or destination.is_symlink():
         _invalid(f"immutable output already exists: {destination}")
@@ -260,7 +347,12 @@ def materialize_tqqq_r1_snapshot(
     try:
         prices_path = temporary / "prices.csv"
         _write_prices(prices_path, normalized)
-        validation = {"valid": True, "row_count": len(normalized), "symbols": list(SYMBOLS)}
+        validation = {
+            "valid": True,
+            "row_count": len(normalized),
+            "symbols": list(SYMBOLS),
+            "snapshot_id": f"sha256-{expected_manifest_sha256}",
+        }
         _write_json(temporary / "validation.json", validation)
         manifest = {
             "contract_version": CONTRACT_VERSION,
@@ -272,16 +364,16 @@ def materialize_tqqq_r1_snapshot(
             "size": 0,
             "row_count": len(normalized),
             "prices_sha256": _sha256(prices_path),
+            "source_identity": validated_source_identity,
         }
         _write_json(temporary / "manifest.json", manifest)
         _write_json(
             temporary / "sha256sums.json",
             {name: _sha256(temporary / name) for name in ("prices.csv", "manifest.json", "validation.json")},
         )
-        manifest_sha256 = _sha256(temporary / "manifest.json")
-        verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=manifest_sha256)
+        verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=expected_manifest_sha256)
         os.replace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return SnapshotResult(output_dir=destination, manifest_sha256=manifest_sha256)
+    return SnapshotResult(output_dir=destination, snapshot_id=f"sha256-{expected_manifest_sha256}")
