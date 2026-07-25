@@ -12,7 +12,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -188,8 +188,16 @@ def _has_exact_type(value: object, expected: object) -> bool:
 
 
 def _source_identity_reference(value: object) -> dict[str, object]:
-    if type(value) is not dict or set(value) != {"artifact_sha256", "repository", "commit", "tree", "files"}:
+    if type(value) is not dict or set(value) != {
+        "artifact_sha256",
+        "repository",
+        "commit",
+        "tree",
+        "files",
+        "trusted_provenance",
+    }:
         _invalid("invalid source identity")
+    provenance = value["trusted_provenance"]
     files = value["files"]
     if (
         type(value["artifact_sha256"]) is not str
@@ -202,6 +210,9 @@ def _source_identity_reference(value: object) -> dict[str, object]:
         or type(files) is not dict
         or set(files) != {"tqqq_r1_snapshot.py", "yfinance_prices.py"}
         or any(type(digest) is not str or not _SHA256_RE.fullmatch(digest) for digest in files.values())
+        or type(provenance) is not dict
+        or set(provenance) != {"repository", "commit", "tree", "files"}
+        or provenance != {"repository": value["repository"], "commit": value["commit"], "tree": value["tree"], "files": files}
     ):
         _invalid("invalid source identity")
     return {
@@ -210,6 +221,12 @@ def _source_identity_reference(value: object) -> dict[str, object]:
         "commit": value["commit"],
         "tree": value["tree"],
         "files": dict(files),
+        "trusted_provenance": {
+            "repository": value["repository"],
+            "commit": value["commit"],
+            "tree": value["tree"],
+            "files": dict(files),
+        },
     }
 
 
@@ -223,7 +240,7 @@ def _load_verified_source_identity(path: str | Path) -> dict[str, object]:
     except OSError as exc:
         raise SnapshotValidationError("invalid source identity") from exc
     identity = _parse_json_object(raw, "source identity")
-    if set(identity) != {"repository", "commit", "tree", "files"}:
+    if set(identity) != {"repository", "commit", "tree", "files", "trusted_provenance"}:
         _invalid("invalid source identity")
     reference = _source_identity_reference(
         {
@@ -247,10 +264,13 @@ def _load_verified_source_identity(path: str | Path) -> dict[str, object]:
 def _normalized_observed_prices(prices: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("downloaded prices must be a DataFrame")
-    required = ("as_of", "symbol", PRICE_FIELD)
+    price_column = PRICE_FIELD if PRICE_FIELD in prices.columns else "close"
+    required = ("as_of", "symbol", price_column)
     if any(list(prices.columns).count(column) != 1 for column in required):
         _invalid("downloaded prices require exact columns")
-    observed = prices.loc[:, list(required)].rename(columns={"as_of": "session"}).copy()
+    if price_column == "close" and list(prices.columns).count(PRICE_FIELD):
+        _invalid("downloaded prices require one price column")
+    observed = prices.loc[:, list(required)].rename(columns={"as_of": "session", price_column: PRICE_FIELD}).copy()
     if not observed["symbol"].map(lambda value: type(value) is str and value in SYMBOLS).all():
         _invalid("downloaded prices contain noncanonical symbol")
     observed["session"] = observed["session"].map(_normalize_session)
@@ -268,12 +288,31 @@ def _observed_coverage(prices: pd.DataFrame) -> dict[str, list[str]]:
     }
 
 
+def _nyse_early_close(session: date) -> time | None:
+    thanksgiving = date(session.year, 11, 1)
+    thanksgiving += timedelta(days=(3 - thanksgiving.weekday()) % 7 + 21)
+    if session == thanksgiving + timedelta(days=1):
+        return time(13)
+    independence_day = date(session.year, 7, 4)
+    if independence_day.weekday() < 5 and session == independence_day - timedelta(days=1):
+        return time(13)
+    christmas = date(session.year, 12, 25)
+    if christmas.weekday() != 5 and session == christmas - timedelta(days=1) and session.weekday() < 5:
+        return time(13)
+    return None
+
+
+def _nyse_session_close(session: date) -> time:
+    return _nyse_early_close(session) or time(16)
+
+
 def _reject_unclosed_trading_session(prices: pd.DataFrame, *, observed_at: datetime) -> None:
     if observed_at.tzinfo is None:
         _invalid("observed_at must be timezone-aware")
     new_york = observed_at.astimezone(_NEW_YORK)
-    if new_york.weekday() < 5 and new_york.time() < time(16):
-        current_session = pd.Timestamp(new_york.date())
+    current_date = new_york.date()
+    if current_date.weekday() < 5 and new_york.time() < _nyse_session_close(current_date):
+        current_session = pd.Timestamp(current_date)
         if prices["session"].eq(current_session).any():
             _invalid("unclosed trading session")
 
@@ -284,6 +323,27 @@ def _common_prices(observed: pd.DataFrame) -> pd.DataFrame:
     if not common_sessions:
         _invalid("no common observed sessions")
     return _normalized_prices(observed.loc[observed["session"].isin(common_sessions)].copy())
+
+
+def _canonical_coverage(value: object, *, error: str) -> dict[str, list[str]]:
+    if type(value) is not dict or set(value) != set(SYMBOLS):
+        _invalid(error)
+    coverage: dict[str, list[str]] = {}
+    for symbol in SYMBOLS:
+        sessions = value[symbol]
+        if type(sessions) is not list or any(type(session) is not str for session in sessions):
+            _invalid(error)
+        try:
+            normalized = [_normalize_session(session) for session in sessions]
+        except SnapshotValidationError:
+            _invalid(error)
+        if any(session < pd.Timestamp(REQUESTED_LOWER_BOUND) or session.dayofweek >= 5 for session in normalized):
+            _invalid(error)
+        canonical = [session.strftime("%Y-%m-%d") for session in normalized]
+        if len(canonical) != len(set(canonical)):
+            _invalid(error)
+        coverage[symbol] = sorted(canonical)
+    return coverage
 
 
 def verify_tqqq_r1_snapshot(
@@ -348,15 +408,8 @@ def verify_tqqq_r1_snapshot(
     if "retrieval_receipt.json" in members:
         receipt = _parse_json_object(members["retrieval_receipt.json"], "retrieval receipt")
         identity = _source_identity_reference(manifest.get("source_identity"))
-        coverage = receipt.get("observed_coverage")
-        if type(coverage) is not dict or set(coverage) != set(SYMBOLS):
-            _invalid("invalid retrieval receipt")
-        if any(
-            type(sessions) is not list
-            or sessions != sorted(set(sessions))
-            or any(not _is_canonical_session(session) for session in sessions)
-            for sessions in coverage.values()
-        ):
+        coverage = _canonical_coverage(receipt.get("observed_coverage"), error="invalid retrieval receipt")
+        if coverage != receipt.get("observed_coverage"):
             _invalid("invalid retrieval receipt")
         common_sessions = sorted(set(coverage[SYMBOLS[0]]) & set(coverage[SYMBOLS[1]]))
         if common_sessions != prices["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
@@ -407,15 +460,7 @@ def materialize_tqqq_r1_snapshot(
         _invalid("source identity and observed coverage are required together")
     if source_identity is not None:
         source_identity = _source_identity_reference(source_identity)
-        if type(observed_coverage) is not dict or set(observed_coverage) != set(SYMBOLS):
-            _invalid("invalid observed coverage")
-        if any(
-            type(sessions) is not list
-            or sessions != sorted(set(sessions))
-            or any(not _is_canonical_session(session) for session in sessions)
-            for sessions in observed_coverage.values()
-        ):
-            _invalid("invalid observed coverage")
+        observed_coverage = _canonical_coverage(observed_coverage, error="invalid observed coverage")
         common_sessions = sorted(set(observed_coverage[SYMBOLS[0]]) & set(observed_coverage[SYMBOLS[1]]))
         if common_sessions != normalized["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
             _invalid("invalid observed coverage")

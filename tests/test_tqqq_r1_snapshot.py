@@ -45,16 +45,20 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
 
 def _source_identity_artifact(tmp_path: Path, *, snapshot_sha256: str | None = None) -> Path:
     artifact = tmp_path / "source-identity.json"
+    provenance = {
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit": "a" * 40,
+        "tree": "b" * 40,
+        "files": {
+            "tqqq_r1_snapshot.py": snapshot_sha256 or hashlib.sha256(Path(snapshot.__file__).read_bytes()).hexdigest(),
+            "yfinance_prices.py": hashlib.sha256(Path(yfinance_prices.__file__).read_bytes()).hexdigest(),
+        },
+    }
     _write_json(
         artifact,
         {
-            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
-            "commit": "a" * 40,
-            "tree": "b" * 40,
-            "files": {
-                "tqqq_r1_snapshot.py": snapshot_sha256 or hashlib.sha256(Path(snapshot.__file__).read_bytes()).hexdigest(),
-                "yfinance_prices.py": hashlib.sha256(Path(yfinance_prices.__file__).read_bytes()).hexdigest(),
-            },
+            **provenance,
+            "trusted_provenance": provenance,
         },
     )
     artifact.chmod(0o444)
@@ -317,3 +321,87 @@ def test_runner_rejects_partial_unclosed_raw_session_before_common_intersection(
             source_identity_path=identity,
             observed_at=datetime(2026, 7, 24, 19, tzinfo=timezone.utc),
         )
+
+
+def test_runner_maps_yfinance_adjusted_close_from_downloaded_close_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    downloaded = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2010-01-05"],
+        tqqq_sessions=["2010-01-04", "2010-01-05"],
+    ).rename(columns={"adjusted_close": "close"})
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: downloaded)
+
+    result = snapshot.run_tqqq_r1_snapshot(
+        tmp_path / "snapshot",
+        source_identity_path=identity,
+        observed_at=datetime(2026, 7, 24, 21, tzinfo=timezone.utc),
+    )
+
+    assert result.output_dir.is_dir()
+
+
+def test_runner_accepts_completed_nyse_early_close_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    raw_prices = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2026-11-27"],
+        tqqq_sessions=["2010-01-04", "2026-11-27"],
+    )
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: raw_prices)
+
+    result = snapshot.run_tqqq_r1_snapshot(
+        tmp_path / "snapshot",
+        source_identity_path=identity,
+        observed_at=datetime(2026, 11, 27, 18, 1, tzinfo=timezone.utc),
+    )
+
+    assert result.output_dir.is_dir()
+
+
+def test_materialize_rejects_impossible_non_common_coverage_date(tmp_path: Path) -> None:
+    identity_path = _source_identity_artifact(tmp_path)
+    identity = {
+        "artifact_sha256": hashlib.sha256(identity_path.read_bytes()).hexdigest(),
+        **json.loads(identity_path.read_text(encoding="utf-8")),
+    }
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="observed coverage"):
+        snapshot.materialize_tqqq_r1_snapshot(
+            _fixture_prices(),
+            tmp_path / "snapshot",
+            source_identity=identity,
+            observed_coverage={"QQQ": ["2010-01-04", "2010-01-05", "2026-99-99"], "TQQQ": ["2010-01-04", "2010-01-05"]},
+        )
+
+
+def test_materialize_canonicalizes_valid_coverage_dates(tmp_path: Path) -> None:
+    identity_path = _source_identity_artifact(tmp_path)
+    identity = {
+        "artifact_sha256": hashlib.sha256(identity_path.read_bytes()).hexdigest(),
+        **json.loads(identity_path.read_text(encoding="utf-8")),
+    }
+
+    result = snapshot.materialize_tqqq_r1_snapshot(
+        _fixture_prices(),
+        tmp_path / "snapshot",
+        source_identity=identity,
+        observed_coverage={"QQQ": ["2010-1-5", "2010-1-4"], "TQQQ": ["2010-1-5", "2010-1-4"]},
+    )
+
+    receipt = json.loads((result.output_dir / "retrieval_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["observed_coverage"] == {"QQQ": ["2010-01-04", "2010-01-05"], "TQQQ": ["2010-01-04", "2010-01-05"]}
+
+
+def test_runner_rejects_unattested_commit_and_tree_before_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    payload = json.loads(identity.read_text(encoding="utf-8"))
+    payload["commit"] = "c" * 40
+    payload["tree"] = "d" * 40
+    identity.chmod(0o644)
+    _write_json(identity, payload)
+    identity.chmod(0o444)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="source identity"):
+        snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot", source_identity_path=identity)
