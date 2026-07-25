@@ -23,6 +23,68 @@ def _fixture_prices() -> pd.DataFrame:
     )
 
 
+def _source_identity(calendar_sessions: list[str]) -> dict[str, object]:
+    calendar_sha256 = hashlib.sha256(
+        (json.dumps(calendar_sessions, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    return {
+        "route": "R1_STATIC_RESEARCH",
+        "provider": "external-control-plane-receipt",
+        "retrieval_library": "local-fixture",
+        "source_version": "fixture.v1",
+        "symbols": ["QQQ", "TQQQ"],
+        "price_field": "adjusted_close",
+        "adjustment": "split-and-dividend-adjusted",
+        "calendar_sha256": calendar_sha256,
+        "calendar_sessions": calendar_sessions,
+        "timezone": "America/New_York",
+        "coverage_start": calendar_sessions[0],
+        "coverage_end": calendar_sessions[-1],
+        "as_of": calendar_sessions[-1],
+        "payload_schema": "prices.csv.v1",
+        "sort_order": "session,symbol",
+        "missing_data_policy": "reject-missing-or-duplicate",
+    }
+
+
+SOURCE_IDENTITY = _source_identity(["2010-01-04", "2010-01-05"])
+
+
+def _external_manifest_sha256(prices: pd.DataFrame, source_identity: dict[str, object] = SOURCE_IDENTITY) -> str:
+    normalized = prices.loc[:, ["session", "symbol", "adjusted_close"]].copy()
+    normalized["session"] = pd.to_datetime(normalized["session"]).dt.strftime("%Y-%m-%d")
+    normalized = normalized.sort_values(["session", "symbol"], kind="stable")
+    prices_bytes = normalized.to_csv(index=False, lineterminator="\n", float_format="%.17g").encode()
+    manifest = {
+        "contract_version": "tqqq_r1_qqq_tqqq_immutable_snapshot.v3",
+        "symbols": ["QQQ", "TQQQ"],
+        "requested_lower_bound": "2010-01-01",
+        "price_field": "adjusted_close",
+        "plugin": "ABSENT_DISABLED",
+        "mode": "core_only",
+        "size": 0,
+        "row_count": len(normalized),
+        "prices_sha256": hashlib.sha256(prices_bytes).hexdigest(),
+        "source_identity": source_identity,
+    }
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n").hexdigest()
+
+
+def _materialize_v3(
+    prices: pd.DataFrame,
+    output_dir: Path,
+    *,
+    expected_manifest_sha256: str | None = None,
+    source_identity: dict[str, object] = SOURCE_IDENTITY,
+) -> snapshot.SnapshotResult:
+    return snapshot.materialize_tqqq_r1_snapshot(
+        prices,
+        output_dir,
+        expected_manifest_sha256=expected_manifest_sha256 or _external_manifest_sha256(prices, source_identity),
+        source_identity=source_identity,
+    )
+
+
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -40,6 +102,26 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
         },
     )
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def _refresh_v3_trusted_metadata(output_dir: Path) -> str:
+    manifest_path = output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["prices_sha256"] = hashlib.sha256((output_dir / "prices.csv").read_bytes()).hexdigest()
+    _write_json(manifest_path, manifest)
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    validation_path = output_dir / "validation.json"
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation["snapshot_id"] = f"sha256-{manifest_sha256}"
+    _write_json(validation_path, validation)
+    _write_json(
+        output_dir / "sha256sums.json",
+        {
+            name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+            for name in ("prices.csv", "manifest.json", "validation.json")
+        },
+    )
+    return manifest_sha256
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
@@ -62,7 +144,7 @@ def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) ->
         "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
     )
     assert snapshot.verify_tqqq_r1_snapshot(
-        result.output_dir, expected_manifest_sha256=result.manifest_sha256
+        result.output_dir, expected_manifest_sha256=result.manifest_sha256, allow_legacy=True
     ) == result
 
 
@@ -221,8 +303,10 @@ def test_verify_rejects_invalid_metadata_scalar_types(tmp_path: Path) -> None:
     output_dir = result.output_dir
     _write_json(output_dir / "validation.json", {"valid": 1, "row_count": 4.0, "symbols": ["QQQ", "TQQQ"]})
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="invalid validation"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid legacy snapshot"):
+        snapshot.verify_tqqq_r1_snapshot(
+            output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir), allow_legacy=True
+        )
 
 
 def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
@@ -232,3 +316,124 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_v3_materialize_binds_the_external_manifest_receipt_and_snapshot_id(tmp_path: Path) -> None:
+    expected_manifest_sha256 = _external_manifest_sha256(_fixture_prices())
+
+    result = _materialize_v3(
+        _fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=expected_manifest_sha256
+    )
+
+    assert result.manifest_sha256 == expected_manifest_sha256
+    assert result.snapshot_id == f"sha256-{expected_manifest_sha256}"
+    assert snapshot.verify_tqqq_r1_snapshot(
+        result.output_dir, expected_manifest_sha256=expected_manifest_sha256
+    ) == result
+
+
+def test_v3_materialize_rejects_a_nonmatching_external_manifest_receipt(tmp_path: Path) -> None:
+    with pytest.raises(snapshot.SnapshotValidationError, match="trusted manifest hash mismatch"):
+        _materialize_v3(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256="0" * 64)
+
+    assert not (tmp_path / "snapshot").exists()
+
+
+def test_legacy_materializer_call_and_manifest_sha256_remain_compatible(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "legacy")
+
+    assert result.manifest_sha256 == hashlib.sha256((result.output_dir / "manifest.json").read_bytes()).hexdigest()
+    assert result.snapshot_id is None
+    with pytest.raises(snapshot.SnapshotValidationError, match="legacy snapshot requires explicit opt-in"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+    assert snapshot.verify_tqqq_r1_snapshot(
+        result.output_dir, expected_manifest_sha256=result.manifest_sha256, allow_legacy=True
+    ) == result
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("route", "R2", "invalid R1 route"),
+        ("timezone", "UTC", "invalid R1 timezone"),
+        ("calendar_sha256", "a" * 63, "invalid R1 calendar digest"),
+        ("coverage_end", "2010-01-04", "R1 coverage identity does not match prices"),
+    ],
+)
+def test_v3_materialize_fails_closed_for_source_identity(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
+    source_identity = {**SOURCE_IDENTITY, field: value}
+
+    with pytest.raises(snapshot.SnapshotValidationError, match=message):
+        _materialize_v3(_fixture_prices(), tmp_path / "snapshot", source_identity=source_identity)
+
+
+def test_v3_verify_rejects_incomplete_referenced_calendar_coverage(tmp_path: Path) -> None:
+    prices = pd.concat(
+        [
+            _fixture_prices(),
+            pd.DataFrame(
+                [
+                    {"session": "2010-01-06", "symbol": "QQQ", "adjusted_close": 47.0},
+                    {"session": "2010-01-06", "symbol": "TQQQ", "adjusted_close": 11.5},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    source_identity = _source_identity(["2010-01-04", "2010-01-05", "2010-01-06"])
+    result = _materialize_v3(prices, tmp_path / "snapshot", source_identity=source_identity)
+    prices_path = result.output_dir / "prices.csv"
+    prices_path.write_text(
+        "\n".join(line for line in prices_path.read_text(encoding="utf-8").splitlines() if "2010-01-05" not in line)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="referenced calendar sessions"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=_refresh_v3_trusted_metadata(result.output_dir)
+        )
+
+
+def test_v3_verify_rejects_raw_csv_outside_declared_order(tmp_path: Path) -> None:
+    result = _materialize_v3(_fixture_prices(), tmp_path / "snapshot")
+    prices_path = result.output_dir / "prices.csv"
+    rows = prices_path.read_text(encoding="utf-8").splitlines()
+    prices_path.write_text("\n".join([rows[0], rows[2], rows[1], *rows[3:]]) + "\n", encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="declared sort order"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=_refresh_v3_trusted_metadata(result.output_dir)
+        )
+
+
+def test_v3_materialize_canonicalizes_unsorted_public_input_before_validation_and_write(tmp_path: Path) -> None:
+    prices = _fixture_prices()
+    source_identity = _source_identity(["2010-01-04", "2010-01-05"])
+
+    result = _materialize_v3(prices, tmp_path / "snapshot", source_identity=source_identity)
+
+    assert (result.output_dir / "prices.csv").read_text(encoding="utf-8").splitlines()[1:] == [
+        "2010-01-04,QQQ,45.25",
+        "2010-01-04,TQQQ,10.5",
+        "2010-01-05,QQQ,46",
+        "2010-01-05,TQQQ,11",
+    ]
+
+
+@pytest.mark.parametrize("contract_version", [["v3"], {"version": "v3"}], ids=["array", "object"])
+def test_v3_verify_rejects_nonscalar_contract_version_as_validation_error(
+    tmp_path: Path, contract_version: object
+) -> None:
+    result = _materialize_v3(_fixture_prices(), tmp_path / "snapshot")
+    manifest_path = result.output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["contract_version"] = contract_version
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unsupported contract version"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=_refresh_v3_trusted_metadata(result.output_dir)
+        )
