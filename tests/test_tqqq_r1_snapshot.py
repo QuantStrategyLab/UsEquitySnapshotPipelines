@@ -400,3 +400,87 @@ def test_endpoint_trusted_snapshot_rejects_existing_digest_directory_and_tampere
     _write_json(result.output_dir / "COMPLETE.json", {"schema": "qsl.tqqq.snapshot-completion.v1", "manifest_sha256": "0" * 64})
     with pytest.raises(snapshot.SnapshotValidationError, match="STRICT_READBACK_FAILED"):
         snapshot.verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=result.manifest_sha256)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param("manifest", id="fixed-manifest-field"),
+        pytest.param("prices", id="out-of-contract-prices"),
+    ],
+)
+def test_endpoint_trusted_verifier_rejects_self_consistent_out_of_contract_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    context = _write_trust_context(tmp_path)
+    output_root = tmp_path / "private"
+    output_root.mkdir(mode=0o700)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2010, 2, 11, 22, tzinfo=timezone.utc))
+    prices = pd.DataFrame(
+        [
+            {"session": "2010-01-04", "symbol": "QQQ", "adjusted_close": 45.0},
+            {"session": "2010-02-11", "symbol": "QQQ", "adjusted_close": 46.0},
+            {"session": "2010-02-11", "symbol": "TQQQ", "adjusted_close": 10.0},
+        ]
+    )
+    result = snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(
+        prices,
+        output_root,
+        calendar_path=context["calendar"],
+        endpoint_packet_path=context["endpoint"],
+        runtime_anchor_path=context["runtime"],
+        expected_calendar_sha256=context["calendar_sha256"],
+        expected_endpoint_packet_sha256=context["endpoint_sha256"],
+        expected_runtime_source_identity_sha256=context["runtime_sha256"],
+    )
+    manifest_path = result.output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "manifest":
+        manifest["price_field"] = "close"
+    else:
+        (result.output_dir / "prices.csv").write_text(
+            "session,symbol,adjusted_close\n2010-01-04,QQQ,45\n2010-02-11,QQQ,46\n2010-02-11,QQQ,10\n",
+            encoding="utf-8",
+        )
+        manifest["prices_sha256"] = hashlib.sha256((result.output_dir / "prices.csv").read_bytes()).hexdigest()
+    _write_json(manifest_path, manifest)
+    replacement_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    replacement_dir = output_root / f"sha256-{replacement_sha256}"
+    result.output_dir.rename(replacement_dir)
+    _write_json(replacement_dir / "COMPLETE.json", {"schema": "qsl.tqqq.snapshot-completion.v1", "manifest_sha256": replacement_sha256})
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="STRICT_READBACK_FAILED"):
+        snapshot.verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=replacement_sha256)
+
+
+def test_endpoint_trusted_snapshot_cleans_failed_publication_for_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _write_trust_context(tmp_path)
+    output_root = tmp_path / "private"
+    output_root.mkdir(mode=0o700)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2010, 2, 11, 22, tzinfo=timezone.utc))
+    prices = pd.DataFrame(
+        [
+            {"session": "2010-01-04", "symbol": "QQQ", "adjusted_close": 45.0},
+            {"session": "2010-02-11", "symbol": "QQQ", "adjusted_close": 46.0},
+            {"session": "2010-02-11", "symbol": "TQQQ", "adjusted_close": 10.0},
+        ]
+    )
+    kwargs = {
+        "calendar_path": context["calendar"], "endpoint_packet_path": context["endpoint"], "runtime_anchor_path": context["runtime"],
+        "expected_calendar_sha256": context["calendar_sha256"], "expected_endpoint_packet_sha256": context["endpoint_sha256"],
+        "expected_runtime_source_identity_sha256": context["runtime_sha256"],
+    }
+    original_write = snapshot._write_new_member
+
+    def fail_manifest(directory_fd: int, name: str, raw: bytes) -> None:
+        if name == "manifest.json":
+            raise snapshot.SnapshotValidationError("injected publication failure")
+        original_write(directory_fd, name, raw)
+
+    monkeypatch.setattr(snapshot, "_write_new_member", fail_manifest)
+    with pytest.raises(snapshot.SnapshotValidationError, match="injected publication failure"):
+        snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(prices, output_root, **kwargs)
+    assert list(output_root.iterdir()) == []
+
+    monkeypatch.setattr(snapshot, "_write_new_member", original_write)
+    assert snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(prices, output_root, **kwargs).output_dir.is_dir()

@@ -523,6 +523,78 @@ def _read_member(directory_fd: int, name: str, *, limit: int) -> bytes:
         os.close(fd)
 
 
+def _remove_incomplete_package(root_fd: int, name: str, identity: tuple[int, int]) -> None:
+    """Best-effort cleanup limited to the directory this invocation created."""
+    try:
+        current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+            return
+        directory_fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=root_fd)
+        try:
+            members = tuple(os.listdir(directory_fd))
+            if any(member not in _TRUSTED_OUTPUT_FILENAMES for member in members):
+                return
+            for member in members:
+                info = os.stat(member, dir_fd=directory_fd, follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    return
+            for member in members:
+                os.unlink(member, dir_fd=directory_fd)
+        finally:
+            os.close(directory_fd)
+        os.rmdir(name, dir_fd=root_fd)
+    except OSError:
+        return
+
+
+def _validate_persisted_snapshot(manifest: dict[str, Any], prices_raw: bytes) -> None:
+    fixed = {
+        "schema": _TRUSTED_MANIFEST_SCHEMA,
+        "contract_version": _TRUSTED_CONTRACT_VERSION,
+        "symbols": list(SYMBOLS),
+        "requested_lower_bound": REQUESTED_LOWER_BOUND,
+        "qqq_first_session": _QQQ_FIRST_SESSION,
+        "tqqq_first_usable_session": _TQQQ_FIRST_USABLE_SESSION,
+        "price_field": PRICE_FIELD,
+        "mode": MODE,
+        "plugin": PLUGIN,
+        "size": 0,
+    }
+    if any(manifest.get(key) != value or type(manifest.get(key)) is not type(value) for key, value in fixed.items()):
+        _invalid("STRICT_READBACK_FAILED")
+    if (
+        type(manifest.get("row_count")) is not int
+        or type(manifest.get("completed_session_count")) is not int
+        or manifest["row_count"] <= 0
+        or manifest["completed_session_count"] <= 0
+        or not _is_canonical_session(manifest.get("required_last_completed_session"))
+    ):
+        _invalid("STRICT_READBACK_FAILED")
+    try:
+        prices = pd.read_csv(BytesIO(prices_raw))
+        normalized = _normalized_prices(
+            prices,
+            require_exact_columns=True,
+            require_canonical_symbols=True,
+            require_canonical_sessions=True,
+            require_session_symbol_pairs=False,
+        )
+    except (SnapshotValidationError, UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as exc:
+        raise SnapshotValidationError("STRICT_READBACK_FAILED") from exc
+    qqq_sessions = normalized.loc[normalized["symbol"].eq("QQQ"), "session"].dt.strftime("%Y-%m-%d").tolist()
+    tqqq_sessions = normalized.loc[normalized["symbol"].eq("TQQQ"), "session"].dt.strftime("%Y-%m-%d").tolist()
+    if (
+        len(normalized) != manifest["row_count"]
+        or len(qqq_sessions) != manifest["completed_session_count"]
+        or not qqq_sessions
+        or qqq_sessions[0] != _QQQ_FIRST_SESSION
+        or qqq_sessions[-1] != manifest["required_last_completed_session"]
+        or not tqqq_sessions
+        or any(session < _TQQQ_FIRST_USABLE_SESSION or session not in qqq_sessions for session in tqqq_sessions)
+    ):
+        _invalid("STRICT_READBACK_FAILED")
+
+
 def _validate_endpoint(raw: bytes, calendar: list[dict[str, object]], calendar_sha256: str, runtime_sha256: str) -> tuple[list[str], str]:
     packet = _parse_exact_object(raw, "CALENDAR_ENDPOINT_PACKET_INVALID")
     keys = {
@@ -603,6 +675,7 @@ def materialize_tqqq_calendar_endpoint_trusted_snapshot(
     manifest_sha256 = _digest_bytes(manifest_bytes)
     root_fd, root_info = _open_private_root(output_root)
     package_name = f"sha256-{manifest_sha256}"
+    package_identity: tuple[int, int] | None = None
     try:
         try:
             os.mkdir(package_name, mode=0o700, dir_fd=root_fd)
@@ -615,6 +688,7 @@ def materialize_tqqq_calendar_endpoint_trusted_snapshot(
             package_info = os.fstat(package_fd)
             if not stat.S_ISDIR(package_info.st_mode) or package_info.st_uid != os.getuid() or stat.S_IMODE(package_info.st_mode) != 0o700:
                 _invalid("IMMUTABLE_CREATE_CONFLICT")
+            package_identity = (package_info.st_dev, package_info.st_ino)
             _write_new_member(package_fd, "prices.csv", prices_bytes)
             _write_new_member(package_fd, "manifest.json", manifest_bytes)
             if (
@@ -629,9 +703,13 @@ def materialize_tqqq_calendar_endpoint_trusted_snapshot(
             os.close(package_fd)
         if os.fstat(root_fd).st_ino != root_info.st_ino or os.fstat(root_fd).st_dev != root_info.st_dev:
             _invalid("IMMUTABLE_CREATE_CONFLICT")
+        return verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=manifest_sha256)
+    except Exception:
+        if package_identity is not None:
+            _remove_incomplete_package(root_fd, package_name, package_identity)
+        raise
     finally:
         os.close(root_fd)
-    return verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=manifest_sha256)
 
 
 def verify_tqqq_calendar_endpoint_trusted_snapshot(output_root: str | Path, *, expected_manifest_sha256: object) -> SnapshotResult:
@@ -665,16 +743,9 @@ def verify_tqqq_calendar_endpoint_trusted_snapshot(output_root: str | Path, *, e
         _invalid("STRICT_READBACK_FAILED")
     if complete != {"schema": _TRUSTED_COMPLETE_SCHEMA, "manifest_sha256": expected_manifest_sha256}:
         _invalid("STRICT_READBACK_FAILED")
-    if manifest.get("symbols") != list(SYMBOLS) or manifest.get("mode") != MODE or manifest.get("plugin") != PLUGIN or manifest.get("size") != 0:
-        _invalid("STRICT_READBACK_FAILED")
     if not all(_is_hex(manifest.get(key), 64) for key in ("prices_sha256", "calendar_evidence_sha256", "runtime_anchor_sha256", "endpoint_packet_sha256")):
         _invalid("STRICT_READBACK_FAILED")
     if manifest["prices_sha256"] != _digest_bytes(members["prices.csv"]):
         _invalid("STRICT_READBACK_FAILED")
-    try:
-        prices = pd.read_csv(BytesIO(members["prices.csv"]))
-        if type(manifest["row_count"]) is not int or type(manifest["completed_session_count"]) is not int or len(prices) != manifest["row_count"]:
-            _invalid("STRICT_READBACK_FAILED")
-    except (UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as exc:
-        raise SnapshotValidationError("STRICT_READBACK_FAILED") from exc
+    _validate_persisted_snapshot(manifest, members["prices.csv"])
     return SnapshotResult(output_dir=Path(output_root) / package_name, manifest_sha256=expected_manifest_sha256)
