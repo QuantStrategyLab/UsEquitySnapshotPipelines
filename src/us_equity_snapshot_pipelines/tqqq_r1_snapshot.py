@@ -399,8 +399,17 @@ def _trusted_readback_matches(output_dir: Path, member_hashes: dict[str, str]) -
         return False
 
 
-def _trusted_result(output_dir: Path) -> SnapshotResult:
-    return SnapshotResult(output_dir=output_dir, manifest_sha256=_sha256(output_dir / "trust.json"))
+def _trusted_output_digest(members: dict[str, bytes]) -> str:
+    digest = hashlib.sha256(b"qsl.tqqq.fixture-trusted-output.v1\0")
+    for name in _TRUSTED_OUTPUT_FILENAMES:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(members[name])
+    return digest.hexdigest()
+
+
+def _trusted_result(output_dir: Path, output_digest: str) -> SnapshotResult:
+    return SnapshotResult(output_dir=output_dir, manifest_sha256=output_digest)
 
 
 def verify_tqqq_calendar_endpoint_trusted_snapshot(
@@ -409,6 +418,7 @@ def verify_tqqq_calendar_endpoint_trusted_snapshot(
     expected_calendar_sha256: object,
     expected_endpoint_packet_sha256: object,
     expected_runtime_source_identity_sha256: object,
+    expected_output_sha256: object,
 ) -> SnapshotResult:
     expected_digests = {
         "calendar_sha256": expected_calendar_sha256,
@@ -417,6 +427,8 @@ def verify_tqqq_calendar_endpoint_trusted_snapshot(
     }
     if not all(_is_sha256(value) for value in expected_digests.values()):
         _invalid("CALENDAR_ENDPOINT_AUTHORITY_MISSING")
+    if not _is_sha256(expected_output_sha256):
+        _invalid("STRICT_READBACK_FAILED")
     output = Path(output_dir)
     if output.is_symlink() or not output.is_dir():
         _invalid("STRICT_READBACK_FAILED")
@@ -428,6 +440,8 @@ def verify_tqqq_calendar_endpoint_trusted_snapshot(
     if names != _TRUSTED_OUTPUT_FILENAMES or any((output / name).is_symlink() for name in _TRUSTED_OUTPUT_FILENAMES):
         _invalid("STRICT_READBACK_FAILED")
     member_hashes = {name: _digest(raw) for name, raw in members.items()}
+    if _trusted_output_digest(members) != expected_output_sha256:
+        _invalid("STRICT_READBACK_FAILED")
     sums = _parse_json_object(members["sha256sums.json"], "trusted sha256sums")
     trust = _parse_json_object(members["trust.json"], "trusted snapshot")
     if sums != {"prices.csv": member_hashes["prices.csv"], "trust.json": member_hashes["trust.json"]}:
@@ -452,7 +466,7 @@ def verify_tqqq_calendar_endpoint_trusted_snapshot(
     _trusted_prices(prices, expected_sessions)
     if not _trusted_readback_matches(output, member_hashes):
         _invalid("STRICT_READBACK_FAILED")
-    return _trusted_result(output)
+    return _trusted_result(output, expected_output_sha256)
 
 
 def materialize_tqqq_calendar_endpoint_trusted_snapshot(
@@ -529,7 +543,17 @@ def materialize_tqqq_calendar_endpoint_trusted_snapshot(
     endpoint_observed = _parse_utc(endpoint["endpoint_observed_at_utc"], "CALENDAR_SCHEMA_INVALID")
     last_close = _parse_utc(endpoint["required_last_completed_close_utc"], "CALENDAR_SCHEMA_INVALID")
     next_close = _parse_utc(endpoint["next_session_close_utc"], "CALENDAR_SCHEMA_INVALID")
-    if endpoint_observed > observation_time or last_close > observation_time or observation_time >= next_close:
+    next_session = endpoint["next_session"]
+    if (
+        not _is_canonical_session(next_session)
+        or next_session <= sessions[-1]
+        or next_close.date().isoformat() != next_session
+        or endpoint_observed < last_close
+        or endpoint_observed >= next_close
+        or endpoint_observed > observation_time
+        or last_close > observation_time
+        or observation_time >= next_close
+    ):
         _invalid("CALENDAR_ENDPOINT_STALE_AT_OBSERVATION")
     expected_sessions = {
         "QQQ": sessions,
@@ -557,11 +581,14 @@ def materialize_tqqq_calendar_endpoint_trusted_snapshot(
             temporary / "sha256sums.json",
             {name: _sha256(temporary / name) for name in ("prices.csv", "trust.json")},
         )
+        members = {name: (temporary / name).read_bytes() for name in _TRUSTED_OUTPUT_FILENAMES}
+        output_digest = _trusted_output_digest(members)
         result = verify_tqqq_calendar_endpoint_trusted_snapshot(
             temporary,
             expected_calendar_sha256=expected_calendar_sha256,
             expected_endpoint_packet_sha256=expected_endpoint_packet_sha256,
             expected_runtime_source_identity_sha256=expected_runtime_source_identity_sha256,
+            expected_output_sha256=output_digest,
         )
         os.replace(temporary, destination)
         return SnapshotResult(output_dir=destination, manifest_sha256=result.manifest_sha256)

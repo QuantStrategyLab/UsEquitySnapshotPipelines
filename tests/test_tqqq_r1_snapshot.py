@@ -431,6 +431,7 @@ def test_trusted_fixture_consumer_uses_private_utc_clock_and_exact_sessions(tmp_
         expected_calendar_sha256=inputs["expected_calendar_sha256"],
         expected_endpoint_packet_sha256=inputs["expected_endpoint_packet_sha256"],
         expected_runtime_source_identity_sha256=inputs["expected_runtime_source_identity_sha256"],
+        expected_output_sha256=result.manifest_sha256,
     ) == result
 
 
@@ -448,4 +449,64 @@ def test_trusted_fixture_consumer_rejects_tampered_persisted_readback(
             expected_calendar_sha256=inputs["expected_calendar_sha256"],
             expected_endpoint_packet_sha256=inputs["expected_endpoint_packet_sha256"],
             expected_runtime_source_identity_sha256=inputs["expected_runtime_source_identity_sha256"],
+            expected_output_sha256=result.manifest_sha256,
         )
+
+
+def test_trusted_fixture_consumer_rejects_rehashed_persisted_output_without_external_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _trusted_fixture_inputs(tmp_path)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc))
+    result = _trusted_materialize(tmp_path, inputs)
+    output = result.output_dir
+    (output / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        "2010-01-04,QQQ,99\n"
+        "2010-02-11,QQQ,44\n"
+        "2010-02-11,TQQQ,10.5\n"
+        "2026-07-24,QQQ,500\n"
+        "2026-07-24,TQQQ,80\n",
+        encoding="utf-8",
+    )
+    trust = json.loads((output / "trust.json").read_text(encoding="utf-8"))
+    trust["prices_sha256"] = _sha256_bytes((output / "prices.csv").read_bytes())
+    _write_json(output / "trust.json", trust)
+    _write_json(
+        output / "sha256sums.json",
+        {
+            "prices.csv": _sha256_bytes((output / "prices.csv").read_bytes()),
+            "trust.json": _sha256_bytes((output / "trust.json").read_bytes()),
+        },
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="STRICT_READBACK_FAILED"):
+        snapshot.verify_tqqq_calendar_endpoint_trusted_snapshot(
+            output,
+            expected_calendar_sha256=inputs["expected_calendar_sha256"],
+            expected_endpoint_packet_sha256=inputs["expected_endpoint_packet_sha256"],
+            expected_runtime_source_identity_sha256=inputs["expected_runtime_source_identity_sha256"],
+            expected_output_sha256=result.manifest_sha256,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("endpoint_observed_at_utc", "2026-07-24T19:00:00Z"),
+        ("next_session", "2026-07-28"),
+    ],
+)
+def test_trusted_fixture_consumer_rejects_invalid_endpoint_freshness_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: str
+) -> None:
+    inputs = _trusted_fixture_inputs(tmp_path)
+    endpoint = Path(inputs["endpoint_packet_path"])
+    payload = json.loads(endpoint.read_text(encoding="utf-8"))
+    payload[field] = value
+    _write_json(endpoint, payload)
+    inputs["expected_endpoint_packet_sha256"] = _sha256_bytes(endpoint.read_bytes())
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="CALENDAR_ENDPOINT_STALE_AT_OBSERVATION"):
+        _trusted_materialize(tmp_path, inputs)
