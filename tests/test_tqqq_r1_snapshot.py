@@ -14,9 +14,9 @@ from us_equity_snapshot_pipelines import tqqq_r1_snapshot as snapshot
 
 
 _FIXTURE_SOURCE_IDENTITY = (
-    b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"77094cf8354bcde8f97955a74f26b943d8e606b6290ff9eaf679bff30ef0161c","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
+    b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"dada6964e127539cd5403e655729b56d3824998063da06f2437357c859f1e97c","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
 )
-_FIXTURE_SOURCE_IDENTITY_SHA256 = "3504652ab5c70670ad52e750fee65c8fd3b3b41cfc60b6d7b5ef3647cf2a59ee"
+_FIXTURE_SOURCE_IDENTITY_SHA256 = "b3510283bd3676c81745b0e05737198549d73eeb69f8880dced5c2bbaaf613e1"
 _EXECUTED_FILE_MISMATCH_SOURCE_IDENTITY = (
     b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"0000000000000000000000000000000000000000000000000000000000000000","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
 )
@@ -26,9 +26,12 @@ _EXECUTED_FILE_MISMATCH_SOURCE_IDENTITY_SHA256 = (
 _FIXTURE_XNYS_CALENDAR = (
     b'{"close_utc":"2010-01-04T21:00:00Z","early_close":false,"open_utc":"2010-01-04T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-04"}\n'
     b'{"close_utc":"2010-01-05T21:00:00Z","early_close":false,"open_utc":"2010-01-05T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-05"}\n'
+    b'{"close_utc":"2010-02-10T21:00:00Z","early_close":false,"open_utc":"2010-02-10T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-02-10"}\n'
+    b'{"close_utc":"2010-02-11T21:00:00Z","early_close":false,"open_utc":"2010-02-11T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-02-11"}\n'
+    b'{"close_utc":"2010-02-12T21:00:00Z","early_close":false,"open_utc":"2010-02-12T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-02-12"}\n'
     b'{"close_utc":"2026-07-24T20:00:00Z","early_close":false,"open_utc":"2026-07-24T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2026-07-24"}\n'
 )
-_FIXTURE_XNYS_CALENDAR_SHA256 = "71f36e50f2fff906681b47d0d2f219d317993e967c12cbe2be5a034c126e8aa0"
+_FIXTURE_XNYS_CALENDAR_SHA256 = "7a77ac65791677d282f11e2a67e4ca5f5d9c0b2541eaed4753b9534950f66002"
 _MISMATCHED_XNYS_CALENDAR = (
     b'{"close_utc":"2010-01-04T21:00:00Z","early_close":false,"open_utc":"2010-01-04T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-04"}\n'
     b'{"close_utc":"2010-01-05T21:00:00Z","early_close":false,"open_utc":"2010-01-05T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-05"}\n'
@@ -44,6 +47,14 @@ _RETRIEVAL_ANCHOR_ARGUMENTS = (
     "calendar_path",
     "expected_calendar_sha256",
 )
+_QQQ_FIXTURE_SESSIONS = (
+    "2010-01-04",
+    "2010-01-05",
+    "2010-02-10",
+    "2010-02-11",
+    "2010-02-12",
+)
+_TQQQ_FIXTURE_SESSIONS = ("2010-02-10", "2010-02-11", "2010-02-12")
 
 
 def _fixture_prices() -> pd.DataFrame:
@@ -91,14 +102,23 @@ def _write_external_anchor_fixtures(
     return source_identity, calendar
 
 
-def _fixture_downloaded_prices(*, extra_session: str | None = None) -> pd.DataFrame:
-    sessions = ["2010-01-04", "2010-01-05"]
+def _fixture_downloaded_prices(
+    *,
+    qqq_sessions: tuple[str, ...] = _QQQ_FIXTURE_SESSIONS,
+    tqqq_sessions: tuple[str, ...] = _TQQQ_FIXTURE_SESSIONS,
+    extra_session: str | None = None,
+) -> pd.DataFrame:
+    sessions_by_symbol = {
+        "QQQ": [*qqq_sessions],
+        "TQQQ": [*tqqq_sessions],
+    }
     if extra_session is not None:
-        sessions.append(extra_session)
+        sessions_by_symbol["QQQ"].append(extra_session)
+        sessions_by_symbol["TQQQ"].append(extra_session)
     return pd.DataFrame(
         [
             {"as_of": session, "symbol": symbol, "adjusted_close": 10.0}
-            for symbol in ("QQQ", "TQQQ")
+            for symbol, sessions in sessions_by_symbol.items()
             for session in sessions
         ]
     )
@@ -329,7 +349,7 @@ def test_runner_materializes_anchored_output_from_private_download_path(
     monkeypatch.setattr(
         snapshot,
         "_utc_now",
-        lambda: datetime(2026, 7, 24, 21, tzinfo=timezone.utc),
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
         raising=False,
     )
     monkeypatch.setattr(
@@ -354,7 +374,7 @@ def test_runner_materializes_anchored_output_from_private_download_path(
     assert receipt["calendar"]["coverage"] == {
         "first_session": "2010-01-04",
         "last_session": "2026-07-24",
-        "session_count": 3,
+        "session_count": 6,
     }
     assert (result.output_dir / "retrieval_receipt.json").is_file()
     assert snapshot.verify_tqqq_r1_snapshot(
@@ -538,6 +558,215 @@ def test_runner_rejects_session_future_relative_to_private_clock(
     )
 
     with pytest.raises(snapshot.SnapshotValidationError, match="future observed session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_missing_first_qqq_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: _fixture_downloaded_prices(
+            qqq_sessions=_QQQ_FIXTURE_SESSIONS[1:],
+        ),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="QQQ.*closed XNYS coverage"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_tqqq_post_inception_internal_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: _fixture_downloaded_prices(
+            tqqq_sessions=("2010-02-10", "2010-02-12"),
+        ),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="TQQQ.*closed XNYS coverage"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_trailing_truncated_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: _fixture_downloaded_prices(
+            qqq_sessions=_QQQ_FIXTURE_SESSIONS[:-1],
+            tqqq_sessions=_TQQQ_FIXTURE_SESSIONS[:-1],
+        ),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="closed XNYS coverage"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_raw_close_instead_of_adjusted_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    raw_close = _fixture_downloaded_prices().rename(columns={"adjusted_close": "close"})
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: raw_close,
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_tqqq_pre_inception_extra_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: _fixture_downloaded_prices(
+            tqqq_sessions=("2010-01-05", *_TQQQ_FIXTURE_SESSIONS),
+        ),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="TQQQ.*closed XNYS coverage"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_duplicate_symbol_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    prices = _fixture_downloaded_prices()
+    duplicate = prices.loc[
+        prices["symbol"].eq("TQQQ") & prices["as_of"].eq("2010-02-10")
+    ]
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        snapshot,
+        "_download_price_history",
+        lambda *_args, **_kwargs: pd.concat([prices, duplicate], ignore_index=True),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_conflicting_close_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    prices = _fixture_downloaded_prices().assign(close=1.0)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(snapshot, "_download_price_history", lambda *_args, **_kwargs: prices)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_duplicate_adjusted_close_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    prices = _fixture_downloaded_prices()
+    prices = pd.concat([prices, prices[["adjusted_close"]]], axis=1)
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(snapshot, "_download_price_history", lambda *_args, **_kwargs: prices)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
         snapshot.run_tqqq_r1_snapshot(
             tmp_path / "snapshot",
             source_identity_path=source_identity,

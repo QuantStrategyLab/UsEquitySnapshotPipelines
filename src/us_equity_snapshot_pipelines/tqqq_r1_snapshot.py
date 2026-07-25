@@ -26,6 +26,7 @@ CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
 RETRIEVAL_CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v3"
 SYMBOLS = ("QQQ", "TQQQ")
 REQUESTED_LOWER_BOUND = "2010-01-01"
+TQQQ_FIRST_TRADING_DAY = "2010-02-10"
 PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
@@ -380,14 +381,11 @@ def _load_external_xnys_calendar(
 def _normalized_observed_prices(prices: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("downloaded prices must be a DataFrame")
-    price_column = PRICE_FIELD if PRICE_FIELD in prices.columns else "close"
-    required = ("as_of", "symbol", price_column)
-    if any(list(prices.columns).count(column) != 1 for column in required):
-        _invalid("downloaded prices require exact columns")
-    if price_column == "close" and list(prices.columns).count(PRICE_FIELD):
-        _invalid("downloaded prices require one price column")
+    required = ("as_of", "symbol", PRICE_FIELD)
+    if any(list(prices.columns).count(column) != 1 for column in required) or "close" in prices.columns:
+        _invalid("downloaded prices require exact adjusted_close")
     observed = prices.loc[:, list(required)].rename(
-        columns={"as_of": "session", price_column: PRICE_FIELD}
+        columns={"as_of": "session"}
     ).copy()
     if not observed["symbol"].map(lambda value: type(value) is str and value in SYMBOLS).all():
         _invalid("downloaded prices contain noncanonical symbol")
@@ -428,6 +426,20 @@ def _require_xnys_sessions(
             _invalid("future observed session")
         if session == current_date and observed_utc < closes[session]:
             _invalid("unclosed trading session")
+
+    qqq_sessions = tuple(session for session in closes if session >= pd.Timestamp(REQUESTED_LOWER_BOUND))
+    tqqq_start = pd.Timestamp(TQQQ_FIRST_TRADING_DAY)
+    if not qqq_sessions or tqqq_start not in closes:
+        _invalid("XNYS calendar does not cover required symbol start sessions")
+    closed_sessions = tuple(session for session, close in closes.items() if close <= observed_utc)
+    expected_by_symbol = {
+        "QQQ": tuple(session for session in closed_sessions if session >= qqq_sessions[0]),
+        "TQQQ": tuple(session for session in closed_sessions if session >= tqqq_start),
+    }
+    for symbol, expected in expected_by_symbol.items():
+        observed = tuple(prices.loc[prices["symbol"].eq(symbol), "session"])
+        if observed != expected:
+            _invalid(f"{symbol} observed sessions do not match exact closed XNYS coverage")
 
 
 def _observed_coverage(prices: pd.DataFrame) -> dict[str, list[str]]:
