@@ -363,3 +363,93 @@ def test_e4_validation_uses_private_clock_seam_without_public_clock_override(mon
             successor_close_utc="2026-07-27T20:00:00Z",
             e3_digest="b" * 64,
         )
+
+
+def _calendar_bound_inputs(tmp_path: Path) -> tuple[Path, str, pd.DataFrame]:
+    sessions = pd.bdate_range("2010-01-04", periods=4165)
+    calendar = tmp_path / "calendar.ndjson"
+    calendar.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "schema": snapshot.CALENDAR_SCHEMA,
+                    "session_date": session.strftime("%Y-%m-%d"),
+                    "open_utc": f"{session:%Y-%m-%d}T13:30:00Z",
+                    "close_utc": f"{session:%Y-%m-%d}T20:00:00Z",
+                    "early_close": False,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+            for session in sessions
+        ),
+        encoding="utf-8",
+    )
+    prices = pd.DataFrame(
+        [
+            {"session": session.strftime("%Y-%m-%d"), "symbol": symbol, "adjusted_close": 1.0}
+            for session in sessions[:-1]
+            for symbol in ("QQQ", "TQQQ")
+            if symbol == "QQQ" or session.strftime("%Y-%m-%d") >= snapshot.TQQQ_FIRST_USABLE_SESSION
+        ]
+    )
+    return calendar, hashlib.sha256(calendar.read_bytes()).hexdigest(), prices
+
+
+def test_calendar_bound_manifest_immutably_binds_calendar_digest_and_successor(tmp_path: Path) -> None:
+    calendar, digest, prices = _calendar_bound_inputs(tmp_path)
+    result = snapshot.materialize_tqqq_r1_snapshot(
+        prices, tmp_path / "published", calendar_path=calendar, expected_calendar_sha256=digest
+    )
+    manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
+    rows = [json.loads(line) for line in calendar.read_text(encoding="utf-8").splitlines()]
+    assert manifest["calendar_sha256"] == digest
+    assert manifest["completed_last_session"] == rows[-2]["session_date"]
+    assert manifest["successor_session"] == rows[-1]["session_date"]
+
+
+def test_calendar_validation_accepts_holiday_successor_gap(tmp_path: Path) -> None:
+    calendar, digest, _ = _calendar_bound_inputs(tmp_path)
+    rows = [json.loads(line) for line in calendar.read_text(encoding="utf-8").splitlines()]
+    rows[-1]["session_date"] = "2026-01-01"
+    rows[-1]["open_utc"] = "2026-01-01T13:30:00Z"
+    rows[-1]["close_utc"] = "2026-01-01T20:00:00Z"
+    calendar.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    snapshot._validated_calendar(calendar, hashlib.sha256(calendar.read_bytes()).hexdigest())
+
+
+def test_calendar_bound_publication_rejects_symlink_root_and_cleans_owned_final_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calendar, digest, prices = _calendar_bound_inputs(tmp_path)
+    redirect = tmp_path / "redirect"
+    redirect.mkdir()
+    root_link = tmp_path / "root-link"
+    root_link.symlink_to(redirect, target_is_directory=True)
+    with pytest.raises(snapshot.SnapshotValidationError, match="root symlink"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, root_link, calendar_path=calendar, expected_calendar_sha256=digest)
+    root = tmp_path / "published"
+    real_open = snapshot.os.open
+    failures = 0
+
+    def fail_twice(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777, **kwargs: object) -> int:
+        nonlocal failures
+        if flags & os.O_EXCL and failures < 2:
+            failures += 1
+            raise OSError("simulated write failure")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(snapshot.os, "open", fail_twice)
+    with pytest.raises(snapshot.SnapshotValidationError, match="publication failed"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, root, calendar_path=calendar, expected_calendar_sha256=digest)
+    assert tuple(root.iterdir()) == ()
+
+
+def test_calendar_bound_publication_fsyncs_destination_and_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar, digest, prices = _calendar_bound_inputs(tmp_path)
+    calls: list[Path] = []
+    monkeypatch.setattr(snapshot, "_fsync_directory", lambda path: calls.append(Path(path)))
+    result = snapshot.materialize_tqqq_r1_snapshot(
+        prices, tmp_path / "published", calendar_path=calendar, expected_calendar_sha256=digest
+    )
+    assert calls == [tmp_path, result.output_dir, tmp_path / "published"]

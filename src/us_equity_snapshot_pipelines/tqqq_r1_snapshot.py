@@ -120,7 +120,7 @@ def _read_calendar_bytes(path: str | Path, *, expected_sha256: str) -> bytes:
     return raw
 
 
-def _validated_calendar(path: str | Path, expected_sha256: str) -> tuple[tuple[str, ...], str]:
+def _validated_calendar(path: str | Path, expected_sha256: str) -> tuple[tuple[str, ...], str, str]:
     raw = _read_calendar_bytes(path, expected_sha256=expected_sha256)
     try:
         rows = [_parse_json_object(line, "calendar row") for line in raw.splitlines()]
@@ -145,10 +145,7 @@ def _validated_calendar(path: str | Path, expected_sha256: str) -> tuple[tuple[s
         dates.append(row["session_date"])
     if dates != sorted(dates) or len(set(dates)) != len(dates):
         _invalid("calendar rows are missing, duplicate, extra, or out of order")
-    successor = dates[-1]
-    if (pd.Timestamp(successor) - pd.Timestamp(dates[-2])).days not in (1, 3):
-        _invalid("calendar successor is not adjacent")
-    return tuple(dates[:-1]), successor
+    return tuple(dates[:-1]), dates[-1], rows[-1]["close_utc"]
 
 
 def _require_calendar_coverage(prices: pd.DataFrame, completed_dates: tuple[str, ...]) -> None:
@@ -346,16 +343,25 @@ def verify_tqqq_r1_snapshot(
         "row_count": len(prices),
         "prices_sha256": member_hashes["prices.csv"],
     }
+    if (calendar_path is None) != (expected_calendar_sha256 is None):
+        _invalid("calendar path and expected hash must be supplied together")
+    if calendar_path is not None:
+        completed_dates, successor_session, successor_close_utc = _validated_calendar(calendar_path, expected_calendar_sha256)
+        _require_calendar_coverage(prices, completed_dates)
+        expected_manifest.update(
+            {
+                "calendar_sha256": expected_calendar_sha256,
+                "completed_last_session": completed_dates[-1],
+                "successor_session": successor_session,
+                "successor_close_utc": successor_close_utc,
+            }
+        )
     if not _has_exact_type(manifest, expected_manifest):
         _invalid("invalid manifest")
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    if (calendar_path is None) != (expected_calendar_sha256 is None):
-        _invalid("calendar path and expected hash must be supplied together")
     if calendar_path is not None:
-        completed_dates, _ = _validated_calendar(calendar_path, expected_calendar_sha256)
-        _require_calendar_coverage(prices, completed_dates)
         if output.name != expected_manifest_sha256 or members["COMPLETE"] != f"{expected_manifest_sha256}\n".encode("ascii"):
             _invalid("invalid immutable completion marker")
     return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
@@ -367,6 +373,14 @@ def _write_exclusive(path: Path, payload: bytes) -> None:
         view = memoryview(payload)
         while view:
             view = view[os.write(fd, view) :]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -394,9 +408,20 @@ def _materialize_calendar_bound(
     *,
     calendar_path: str | Path,
     expected_calendar_sha256: str,
+    completed_dates: tuple[str, ...],
+    successor_session: str,
+    successor_close_utc: str,
 ) -> SnapshotResult:
     """Publish calendar-bound bytes through a digest-addressed exclusive directory."""
     output_root.parent.mkdir(parents=True, exist_ok=True)
+    if output_root.is_symlink():
+        _invalid("calendar-bound output root symlink is not allowed")
+    if output_root.exists():
+        if not output_root.is_dir():
+            _invalid("calendar-bound output root must be a directory")
+    else:
+        os.mkdir(output_root, 0o700)
+        _fsync_directory(output_root.parent)
     staging = Path(tempfile.mkdtemp(prefix=".tqqq-r1-staging.", dir=output_root.parent))
     try:
         _write_prices(staging / "prices.csv", prices)
@@ -411,6 +436,10 @@ def _materialize_calendar_bound(
             "size": 0,
             "row_count": len(prices),
             "prices_sha256": _sha256(staging / "prices.csv"),
+            "calendar_sha256": expected_calendar_sha256,
+            "completed_last_session": completed_dates[-1],
+            "successor_session": successor_session,
+            "successor_close_utc": successor_close_utc,
         }
         _write_json(staging / "manifest.json", manifest)
         _write_json(staging / "sha256sums.json", {name: _sha256(staging / name) for name in OUTPUT_FILENAMES if name != "sha256sums.json"})
@@ -431,6 +460,8 @@ def _materialize_calendar_bound(
             for name in OUTPUT_FILENAMES:
                 _write_exclusive(destination / name, payloads[name])
             _write_exclusive(destination / "COMPLETE", f"{manifest_sha256}\n".encode("ascii"))
+            _fsync_directory(destination)
+            _fsync_directory(output_root)
             result = verify_tqqq_r1_snapshot(destination, expected_manifest_sha256=manifest_sha256, calendar_path=calendar_path, expected_calendar_sha256=expected_calendar_sha256)
             current = os.lstat(destination)
             if (current.st_dev, current.st_ino) != identity:
@@ -439,6 +470,7 @@ def _materialize_calendar_bound(
         except OSError as exc:
             if attempt == 0 and _owned_directory_cleanup(destination, identity):
                 continue
+            _owned_directory_cleanup(destination, identity)
             raise SnapshotValidationError("immutable publication failed") from exc
         except Exception:
             _owned_directory_cleanup(destination, identity)
@@ -467,13 +499,16 @@ def materialize_tqqq_r1_snapshot(
     if (calendar_path is None) != (expected_calendar_sha256 is None):
         _invalid("calendar path and expected hash must be supplied together")
     if calendar_path is not None:
-        completed_dates, _ = _validated_calendar(calendar_path, expected_calendar_sha256)
+        completed_dates, successor_session, successor_close_utc = _validated_calendar(calendar_path, expected_calendar_sha256)
         _require_calendar_coverage(normalized, completed_dates)
         return _materialize_calendar_bound(
             normalized,
             Path(output_dir),
             calendar_path=calendar_path,
             expected_calendar_sha256=expected_calendar_sha256,
+            completed_dates=completed_dates,
+            successor_session=successor_session,
+            successor_close_utc=successor_close_utc,
         )
     destination = Path(output_dir)
     if destination.exists() or destination.is_symlink():
