@@ -294,7 +294,8 @@ def _nyse_early_close(session: date) -> time | None:
     if session == thanksgiving + timedelta(days=1):
         return time(13)
     independence_day = date(session.year, 7, 4)
-    if independence_day.weekday() < 5 and session == independence_day - timedelta(days=1):
+    independence_early_close = independence_day - timedelta(days=2 if independence_day.weekday() >= 5 else 1)
+    if session == independence_early_close:
         return time(13)
     christmas = date(session.year, 12, 25)
     if christmas.weekday() != 5 and session == christmas - timedelta(days=1) and session.weekday() < 5:
@@ -311,6 +312,8 @@ def _reject_unclosed_trading_session(prices: pd.DataFrame, *, observed_at: datet
         _invalid("observed_at must be timezone-aware")
     new_york = observed_at.astimezone(_NEW_YORK)
     current_date = new_york.date()
+    if (prices["session"] > pd.Timestamp(current_date)).any():
+        _invalid("future observed session")
     if current_date.weekday() < 5 and new_york.time() < _nyse_session_close(current_date):
         current_session = pd.Timestamp(current_date)
         if prices["session"].eq(current_session).any():

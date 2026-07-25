@@ -405,3 +405,40 @@ def test_runner_rejects_unattested_commit_and_tree_before_download(tmp_path: Pat
 
     with pytest.raises(snapshot.SnapshotValidationError, match="source identity"):
         snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot", source_identity_path=identity)
+
+
+def test_runner_rejects_future_weekday_session_before_common_intersection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    raw_prices = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2026-07-27"],
+        tqqq_sessions=["2010-01-04", "2026-07-27"],
+    )
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: raw_prices)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="future observed session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=identity,
+            observed_at=datetime(2026, 7, 24, 21, tzinfo=timezone.utc),
+        )
+
+
+def test_runner_accepts_completed_nyse_saturday_observed_independence_day_early_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _source_identity_artifact(tmp_path)
+    raw_prices = _raw_downloaded_prices(
+        qqq_sessions=["2010-01-04", "2026-07-02"],
+        tqqq_sessions=["2010-01-04", "2026-07-02"],
+    )
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: raw_prices)
+
+    result = snapshot.run_tqqq_r1_snapshot(
+        tmp_path / "snapshot",
+        source_identity_path=identity,
+        observed_at=datetime(2026, 7, 2, 18, 1, tzinfo=timezone.utc),
+    )
+
+    assert result.output_dir.is_dir()
