@@ -232,3 +232,171 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def _write_trust_context(tmp_path: Path) -> dict[str, object]:
+    calendar = tmp_path / "calendar.ndjson"
+    calendar.write_text(
+        "\n".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":"))
+            for row in (
+                {
+                    "schema": "qsl.r1.xnys.session.v1",
+                    "session_date": "2010-01-04",
+                    "open_utc": "2010-01-04T14:30:00Z",
+                    "close_utc": "2010-01-04T21:00:00Z",
+                    "early_close": False,
+                },
+                {
+                    "schema": "qsl.r1.xnys.session.v1",
+                    "session_date": "2010-02-11",
+                    "open_utc": "2010-02-11T14:30:00Z",
+                    "close_utc": "2010-02-11T21:00:00Z",
+                    "early_close": False,
+                },
+                {
+                    "schema": "qsl.r1.xnys.session.v1",
+                    "session_date": "2010-02-12",
+                    "open_utc": "2010-02-12T14:30:00Z",
+                    "close_utc": "2010-02-12T21:00:00Z",
+                    "early_close": False,
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime-anchor.json"
+    source_files = {
+        "src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py": Path(snapshot.__file__),
+        "src/us_equity_snapshot_pipelines/yfinance_prices.py": Path(snapshot.__file__).with_name("yfinance_prices.py"),
+    }
+    _write_json(
+        runtime,
+        {
+            "schema": "qsl.tqqq.runtime-source-anchor.v1",
+            "repo": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "ref": "refs/heads/main",
+            "commit": "a" * 40,
+            "parent": "b" * 40,
+            "tree": "c" * 40,
+            "verified_at_utc": "2010-02-11T21:30:00Z",
+            "files": {
+                name: {"git_blob_sha1": "d" * 40, "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "size_bytes": path.stat().st_size}
+                for name, path in source_files.items()
+            },
+            "authority_event_id": "00000000-0000-4000-8000-000000000001",
+        },
+    )
+    calendar_sha256 = hashlib.sha256(calendar.read_bytes()).hexdigest()
+    runtime_sha256 = hashlib.sha256(runtime.read_bytes()).hexdigest()
+    endpoint = tmp_path / "endpoint.json"
+    _write_json(
+        endpoint,
+        {
+            "schema": "qsl.tqqq.calendar-endpoint-packet.v1",
+            "venue": "XNYS",
+            "calendar_request_floor": "2010-01-01",
+            "required_first_session": "2010-01-04",
+            "required_last_completed_session": "2010-02-11",
+            "required_last_completed_close_utc": "2010-02-11T21:00:00Z",
+            "next_session": "2010-02-12",
+            "next_session_close_utc": "2010-02-12T21:00:00Z",
+            "endpoint_observed_at_utc": "2010-02-11T21:30:00Z",
+            "completed_session_count": 2,
+            "calendar_evidence_session_count": 3,
+            "calendar_evidence_sha256": calendar_sha256,
+            "runtime_anchor_sha256": runtime_sha256,
+            "authority_event_id": "00000000-0000-4000-8000-000000000001",
+        },
+    )
+    return {
+        "calendar": calendar,
+        "endpoint": endpoint,
+        "runtime": runtime,
+        "calendar_sha256": calendar_sha256,
+        "endpoint_sha256": hashlib.sha256(endpoint.read_bytes()).hexdigest(),
+        "runtime_sha256": runtime_sha256,
+    }
+
+
+def test_endpoint_trusted_snapshot_uses_real_schemas_and_digest_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _write_trust_context(tmp_path)
+    output_root = tmp_path / "private"
+    output_root.mkdir(mode=0o700)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2010, 2, 11, 22, tzinfo=timezone.utc))
+    prices = pd.DataFrame(
+        [
+            {"session": "2010-02-11", "symbol": "TQQQ", "adjusted_close": 10.0},
+            {"session": "2010-01-04", "symbol": "QQQ", "adjusted_close": 45.0},
+            {"session": "2010-02-11", "symbol": "QQQ", "adjusted_close": 46.0},
+        ]
+    )
+
+    result = snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(
+        prices,
+        output_root,
+        calendar_path=context["calendar"],
+        endpoint_packet_path=context["endpoint"],
+        runtime_anchor_path=context["runtime"],
+        expected_calendar_sha256=context["calendar_sha256"],
+        expected_endpoint_packet_sha256=context["endpoint_sha256"],
+        expected_runtime_source_identity_sha256=context["runtime_sha256"],
+    )
+
+    assert result.output_dir.name == f"sha256-{result.manifest_sha256}"
+    assert {path.name for path in result.output_dir.iterdir()} == {"prices.csv", "manifest.json", "COMPLETE.json"}
+    assert snapshot.verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=result.manifest_sha256) == result
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "fifo"])
+def test_endpoint_trusted_snapshot_rejects_unsafe_calendar_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    context = _write_trust_context(tmp_path)
+    calendar = context["calendar"]
+    replacement = tmp_path / f"{kind}-calendar"
+    if kind == "symlink":
+        replacement.symlink_to(calendar)
+    elif kind == "hardlink":
+        replacement.hardlink_to(calendar)
+    else:
+        import os
+
+        os.mkfifo(replacement)
+    output_root = tmp_path / "private"
+    output_root.mkdir(mode=0o700)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2010, 2, 11, 22, tzinfo=timezone.utc))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="CALENDAR_SCHEMA_INVALID"):
+        snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(
+            _fixture_prices(), output_root, calendar_path=replacement, endpoint_packet_path=context["endpoint"], runtime_anchor_path=context["runtime"],
+            expected_calendar_sha256=context["calendar_sha256"], expected_endpoint_packet_sha256=context["endpoint_sha256"],
+            expected_runtime_source_identity_sha256=context["runtime_sha256"],
+        )
+
+
+def test_endpoint_trusted_snapshot_rejects_existing_digest_directory_and_tampered_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _write_trust_context(tmp_path)
+    output_root = tmp_path / "private"
+    output_root.mkdir(mode=0o700)
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2010, 2, 11, 22, tzinfo=timezone.utc))
+    prices = pd.DataFrame(
+        [
+            {"session": "2010-01-04", "symbol": "QQQ", "adjusted_close": 45.0},
+            {"session": "2010-02-11", "symbol": "QQQ", "adjusted_close": 46.0},
+            {"session": "2010-02-11", "symbol": "TQQQ", "adjusted_close": 10.0},
+        ]
+    )
+    kwargs = {
+        "calendar_path": context["calendar"], "endpoint_packet_path": context["endpoint"], "runtime_anchor_path": context["runtime"],
+        "expected_calendar_sha256": context["calendar_sha256"], "expected_endpoint_packet_sha256": context["endpoint_sha256"],
+        "expected_runtime_source_identity_sha256": context["runtime_sha256"],
+    }
+    result = snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(prices, output_root, **kwargs)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="IMMUTABLE_CREATE_CONFLICT"):
+        snapshot.materialize_tqqq_calendar_endpoint_trusted_snapshot(prices, output_root, **kwargs)
+    _write_json(result.output_dir / "COMPLETE.json", {"schema": "qsl.tqqq.snapshot-completion.v1", "manifest_sha256": "0" * 64})
+    with pytest.raises(snapshot.SnapshotValidationError, match="STRICT_READBACK_FAILED"):
+        snapshot.verify_tqqq_calendar_endpoint_trusted_snapshot(output_root, expected_manifest_sha256=result.manifest_sha256)
