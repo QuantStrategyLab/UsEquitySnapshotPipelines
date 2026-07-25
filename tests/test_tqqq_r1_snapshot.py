@@ -14,9 +14,9 @@ from us_equity_snapshot_pipelines import tqqq_r1_snapshot as snapshot
 
 
 _FIXTURE_SOURCE_IDENTITY = (
-    b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"dada6964e127539cd5403e655729b56d3824998063da06f2437357c859f1e97c","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
+    b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"b3bdd32f2688c05b754602a8a257540d81357d86e37d9420ccd93e208744ca45","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
 )
-_FIXTURE_SOURCE_IDENTITY_SHA256 = "b3510283bd3676c81745b0e05737198549d73eeb69f8880dced5c2bbaaf613e1"
+_FIXTURE_SOURCE_IDENTITY_SHA256 = "e589fda6bfcc891415703ac5b69b80b68f038a754ea7fb2b551c4b055897e8aa"
 _EXECUTED_FILE_MISMATCH_SOURCE_IDENTITY = (
     b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"0000000000000000000000000000000000000000000000000000000000000000","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
 )
@@ -54,7 +54,7 @@ _QQQ_FIXTURE_SESSIONS = (
     "2010-02-11",
     "2010-02-12",
 )
-_TQQQ_FIXTURE_SESSIONS = ("2010-02-10", "2010-02-11", "2010-02-12")
+_TQQQ_FIXTURE_SESSIONS = ("2010-02-11", "2010-02-12")
 
 
 def _fixture_prices() -> pd.DataFrame:
@@ -117,10 +117,19 @@ def _fixture_downloaded_prices(
         sessions_by_symbol["TQQQ"].append(extra_session)
     return pd.DataFrame(
         [
-            {"as_of": session, "symbol": symbol, "adjusted_close": 10.0}
+            {
+                "symbol": symbol,
+                "as_of": session,
+                "open": 10.0,
+                "high": 10.0,
+                "low": 10.0,
+                "close": 10.0,
+                "volume": 1_000.0,
+            }
             for symbol, sessions in sessions_by_symbol.items()
             for session in sessions
-        ]
+        ],
+        columns=snapshot.yfinance_prices.PRICE_HISTORY_COLUMNS,
     )
 
 
@@ -346,6 +355,14 @@ def test_runner_materializes_anchored_output_from_private_download_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    download_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def canonical_adjusted_download(
+        symbols: list[str], **kwargs: object
+    ) -> pd.DataFrame:
+        download_calls.append((symbols, kwargs))
+        return _fixture_downloaded_prices()
+
     monkeypatch.setattr(
         snapshot,
         "_utc_now",
@@ -355,7 +372,7 @@ def test_runner_materializes_anchored_output_from_private_download_path(
     monkeypatch.setattr(
         snapshot,
         "_download_price_history",
-        lambda *_args, **_kwargs: _fixture_downloaded_prices(),
+        canonical_adjusted_download,
         raising=False,
     )
 
@@ -370,12 +387,21 @@ def test_runner_materializes_anchored_output_from_private_download_path(
     manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
     receipt = json.loads((result.output_dir / "retrieval_receipt.json").read_text(encoding="utf-8"))
     assert manifest["source_identity"]["artifact_sha256"] == _FIXTURE_SOURCE_IDENTITY_SHA256
+    assert manifest["source_identity"]["files"][
+        "src/us_equity_snapshot_pipelines/yfinance_prices.py"
+    ] == "d409c9dfe1548797e4e4d4ba304c310d18fd08260d0e9fa5f025c2a78b849323"
     assert receipt["calendar"]["artifact_sha256"] == _FIXTURE_XNYS_CALENDAR_SHA256
     assert receipt["calendar"]["coverage"] == {
         "first_session": "2010-01-04",
         "last_session": "2026-07-24",
         "session_count": 6,
     }
+    assert download_calls == [
+        (
+            ["QQQ", "TQQQ"],
+            {"start": "2010-01-01", "price_field": "adjusted_close"},
+        )
+    ]
     assert (result.output_dir / "retrieval_receipt.json").is_file()
     assert snapshot.verify_tqqq_r1_snapshot(
         result.output_dir,
@@ -594,7 +620,7 @@ def test_runner_rejects_missing_first_qqq_session(
         )
 
 
-def test_runner_rejects_tqqq_post_inception_internal_gap(
+def test_runner_rejects_missing_tqqq_first_usable_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
@@ -607,7 +633,7 @@ def test_runner_rejects_tqqq_post_inception_internal_gap(
         snapshot,
         "_download_price_history",
         lambda *_args, **_kwargs: _fixture_downloaded_prices(
-            tqqq_sessions=("2010-02-10", "2010-02-12"),
+            tqqq_sessions=("2010-02-12",),
         ),
     )
 
@@ -621,8 +647,19 @@ def test_runner_rejects_tqqq_post_inception_internal_gap(
         )
 
 
+@pytest.mark.parametrize(
+    ("qqq_sessions", "tqqq_sessions", "symbol"),
+    [
+        (_QQQ_FIXTURE_SESSIONS[:-1], _TQQQ_FIXTURE_SESSIONS, "QQQ"),
+        (_QQQ_FIXTURE_SESSIONS, _TQQQ_FIXTURE_SESSIONS[:-1], "TQQQ"),
+    ],
+)
 def test_runner_rejects_trailing_truncated_response(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qqq_sessions: tuple[str, ...],
+    tqqq_sessions: tuple[str, ...],
+    symbol: str,
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
     monkeypatch.setattr(
@@ -634,12 +671,15 @@ def test_runner_rejects_trailing_truncated_response(
         snapshot,
         "_download_price_history",
         lambda *_args, **_kwargs: _fixture_downloaded_prices(
-            qqq_sessions=_QQQ_FIXTURE_SESSIONS[:-1],
-            tqqq_sessions=_TQQQ_FIXTURE_SESSIONS[:-1],
+            qqq_sessions=qqq_sessions,
+            tqqq_sessions=tqqq_sessions,
         ),
     )
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="closed XNYS coverage"):
+    with pytest.raises(
+        snapshot.SnapshotValidationError,
+        match=rf"{symbol}.*closed XNYS coverage",
+    ):
         snapshot.run_tqqq_r1_snapshot(
             tmp_path / "snapshot",
             source_identity_path=source_identity,
@@ -649,33 +689,14 @@ def test_runner_rejects_trailing_truncated_response(
         )
 
 
-def test_runner_rejects_raw_close_instead_of_adjusted_close(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
-    raw_close = _fixture_downloaded_prices().rename(columns={"adjusted_close": "close"})
-    monkeypatch.setattr(
-        snapshot,
-        "_utc_now",
-        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
-    )
-    monkeypatch.setattr(
-        snapshot,
-        "_download_price_history",
-        lambda *_args, **_kwargs: raw_close,
-    )
+def test_public_materializer_rejects_raw_close(tmp_path: Path) -> None:
+    raw_close = _fixture_prices().rename(columns={"adjusted_close": "close"})
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
-        snapshot.run_tqqq_r1_snapshot(
-            tmp_path / "snapshot",
-            source_identity_path=source_identity,
-            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
-            calendar_path=calendar,
-            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
-        )
+    with pytest.raises(snapshot.SnapshotValidationError, match="required columns"):
+        snapshot.materialize_tqqq_r1_snapshot(raw_close, tmp_path / "snapshot")
 
 
-def test_runner_rejects_tqqq_pre_inception_extra_session(
+def test_runner_rejects_tqqq_pre_usable_route_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
@@ -688,7 +709,7 @@ def test_runner_rejects_tqqq_pre_inception_extra_session(
         snapshot,
         "_download_price_history",
         lambda *_args, **_kwargs: _fixture_downloaded_prices(
-            tqqq_sessions=("2010-01-05", *_TQQQ_FIXTURE_SESSIONS),
+            tqqq_sessions=("2010-02-10", *_TQQQ_FIXTURE_SESSIONS),
         ),
     )
 
@@ -708,7 +729,7 @@ def test_runner_rejects_duplicate_symbol_session(
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
     prices = _fixture_downloaded_prices()
     duplicate = prices.loc[
-        prices["symbol"].eq("TQQQ") & prices["as_of"].eq("2010-02-10")
+        prices["symbol"].eq("TQQQ") & prices["as_of"].eq("2010-02-11")
     ]
     monkeypatch.setattr(
         snapshot,
@@ -731,11 +752,11 @@ def test_runner_rejects_duplicate_symbol_session(
         )
 
 
-def test_runner_rejects_conflicting_close_column(
+def test_runner_rejects_conflicting_adjusted_close_column(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
-    prices = _fixture_downloaded_prices().assign(close=1.0)
+    prices = _fixture_downloaded_prices().assign(adjusted_close=1.0)
     monkeypatch.setattr(
         snapshot,
         "_utc_now",
@@ -743,7 +764,7 @@ def test_runner_rejects_conflicting_close_column(
     )
     monkeypatch.setattr(snapshot, "_download_price_history", lambda *_args, **_kwargs: prices)
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
+    with pytest.raises(snapshot.SnapshotValidationError, match="canonical adjusted download schema"):
         snapshot.run_tqqq_r1_snapshot(
             tmp_path / "snapshot",
             source_identity_path=source_identity,
@@ -753,12 +774,12 @@ def test_runner_rejects_conflicting_close_column(
         )
 
 
-def test_runner_rejects_duplicate_adjusted_close_column(
+def test_runner_rejects_duplicate_close_column(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
     prices = _fixture_downloaded_prices()
-    prices = pd.concat([prices, prices[["adjusted_close"]]], axis=1)
+    prices = pd.concat([prices, prices[["close"]]], axis=1)
     monkeypatch.setattr(
         snapshot,
         "_utc_now",
@@ -766,7 +787,7 @@ def test_runner_rejects_duplicate_adjusted_close_column(
     )
     monkeypatch.setattr(snapshot, "_download_price_history", lambda *_args, **_kwargs: prices)
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="exact adjusted_close"):
+    with pytest.raises(snapshot.SnapshotValidationError, match="canonical adjusted download schema"):
         snapshot.run_tqqq_r1_snapshot(
             tmp_path / "snapshot",
             source_identity_path=source_identity,
@@ -774,3 +795,30 @@ def test_runner_rejects_duplicate_adjusted_close_column(
             calendar_path=calendar,
             expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
         )
+
+
+def test_runner_rejects_noncanonical_adjusted_download_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    prices = _fixture_downloaded_prices().drop(columns=["volume"])
+    monkeypatch.setattr(
+        snapshot,
+        "_utc_now",
+        lambda: datetime(2010, 2, 12, 22, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(snapshot, "_download_price_history", lambda *_args, **_kwargs: prices)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="canonical adjusted download schema"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_tqqq_route_distinguishes_product_fact_from_first_usable_session() -> None:
+    assert snapshot.TQQQ_FIRST_TRADING_DAY == "2010-02-10"
+    assert snapshot.TQQQ_FIRST_USABLE_SESSION == "2010-02-11"

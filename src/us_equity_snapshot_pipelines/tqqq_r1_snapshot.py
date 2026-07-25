@@ -27,6 +27,7 @@ RETRIEVAL_CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v3"
 SYMBOLS = ("QQQ", "TQQQ")
 REQUESTED_LOWER_BOUND = "2010-01-01"
 TQQQ_FIRST_TRADING_DAY = "2010-02-10"
+TQQQ_FIRST_USABLE_SESSION = "2010-02-11"
 PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
@@ -409,6 +410,22 @@ def _normalized_observed_prices(prices: pd.DataFrame) -> pd.DataFrame:
     return observed.sort_values(["session", "symbol"], kind="stable").reset_index(drop=True)
 
 
+def _adapt_pinned_adjusted_download(prices: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(prices, pd.DataFrame):
+        _invalid("downloaded prices must use canonical adjusted download schema")
+    columns = list(prices.columns)
+    if (
+        columns != list(yfinance_prices.PRICE_HISTORY_COLUMNS)
+        or columns.count("close") != 1
+        or columns.count(PRICE_FIELD) != 0
+        or len(columns) != len(set(columns))
+    ):
+        _invalid("downloaded prices must use canonical adjusted download schema")
+    return prices.loc[:, ["as_of", "symbol", "close"]].rename(
+        columns={"close": PRICE_FIELD}
+    )
+
+
 def _require_xnys_sessions(
     prices: pd.DataFrame,
     closes: dict[pd.Timestamp, datetime],
@@ -428,7 +445,7 @@ def _require_xnys_sessions(
             _invalid("unclosed trading session")
 
     qqq_sessions = tuple(session for session in closes if session >= pd.Timestamp(REQUESTED_LOWER_BOUND))
-    tqqq_start = pd.Timestamp(TQQQ_FIRST_TRADING_DAY)
+    tqqq_start = pd.Timestamp(TQQQ_FIRST_USABLE_SESSION)
     if not qqq_sessions or tqqq_start not in closes:
         _invalid("XNYS calendar does not cover required symbol start sessions")
     closed_sessions = tuple(session for session, close in closes.items() if close <= observed_utc)
@@ -719,10 +736,12 @@ def run_tqqq_r1_snapshot(
     )
     observation_time = _utc_now()
     observed = _normalized_observed_prices(
-        _download_price_history(
-            list(SYMBOLS),
-            start=REQUESTED_LOWER_BOUND,
-            price_field=PRICE_FIELD,
+        _adapt_pinned_adjusted_download(
+            _download_price_history(
+                list(SYMBOLS),
+                start=REQUESTED_LOWER_BOUND,
+                price_field=PRICE_FIELD,
+            )
         )
     )
     _require_xnys_sessions(observed, calendar.closes, observed_at=observation_time)
