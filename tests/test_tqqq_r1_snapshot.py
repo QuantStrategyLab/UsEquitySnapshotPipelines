@@ -10,6 +10,19 @@ import pandas as pd
 import pytest
 
 from us_equity_snapshot_pipelines import tqqq_r1_snapshot as snapshot
+from us_equity_snapshot_pipelines import yfinance_prices
+
+
+_FIXTURE_SOURCE_IDENTITY = (
+    b'{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","files":{"src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py":{"content_sha256":"6e718635b05352ee98ee205eac73289e35d22b2ae735821aee3bcac844a90f33","git_blob_sha1":"dddddddddddddddddddddddddddddddddddddddd"},"src/us_equity_snapshot_pipelines/yfinance_prices.py":{"content_sha256":"849b731e0f6bd17283bb01f598463934fbcf6eab68d82cd02b03091538a1b3b8","git_blob_sha1":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"parent":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ref":"refs/heads/main","repo":"QuantStrategyLab/UsEquitySnapshotPipelines","schema":"qsl.r1.uesp.source-identity-anchor.v1","tree":"cccccccccccccccccccccccccccccccccccccccc","verification":{"allowlisted_reads":0,"source":"fixture","writes":0}}\n'
+)
+_FIXTURE_SOURCE_IDENTITY_SHA256 = "2260dceb6a0df674ddc8e63b2144ff1c9234d5f712fbb56b2599cd9cc9f344be"
+_FIXTURE_XNYS_CALENDAR = (
+    b'{"close_utc":"2010-01-04T21:00:00Z","early_close":false,"open_utc":"2010-01-04T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-04"}\n'
+    b'{"close_utc":"2010-01-05T21:00:00Z","early_close":false,"open_utc":"2010-01-05T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-05"}\n'
+    b'{"close_utc":"2026-07-24T20:00:00Z","early_close":false,"open_utc":"2026-07-24T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2026-07-24"}\n'
+)
+_FIXTURE_XNYS_CALENDAR_SHA256 = "71f36e50f2fff906681b47d0d2f219d317993e967c12cbe2be5a034c126e8aa0"
 
 
 def _fixture_prices() -> pd.DataFrame:
@@ -40,6 +53,40 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
         },
     )
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def _write_external_anchor_fixtures(tmp_path: Path) -> tuple[Path, Path]:
+    source_identity = tmp_path / "source-identity.json"
+    calendar = tmp_path / "xnys-sessions.ndjson"
+    source_identity.write_bytes(_FIXTURE_SOURCE_IDENTITY)
+    calendar.write_bytes(_FIXTURE_XNYS_CALENDAR)
+    source_identity.chmod(0o444)
+    calendar.chmod(0o444)
+    return source_identity, calendar
+
+
+def _fixture_downloaded_prices(*, extra_qqq_session: str | None = None) -> pd.DataFrame:
+    qqq_sessions = ["2010-01-04", "2010-01-05"]
+    if extra_qqq_session is not None:
+        qqq_sessions.append(extra_qqq_session)
+    return pd.DataFrame(
+        [
+            {"as_of": session, "symbol": symbol, "adjusted_close": 10.0}
+            for symbol, sessions in (("QQQ", qqq_sessions), ("TQQQ", ["2010-01-04", "2010-01-05"]))
+            for session in sessions
+        ]
+    )
+
+
+def _install_fixture_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    snapshot_path = installed / "tqqq_r1_snapshot.py"
+    yfinance_path = installed / "yfinance_prices.py"
+    snapshot_path.write_bytes(b"fixture-tqqq\n")
+    yfinance_path.write_bytes(b"fixture-yfinance\n")
+    monkeypatch.setattr(snapshot, "__file__", str(snapshot_path))
+    monkeypatch.setattr(yfinance_prices, "__file__", str(yfinance_path))
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
@@ -232,3 +279,93 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_runner_consumes_external_source_and_xnys_calendar_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: _fixture_downloaded_prices())
+
+    result = snapshot.run_tqqq_r1_snapshot(
+        tmp_path / "snapshot",
+        source_identity_path=source_identity,
+        expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+        calendar_path=calendar,
+        expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        observed_at=datetime(2026, 7, 24, 21, tzinfo=timezone.utc),
+    )
+
+    manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
+    receipt = json.loads((result.output_dir / "retrieval_receipt.json").read_text(encoding="utf-8"))
+    assert manifest["source_identity"]["artifact_sha256"] == _FIXTURE_SOURCE_IDENTITY_SHA256
+    assert receipt["calendar"]["artifact_sha256"] == _FIXTURE_XNYS_CALENDAR_SHA256
+    assert receipt["calendar"]["coverage"] == {
+        "first_session": "2010-01-04",
+        "last_session": "2026-07-24",
+        "session_count": 3,
+    }
+    assert snapshot.verify_tqqq_r1_snapshot(
+        result.output_dir,
+        expected_manifest_sha256=result.manifest_sha256,
+        expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+        expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+    ) == result
+
+
+def test_runner_rejects_wrong_external_source_anchor_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="source identity digest mismatch"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256="0" * 64,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_installed_source_file_mismatch_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    Path(snapshot.__file__).write_bytes(b"different-installed-source\n")
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="executed-file mismatch"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+        )
+
+
+def test_runner_rejects_observed_xnys_holiday_not_in_external_calendar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        snapshot,
+        "download_price_history",
+        lambda *_args, **_kwargs: _fixture_downloaded_prices(extra_qqq_session="2026-12-25"),
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="outside XNYS calendar"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
+            observed_at=datetime(2026, 12, 25, 21, tzinfo=timezone.utc),
+        )
