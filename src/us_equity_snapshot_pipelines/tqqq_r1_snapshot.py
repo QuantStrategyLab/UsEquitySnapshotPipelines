@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,10 @@ OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sum
 
 class SnapshotValidationError(ValueError):
     """Raised when a snapshot cannot satisfy the immutable local contract."""
+
+    recommendation = None
+    size_zero_required = True
+    side_effects = {"provider": 0, "replay": 0, "order": 0}
 
 
 @dataclass(frozen=True)
@@ -285,3 +290,281 @@ def materialize_tqqq_r1_snapshot(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return SnapshotResult(output_dir=destination, manifest_sha256=manifest_sha256)
+
+
+_TRUSTED_OUTPUT_FILENAMES = ("prices.csv", "sha256sums.json", "trust.json")
+_CALENDAR_SCHEMA = "qsl.r1.xnys.session.v1"
+_ENDPOINT_SCHEMA = "qsl.tqqq.fixture-calendar-endpoint-packet.v1"
+_RUNTIME_SCHEMA = "qsl.tqqq.fixture-runtime-source-identity.v1"
+_TRUST_SCHEMA = "qsl.tqqq.fixture-trusted-snapshot.v1"
+_QQQ_FIRST_SESSION = "2010-01-04"
+_TQQQ_FIRST_USABLE_SESSION = "2010-02-11"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _read_trusted_bytes(path: object) -> bytes:
+    if not isinstance(path, (str, Path)):
+        _invalid("CALENDAR_ENDPOINT_AUTHORITY_MISSING")
+    target = Path(path)
+    if target.is_symlink():
+        _invalid("CALENDAR_ENDPOINT_AUTHORITY_MISSING")
+    try:
+        return target.read_bytes()
+    except OSError as exc:
+        raise SnapshotValidationError("CALENDAR_ENDPOINT_AUTHORITY_MISSING") from exc
+
+
+def _parse_utc(value: object, status: str) -> datetime:
+    if type(value) is not str:
+        _invalid(status)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SnapshotValidationError(status) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        _invalid(status)
+    return parsed.astimezone(timezone.utc)
+
+
+def _trusted_calendar(raw: bytes) -> list[dict[str, object]]:
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise SnapshotValidationError("CALENDAR_SCHEMA_INVALID") from exc
+    if not lines:
+        _invalid("CALENDAR_SCHEMA_INVALID")
+    sessions: list[dict[str, object]] = []
+    previous = ""
+    for line in lines:
+        entry = _parse_json_object(line.encode("utf-8"), "calendar")
+        if set(entry) != {"schema", "session", "open_utc", "close_utc"} or entry["schema"] != _CALENDAR_SCHEMA:
+            _invalid("CALENDAR_SCHEMA_INVALID")
+        session = entry["session"]
+        if type(session) is not str or len(session) != 10:
+            _invalid("CALENDAR_SCHEMA_INVALID")
+        try:
+            parsed_session = pd.Timestamp(session)
+        except ValueError as exc:
+            raise SnapshotValidationError("CALENDAR_SCHEMA_INVALID") from exc
+        if parsed_session.strftime("%Y-%m-%d") != session or session <= previous:
+            _invalid("CALENDAR_SCHEMA_INVALID")
+        opened = _parse_utc(entry["open_utc"], "CALENDAR_SCHEMA_INVALID")
+        closed = _parse_utc(entry["close_utc"], "CALENDAR_SCHEMA_INVALID")
+        if opened >= closed or closed.date().isoformat() != session:
+            _invalid("CALENDAR_SCHEMA_INVALID")
+        sessions.append(entry)
+        previous = session
+    return sessions
+
+
+def _trusted_prices(prices: pd.DataFrame, expected_sessions: dict[str, list[str]]) -> pd.DataFrame:
+    required = ("session", "symbol", PRICE_FIELD)
+    if not isinstance(prices, pd.DataFrame) or any(list(prices.columns).count(column) != 1 for column in required):
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    if list(prices.columns) != list(required):
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    normalized = prices.copy()
+    if not normalized["symbol"].map(lambda value: type(value) is str and value in SYMBOLS).all():
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    if not normalized["session"].map(_is_canonical_session).all():
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    normalized["session"] = normalized["session"].map(_normalize_session)
+    if normalized.duplicated(["session", "symbol"]).any():
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    normalized[PRICE_FIELD] = pd.to_numeric(normalized[PRICE_FIELD], errors="coerce")
+    if normalized[PRICE_FIELD].isna().any() or not normalized[PRICE_FIELD].map(math.isfinite).all():
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    for symbol, expected in expected_sessions.items():
+        actual = normalized.loc[normalized["symbol"].eq(symbol), "session"].dt.strftime("%Y-%m-%d").tolist()
+        if actual != expected:
+            _invalid("EXACT_SESSION_SET_MISMATCH")
+    return normalized.sort_values(["session", "symbol"], kind="stable").reset_index(drop=True)
+
+
+def _trusted_readback_matches(output_dir: Path, member_hashes: dict[str, str]) -> bool:
+    try:
+        return all(_digest((output_dir / name).read_bytes()) == digest for name, digest in member_hashes.items())
+    except OSError:
+        return False
+
+
+def _trusted_result(output_dir: Path) -> SnapshotResult:
+    return SnapshotResult(output_dir=output_dir, manifest_sha256=_sha256(output_dir / "trust.json"))
+
+
+def verify_tqqq_calendar_endpoint_trusted_snapshot(
+    output_dir: str | Path,
+    *,
+    expected_calendar_sha256: object,
+    expected_endpoint_packet_sha256: object,
+    expected_runtime_source_identity_sha256: object,
+) -> SnapshotResult:
+    expected_digests = {
+        "calendar_sha256": expected_calendar_sha256,
+        "endpoint_packet_sha256": expected_endpoint_packet_sha256,
+        "runtime_source_identity_sha256": expected_runtime_source_identity_sha256,
+    }
+    if not all(_is_sha256(value) for value in expected_digests.values()):
+        _invalid("CALENDAR_ENDPOINT_AUTHORITY_MISSING")
+    output = Path(output_dir)
+    if output.is_symlink() or not output.is_dir():
+        _invalid("STRICT_READBACK_FAILED")
+    try:
+        names = tuple(sorted(member.name for member in output.iterdir()))
+        members = {name: (output / name).read_bytes() for name in _TRUSTED_OUTPUT_FILENAMES}
+    except OSError as exc:
+        raise SnapshotValidationError("STRICT_READBACK_FAILED") from exc
+    if names != _TRUSTED_OUTPUT_FILENAMES or any((output / name).is_symlink() for name in _TRUSTED_OUTPUT_FILENAMES):
+        _invalid("STRICT_READBACK_FAILED")
+    member_hashes = {name: _digest(raw) for name, raw in members.items()}
+    sums = _parse_json_object(members["sha256sums.json"], "trusted sha256sums")
+    trust = _parse_json_object(members["trust.json"], "trusted snapshot")
+    if sums != {"prices.csv": member_hashes["prices.csv"], "trust.json": member_hashes["trust.json"]}:
+        _invalid("STRICT_READBACK_FAILED")
+    if set(trust) != {"schema", "digests", "expected_sessions", "prices_sha256", "row_count"}:
+        _invalid("STRICT_READBACK_FAILED")
+    if trust["schema"] != _TRUST_SCHEMA or trust["digests"] != expected_digests:
+        _invalid("STRICT_READBACK_FAILED")
+    expected_sessions = trust["expected_sessions"]
+    if not isinstance(expected_sessions, dict) or set(expected_sessions) != set(SYMBOLS):
+        _invalid("STRICT_READBACK_FAILED")
+    if any(type(values) is not list or any(type(value) is not str for value in values) for values in expected_sessions.values()):
+        _invalid("STRICT_READBACK_FAILED")
+    if trust["prices_sha256"] != member_hashes["prices.csv"] or type(trust["row_count"]) is not int:
+        _invalid("STRICT_READBACK_FAILED")
+    try:
+        prices = pd.read_csv(BytesIO(members["prices.csv"]))
+    except (UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise SnapshotValidationError("STRICT_READBACK_FAILED") from exc
+    if len(prices) != trust["row_count"]:
+        _invalid("STRICT_READBACK_FAILED")
+    _trusted_prices(prices, expected_sessions)
+    if not _trusted_readback_matches(output, member_hashes):
+        _invalid("STRICT_READBACK_FAILED")
+    return _trusted_result(output)
+
+
+def materialize_tqqq_calendar_endpoint_trusted_snapshot(
+    prices: pd.DataFrame,
+    output_dir: str | Path,
+    *,
+    calendar_path: object,
+    endpoint_packet_path: object,
+    runtime_anchor_path: object,
+    expected_calendar_sha256: object,
+    expected_endpoint_packet_sha256: object,
+    expected_runtime_source_identity_sha256: object,
+) -> SnapshotResult:
+    observation_time = _utc_now()
+    if observation_time.tzinfo is None or observation_time.utcoffset() is None:
+        _invalid("CALENDAR_ENDPOINT_STALE_AT_OBSERVATION")
+    observation_time = observation_time.astimezone(timezone.utc)
+    expected = {
+        "calendar_sha256": expected_calendar_sha256,
+        "endpoint_packet_sha256": expected_endpoint_packet_sha256,
+        "runtime_source_identity_sha256": expected_runtime_source_identity_sha256,
+    }
+    if not all(_is_sha256(value) for value in expected.values()):
+        _invalid("CALENDAR_ENDPOINT_AUTHORITY_MISSING")
+    calendar_raw = _read_trusted_bytes(calendar_path)
+    endpoint_raw = _read_trusted_bytes(endpoint_packet_path)
+    runtime_raw = _read_trusted_bytes(runtime_anchor_path)
+    if _digest(calendar_raw) != expected_calendar_sha256:
+        _invalid("CALENDAR_DIGEST_MISMATCH")
+    if _digest(endpoint_raw) != expected_endpoint_packet_sha256:
+        _invalid("CALENDAR_ENDPOINT_PACKET_DIGEST_MISMATCH")
+    if _digest(runtime_raw) != expected_runtime_source_identity_sha256:
+        _invalid("RUNTIME_SOURCE_IDENTITY_MISMATCH")
+    endpoint = _parse_json_object(endpoint_raw, "endpoint packet")
+    runtime = _parse_json_object(runtime_raw, "runtime source identity")
+    endpoint_keys = {
+        "schema",
+        "venue",
+        "required_first_session",
+        "required_last_completed_session",
+        "required_last_completed_close_utc",
+        "next_session",
+        "next_session_close_utc",
+        "endpoint_observed_at_utc",
+        "expected_session_count",
+        "expected_calendar_sha256",
+        "expected_runtime_source_identity_sha256",
+    }
+    if set(endpoint) != endpoint_keys or endpoint["schema"] != _ENDPOINT_SCHEMA or endpoint["venue"] != "XNYS":
+        _invalid("CALENDAR_SCHEMA_INVALID")
+    if endpoint["expected_calendar_sha256"] != expected_calendar_sha256:
+        _invalid("CALENDAR_DIGEST_MISMATCH")
+    if endpoint["expected_runtime_source_identity_sha256"] != expected_runtime_source_identity_sha256:
+        _invalid("RUNTIME_SOURCE_IDENTITY_MISMATCH")
+    if set(runtime) != {"schema", "source_sha256"} or runtime["schema"] != _RUNTIME_SCHEMA:
+        _invalid("RUNTIME_SOURCE_IDENTITY_MISMATCH")
+    source_hashes = runtime["source_sha256"]
+    if not isinstance(source_hashes, dict) or set(source_hashes) != {"tqqq_r1_snapshot.py", "yfinance_prices.py"}:
+        _invalid("RUNTIME_SOURCE_IDENTITY_MISMATCH")
+    source_paths = {"tqqq_r1_snapshot.py": Path(__file__), "yfinance_prices.py": Path(__file__).with_name("yfinance_prices.py")}
+    if any(not _is_sha256(source_hashes[name]) or _sha256(path) != source_hashes[name] for name, path in source_paths.items()):
+        _invalid("RUNTIME_SOURCE_IDENTITY_MISMATCH")
+    calendar = _trusted_calendar(calendar_raw)
+    sessions = [entry["session"] for entry in calendar]
+    if endpoint["required_first_session"] != _QQQ_FIRST_SESSION or sessions[0] != _QQQ_FIRST_SESSION:
+        _invalid("CALENDAR_START_MISMATCH")
+    if (
+        type(endpoint["expected_session_count"]) is not int
+        or endpoint["expected_session_count"] != len(calendar)
+        or endpoint["required_last_completed_session"] != sessions[-1]
+        or endpoint["required_last_completed_close_utc"] != calendar[-1]["close_utc"]
+    ):
+        _invalid("CALENDAR_END_MISMATCH")
+    endpoint_observed = _parse_utc(endpoint["endpoint_observed_at_utc"], "CALENDAR_SCHEMA_INVALID")
+    last_close = _parse_utc(endpoint["required_last_completed_close_utc"], "CALENDAR_SCHEMA_INVALID")
+    next_close = _parse_utc(endpoint["next_session_close_utc"], "CALENDAR_SCHEMA_INVALID")
+    if endpoint_observed > observation_time or last_close > observation_time or observation_time >= next_close:
+        _invalid("CALENDAR_ENDPOINT_STALE_AT_OBSERVATION")
+    expected_sessions = {
+        "QQQ": sessions,
+        "TQQQ": [session for session in sessions if session >= _TQQQ_FIRST_USABLE_SESSION],
+    }
+    if _TQQQ_FIRST_USABLE_SESSION not in expected_sessions["TQQQ"]:
+        _invalid("EXACT_SESSION_SET_MISMATCH")
+    normalized = _trusted_prices(prices, expected_sessions)
+    destination = Path(output_dir)
+    if destination.exists() or destination.is_symlink():
+        _invalid("IMMUTABLE_CREATE_FAILED")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    try:
+        _write_prices(temporary / "prices.csv", normalized)
+        trust = {
+            "schema": _TRUST_SCHEMA,
+            "digests": expected,
+            "expected_sessions": expected_sessions,
+            "prices_sha256": _sha256(temporary / "prices.csv"),
+            "row_count": len(normalized),
+        }
+        _write_json(temporary / "trust.json", trust)
+        _write_json(
+            temporary / "sha256sums.json",
+            {name: _sha256(temporary / name) for name in ("prices.csv", "trust.json")},
+        )
+        result = verify_tqqq_calendar_endpoint_trusted_snapshot(
+            temporary,
+            expected_calendar_sha256=expected_calendar_sha256,
+            expected_endpoint_packet_sha256=expected_endpoint_packet_sha256,
+            expected_runtime_source_identity_sha256=expected_runtime_source_identity_sha256,
+        )
+        os.replace(temporary, destination)
+        return SnapshotResult(output_dir=destination, manifest_sha256=result.manifest_sha256)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
