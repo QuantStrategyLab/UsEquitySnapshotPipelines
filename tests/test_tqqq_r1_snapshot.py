@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -232,3 +233,133 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_calendar_bound_materialization_requires_verified_full_coverage(tmp_path: Path) -> None:
+    sessions = pd.bdate_range("2010-01-04", periods=4165)
+    calendar = tmp_path / "calendar.ndjson"
+    rows = []
+    for session in sessions:
+        day = session.strftime("%Y-%m-%d")
+        rows.append({"schema": "qsl.r1.xnys.session.v1", "session_date": day, "open_utc": f"{day}T13:30:00Z", "close_utc": f"{day}T20:00:00Z", "early_close": False})
+    calendar.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+    digest = hashlib.sha256(calendar.read_bytes()).hexdigest()
+    prices = pd.DataFrame(
+        [
+            {"session": row["session_date"], "symbol": symbol, "adjusted_close": 1.0}
+            for row in rows[:-1]
+            for symbol in ("QQQ", "TQQQ")
+            if symbol == "QQQ" or row["session_date"] >= "2010-02-11"
+        ]
+    )
+    with pytest.raises(snapshot.SnapshotValidationError, match="exactly cover"):
+        snapshot.materialize_tqqq_r1_snapshot(
+            prices.iloc[1:],
+            tmp_path / "snapshot-root",
+            calendar_path=calendar,
+            expected_calendar_sha256=digest,
+        )
+    result = snapshot.materialize_tqqq_r1_snapshot(
+        prices,
+        tmp_path / "snapshot-root",
+        calendar_path=calendar,
+        expected_calendar_sha256=digest,
+    )
+    assert snapshot.verify_tqqq_r1_snapshot(
+        result.output_dir,
+        expected_manifest_sha256=result.manifest_sha256,
+        calendar_path=calendar,
+        expected_calendar_sha256=digest,
+    ) == result
+    assert result.output_dir.name == result.manifest_sha256
+    assert tuple(sorted(path.name for path in result.output_dir.iterdir())) == (
+        "COMPLETE",
+        "manifest.json",
+        "prices.csv",
+        "sha256sums.json",
+        "validation.json",
+    )
+    assert (result.output_dir / "COMPLETE").read_text(encoding="utf-8") == f"{result.manifest_sha256}\n"
+
+
+def test_calendar_bound_publication_retries_only_after_owned_directory_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions = pd.bdate_range("2010-01-04", periods=4165)
+    calendar = tmp_path / "calendar.ndjson"
+    calendar.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "schema": snapshot.CALENDAR_SCHEMA,
+                    "session_date": session.strftime("%Y-%m-%d"),
+                    "open_utc": f"{session:%Y-%m-%d}T13:30:00Z",
+                    "close_utc": f"{session:%Y-%m-%d}T20:00:00Z",
+                    "early_close": False,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+            for session in sessions
+        ),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(calendar.read_bytes()).hexdigest()
+    prices = pd.DataFrame(
+        [
+            {"session": session.strftime("%Y-%m-%d"), "symbol": symbol, "adjusted_close": 1.0}
+            for session in sessions[:-1]
+            for symbol in ("QQQ", "TQQQ")
+            if symbol == "QQQ" or session.strftime("%Y-%m-%d") >= snapshot.TQQQ_FIRST_USABLE_SESSION
+        ]
+    )
+    real_open = snapshot.os.open
+    failures = 0
+
+    def fail_once(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777, **kwargs: object
+    ) -> int:
+        nonlocal failures
+        if flags & os.O_EXCL and failures == 0:
+            failures += 1
+            raise OSError("simulated first write failure")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(snapshot.os, "open", fail_once)
+    result = snapshot.materialize_tqqq_r1_snapshot(
+        prices,
+        tmp_path / "snapshot-root",
+        calendar_path=calendar,
+        expected_calendar_sha256=digest,
+    )
+    assert failures == 1
+    assert (result.output_dir / "COMPLETE").is_file()
+
+
+def test_e4_validation_uses_private_clock_seam_without_public_clock_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(snapshot, "_utc_now", lambda: datetime(2026, 7, 25, tzinfo=timezone.utc))
+    observation = {
+        "schema": snapshot.E4_SCHEMA,
+        "calendar_sha256": "a" * 64,
+        "completed_last_session": "2026-07-24",
+        "successor_session": "2026-07-27",
+        "successor_close_utc": "2026-07-27T20:00:00Z",
+        "e3_digest": "b" * 64,
+        "endpoint_observed_at_utc": "2026-07-25T00:00:00Z",
+    }
+    snapshot._validate_e4_observation(
+        observation,
+        calendar_sha256="a" * 64,
+        completed_last_session="2026-07-24",
+        successor_session="2026-07-27",
+        successor_close_utc="2026-07-27T20:00:00Z",
+        e3_digest="b" * 64,
+    )
+    observation["endpoint_observed_at_utc"] = "2026-07-26T00:00:00Z"
+    with pytest.raises(snapshot.SnapshotValidationError, match="future E4"):
+        snapshot._validate_e4_observation(
+            observation,
+            calendar_sha256="a" * 64,
+            completed_last_session="2026-07-24",
+            successor_session="2026-07-27",
+            successor_close_utc="2026-07-27T20:00:00Z",
+            e3_digest="b" * 64,
+        )
