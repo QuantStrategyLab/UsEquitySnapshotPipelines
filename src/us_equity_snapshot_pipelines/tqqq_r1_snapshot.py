@@ -15,7 +15,8 @@ from typing import Any
 
 import pandas as pd
 
-CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
+LEGACY_CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
+CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v3"
 SYMBOLS = ("QQQ", "TQQQ")
 REQUESTED_LOWER_BOUND = "2010-01-01"
 PRICE_FIELD = "adjusted_close"
@@ -31,6 +32,7 @@ SOURCE_IDENTITY_KEYS = {
     "price_field",
     "adjustment",
     "calendar_sha256",
+    "calendar_sessions",
     "timezone",
     "coverage_start",
     "coverage_end",
@@ -48,7 +50,8 @@ class SnapshotValidationError(ValueError):
 @dataclass(frozen=True)
 class SnapshotResult:
     output_dir: Path
-    snapshot_id: str
+    manifest_sha256: str
+    snapshot_id: str | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -125,6 +128,17 @@ def _validate_source_identity(source_identity: object, prices: pd.DataFrame) -> 
         _invalid("invalid R1 missing-data policy")
     if not _is_sha256(source_identity["calendar_sha256"]):
         _invalid("invalid R1 calendar digest")
+    calendar_sessions = source_identity["calendar_sessions"]
+    if (
+        type(calendar_sessions) is not list
+        or not calendar_sessions
+        or any(not _is_canonical_session(session) for session in calendar_sessions)
+        or calendar_sessions != sorted(set(calendar_sessions))
+    ):
+        _invalid("invalid referenced calendar sessions")
+    calendar_bytes = (json.dumps(calendar_sessions, separators=(",", ":")) + "\n").encode()
+    if hashlib.sha256(calendar_bytes).hexdigest() != source_identity["calendar_sha256"]:
+        _invalid("referenced calendar digest mismatch")
     coverage = ("coverage_start", "coverage_end", "as_of")
     if any(not _is_canonical_session(source_identity[field]) for field in coverage):
         _invalid("invalid R1 coverage identity")
@@ -136,6 +150,9 @@ def _validate_source_identity(source_identity: object, prices: pd.DataFrame) -> 
         or source_identity["as_of"] != last_session
     ):
         _invalid("R1 coverage identity does not match prices")
+    observed_sessions = [session.strftime("%Y-%m-%d") for session in prices["session"].drop_duplicates()]
+    if observed_sessions != calendar_sessions:
+        _invalid("observed sessions do not match referenced calendar sessions")
     return source_identity
 
 
@@ -145,6 +162,7 @@ def _normalized_prices(
     require_exact_columns: bool = False,
     require_canonical_symbols: bool = False,
     require_canonical_sessions: bool = False,
+    require_canonical_order: bool = False,
 ) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("prices must be a DataFrame")
@@ -183,6 +201,10 @@ def _normalized_prices(
         _invalid("duplicate session for symbol")
     if not normalized.groupby("session")["symbol"].agg(set).eq(set(SYMBOLS)).all():
         _invalid("each session must contain exactly QQQ and TQQQ")
+    if require_canonical_order:
+        observed_order = list(zip(normalized["session"], normalized["symbol"]))
+        if observed_order != sorted(observed_order):
+            _invalid("prices.csv violates declared sort order")
 
     adjusted_close = normalized[PRICE_FIELD]
     if pd.api.types.is_complex_dtype(adjusted_close) or adjusted_close.map(pd.api.types.is_complex).any():
@@ -277,21 +299,24 @@ def verify_tqqq_r1_snapshot(
         if type(expected) is not str or member_hashes[name] != expected:
             _invalid(f"hash mismatch: {name}")
 
+    contract_version = manifest.get("contract_version")
+    if contract_version not in {LEGACY_CONTRACT_VERSION, CONTRACT_VERSION}:
+        _invalid("unsupported contract version")
     try:
         prices = _normalized_prices(
             pd.read_csv(BytesIO(members["prices.csv"])),
             require_exact_columns=True,
             require_canonical_symbols=True,
             require_canonical_sessions=True,
+            require_canonical_order=contract_version == CONTRACT_VERSION,
         )
     except (UnicodeDecodeError, ValueError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         if isinstance(exc, SnapshotValidationError):
             raise
         raise SnapshotValidationError("invalid prices.csv") from exc
 
-    source_identity = _validate_source_identity(manifest.get("source_identity"), prices)
     expected_manifest = {
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": contract_version,
         "symbols": list(SYMBOLS),
         "requested_lower_bound": REQUESTED_LOWER_BOUND,
         "price_field": PRICE_FIELD,
@@ -300,8 +325,15 @@ def verify_tqqq_r1_snapshot(
         "size": 0,
         "row_count": len(prices),
         "prices_sha256": member_hashes["prices.csv"],
-        "source_identity": source_identity,
     }
+    if contract_version == LEGACY_CONTRACT_VERSION:
+        expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
+        if not _has_exact_type(manifest, expected_manifest) or not _has_exact_type(validation, expected_validation):
+            _invalid("invalid legacy snapshot")
+        return SnapshotResult(output_dir=output, manifest_sha256=expected_manifest_sha256)
+
+    source_identity = _validate_source_identity(manifest.get("source_identity"), prices)
+    expected_manifest["source_identity"] = source_identity
     if not _has_exact_type(manifest, expected_manifest):
         _invalid("invalid manifest")
     snapshot_id = f"sha256-{expected_manifest_sha256}"
@@ -315,15 +347,15 @@ def verify_tqqq_r1_snapshot(
         _invalid("snapshot id does not bind external manifest receipt")
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output, snapshot_id=snapshot_id)
+    return SnapshotResult(output_dir=output, manifest_sha256=expected_manifest_sha256, snapshot_id=snapshot_id)
 
 
 def materialize_tqqq_r1_snapshot(
     prices: pd.DataFrame,
     output_dir: str | Path,
     *,
-    expected_manifest_sha256: str,
-    source_identity: dict[str, object],
+    expected_manifest_sha256: str | None = None,
+    source_identity: dict[str, object] | None = None,
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
@@ -335,10 +367,11 @@ def materialize_tqqq_r1_snapshot(
         _invalid("plugin must be ABSENT_DISABLED")
     if size != 0:
         _invalid("size must be zero")
-    if not _is_sha256(expected_manifest_sha256):
-        _invalid("invalid external manifest receipt")
+    receipt_bound = expected_manifest_sha256 is not None or source_identity is not None
+    if receipt_bound and (not _is_sha256(expected_manifest_sha256) or source_identity is None):
+        _invalid("receipt-bound snapshots require external manifest receipt and source identity")
     normalized = _normalized_prices(prices)
-    validated_source_identity = _validate_source_identity(source_identity, normalized)
+    validated_source_identity = _validate_source_identity(source_identity, normalized) if receipt_bound else None
     destination = Path(output_dir)
     if destination.exists() or destination.is_symlink():
         _invalid(f"immutable output already exists: {destination}")
@@ -347,15 +380,12 @@ def materialize_tqqq_r1_snapshot(
     try:
         prices_path = temporary / "prices.csv"
         _write_prices(prices_path, normalized)
-        validation = {
-            "valid": True,
-            "row_count": len(normalized),
-            "symbols": list(SYMBOLS),
-            "snapshot_id": f"sha256-{expected_manifest_sha256}",
-        }
+        validation = {"valid": True, "row_count": len(normalized), "symbols": list(SYMBOLS)}
+        if receipt_bound:
+            validation["snapshot_id"] = f"sha256-{expected_manifest_sha256}"
         _write_json(temporary / "validation.json", validation)
         manifest = {
-            "contract_version": CONTRACT_VERSION,
+            "contract_version": CONTRACT_VERSION if receipt_bound else LEGACY_CONTRACT_VERSION,
             "symbols": list(SYMBOLS),
             "requested_lower_bound": REQUESTED_LOWER_BOUND,
             "price_field": PRICE_FIELD,
@@ -364,16 +394,24 @@ def materialize_tqqq_r1_snapshot(
             "size": 0,
             "row_count": len(normalized),
             "prices_sha256": _sha256(prices_path),
-            "source_identity": validated_source_identity,
         }
+        if receipt_bound:
+            manifest["source_identity"] = validated_source_identity
         _write_json(temporary / "manifest.json", manifest)
         _write_json(
             temporary / "sha256sums.json",
             {name: _sha256(temporary / name) for name in ("prices.csv", "manifest.json", "validation.json")},
         )
-        verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=expected_manifest_sha256)
+        manifest_sha256 = _sha256(temporary / "manifest.json")
+        verify_tqqq_r1_snapshot(
+            temporary, expected_manifest_sha256=expected_manifest_sha256 if receipt_bound else manifest_sha256
+        )
         os.replace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
-    return SnapshotResult(output_dir=destination, snapshot_id=f"sha256-{expected_manifest_sha256}")
+    return SnapshotResult(
+        output_dir=destination,
+        manifest_sha256=expected_manifest_sha256 if receipt_bound else manifest_sha256,
+        snapshot_id=f"sha256-{expected_manifest_sha256}" if receipt_bound else None,
+    )

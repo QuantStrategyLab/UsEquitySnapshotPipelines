@@ -23,23 +23,31 @@ def _fixture_prices() -> pd.DataFrame:
     )
 
 
-SOURCE_IDENTITY = {
-    "route": "R1_STATIC_RESEARCH",
-    "provider": "external-control-plane-receipt",
-    "retrieval_library": "local-fixture",
-    "source_version": "fixture.v1",
-    "symbols": ["QQQ", "TQQQ"],
-    "price_field": "adjusted_close",
-    "adjustment": "split-and-dividend-adjusted",
-    "calendar_sha256": "a" * 64,
-    "timezone": "America/New_York",
-    "coverage_start": "2010-01-04",
-    "coverage_end": "2010-01-05",
-    "as_of": "2010-01-05",
-    "payload_schema": "prices.csv.v1",
-    "sort_order": "session,symbol",
-    "missing_data_policy": "reject-missing-or-duplicate",
-}
+def _source_identity(calendar_sessions: list[str]) -> dict[str, object]:
+    calendar_sha256 = hashlib.sha256(
+        (json.dumps(calendar_sessions, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    return {
+        "route": "R1_STATIC_RESEARCH",
+        "provider": "external-control-plane-receipt",
+        "retrieval_library": "local-fixture",
+        "source_version": "fixture.v1",
+        "symbols": ["QQQ", "TQQQ"],
+        "price_field": "adjusted_close",
+        "adjustment": "split-and-dividend-adjusted",
+        "calendar_sha256": calendar_sha256,
+        "calendar_sessions": calendar_sessions,
+        "timezone": "America/New_York",
+        "coverage_start": calendar_sessions[0],
+        "coverage_end": calendar_sessions[-1],
+        "as_of": calendar_sessions[-1],
+        "payload_schema": "prices.csv.v1",
+        "sort_order": "session,symbol",
+        "missing_data_policy": "reject-missing-or-duplicate",
+    }
+
+
+SOURCE_IDENTITY = _source_identity(["2010-01-04", "2010-01-05"])
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -121,7 +129,7 @@ def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) ->
         "2010-01-05,TQQQ,11\n"
     )
     assert json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))["contract_version"] == (
-        "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
+        snapshot.CONTRACT_VERSION
     )
     assert snapshot.verify_tqqq_r1_snapshot(
         result.output_dir, expected_manifest_sha256=FIXTURE_MANIFEST_SHA256
@@ -134,6 +142,16 @@ def test_materialize_rejects_nonmatching_external_manifest_receipt(tmp_path: Pat
         _materialize(_fixture_prices(), tmp_path / "snapshot")
 
     assert not (tmp_path / "snapshot").exists()
+
+
+def test_legacy_v2_materialize_and_result_digest_remain_compatible(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "legacy")
+
+    assert result.manifest_sha256 == hashlib.sha256((result.output_dir / "manifest.json").read_bytes()).hexdigest()
+    assert result.snapshot_id is None
+    assert snapshot.verify_tqqq_r1_snapshot(
+        result.output_dir, expected_manifest_sha256=result.manifest_sha256
+    ) == result
 
 
 @pytest.mark.parametrize(
@@ -172,6 +190,50 @@ def test_verify_rejects_snapshot_id_not_bound_to_external_manifest_receipt(tmp_p
 
     with pytest.raises(snapshot.SnapshotValidationError, match="snapshot id does not bind external manifest receipt"):
         snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
+
+
+def test_verify_rejects_missing_referenced_calendar_session(tmp_path: Path) -> None:
+    prices = pd.concat(
+        [
+            _fixture_prices(),
+            pd.DataFrame(
+                [
+                    {"session": "2010-01-06", "symbol": "QQQ", "adjusted_close": 47.0},
+                    {"session": "2010-01-06", "symbol": "TQQQ", "adjusted_close": 11.5},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    source_identity = _source_identity(["2010-01-04", "2010-01-05", "2010-01-06"])
+    result = _materialize(
+        prices,
+        tmp_path / "snapshot",
+        expected_manifest_sha256=_external_manifest_sha256(prices, source_identity),
+        source_identity=source_identity,
+    )
+    prices_path = result.output_dir / "prices.csv"
+    prices_path.write_text(
+        "\n".join(line for line in prices_path.read_text(encoding="utf-8").splitlines() if "2010-01-05" not in line) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="referenced calendar sessions"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=_refresh_trusted_metadata(result.output_dir)
+        )
+
+
+def test_verify_rejects_raw_csv_outside_declared_sort_order(tmp_path: Path) -> None:
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", expected_manifest_sha256=FIXTURE_MANIFEST_SHA256)
+    prices_path = result.output_dir / "prices.csv"
+    rows = prices_path.read_text(encoding="utf-8").splitlines()
+    prices_path.write_text("\n".join([rows[0], rows[2], rows[1], *rows[3:]]) + "\n", encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="declared sort order"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=_refresh_trusted_metadata(result.output_dir)
+        )
 
 
 def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_path: Path) -> None:
