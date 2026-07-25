@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import errno
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -556,11 +559,15 @@ def test_losing_receipt_publication_preserves_winner_receipt(monkeypatch: pytest
     receipt_path = tmp_path / "snapshot.tqqq_r1_retrieval_receipt.v1.json"
     winner_receipt = b"winner receipt"
 
-    def lose_link(_source: str | Path, destination: str | Path) -> None:
-        Path(destination).write_bytes(winner_receipt)
-        raise FileExistsError
+    original_open = snapshot.Path.open
 
-    monkeypatch.setattr(snapshot.os, "link", lose_link)
+    def lose_exclusive_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path == receipt_path and mode == "xb":
+            path.write_bytes(winner_receipt)
+            raise FileExistsError
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(snapshot.Path, "open", lose_exclusive_open)
 
     with pytest.raises(FileExistsError):
         _materialize(_fixture_prices(), output_dir)
@@ -576,3 +583,51 @@ def test_materialize_rejects_boolean_receipt_size(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid receipt"):
         snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot", retrieval_receipt=receipt)
+
+
+def test_runner_clears_retained_yfinance_proxy_before_direct_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    yfinance = SimpleNamespace(config=SimpleNamespace(network=SimpleNamespace(proxy={"https": "http://proxy.example"})))
+    monkeypatch.setitem(sys.modules, "yfinance", yfinance)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pd.DataFrame([
+        {"symbol": "QQQ", "as_of": "2010-01-04", "close": 45.25},
+        {"symbol": "TQQQ", "as_of": "2010-01-04", "close": 10.5},
+    ]))
+    monkeypatch.setattr(snapshot, "_source_identity", lambda: {"repository": "test/repo", "commit": "abc", "tree": "def"})
+    monkeypatch.setattr(snapshot, "_yfinance_runtime_version", lambda: "0.test")
+    monkeypatch.setattr(snapshot, "_retrieval_utc", lambda: "2026-07-25T00:00:00Z")
+
+    snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot")
+
+    assert yfinance.config.network.proxy is None
+
+
+def test_runner_rejects_current_unclosed_new_york_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pd.DataFrame([
+        {"symbol": "QQQ", "as_of": "2010-01-04", "close": 45.25},
+        {"symbol": "TQQQ", "as_of": "2010-01-04", "close": 10.5},
+    ]))
+    monkeypatch.setattr(snapshot, "_source_identity", lambda: {"repository": "test/repo", "commit": "abc", "tree": "def"})
+    monkeypatch.setattr(snapshot, "_yfinance_runtime_version", lambda: "0.test")
+    monkeypatch.setattr(snapshot, "_retrieval_utc", lambda: "2010-01-04T18:00:00Z")
+    monkeypatch.setattr(
+        snapshot,
+        "_new_york_now",
+        lambda: datetime(2010, 1, 4, 13, tzinfo=ZoneInfo("America/New_York")),
+        raising=False,
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unclosed trading session"):
+        snapshot.run_tqqq_r1_snapshot(tmp_path / "snapshot")
+
+
+def test_materialize_publishes_receipt_when_hard_links_cross_filesystem(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    receipt_path = tmp_path / "other-filesystem" / "receipt.json"
+    receipt_path.parent.mkdir()
+    monkeypatch.setattr(snapshot.os, "link", lambda *_args: (_ for _ in ()).throw(OSError(errno.EXDEV, "cross-device link")))
+
+    result = _materialize(_fixture_prices(), tmp_path / "snapshot", receipt_path=receipt_path)
+
+    assert result.receipt_path == receipt_path
+    assert _verify(result.output_dir, result.manifest_sha256, result.receipt_path) == result

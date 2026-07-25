@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import unquote, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -322,6 +323,32 @@ def _reject_proxy_configuration() -> None:
         _invalid("proxy is not allowed")
 
 
+def _clear_yfinance_proxy_configuration() -> None:
+    import yfinance as yf
+
+    try:
+        yf.config.network.proxy = None
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SnapshotValidationError("unable to clear yfinance proxy") from exc
+    if yf.config.network.proxy is not None:
+        _invalid("unable to clear yfinance proxy")
+
+
+def _new_york_now() -> datetime:
+    return datetime.now(ZoneInfo("America/New_York"))
+
+
+def _reject_unclosed_trading_session(prices: pd.DataFrame) -> None:
+    now = _new_york_now()
+    if now.weekday() < 5 and now.hour < 16 and prices["session"].eq(pd.Timestamp(now.date())).any():
+        _invalid("unclosed trading session is not allowed")
+
+
+def _publish_receipt_no_clobber(receipt_path: Path, receipt_bytes: bytes) -> None:
+    with receipt_path.open("xb") as handle:
+        handle.write(receipt_bytes)
+
+
 def _build_receipt(
     *,
     coverage: dict[str, dict[str, object]],
@@ -609,7 +636,7 @@ def materialize_tqqq_r1_snapshot(
             expected_receipt_path=staged_receipt,
             expected_receipt_bytes=receipt_bytes,
         )
-        os.link(staged_receipt, actual_receipt_path)
+        _publish_receipt_no_clobber(actual_receipt_path, receipt_bytes)
         staged_receipt.unlink()
         receipt_published = True
         os.replace(temporary, destination)
@@ -625,8 +652,10 @@ def materialize_tqqq_r1_snapshot(
 def run_tqqq_r1_snapshot(output_dir: str | Path) -> SnapshotResult:
     """Download exactly QQQ/TQQQ once and materialize only common observed sessions."""
     _reject_proxy_configuration()
+    _clear_yfinance_proxy_configuration()
     downloaded = download_price_history(list(SYMBOLS), start=REQUESTED_LOWER_BOUND, price_field=PRICE_FIELD)
     prices, coverage, common_sessions = _normalize_downloaded_prices(downloaded)
+    _reject_unclosed_trading_session(prices)
     receipt = _build_receipt(
         coverage=coverage,
         common_sessions=common_sessions,
