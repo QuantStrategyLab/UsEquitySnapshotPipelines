@@ -50,6 +50,17 @@ class SnapshotResult:
     manifest_sha256: str
 
 
+@dataclass(frozen=True)
+class _LoadedSourceIdentity:
+    reference: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _LoadedXNYSCalendar:
+    reference: dict[str, object]
+    closes: dict[pd.Timestamp, datetime]
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -225,7 +236,7 @@ def _source_identity_reference(value: object) -> dict[str, object]:
 
 def _load_external_source_identity(
     path: str | Path, *, expected_source_identity_sha256: str
-) -> dict[str, object]:
+) -> _LoadedSourceIdentity:
     expected = _trusted_digest(expected_source_identity_sha256, name="source identity")
     raw = _read_external_artifact(path, name="source identity")
     if hashlib.sha256(raw).hexdigest() != expected:
@@ -265,7 +276,7 @@ def _load_external_source_identity(
         raise SnapshotValidationError("invalid source identity") from exc
     if actual != reference["files"]:
         _invalid("source identity executed-file mismatch")
-    return reference
+    return _LoadedSourceIdentity(reference=reference)
 
 
 def _calendar_reference(value: object) -> dict[str, object]:
@@ -293,7 +304,7 @@ def _calendar_reference(value: object) -> dict[str, object]:
     return {"artifact_sha256": value["artifact_sha256"], "schema": value["schema"], "coverage": dict(coverage)}
 
 
-def _load_external_xnys_calendar(path: str | Path, *, expected_calendar_sha256: str) -> tuple[dict[str, object], dict[pd.Timestamp, datetime]]:
+def _load_external_xnys_calendar(path: str | Path, *, expected_calendar_sha256: str) -> _LoadedXNYSCalendar:
     expected = _trusted_digest(expected_calendar_sha256, name="calendar")
     raw = _read_external_artifact(path, name="XNYS calendar")
     if hashlib.sha256(raw).hexdigest() != expected:
@@ -316,14 +327,24 @@ def _load_external_xnys_calendar(path: str | Path, *, expected_calendar_sha256: 
             opened = datetime.fromisoformat(str(row["open_utc"]).replace("Z", "+00:00"))
         except (SnapshotValidationError, ValueError):
             _invalid("invalid XNYS calendar")
-        if close.tzinfo != timezone.utc or opened.tzinfo != timezone.utc or opened >= close or session in closes:
-            _invalid("invalid XNYS calendar")
+        if (
+            close.tzinfo != timezone.utc
+            or opened.tzinfo != timezone.utc
+            or opened.date() != session.date()
+            or close.date() != session.date()
+            or opened >= close
+            or session in closes
+        ):
+            _invalid("XNYS calendar timestamps do not match declared session")
         closes[session] = close
     sessions = list(closes)
     if sessions != sorted(sessions):
         _invalid("invalid XNYS calendar")
     coverage = {"first_session": sessions[0].strftime("%Y-%m-%d"), "last_session": sessions[-1].strftime("%Y-%m-%d"), "session_count": len(sessions)}
-    return _calendar_reference({"artifact_sha256": expected, "schema": "qsl.r1.xnys.session.v1", "coverage": coverage}), closes
+    return _LoadedXNYSCalendar(
+        reference=_calendar_reference({"artifact_sha256": expected, "schema": "qsl.r1.xnys.session.v1", "coverage": coverage}),
+        closes=closes,
+    )
 
 
 def _normalized_observed_prices(prices: pd.DataFrame) -> pd.DataFrame:
@@ -421,6 +442,8 @@ def verify_tqqq_r1_snapshot(
     if names not in {tuple(sorted(OUTPUT_FILENAMES)), tuple(sorted(RETRIEVAL_OUTPUT_FILENAMES))}:
         _invalid(f"unexpected output files: {names}")
     filenames = RETRIEVAL_OUTPUT_FILENAMES if "retrieval_receipt.json" in names else OUTPUT_FILENAMES
+    if (expected_source_identity_sha256 is not None or expected_calendar_sha256 is not None) and filenames == OUTPUT_FILENAMES:
+        _invalid("retrieval receipt is required when external anchor expectations are supplied")
     if any(not (output / name).is_file() or (output / name).is_symlink() for name in filenames):
         _invalid("snapshot members must be regular non-symlink files")
     try:
@@ -512,8 +535,8 @@ def materialize_tqqq_r1_snapshot(
     mode: str = MODE,
     plugin: str = PLUGIN,
     size: int = 0,
-    source_identity: dict[str, object] | None = None,
-    calendar: dict[str, object] | None = None,
+    source_identity: _LoadedSourceIdentity | None = None,
+    calendar: _LoadedXNYSCalendar | None = None,
     observed_coverage: dict[str, list[str]] | None = None,
 ) -> SnapshotResult:
     """Validate fixture/local input and atomically write the four immutable contract files."""
@@ -527,8 +550,10 @@ def materialize_tqqq_r1_snapshot(
     if (source_identity is None) != (calendar is None) or (source_identity is None) != (observed_coverage is None):
         _invalid("source identity, calendar, and observed coverage are required together")
     if source_identity is not None:
-        source_identity = _source_identity_reference(source_identity)
-        calendar = _calendar_reference(calendar)
+        if not isinstance(source_identity, _LoadedSourceIdentity) or not isinstance(calendar, _LoadedXNYSCalendar):
+            _invalid("anchored materialization requires loader-validated anchors")
+        source_identity = source_identity.reference
+        calendar = calendar.reference
         observed_coverage = _canonical_coverage(observed_coverage, error="invalid observed coverage")
         common_sessions = sorted(set(observed_coverage[SYMBOLS[0]]) & set(observed_coverage[SYMBOLS[1]]))
         if common_sessions != normalized["session"].dt.strftime("%Y-%m-%d").drop_duplicates().tolist():
@@ -582,8 +607,8 @@ def materialize_tqqq_r1_snapshot(
         verify_tqqq_r1_snapshot(
             temporary,
             expected_manifest_sha256=manifest_sha256,
-            expected_source_identity_sha256=None if source_identity is None else source_identity["artifact_sha256"],
-            expected_calendar_sha256=None if calendar is None else calendar["artifact_sha256"],
+            expected_source_identity_sha256=None if source_identity is None else str(source_identity["artifact_sha256"]),
+            expected_calendar_sha256=None if calendar is None else str(calendar["artifact_sha256"]),
         )
         os.replace(temporary, destination)
     except Exception:
@@ -610,7 +635,7 @@ def run_tqqq_r1_snapshot(
         source_identity_path,
         expected_source_identity_sha256=expected_source_identity_sha256,
     )
-    calendar, closes = _load_external_xnys_calendar(
+    calendar = _load_external_xnys_calendar(
         calendar_path,
         expected_calendar_sha256=expected_calendar_sha256,
     )
@@ -622,7 +647,7 @@ def run_tqqq_r1_snapshot(
             price_field=PRICE_FIELD,
         )
     )
-    _require_xnys_sessions(observed, closes, observed_at=observed_at or datetime.now(timezone.utc))
+    _require_xnys_sessions(observed, calendar.closes, observed_at=observed_at or datetime.now(timezone.utc))
     return materialize_tqqq_r1_snapshot(
         _common_prices(observed),
         destination,

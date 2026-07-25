@@ -23,6 +23,12 @@ _FIXTURE_XNYS_CALENDAR = (
     b'{"close_utc":"2026-07-24T20:00:00Z","early_close":false,"open_utc":"2026-07-24T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2026-07-24"}\n'
 )
 _FIXTURE_XNYS_CALENDAR_SHA256 = "71f36e50f2fff906681b47d0d2f219d317993e967c12cbe2be5a034c126e8aa0"
+_MISMATCHED_XNYS_CALENDAR = (
+    b'{"close_utc":"2010-01-04T21:00:00Z","early_close":false,"open_utc":"2010-01-04T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-04"}\n'
+    b'{"close_utc":"2010-01-05T21:00:00Z","early_close":false,"open_utc":"2010-01-05T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2010-01-05"}\n'
+    b'{"close_utc":"2026-07-23T20:00:00Z","early_close":false,"open_utc":"2026-07-23T14:30:00Z","schema":"qsl.r1.xnys.session.v1","session_date":"2026-07-24"}\n'
+)
+_MISMATCHED_XNYS_CALENDAR_SHA256 = "d9e64d7c8d4617650749f4a9c0ddadc10759b3f5315e9a7b6da3695cd7530849"
 
 
 def _fixture_prices() -> pd.DataFrame:
@@ -368,4 +374,62 @@ def test_runner_rejects_observed_xnys_holiday_not_in_external_calendar(
             calendar_path=calendar,
             expected_calendar_sha256=_FIXTURE_XNYS_CALENDAR_SHA256,
             observed_at=datetime(2026, 12, 25, 21, tzinfo=timezone.utc),
+        )
+
+
+def test_verify_rejects_legacy_snapshot_when_any_anchor_expectation_is_supplied(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="retrieval receipt is required"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir,
+            expected_manifest_sha256=result.manifest_sha256,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+        )
+
+
+def test_materialize_rejects_shape_valid_unloaded_anchor_dictionaries(tmp_path: Path) -> None:
+    source_identity = {
+        "artifact_sha256": _FIXTURE_SOURCE_IDENTITY_SHA256,
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit": "a" * 40,
+        "tree": "c" * 40,
+        "files": {
+            "src/us_equity_snapshot_pipelines/tqqq_r1_snapshot.py": "6e718635b05352ee98ee205eac73289e35d22b2ae735821aee3bcac844a90f33",
+            "src/us_equity_snapshot_pipelines/yfinance_prices.py": "849b731e0f6bd17283bb01f598463934fbcf6eab68d82cd02b03091538a1b3b8",
+        },
+    }
+    calendar = {
+        "artifact_sha256": _FIXTURE_XNYS_CALENDAR_SHA256,
+        "schema": "qsl.r1.xnys.session.v1",
+        "coverage": {"first_session": "2010-01-04", "last_session": "2026-07-24", "session_count": 3},
+    }
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="loader-validated"):
+        snapshot.materialize_tqqq_r1_snapshot(
+            _fixture_prices(),
+            tmp_path / "snapshot",
+            source_identity=source_identity,
+            calendar=calendar,
+            observed_coverage={"QQQ": ["2010-01-04", "2010-01-05"], "TQQQ": ["2010-01-04", "2010-01-05"]},
+        )
+
+
+def test_runner_rejects_calendar_timestamps_from_another_declared_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_identity, calendar = _write_external_anchor_fixtures(tmp_path)
+    calendar.chmod(0o644)
+    calendar.write_bytes(_MISMATCHED_XNYS_CALENDAR)
+    calendar.chmod(0o444)
+    _install_fixture_sources(tmp_path, monkeypatch)
+    monkeypatch.setattr(snapshot, "download_price_history", lambda *_args, **_kwargs: pytest.fail("download must not run"))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="timestamps do not match declared session"):
+        snapshot.run_tqqq_r1_snapshot(
+            tmp_path / "snapshot",
+            source_identity_path=source_identity,
+            expected_source_identity_sha256=_FIXTURE_SOURCE_IDENTITY_SHA256,
+            calendar_path=calendar,
+            expected_calendar_sha256=_MISMATCHED_XNYS_CALENDAR_SHA256,
         )
