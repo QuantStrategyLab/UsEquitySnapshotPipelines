@@ -85,3 +85,11 @@ where = ["src"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/gate_codex_app_review.py" = ["E701", "E702"]
+"scripts/plan_codex_auto_merge_enablement.py" = ["E402"]
+"scripts/run_global_etf_rotation_shadow_cycle.py" = ["E402"]
+"scripts/run_russell_leader_rotation_shadow_cycle.py" = ["E402"]
+"scripts/static_pr_guard.py" = ["F841"]
+"tests/test_gate_codex_app_review.py" = ["E402"]
