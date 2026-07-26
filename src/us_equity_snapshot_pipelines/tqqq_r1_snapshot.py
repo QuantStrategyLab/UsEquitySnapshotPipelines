@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -26,6 +27,14 @@ PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAME = "snapshot.json"
+XNYS_EXCEPTIONAL_CLOSURES = frozenset(
+    {
+        date(2012, 10, 29),
+        date(2012, 10, 30),
+        date(2018, 12, 5),
+        date(2025, 1, 9),
+    }
+)
 
 
 class SnapshotValidationError(ValueError):
@@ -125,7 +134,9 @@ def _is_xnys_regular_session(session: pd.Timestamp) -> bool:
     value = session.date()
     if value.weekday() >= 5 or value < date.fromisoformat(REQUESTED_LOWER_BOUND) or value > date.fromisoformat(MAX_SESSION):
         return False
-    return value not in _xnys_holidays(value.year - 1).union(_xnys_holidays(value.year), _xnys_holidays(value.year + 1))
+    return value not in XNYS_EXCEPTIONAL_CLOSURES and value not in _xnys_holidays(value.year - 1).union(
+        _xnys_holidays(value.year), _xnys_holidays(value.year + 1)
+    )
 
 
 def _normalized_prices(prices: object) -> pd.DataFrame:
@@ -148,12 +159,14 @@ def _normalized_prices(prices: object) -> pd.DataFrame:
         _invalid("each session must contain exactly QQQ and TQQQ")
     adjusted_close = normalized[PRICE_FIELD]
     if (
-        pd.api.types.is_bool_dtype(adjusted_close)
+        pd.api.types.is_datetime64_any_dtype(adjusted_close)
+        or pd.api.types.is_timedelta64_dtype(adjusted_close)
+        or pd.api.types.is_bool_dtype(adjusted_close)
         or adjusted_close.map(pd.api.types.is_bool).any()
         or pd.api.types.is_complex_dtype(adjusted_close)
         or adjusted_close.map(pd.api.types.is_complex).any()
     ):
-        _invalid("adjusted_close must be real")
+        _invalid("datetime-like adjusted_close is not allowed")
     normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
     if normalized[PRICE_FIELD].isna().any() or not normalized[PRICE_FIELD].map(math.isfinite).all() or (normalized[PRICE_FIELD] <= 0).any():
         _invalid("adjusted_close must be positive finite")
@@ -215,7 +228,23 @@ def _validated_envelope(content: bytes) -> tuple[dict[str, object], str]:
     expected_keys = {"calendar", "contract_version", "records", "request", "row_count", "snapshot_identity", "symbols"}
     if set(envelope) != expected_keys or envelope.get("calendar") != CALENDAR or envelope.get("contract_version") != CONTRACT_VERSION:
         _invalid("invalid snapshot envelope")
-    if envelope.get("request") != {"mode": MODE, "plugin": PLUGIN, "size": 0} or envelope.get("symbols") != list(SYMBOLS):
+    request = envelope.get("request")
+    symbols = envelope.get("symbols")
+    if (
+        type(request) is not dict
+        or set(request) != {"mode", "plugin", "size"}
+        or type(request["mode"]) is not str
+        or request["mode"] != MODE
+        or type(request["plugin"]) is not str
+        or request["plugin"] != PLUGIN
+        or type(request["size"]) is not int
+        or request["size"] != 0
+        or type(symbols) is not list
+        or any(type(symbol) is not str for symbol in symbols)
+        or symbols != list(SYMBOLS)
+        or type(envelope.get("row_count")) is not int
+        or type(envelope.get("snapshot_identity")) is not str
+    ):
         _invalid("invalid snapshot envelope")
     records = envelope.get("records")
     if type(records) is not list or not 0 < len(records) <= MAX_ROW_COUNT or envelope.get("row_count") != len(records):
@@ -279,23 +308,18 @@ def materialize_tqqq_r1_snapshot(request: object, *_legacy_arguments: object) ->
     if len(content) > MAX_ENVELOPE_BYTES:
         _invalid("snapshot exceeds size bound")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
     try:
-        destination.mkdir()
-    except FileExistsError as exc:
-        raise SnapshotValidationError(f"immutable output already exists: {destination}") from exc
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{OUTPUT_FILENAME}.", dir=destination)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
+        snapshot_path = staging / OUTPUT_FILENAME
+        with snapshot_path.open("wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        _fsync_directory(destination)
-        os.replace(temporary, destination / OUTPUT_FILENAME)
-        _fsync_directory(destination)
+        _fsync_directory(staging)
+        os.replace(staging, destination)
+        _fsync_directory(destination.parent)
     except Exception:
-        temporary.unlink(missing_ok=True)
-        destination.rmdir()
+        shutil.rmtree(staging, ignore_errors=True)
         raise
     snapshot_sha256 = _sha256(content)
     result = verify_tqqq_r1_snapshot(destination, expected_snapshot_sha256=snapshot_sha256)

@@ -62,6 +62,24 @@ def test_admission_rejects_non_xnys_regular_session(tmp_path: Path) -> None:
         snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
 
 
+@pytest.mark.parametrize("closed_session", ["2012-10-29", "2012-10-30", "2018-12-05", "2025-01-09"])
+def test_admission_rejects_exceptional_xnys_closure(tmp_path: Path, closed_session: str) -> None:
+    prices = _fixture_prices().replace("2010-01-05", closed_session)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="XNYS regular session"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
+
+
+@pytest.mark.parametrize("dtype", ["datetime", "timedelta"])
+def test_admission_rejects_datetime_like_adjusted_close(tmp_path: Path, dtype: str) -> None:
+    values = pd.to_datetime(["2010-01-04", "2010-01-04", "2010-01-05", "2010-01-05"])
+    adjusted_close = values if dtype == "datetime" else values - values[0]
+    prices = _fixture_prices().assign(adjusted_close=adjusted_close)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="datetime-like adjusted_close"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
+
+
 def test_admission_rejects_row_count_above_explicit_bound(tmp_path: Path) -> None:
     prices = pd.concat([_fixture_prices()] * (snapshot.MAX_ROW_COUNT // 4 + 1), ignore_index=True)
 
@@ -79,6 +97,35 @@ def test_readback_recomputes_snapshot_identity_even_with_new_trusted_file_hash(t
 
     with pytest.raises(snapshot.SnapshotValidationError, match="snapshot identity mismatch"):
         snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_snapshot_sha256=forged_file_hash)
+
+
+@pytest.mark.parametrize("field_value", [0.0, False])
+def test_readback_rejects_non_exact_request_size_type(tmp_path: Path, field_value: object) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+    envelope_path = result.output_dir / "snapshot.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    envelope["request"]["size"] = field_value
+    content = json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n"
+    envelope_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid snapshot envelope"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_snapshot_sha256=hashlib.sha256(content.encode()).hexdigest()
+        )
+
+
+def test_readback_rejects_non_exact_row_count_type(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+    envelope_path = result.output_dir / "snapshot.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    envelope["row_count"] = float(envelope["row_count"])
+    content = json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n"
+    envelope_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid snapshot envelope"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_snapshot_sha256=hashlib.sha256(content.encode()).hexdigest()
+        )
 
 
 def test_readback_requires_exact_single_regular_file_and_size_bound(tmp_path: Path) -> None:
@@ -123,3 +170,29 @@ def test_publish_fsyncs_temporary_file_and_parent_directory_before_and_after_ato
 
     assert len(fsync_calls) >= 3
     assert replace_calls[0][0].parent == replace_calls[0][1].parent
+
+
+def test_publish_atomically_renames_sibling_staging_root_and_fsyncs_destination_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replace_calls: list[tuple[Path, Path]] = []
+    fsync_directories: list[Path] = []
+    original_replace = snapshot.os.replace
+    original_fsync_directory = snapshot._fsync_directory
+
+    def recording_replace(source: str | Path, destination: str | Path) -> None:
+        replace_calls.append((Path(source), Path(destination)))
+        original_replace(source, destination)
+
+    def recording_fsync_directory(directory: Path) -> None:
+        fsync_directories.append(directory)
+        original_fsync_directory(directory)
+
+    monkeypatch.setattr(snapshot.os, "replace", recording_replace)
+    monkeypatch.setattr(snapshot, "_fsync_directory", recording_fsync_directory)
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+
+    source, destination = replace_calls[0]
+    assert source.parent == result.output_dir.parent
+    assert destination == result.output_dir
+    assert result.output_dir.parent in fsync_directories
