@@ -16,7 +16,13 @@ API_BASE = "https://api.github.com"
 BOT_LOGIN = "chatgpt-codex-connector[bot]"
 BOT_ID = 199175422
 FINAL_REVIEW_LABEL = "codex-final-review"
-BLOCKING_SEVERITY = re.compile(r"\bP[012]\b", re.IGNORECASE)
+POLICY_PATH = Path(".github/codex_auto_merge_policy.json")
+BLOCKING_FINDING = re.compile(r"!\[P[012] Badge\]\(", re.IGNORECASE)
+SENSITIVE_VALUE = re.compile(
+    r'(?:api[_\s]?key|secret|password|token|credential|private[_\s]?key)\s*[:=]\s*["\']'
+    r'(?!\$\{\{|\{\{|example|placeholder|test|your[-_\s]|xxx|TODO|CHANGEME)[^"\']{12,}["\']',
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,101 @@ def github_request(token: str, method: str, path: str, payload: dict[str, Any] |
         raise RuntimeError("GitHub review evidence response was not JSON") from exc
 
 
+def github_text_request(token: str, path: str) -> str:
+    url = f"{API_BASE}{path}" if path.startswith("/") else path
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3.diff",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "codex-final-review-evidence-gate",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError("GitHub static evidence request failed") from exc
+
+
+def load_policy() -> dict[str, Any]:
+    if POLICY_PATH.exists():
+        try:
+            policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+            if isinstance(policy, dict):
+                return policy
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {
+        "blocked_path_patterns": [
+            r"(^|/)(\.env|.*secret.*|.*credential.*|.*token.*|.*private.*|.*\.pem|.*\.key)$",
+        ],
+        "max_changed_files": 50,
+        "max_changed_lines": 5000,
+    }
+
+
+def compile_patterns(policy: dict[str, Any]) -> list[re.Pattern[str]]:
+    patterns: list[re.Pattern[str]] = []
+    for raw in policy.get("blocked_path_patterns", []):
+        if isinstance(raw, str) and raw.strip():
+            try:
+                patterns.append(re.compile(raw, re.IGNORECASE))
+            except re.error:
+                continue
+    return patterns
+
+
+def scan_diff(diff_text: str, patterns: list[re.Pattern[str]]) -> list[str]:
+    violations: list[str] = []
+    current_file = ""
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split(" ")
+            current_file = parts[3][2:] if len(parts) >= 4 and parts[3].startswith("b/") else ""
+            if current_file and any(pattern.search(current_file) for pattern in patterns):
+                violations.append(f"Blocked file: {current_file}")
+            continue
+        if line.startswith("+++ b/"):
+            current_file = line[6:]
+            continue
+        if line.startswith("+") and not line.startswith("+++") and SENSITIVE_VALUE.search(line[1:]):
+            violations.append(f"Hardcoded secret: {current_file}")
+    return list(dict.fromkeys(violations))
+
+
+def static_guard_issues(files: list[dict[str, Any]], diff_text: str) -> list[str]:
+    policy = load_policy()
+    issues = scan_diff(diff_text, compile_patterns(policy))
+    additions = sum(file.get("additions", 0) or 0 for file in files)
+    deletions = sum(file.get("deletions", 0) or 0 for file in files)
+    if len(files) > policy.get("max_changed_files", 50):
+        issues.append("Too many changed files")
+    if additions + deletions > policy.get("max_changed_lines", 5000):
+        issues.append("Too many changed lines")
+    for file in files:
+        status = (file.get("status") or "").lower()
+        if status in {"removed", "renamed", "copied"}:
+            issues.append(f"File {status}: {file.get('filename', '?')}")
+    return issues
+
+
+def get_static_issues(token: str, repo: str, pr_number: int) -> list[str]:
+    files: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = github_request(token, "GET", f"/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}")
+        if not isinstance(batch, list) or not all(isinstance(file, dict) for file in batch):
+            raise RuntimeError("GitHub static evidence was malformed")
+        files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    diff_text = github_text_request(token, f"/repos/{repo}/pulls/{pr_number}")
+    return static_guard_issues(files, diff_text)
+
+
 def trusted_codex_author(author: object) -> bool:
     if not isinstance(author, dict):
         return False
@@ -77,6 +178,8 @@ def unresolved_blocking_findings(threads: list[dict[str, Any]], review_id: int) 
         if thread.get("isResolved") is not False:
             continue
         comments = thread.get("comments")
+        if isinstance(comments, dict):
+            comments = comments.get("nodes")
         if not isinstance(comments, list):
             return True
         for comment in comments:
@@ -86,9 +189,9 @@ def unresolved_blocking_findings(threads: list[dict[str, Any]], review_id: int) 
             comment_review_id = comment.get("review_id")
             if comment_review_id is None and isinstance(review, dict):
                 comment_review_id = review.get("databaseId")
-            if comment_review_id != review_id or not trusted_codex_author(comment.get("author")):
+            if comment_review_id != review_id:
                 continue
-            if BLOCKING_SEVERITY.search(str(comment.get("body") or "")):
+            if BLOCKING_FINDING.search(str(comment.get("body") or "")):
                 return True
     return False
 
@@ -120,7 +223,7 @@ def evaluate_final_review(
         return GateResult(1, "Codex final review blocked: review is not at current head", "Pushes require a new final review.")
     if (review.get("state") or "").upper() != "APPROVED":
         return GateResult(1, "Codex final review blocked: not approved", "The trusted final review must be APPROVED.")
-    if BLOCKING_SEVERITY.search(str(review.get("body") or "")):
+    if BLOCKING_FINDING.search(str(review.get("body") or "")):
         return GateResult(1, "Codex final review blocked: unresolved P0/P1/P2", "Blocking severity was found in the final review.")
 
     review_id = review.get("id")
@@ -130,6 +233,21 @@ def evaluate_final_review(
         return GateResult(1, "Codex final review blocked: unresolved P0/P1/P2", "Blocking findings remain unresolved.")
 
     return GateResult(0, "Codex final review approved", "Trusted approval matches the current PR head with no unresolved P0/P1/P2.")
+
+
+def evaluate_gate(
+    pr: dict[str, Any],
+    reviews: list[dict[str, Any]],
+    review_threads: list[dict[str, Any]],
+    *,
+    static_issues: list[str] | None = None,
+    evidence_error: str = "",
+) -> GateResult:
+    if evidence_error:
+        return evaluate_final_review(pr, reviews, review_threads, evidence_error=evidence_error)
+    if static_issues:
+        return GateResult(1, "Codex final review blocked: static guard", "Deterministic static guard found blocked changes.")
+    return evaluate_final_review(pr, reviews, review_threads)
 
 
 def get_review_threads(token: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
@@ -144,7 +262,7 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!) {
           comments(first: 100) {
             nodes {
               body
-              author { login databaseId __typename }
+              author { login __typename }
               pullRequestReview { databaseId }
             }
             pageInfo { hasNextPage }
@@ -175,15 +293,16 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!) {
 
 
 def get_review_evidence(token: str, repo: str, pr_number: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    reviews = github_request(token, "GET", f"/repos/{repo}/pulls/{pr_number}/reviews?per_page=100")
-    if not isinstance(reviews, list) or not all(isinstance(review, dict) for review in reviews):
-        raise RuntimeError("GitHub review evidence was malformed")
-    if len(reviews) == 100:
-        more_reviews = github_request(token, "GET", f"/repos/{repo}/pulls/{pr_number}/reviews?per_page=1&page=2")
-        if not isinstance(more_reviews, list):
+    reviews: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = github_request(token, "GET", f"/repos/{repo}/pulls/{pr_number}/reviews?per_page=100&page={page}")
+        if not isinstance(batch, list) or not all(isinstance(review, dict) for review in batch):
             raise RuntimeError("GitHub review evidence was malformed")
-        if more_reviews:
-            raise RuntimeError("GitHub review evidence was incomplete")
+        reviews.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
     return reviews, get_review_threads(token, repo, pr_number)
 
 
@@ -207,10 +326,11 @@ def main() -> int:
         event = json.loads(event_path.read_text(encoding="utf-8"))
         pr = event["pull_request"]
         pr_number = int(pr["number"])
+        static_issues = get_static_issues(token, repo, pr_number)
         reviews, threads = get_review_evidence(token, repo, pr_number)
-        result = evaluate_final_review(pr, reviews, threads)
+        result = evaluate_gate(pr, reviews, threads, static_issues=static_issues)
     except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError, RuntimeError) as exc:
-        result = evaluate_final_review({}, [], [], evidence_error=type(exc).__name__)
+        result = evaluate_gate({}, [], [], evidence_error=type(exc).__name__)
 
     print(result.title)
     step_summary(result)
