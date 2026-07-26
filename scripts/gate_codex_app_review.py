@@ -330,13 +330,13 @@ THREADS_QUERY = """
 query($owner:String!, $name:String!, $number:Int!, $after:String) {
   repository(owner:$owner, name:$name) { pullRequest(number:$number) {
     reviewThreads(first:100, after:$after) { nodes { id isResolved comments(first:100) {
-      nodes { id body author { login databaseId __typename } pullRequestReview { id state author { login databaseId __typename } commit { oid } } }
+      nodes { id body author { login __typename ... on Bot { databaseId } } pullRequestReview { id state author { login __typename ... on Bot { databaseId } } commit { oid } } }
       pageInfo { hasNextPage endCursor } } } pageInfo { hasNextPage endCursor }
   } } }
 }"""
 THREAD_COMMENTS_QUERY = """
 query($thread:ID!, $after:String) { node(id:$thread) { ... on PullRequestReviewThread {
-  comments(first:100, after:$after) { nodes { id body author { login databaseId __typename } pullRequestReview { id state author { login databaseId __typename } commit { oid } } } pageInfo { hasNextPage endCursor } }
+  comments(first:100, after:$after) { nodes { id body author { login __typename ... on Bot { databaseId } } pullRequestReview { id state author { login __typename ... on Bot { databaseId } } commit { oid } } } pageInfo { hasNextPage endCursor } }
 } } }"""
 
 

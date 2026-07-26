@@ -363,3 +363,8 @@ class TestV2Contract:
         assert "issues: read" in workflow and "pull-requests: read" in workflow
         assert "issues: write" not in workflow and "pull-requests: write" not in workflow
         assert "id-token" not in workflow and "sleep" not in workflow.lower()
+
+    def test_review_thread_query_reads_bot_database_id_through_actor_fragment(self):
+        from scripts.gate_codex_app_review import THREADS_QUERY
+
+        assert "... on Bot { databaseId }" in THREADS_QUERY
