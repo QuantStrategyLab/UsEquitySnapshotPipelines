@@ -161,6 +161,20 @@ def test_readback_opens_canonical_file_no_follow_and_rejects_symlink(tmp_path: P
         snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
 
 
+def test_readback_rejects_symlink_root_before_enumeration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    root = tmp_path / "snapshot"
+    root.symlink_to(target, target_is_directory=True)
+
+    def fail_enumeration(self: Path) -> object:
+        raise AssertionError("symlink root must be rejected before enumeration")
+
+    monkeypatch.setattr(Path, "iterdir", fail_enumeration)
+    with pytest.raises(snapshot.SnapshotValidationError, match="root symlink"):
+        snapshot.verify_tqqq_r1_snapshot(root, expected_manifest_sha256="0" * 64)
+
+
 def test_readback_rejects_bad_identity_and_oversized_envelope(tmp_path: Path) -> None:
     result = snapshot.materialize_tqqq_r1_snapshot(_request(), tmp_path / "snapshot")
     envelope = _read_envelope(result.output_dir)

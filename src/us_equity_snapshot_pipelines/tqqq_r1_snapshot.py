@@ -319,10 +319,17 @@ def verify_tqqq_r1_snapshot(output_dir: str | Path, *, expected_manifest_sha256:
     output = Path(output_dir)
     try:
         root = output.lstat()
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read canonical envelope") from exc
+    if stat.S_ISLNK(root.st_mode):
+        _invalid("root symlink is not allowed")
+    if not stat.S_ISDIR(root.st_mode):
+        _invalid("canonical envelope layout is required")
+    try:
         names = sorted(member.name for member in output.iterdir())
     except OSError as exc:
         raise SnapshotValidationError("unable to read canonical envelope") from exc
-    if stat.S_ISLNK(root.st_mode) or not stat.S_ISDIR(root.st_mode) or names != [CANONICAL_FILENAME]:
+    if names != [CANONICAL_FILENAME]:
         _invalid("canonical envelope layout is required")
     raw = _read_regular_file_no_follow(output / CANONICAL_FILENAME)
     if type(expected_manifest_sha256) is not str or _sha256(raw) != expected_manifest_sha256:
