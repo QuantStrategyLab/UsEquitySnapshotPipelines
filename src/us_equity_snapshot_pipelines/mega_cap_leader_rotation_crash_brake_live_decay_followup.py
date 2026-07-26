@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import live_decay_monitor as decay
+from .pipelines import live_decay_monitor as decay
 from .mega_cap_leader_rotation_stress_readiness import parse_csv_ints, parse_csv_strings
 from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
