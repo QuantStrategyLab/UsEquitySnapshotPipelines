@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from decimal import Decimal
+from numbers import Integral
 import os
 import shutil
 import stat
@@ -133,6 +135,18 @@ def _is_canonical_session(value: object) -> bool:
     return type(value) is str and len(value) == 10 and value[4] == "-" and value[7] == "-" and value.replace("-", "").isdigit()
 
 
+def _safely_round_trips(raw: object, numeric: object) -> bool:
+    try:
+        canonical = float(numeric)
+        if isinstance(raw, Integral):
+            return int(canonical) == int(raw)
+        if isinstance(raw, Decimal):
+            return Decimal.from_float(canonical) == raw
+        return float(raw) == canonical
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
 def _normalize_prices(prices: object, *, canonical: bool = False) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("prices must be a DataFrame")
@@ -171,6 +185,8 @@ def _normalize_prices(prices: object, *, canonical: bool = False) -> pd.DataFram
     normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
     if normalized[PRICE_FIELD].isna().any() or not normalized[PRICE_FIELD].map(math.isfinite).all() or (normalized[PRICE_FIELD] <= 0).any():
         _invalid("adjusted_close must be positive finite")
+    if not all(_safely_round_trips(raw, numeric) for raw, numeric in zip(adjusted_close.tolist(), normalized[PRICE_FIELD].tolist())):
+        _invalid("adjusted_close cannot safely round-trip through canonical float")
     return normalized.sort_values(["session", "symbol"], kind="stable").reset_index(drop=True)
 
 
@@ -362,13 +378,22 @@ def materialize_tqqq_r1_snapshot(request: object, output_dir: str | Path) -> Sna
         _invalid(f"immutable output already exists: {destination}")
     _create_durable_parents(destination.parent)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    installed = False
     try:
         _write_staged_envelope(temporary / CANONICAL_FILENAME, raw)
         _fsync_directory(temporary)
         verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=digest)
         os.replace(temporary, destination)
+        installed = True
         _fsync_directory(destination.parent)
-    except Exception:
+    except Exception as exc:
+        if installed:
+            try:
+                shutil.rmtree(destination)
+                _fsync_directory(destination.parent)
+            except Exception as rollback_exc:
+                raise SnapshotValidationError("publication failed; destination state is unknown") from rollback_exc
+            raise SnapshotValidationError("publication failed; destination was rolled back") from exc
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return SnapshotResult(output_dir=destination, manifest_sha256=digest)

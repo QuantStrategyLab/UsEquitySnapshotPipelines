@@ -83,6 +83,11 @@ def test_admission_rejects_datetime_like_adjusted_close(tmp_path: Path, value: o
         snapshot.materialize_tqqq_r1_snapshot(_request(prices=_prices(value=value)), tmp_path / "snapshot")
 
 
+def test_admission_rejects_adjusted_close_that_cannot_safely_round_trip(tmp_path: Path) -> None:
+    with pytest.raises(snapshot.SnapshotValidationError, match="safely round-trip"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(prices=_prices(value=2**53 + 1)), tmp_path / "snapshot")
+
+
 # 5. Envelope scalars and containers have exact, not merely equality-compatible, types.
 @pytest.mark.parametrize("field,value", [("size", False), ("row_count", 2.0), ("symbols", {"QQQ": "TQQQ"})])
 def test_readback_rejects_non_exact_envelope_scalar_and_container_types(
@@ -136,6 +141,27 @@ def test_publish_fsyncs_staging_file_directory_destination_parent_and_new_ancest
     snapshot.materialize_tqqq_r1_snapshot(_request(), destination)
 
     assert len(fsync_calls) >= 5
+
+
+def test_publish_rolls_back_installed_destination_when_final_fsync_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "snapshot"
+    original_fsync_directory = snapshot._fsync_directory
+    failed = False
+
+    def fail_final_fsync(path: Path) -> None:
+        nonlocal failed
+        if path == destination.parent and not failed:
+            failed = True
+            raise OSError("simulated final fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(snapshot, "_fsync_directory", fail_final_fsync)
+    with pytest.raises(snapshot.SnapshotValidationError, match="publication"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(), destination)
+    assert not destination.exists()
+
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(), destination)
+    assert result.output_dir == destination
 
 
 # 9. Readback uses no-follow regular-file descriptor, bounds bytes, and validates identity/digest canonicalization.
