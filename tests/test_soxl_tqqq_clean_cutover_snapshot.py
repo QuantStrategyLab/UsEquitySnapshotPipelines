@@ -277,6 +277,16 @@ def test_readback_recomputes_and_binds_canonical_snapshot_id(tmp_path: Path) -> 
         _readback(result, tmp_path)
 
 
+def test_readback_rejects_integer_spelling_for_canonical_float(tmp_path: Path) -> None:
+    result = _materialize(tmp_path)
+    payload = json.loads((result.path / "payload.json").read_text())
+    manifest = json.loads((result.path / "manifest.json").read_text())
+    payload["rows"][0]["adjusted_close"] = 100
+    _resign_publication(result, payload, manifest)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        _readback(result, tmp_path)
+
+
 def test_readback_consumes_declared_member_size_across_short_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     result = _materialize(tmp_path)
     original_read = snapshot.os.read

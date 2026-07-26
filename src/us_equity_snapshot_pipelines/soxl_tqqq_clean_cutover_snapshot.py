@@ -431,7 +431,7 @@ def _validate_publication(manifest: dict[str, object], payload: dict[str, object
     if type(rows) is not list:
         _fail("invalid rows")
     normalized = _validate_rows(pair_id, rows, sessions)
-    if normalized != rows:
+    if normalized != rows or any(type(row["adjusted_close"]) is not float for row in rows):
         _fail("noncanonical rows")
     if _snapshot_id(pair_id, normalized) != snapshot_id:
         _fail("invalid derived snapshot_id")
