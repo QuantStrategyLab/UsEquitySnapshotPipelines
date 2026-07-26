@@ -7,10 +7,10 @@ import json
 import math
 import os
 import stat
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Mapping
 
 MAX_MEMBER_BYTES = 1_048_576
 _MEMBERS = frozenset({"manifest.json", "payload.json", "publication.json"})
@@ -151,23 +151,34 @@ def _calendar_sessions(path: str | Path, expected_sha256: str) -> frozenset[str]
     return frozenset(parsed)
 
 
+def _snapshot_id(pair_id: str, rows: list[dict[str, object]]) -> str:
+    return "clean_cutover_" + _sha256(_canonical({"pair_id": pair_id, "rows": rows}))[:24]
+
+
 def _validate_rows(pair_id: str, rows: Iterable[Mapping[str, object]], sessions: frozenset[str]) -> list[dict[str, object]]:
     if type(pair_id) is not str or pair_id not in PAIR_SYMBOLS:
         _fail("invalid pair_id")
-    try:
-        supplied = list(rows)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SnapshotValidationError("invalid rows") from exc
-    if not supplied:
-        _fail("invalid rows")
     normalized: list[dict[str, object]] = []
-    for row in supplied:
-        if type(row) is not dict or set(row) != {"session", "symbol", "adjusted_close"}:
+    serialized_rows_size = 0
+    try:
+        iterator = iter(rows)
+    except TypeError as exc:
+        raise SnapshotValidationError("invalid rows") from exc
+    for row in iterator:
+        if not isinstance(row, Mapping):
             _fail("invalid row")
-        session = _require_date(row["session"], "session")
-        symbol = _require_string(row["symbol"], "symbol")
-        value = row["adjusted_close"]
+        try:
+            plain_row = dict(row)
+        except (TypeError, ValueError) as exc:
+            raise SnapshotValidationError("invalid row") from exc
+        if set(plain_row) != {"session", "symbol", "adjusted_close"}:
+            _fail("invalid row")
+        session = _require_date(plain_row["session"], "session")
+        symbol = _require_string(plain_row["symbol"], "symbol")
+        value = plain_row["adjusted_close"]
         if type(value) not in {int, float}:
+            _fail("invalid adjusted_close")
+        if type(value) is int and abs(value) > 2**53:
             _fail("invalid adjusted_close")
         try:
             adjusted_close = float(value)
@@ -177,7 +188,13 @@ def _validate_rows(pair_id: str, rows: Iterable[Mapping[str, object]], sessions:
             _fail("invalid adjusted_close")
         if session not in sessions:
             _fail("session absent from calendar")
-        normalized.append({"session": session, "symbol": symbol, "adjusted_close": adjusted_close})
+        normalized_row = {"session": session, "symbol": symbol, "adjusted_close": adjusted_close}
+        serialized_rows_size += len(_canonical(normalized_row))
+        if serialized_rows_size > MAX_MEMBER_BYTES - 512:
+            _fail("rows exceed bound")
+        normalized.append(normalized_row)
+    if not normalized:
+        _fail("invalid rows")
     symbols = PAIR_SYMBOLS[pair_id]
     ordered_sessions = sorted({str(row["session"]) for row in normalized})
     expected = [(session, symbol) for session in ordered_sessions for symbol in symbols]
@@ -199,7 +216,7 @@ def _build_members(
     generated_at = _require_timestamp(generated_at, "generated_at")
     sessions = [str(row["session"]) for row in rows[::2]]
     symbols = PAIR_SYMBOLS[pair_id]
-    snapshot_id = "clean_cutover_" + _sha256(_canonical({"pair_id": pair_id, "rows": rows}))[:24]
+    snapshot_id = _snapshot_id(pair_id, rows)
     payload = {"pair_id": pair_id, "rows": rows, "snapshot_id": snapshot_id}
     payload_raw = _canonical(payload)
     payload_sha256 = _sha256(payload_raw)
@@ -254,7 +271,11 @@ def _write_member(directory_fd: int, name: str, raw: bytes) -> None:
         raise SnapshotValidationError("exclusive publication failed") from exc
 
 
-def _reserve(destination: str | Path) -> int:
+def _reserve(destination: str | Path) -> tuple[int, int, str]:
+    parent_fd = -1
+    directory_fd = -1
+    created = False
+    name = ""
     try:
         target = Path(destination)
         if target.name in {"", ".", ".."}:
@@ -264,18 +285,53 @@ def _reserve(destination: str | Path) -> int:
         if stat.S_ISLNK(parent_info.st_mode):
             _fail("invalid destination parent")
         parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
-        try:
-            if not stat.S_ISDIR(os.fstat(parent_fd).st_mode):
-                _fail("invalid destination parent")
-            os.mkdir(target.name, 0o700, dir_fd=parent_fd)
-            directory_fd = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
-        finally:
-            os.close(parent_fd)
-        return directory_fd
+        if not stat.S_ISDIR(os.fstat(parent_fd).st_mode):
+            _fail("invalid destination parent")
+        name = target.name
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        created = True
+        directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
+        return directory_fd, parent_fd, name
     except SnapshotValidationError:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if created and parent_fd >= 0:
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            os.close(parent_fd)
         raise
     except (OSError, TypeError, ValueError) as exc:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if created and parent_fd >= 0:
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            os.close(parent_fd)
         raise SnapshotValidationError("destination reservation failed") from exc
+
+
+def _cleanup_reserved(parent_fd: int, directory_fd: int, destination_name: str) -> None:
+    try:
+        for name in _MEMBERS:
+            try:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+        os.rmdir(destination_name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError:
+        pass
 
 
 def materialize_clean_cutover_snapshot(
@@ -294,27 +350,31 @@ def materialize_clean_cutover_snapshot(
     manifest, payload, publication, snapshot_id, manifest_sha256, payload_sha256 = _build_members(
         pair_id, normalized_rows, source_identity, producer_identity, generated_at
     )
-    directory_fd = _reserve(destination)
+    directory_fd, parent_fd, destination_name = _reserve(destination)
     try:
+        os.fsync(parent_fd)
         _write_member(directory_fd, "manifest.json", manifest)
         _write_member(directory_fd, "payload.json", payload)
         _write_member(directory_fd, "publication.json", publication)
         os.fsync(directory_fd)
+        result = strict_readback_clean_cutover_snapshot(
+            destination,
+            calendar_path=calendar_path,
+            calendar_sha256=calendar_sha256,
+            expected_manifest_sha256=manifest_sha256,
+        )
+        if result.snapshot_id != snapshot_id or result.payload_sha256 != payload_sha256:
+            _fail("strict readback mismatch")
+        return result
     except SnapshotValidationError:
+        _cleanup_reserved(parent_fd, directory_fd, destination_name)
         raise
-    except OSError as exc:
+    except (OSError, ValueError, OverflowError) as exc:
+        _cleanup_reserved(parent_fd, directory_fd, destination_name)
         raise SnapshotValidationError("publication failed") from exc
     finally:
         os.close(directory_fd)
-    result = strict_readback_clean_cutover_snapshot(
-        destination,
-        calendar_path=calendar_path,
-        calendar_sha256=calendar_sha256,
-        expected_manifest_sha256=manifest_sha256,
-    )
-    if result.snapshot_id != snapshot_id or result.payload_sha256 != payload_sha256:
-        _fail("strict readback mismatch")
-    return result
+        os.close(parent_fd)
 
 
 def _read_member(directory_fd: int, name: str) -> bytes:
@@ -326,10 +386,17 @@ def _read_member(directory_fd: int, name: str) -> bytes:
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 _fail("invalid publication member")
-            raw = os.read(fd, info.st_size)
-            if len(raw) != info.st_size or os.read(fd, 1):
+            chunks: list[bytes] = []
+            remaining = info.st_size
+            while remaining:
+                chunk = os.read(fd, min(65_536, remaining))
+                if not chunk:
+                    _fail("invalid publication member")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(fd, 1):
                 _fail("invalid publication member")
-            return raw
+            return b"".join(chunks)
         finally:
             os.close(fd)
     except SnapshotValidationError:
@@ -366,6 +433,8 @@ def _validate_publication(manifest: dict[str, object], payload: dict[str, object
     normalized = _validate_rows(pair_id, rows, sessions)
     if normalized != rows:
         _fail("noncanonical rows")
+    if _snapshot_id(pair_id, normalized) != snapshot_id:
+        _fail("invalid derived snapshot_id")
     coverage = manifest["coverage"]
     if type(coverage) is not dict or set(coverage) != {"completed_sessions", "first_session", "last_session", "per_symbol_counts", "row_count"}:
         _fail("invalid coverage")

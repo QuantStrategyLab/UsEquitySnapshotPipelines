@@ -1,6 +1,7 @@
 import hashlib
 import json
 import threading
+from types import MappingProxyType
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,21 @@ def _resign_manifest(result: snapshot.SnapshotResult, manifest: dict[str, object
     (result.path / "publication.json").write_bytes(_canonical(marker))
 
 
+def _resign_publication(result: snapshot.SnapshotResult, payload: dict[str, object], manifest: dict[str, object]) -> None:
+    payload_raw = _canonical(payload)
+    manifest["payload_sha256"] = hashlib.sha256(payload_raw).hexdigest()
+    manifest_raw = _canonical(manifest)
+    marker = {
+        "complete": True,
+        "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "payload_sha256": hashlib.sha256(payload_raw).hexdigest(),
+        "snapshot_id": manifest["snapshot_id"],
+    }
+    (result.path / "payload.json").write_bytes(payload_raw)
+    (result.path / "manifest.json").write_bytes(manifest_raw)
+    (result.path / "publication.json").write_bytes(_canonical(marker))
+
+
 def test_schema_binds_each_pair_to_exact_ordered_symbols() -> None:
     schema = json.loads(Path("schemas/soxl_tqqq_clean_cutover_snapshot.v1.schema.json").read_text())
     assert schema["allOf"]
@@ -101,6 +117,34 @@ def test_materializer_normalizes_scalar_and_numeric_failures(tmp_path: Path, bad
     calendar, digest = _calendar(tmp_path)
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", rows, tmp_path / "snapshot", calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+
+
+def test_materializer_rejects_non_lossless_integer_adjusted_close(tmp_path: Path) -> None:
+    rows = _rows()
+    rows[0]["adjusted_close"] = 9_007_199_254_740_993
+    calendar, digest = _calendar(tmp_path)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", rows, tmp_path / "snapshot", calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+
+
+def test_materializer_accepts_and_normalizes_declared_mapping_rows(tmp_path: Path) -> None:
+    calendar, digest = _calendar(tmp_path)
+    rows = [MappingProxyType(row) for row in _rows()]
+    result = snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", rows, tmp_path / "snapshot", calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+    assert _readback(result, tmp_path) == result
+
+
+def test_materializer_bounds_incremental_row_ingestion(tmp_path: Path) -> None:
+    calendar, digest = _calendar(tmp_path)
+
+    def unbounded_rows() -> object:
+        for index in range(20_000):
+            symbol = snapshot.PAIR_SYMBOLS["QQQ_TQQQ"][index % 2]
+            yield {"session": "2026-01-02", "symbol": symbol, "adjusted_close": 100.0}
+        raise AssertionError("rows iterable was consumed without a bound")
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", unbounded_rows(), tmp_path / "snapshot", calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
 
 
 def test_calendar_requires_regular_nonsymlink_file_and_exact_external_sha(tmp_path: Path) -> None:
@@ -220,6 +264,55 @@ def test_readback_rechecks_calendar_membership_and_external_manifest_digest(tmp_
         snapshot.strict_readback_clean_cutover_snapshot(result.path, calendar_path=calendar, calendar_sha256=digest)
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.strict_readback_clean_cutover_snapshot(result.path, calendar_path=tmp_path / "calendar.json", calendar_sha256=hashlib.sha256((tmp_path / "calendar.json").read_bytes()).hexdigest(), expected_manifest_sha256="0" * 64)
+
+
+def test_readback_recomputes_and_binds_canonical_snapshot_id(tmp_path: Path) -> None:
+    result = _materialize(tmp_path)
+    payload = json.loads((result.path / "payload.json").read_text())
+    manifest = json.loads((result.path / "manifest.json").read_text())
+    payload["snapshot_id"] = "clean_cutover_bogus"
+    manifest["snapshot_id"] = "clean_cutover_bogus"
+    _resign_publication(result, payload, manifest)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        _readback(result, tmp_path)
+
+
+def test_readback_consumes_declared_member_size_across_short_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _materialize(tmp_path)
+    original_read = snapshot.os.read
+
+    def short_read(fd: int, size: int) -> bytes:
+        return original_read(fd, max(1, size // 2))
+
+    monkeypatch.setattr(snapshot.os, "read", short_read)
+    assert _readback(result, tmp_path) == result
+
+
+def test_materializer_fsyncs_parent_after_reserving_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_fsync = snapshot.os.fsync
+    parent_inode = tmp_path.stat().st_ino
+    synced_inodes: list[int] = []
+
+    def record_fsync(fd: int) -> None:
+        synced_inodes.append(snapshot.os.fstat(fd).st_ino)
+        original_fsync(fd)
+
+    monkeypatch.setattr(snapshot.os, "fsync", record_fsync)
+    _materialize(tmp_path)
+    assert parent_inode in synced_inodes
+
+
+def test_materializer_cleans_up_its_own_partial_publication_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar, digest = _calendar(tmp_path)
+    destination = tmp_path / "snapshot"
+
+    def fail_write(_: int, __: str, ___: bytes) -> None:
+        raise snapshot.SnapshotValidationError("injected write failure")
+
+    monkeypatch.setattr(snapshot, "_write_member", fail_write)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", _rows(), destination, calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+    assert not destination.exists()
 
 
 def test_readback_rejects_mismatched_coverage_and_completion_marker(tmp_path: Path) -> None:
