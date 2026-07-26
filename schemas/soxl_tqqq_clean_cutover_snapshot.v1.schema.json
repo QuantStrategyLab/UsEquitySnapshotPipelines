@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$vocabulary": {"https://json-schema.org/draft/2020-12/vocab/format-assertion": true},
   "$id": "https://quantstrategylab.github.io/schemas/soxl_tqqq_clean_cutover_snapshot.v1.schema.json",
   "title": "Offline SOXL/TQQQ clean-cutover snapshot manifest",
   "type": "object",
@@ -21,9 +22,9 @@
       "additionalProperties": false,
       "required": ["first_available_session", "last_available_session", "completed_sessions", "row_count", "per_symbol_counts"],
       "properties": {
-        "first_available_session": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-        "last_available_session": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-        "completed_sessions": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "minItems": 1, "uniqueItems": true},
+        "first_available_session": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "last_available_session": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "completed_sessions": {"type": "array", "items": {"type": "string", "format": "date", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "minItems": 1, "uniqueItems": true},
         "row_count": {"type": "integer", "minimum": 2},
         "per_symbol_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}
       }
@@ -35,7 +36,7 @@
     "source_identity": {"type": "string", "minLength": 1},
     "producer_identity": {"type": "string", "minLength": 1},
     "producer_contract_version": {"const": "soxl_tqqq_clean_cutover_snapshot.materializer.v1"},
-    "materialized_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "materialized_at": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
     "materialization_receipt": {"const": "offline_fixture"},
     "compatibility": {
       "type": "object",
@@ -51,5 +52,49 @@
       }
     },
     "size": {"const": 0}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"pair_id": {"const": "QQQ_TQQQ"}}, "required": ["pair_id"]},
+      "then": {
+        "properties": {
+          "symbols": {"const": ["QQQ", "TQQQ"]},
+          "coverage": {
+            "properties": {
+              "per_symbol_counts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["QQQ", "TQQQ"],
+                "properties": {
+                  "QQQ": {"type": "integer", "minimum": 1},
+                  "TQQQ": {"type": "integer", "minimum": 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"pair_id": {"const": "SOXX_SOXL"}}, "required": ["pair_id"]},
+      "then": {
+        "properties": {
+          "symbols": {"const": ["SOXX", "SOXL"]},
+          "coverage": {
+            "properties": {
+              "per_symbol_counts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["SOXX", "SOXL"],
+                "properties": {
+                  "SOXX": {"type": "integer", "minimum": 1},
+                  "SOXL": {"type": "integer", "minimum": 1}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

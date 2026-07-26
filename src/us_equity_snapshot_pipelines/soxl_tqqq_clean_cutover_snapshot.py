@@ -23,6 +23,7 @@ ADJUSTMENT_SEMANTICS = "adjusted_close"
 PRODUCER_CONTRACT_VERSION = "soxl_tqqq_clean_cutover_snapshot.materializer.v1"
 INVALID_EVIDENCE = "INVALID_EVIDENCE"
 SIZE = 0
+MAX_MEMBER_BYTES = 1_048_576
 OUTPUT_FILENAMES = ("manifest.json", "payload.json", "publication.json")
 PAIR_SYMBOLS = {
     "QQQ_TQQQ": ("QQQ", "TQQQ"),
@@ -125,9 +126,16 @@ def _validate_rows(
         adjusted_close = row["adjusted_close"]
         if not _is_iso_date(session):
             _invalid("session must be a canonical ISO date")
+        if date.fromisoformat(session).weekday() >= 5:
+            _invalid("session must be a trading session")
         if type(symbol) is not str or symbol not in symbols:
             _invalid("each session must contain exactly the pair symbols")
-        if type(adjusted_close) not in (int, float) or isinstance(adjusted_close, bool) or not math.isfinite(adjusted_close) or adjusted_close <= 0:
+        if type(adjusted_close) not in (int, float) or isinstance(adjusted_close, bool) or adjusted_close <= 0:
+            _invalid("adjusted_close must be positive finite")
+        try:
+            if not math.isfinite(adjusted_close):
+                _invalid("adjusted_close must be positive finite")
+        except OverflowError:
             _invalid("adjusted_close must be positive finite")
         normalized.append({"session": session, "symbol": symbol, "adjusted_close": adjusted_close})
     if not normalized:
@@ -180,6 +188,7 @@ def _validate_manifest(manifest: object, payload_sha256: str, expected_calendar_
         or manifest["plugin"] != PLUGIN
         or manifest["offline_fixture"] is not True
         or manifest["compatibility"] != _compatibility()
+        or type(manifest["size"]) is not int
         or manifest["size"] != SIZE
         or type(manifest["source_identity"]) is not str
         or not manifest["source_identity"]
@@ -202,13 +211,19 @@ def _validate_manifest(manifest: object, payload_sha256: str, expected_calendar_
         or coverage["last_available_session"] != completed[-1]
         or type(coverage["row_count"]) is not int
         or coverage["row_count"] != len(completed) * len(symbols)
-        or coverage["per_symbol_counts"] != {symbol: len(completed) for symbol in symbols}
+        or type(coverage["per_symbol_counts"]) is not dict
+        or set(coverage["per_symbol_counts"]) != set(symbols)
+        or any(
+            type(coverage["per_symbol_counts"][symbol]) is not int
+            or coverage["per_symbol_counts"][symbol] != len(completed)
+            for symbol in symbols
+        )
     ):
         _invalid("invalid coverage")
     return pair_id, symbols
 
 
-def _read_members(output_dir: Path) -> dict[str, bytes]:
+def _member_paths(output_dir: Path) -> dict[str, Path]:
     if output_dir.is_symlink() or not output_dir.is_dir():
         _invalid("snapshot root must be a regular directory")
     try:
@@ -217,16 +232,22 @@ def _read_members(output_dir: Path) -> dict[str, bytes]:
         raise SnapshotValidationError(f"{INVALID_EVIDENCE}: unable to read snapshot") from exc
     if names != tuple(sorted(OUTPUT_FILENAMES)):
         _invalid("publication members are not exact")
-    members: dict[str, bytes] = {}
+    members: dict[str, Path] = {}
     for name in OUTPUT_FILENAMES:
         path = output_dir / name
         if path.is_symlink() or not path.is_file():
             _invalid("publication members must be regular files")
-        try:
-            members[name] = path.read_bytes()
-        except OSError as exc:
-            raise SnapshotValidationError(f"{INVALID_EVIDENCE}: unable to read snapshot") from exc
+        members[name] = path
     return members
+
+
+def _read_member(path: Path) -> bytes:
+    try:
+        if path.stat().st_size > MAX_MEMBER_BYTES:
+            _invalid("publication member exceeds bounded readback size")
+        return path.read_bytes()
+    except OSError as exc:
+        raise SnapshotValidationError(f"{INVALID_EVIDENCE}: unable to read snapshot") from exc
 
 
 def verify_clean_cutover_snapshot(
@@ -241,14 +262,16 @@ def verify_clean_cutover_snapshot(
     if not _is_sha256(expected_calendar_sha256):
         _invalid("expected calendar SHA-256 is required")
     output = Path(output_dir)
-    members = _read_members(output)
-    manifest_sha256 = _sha256(members["manifest.json"])
+    members = _member_paths(output)
+    manifest_bytes = _read_member(members["manifest.json"])
+    manifest_sha256 = _sha256(manifest_bytes)
     if manifest_sha256 != expected_manifest_sha256:
         _invalid("manifest digest mismatch")
-    manifest = _parse_object(members["manifest.json"], "manifest")
-    payload = _parse_object(members["payload.json"], "payload")
-    publication = _parse_object(members["publication.json"], "publication")
-    pair_id, symbols = _validate_manifest(manifest, _sha256(members["payload.json"]), expected_calendar_sha256)
+    manifest = _parse_object(manifest_bytes, "manifest")
+    payload_bytes = _read_member(members["payload.json"])
+    payload = _parse_object(payload_bytes, "payload")
+    publication = _parse_object(_read_member(members["publication.json"]), "publication")
+    pair_id, symbols = _validate_manifest(manifest, _sha256(payload_bytes), expected_calendar_sha256)
     if type(payload) is not dict or set(payload) != {"schema", "pair_id", "symbols", "adjustment_semantics", "rows"}:
         _invalid("payload fields are not exact")
     if payload["schema"] != SCHEMA or payload["pair_id"] != pair_id or payload["symbols"] != list(symbols) or payload["adjustment_semantics"] != ADJUSTMENT_SEMANTICS:
@@ -258,7 +281,14 @@ def verify_clean_cutover_snapshot(
     if [row["session"] for row in rows[::len(symbols)]] != completed:
         _invalid("payload coverage mismatch")
     snapshot_id = f"sha256-{expected_manifest_sha256}"
-    if publication != {"schema": "soxl_tqqq_clean_cutover_publication.v1", "complete": True, "snapshot_id": snapshot_id, "manifest_sha256": expected_manifest_sha256}:
+    if (
+        type(publication) is not dict
+        or set(publication) != {"schema", "complete", "snapshot_id", "manifest_sha256"}
+        or publication["schema"] != "soxl_tqqq_clean_cutover_publication.v1"
+        or publication["complete"] is not True
+        or publication["snapshot_id"] != snapshot_id
+        or publication["manifest_sha256"] != expected_manifest_sha256
+    ):
         _invalid("invalid publication marker")
     return SnapshotResult(output_dir=output, snapshot_id=snapshot_id)
 
