@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -23,212 +21,105 @@ def _fixture_prices() -> pd.DataFrame:
     )
 
 
-def _write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+def _request(tmp_path: Path, prices: pd.DataFrame | None = None, **overrides: object) -> object:
+    return snapshot.SnapshotRequest(prices=prices if prices is not None else _fixture_prices(), output_dir=tmp_path / "snapshot", **overrides)
 
 
-def _refresh_trusted_metadata(output_dir: Path) -> str:
-    manifest_path = output_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["prices_sha256"] = hashlib.sha256((output_dir / "prices.csv").read_bytes()).hexdigest()
-    _write_json(manifest_path, manifest)
-    _write_json(
-        output_dir / "sha256sums.json",
-        {
-            name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
-            for name in ("prices.csv", "manifest.json", "validation.json")
-        },
-    )
-    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+def test_materialize_accepts_only_typed_request_and_writes_one_canonical_envelope(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+
+    assert tuple(path.name for path in result.output_dir.iterdir()) == ("snapshot.json",)
+    envelope = json.loads((result.output_dir / "snapshot.json").read_text(encoding="utf-8"))
+    assert envelope["contract_version"] == "tqqq_r1_qqq_tqqq_immutable_snapshot.v3"
+    assert envelope["calendar"] == "XNYS.regular.v1"
+    assert envelope["request"] == {"mode": "core_only", "plugin": "ABSENT_DISABLED", "size": 0}
+    assert envelope["snapshot_identity"] == result.snapshot_identity
+    assert snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_snapshot_sha256=result.snapshot_sha256) == result
 
 
-def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-
-    assert tuple(sorted(path.name for path in result.output_dir.iterdir())) == (
-        "manifest.json",
-        "prices.csv",
-        "sha256sums.json",
-        "validation.json",
-    )
-    assert (result.output_dir / "prices.csv").read_text(encoding="utf-8") == (
-        "session,symbol,adjusted_close\n"
-        "2010-01-04,QQQ,45.25\n"
-        "2010-01-04,TQQQ,10.5\n"
-        "2010-01-05,QQQ,46\n"
-        "2010-01-05,TQQQ,11\n"
-    )
-    assert json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))["contract_version"] == (
-        "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
-    )
-    assert snapshot.verify_tqqq_r1_snapshot(
-        result.output_dir, expected_manifest_sha256=result.manifest_sha256
-    ) == result
+def test_materialize_rejects_untyped_legacy_arguments(tmp_path: Path) -> None:
+    with pytest.raises(snapshot.SnapshotValidationError, match="SnapshotRequest"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
 
 
-def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_path: Path) -> None:
-    prices = _fixture_prices()
-    prices.loc[prices["symbol"].eq("QQQ") & prices["session"].eq("2010-01-04"), "adjusted_close"] = 1.0000000000000002
+def test_admission_rejects_invalid_request_before_destination_io(tmp_path: Path) -> None:
+    output_dir = tmp_path / "not-created" / "snapshot"
 
-    result = snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    with pytest.raises(snapshot.SnapshotValidationError, match="size must be zero"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path / "not-created", size=1))
 
-    actual = pd.read_csv(result.output_dir / "prices.csv").loc[lambda frame: frame["symbol"].eq("QQQ"), "adjusted_close"].iloc[0]
-    assert actual == 1.0000000000000002
-
-
-@pytest.mark.parametrize("column", ["session", "symbol", "adjusted_close"])
-def test_materialize_rejects_duplicate_required_column_labels(tmp_path: Path, column: str) -> None:
-    prices = _fixture_prices()
-    prices = pd.concat([prices, prices[[column]]], axis=1)
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="required columns must appear exactly once"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    assert not output_dir.parent.exists()
 
 
-@pytest.mark.parametrize(
-    "value",
-    [True, np.bool_(True)],
-    ids=["native-bool", "numpy-bool"],
-)
-def test_materialize_rejects_native_and_numpy_boolean_adjusted_close(tmp_path: Path, value: object) -> None:
-    prices = _fixture_prices().astype({"adjusted_close": object})
-    prices.loc[0, "adjusted_close"] = value
+def test_admission_rejects_non_xnys_regular_session(tmp_path: Path) -> None:
+    prices = _fixture_prices().replace("2010-01-05", "2010-04-02")
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    with pytest.raises(snapshot.SnapshotValidationError, match="XNYS regular session"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
+
+    prices = _fixture_prices().replace("2010-01-05", "2010-12-31")
+    with pytest.raises(snapshot.SnapshotValidationError, match="XNYS regular session"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
 
 
-def test_materialize_rejects_mixed_boolean_adjusted_close(tmp_path: Path) -> None:
-    prices = _fixture_prices().astype({"adjusted_close": object})
-    prices.loc[0, "adjusted_close"] = np.bool_(True)
+def test_admission_rejects_row_count_above_explicit_bound(tmp_path: Path) -> None:
+    prices = pd.concat([_fixture_prices()] * (snapshot.MAX_ROW_COUNT // 4 + 1), ignore_index=True)
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    with pytest.raises(snapshot.SnapshotValidationError, match="row count"):
+        snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path, prices))
 
 
-@pytest.mark.parametrize(
-    "prices",
-    [
-        _fixture_prices().assign(adjusted_close=[complex(10.5), complex(45.25), complex(11), complex(46)]),
-        _fixture_prices().assign(
-            adjusted_close=np.array([np.complex64(10.5), np.complex64(45.25), np.complex64(11), np.complex64(46)])
-        ),
-        _fixture_prices().assign(adjusted_close=pd.Series([10.5, 45.25, 11, 46], dtype="complex128")),
-        _fixture_prices().assign(adjusted_close=pd.Series([complex(10.5), 45.25, 11, 46], dtype=object)),
-    ],
-    ids=["native-complex", "numpy-complex", "complex-dtype", "object-complex"],
-)
-def test_materialize_rejects_native_numpy_dtype_and_object_complex_adjusted_close(
-    tmp_path: Path, prices: pd.DataFrame
+def test_readback_recomputes_snapshot_identity_even_with_new_trusted_file_hash(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+    envelope_path = result.output_dir / "snapshot.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    envelope["records"][0]["adjusted_close"] = "999"
+    envelope_path.write_text(json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    forged_file_hash = hashlib.sha256(envelope_path.read_bytes()).hexdigest()
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="snapshot identity mismatch"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_snapshot_sha256=forged_file_hash)
+
+
+def test_readback_requires_exact_single_regular_file_and_size_bound(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+    (result.output_dir / "extra").write_text("not allowed", encoding="utf-8")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unexpected output files"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_snapshot_sha256=result.snapshot_sha256)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "oversized"])
+def test_readback_rejects_non_regular_or_oversized_envelope(tmp_path: Path, kind: str) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
+    envelope_path = result.output_dir / "snapshot.json"
+    if kind == "symlink":
+        target = tmp_path / "target.json"
+        target.write_bytes(envelope_path.read_bytes())
+        envelope_path.unlink()
+        envelope_path.symlink_to(target)
+    else:
+        envelope_path.write_bytes(b"x" * (snapshot.MAX_ENVELOPE_BYTES + 1))
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="bounded regular non-symlink file"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_snapshot_sha256=result.snapshot_sha256)
+
+
+def test_publish_fsyncs_temporary_file_and_parent_directory_before_and_after_atomic_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(snapshot.SnapshotValidationError, match="complex adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    fsync_calls: list[int] = []
+    replace_calls: list[tuple[Path, Path]] = []
+    original_replace = snapshot.os.replace
 
+    monkeypatch.setattr(snapshot.os, "fsync", lambda fd: fsync_calls.append(fd))
 
-@pytest.mark.parametrize(
-    "sessions",
-    [
-        [
-            datetime(2010, 1, 4),
-            datetime(2010, 1, 4, tzinfo=timezone.utc),
-            datetime(2010, 1, 5),
-            datetime(2010, 1, 5, tzinfo=timezone.utc),
-        ],
-        ["2010-01-04T00:00:00+00:00", "2010-01-04T00:00:00-05:00", "2010-01-05T00:00:00+00:00", "2010-01-05T00:00:00-05:00"],
-    ],
-    ids=["mixed-naive-aware", "mixed-offsets"],
-)
-def test_materialize_rejects_mixed_timezone_session_inputs(tmp_path: Path, sessions: list[object]) -> None:
-    prices = _fixture_prices().assign(session=sessions)
+    def recording_replace(source: str | Path, destination: str | Path) -> None:
+        replace_calls.append((Path(source), Path(destination)))
+        original_replace(source, destination)
 
-    with pytest.raises(snapshot.SnapshotValidationError, match="timezone-aware session"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+    monkeypatch.setattr(snapshot.os, "replace", recording_replace)
+    snapshot.materialize_tqqq_r1_snapshot(_request(tmp_path))
 
-
-def test_materialize_rejects_datetime_adjusted_close(tmp_path: Path) -> None:
-    prices = _fixture_prices().assign(adjusted_close=pd.Timestamp("2026-07-25"))
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="datetime-like adjusted_close"):
-        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
-
-
-def test_verify_rejects_noncanonical_symbol_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    (output_dir / "prices.csv").write_text(
-        "session,symbol,adjusted_close\n"
-        "2010-01-04, QQQ ,45.25\n"
-        "2010-01-04,TQQQ,10.5\n"
-        "2010-01-05,QQQ,46\n"
-        "2010-01-05,TQQQ,11\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="canonical symbol"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
-
-
-def test_verify_rejects_noncanonical_raw_session_encoding(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    (output_dir / "prices.csv").write_text(
-        "session,symbol,adjusted_close\n"
-        "2010-01-04T00:00:00,QQQ,45.25\n"
-        "2010-01-04T00:00:00,TQQQ,10.5\n"
-        "2010-01-05T00:00:00,QQQ,46\n"
-        "2010-01-05T00:00:00,TQQQ,11\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="canonical session"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
-
-
-def test_verify_rejects_boolean_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    (output_dir / "prices.csv").write_text(
-        "session,symbol,adjusted_close\n"
-        "2010-01-04,QQQ,True\n"
-        "2010-01-04,TQQQ,True\n"
-        "2010-01-05,QQQ,True\n"
-        "2010-01-05,TQQQ,True\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="boolean adjusted_close"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
-
-
-def test_verify_rejects_mixed_offset_session_readback(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    (output_dir / "prices.csv").write_text(
-        "session,symbol,adjusted_close\n"
-        "2010-01-04T00:00:00+00:00,QQQ,45.25\n"
-        "2010-01-04T00:00:00-05:00,TQQQ,10.5\n"
-        "2010-01-05T00:00:00+00:00,QQQ,46\n"
-        "2010-01-05T00:00:00-05:00,TQQQ,11\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="timezone-aware session"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
-
-
-def test_verify_rejects_invalid_metadata_scalar_types(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    _write_json(output_dir / "validation.json", {"valid": 1, "row_count": 4.0, "symbols": ["QQQ", "TQQQ"]})
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="invalid validation"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
-
-
-def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
-    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
-    output_dir = result.output_dir
-    (output_dir / "prices.csv").write_bytes(b"\xff")
-
-    with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
-        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+    assert len(fsync_calls) >= 3
+    assert replace_calls[0][0].parent == replace_calls[0][1].parent
