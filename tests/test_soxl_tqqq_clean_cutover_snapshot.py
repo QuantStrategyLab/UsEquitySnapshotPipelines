@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import threading
 from types import MappingProxyType
 from pathlib import Path
@@ -323,6 +324,52 @@ def test_materializer_cleans_up_its_own_partial_publication_on_failure(tmp_path:
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", _rows(), destination, calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
     assert not destination.exists()
+
+
+def test_calendar_fifo_is_opened_nonblocking_before_regular_file_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar, digest = _calendar(tmp_path)
+    fifo = tmp_path / "calendar.fifo"
+    os.mkfifo(fifo)
+    original_open = snapshot.os.open
+
+    def require_nonblocking(path: str | bytes | os.PathLike[str], flags: int, *args: object, **kwargs: object) -> int:
+        if os.fspath(path) == os.fspath(fifo) and not flags & os.O_NONBLOCK:
+            raise AssertionError("FIFO admission attempted a blocking open")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(snapshot.os, "open", require_nonblocking)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", _rows(), tmp_path / "snapshot", calendar_path=fifo, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+
+
+def test_materializer_bounds_identities_before_manifest_serialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar, digest = _calendar(tmp_path)
+    original_canonical = snapshot._canonical
+
+    def reject_manifest_serialization(value: object) -> bytes:
+        if type(value) is dict and "source_identity" in value:
+            raise AssertionError("oversized identity reached manifest serialization")
+        return original_canonical(value)
+
+    monkeypatch.setattr(snapshot, "_canonical", reject_manifest_serialization)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", _rows(), tmp_path / "snapshot", calendar_path=calendar, calendar_sha256=digest, source_identity="x" * (snapshot.MAX_MEMBER_BYTES + 1), producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+
+
+def test_cleanup_never_removes_a_replacement_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calendar, digest = _calendar(tmp_path)
+    destination = tmp_path / "snapshot"
+    moved = tmp_path / "moved-reservation"
+
+    def replace_then_fail(_: int, __: str, ___: bytes) -> None:
+        destination.rename(moved)
+        destination.mkdir()
+        raise snapshot.SnapshotValidationError("injected write failure")
+
+    monkeypatch.setattr(snapshot, "_write_member", replace_then_fail)
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_clean_cutover_snapshot("QQQ_TQQQ", _rows(), destination, calendar_path=calendar, calendar_sha256=digest, source_identity="source", producer_identity="producer", generated_at="2026-01-05T12:00:00Z")
+    assert destination.is_dir()
 
 
 def test_readback_rejects_mismatched_coverage_and_completion_marker(tmp_path: Path) -> None:

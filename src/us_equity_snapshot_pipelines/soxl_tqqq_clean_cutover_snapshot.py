@@ -15,6 +15,7 @@ from pathlib import Path
 MAX_MEMBER_BYTES = 1_048_576
 _MEMBERS = frozenset({"manifest.json", "payload.json", "publication.json"})
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 PAIR_SYMBOLS = {"QQQ_TQQQ": ("QQQ", "TQQQ"), "SOXX_SOXL": ("SOXX", "SOXL")}
 
 
@@ -75,6 +76,13 @@ def _require_string(value: object, name: str, *, nonempty: bool = True) -> str:
     return value
 
 
+def _require_identity(value: object, name: str) -> str:
+    value = _require_string(value, name)
+    if len(value) > MAX_MEMBER_BYTES // 16:
+        _fail(f"invalid {name}")
+    return value
+
+
 def _require_sha256(value: object, name: str) -> str:
     value = _require_string(value, name)
     if len(value) != 64 or value.lower() != value or any(char not in "0123456789abcdef" for char in value):
@@ -106,7 +114,7 @@ def _require_timestamp(value: object, name: str) -> str:
 
 def _read_regular(path: str | Path, label: str) -> bytes:
     try:
-        fd = os.open(os.fspath(path), os.O_RDONLY | _NOFOLLOW)
+        fd = os.open(os.fspath(path), os.O_RDONLY | _NOFOLLOW | _NONBLOCK)
     except (OSError, TypeError, ValueError) as exc:
         raise SnapshotValidationError(f"unable to open {label}") from exc
     try:
@@ -211,8 +219,8 @@ def _build_members(
     producer_identity: str,
     generated_at: str,
 ) -> tuple[bytes, bytes, bytes, str, str, str]:
-    source_identity = _require_string(source_identity, "source_identity")
-    producer_identity = _require_string(producer_identity, "producer_identity")
+    source_identity = _require_identity(source_identity, "source_identity")
+    producer_identity = _require_identity(producer_identity, "producer_identity")
     generated_at = _require_timestamp(generated_at, "generated_at")
     sessions = [str(row["session"]) for row in rows[::2]]
     symbols = PAIR_SYMBOLS[pair_id]
@@ -320,6 +328,10 @@ def _reserve(destination: str | Path) -> tuple[int, int, str]:
 
 def _cleanup_reserved(parent_fd: int, directory_fd: int, destination_name: str) -> None:
     try:
+        reserved = os.fstat(directory_fd)
+        named = os.stat(destination_name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (reserved.st_dev, reserved.st_ino):
+            return
         for name in _MEMBERS:
             try:
                 info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
