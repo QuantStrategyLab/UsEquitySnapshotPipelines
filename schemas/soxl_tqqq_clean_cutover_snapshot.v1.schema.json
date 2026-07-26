@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quantstrategylab.github.io/schemas/soxl_tqqq_clean_cutover_snapshot.v1.schema.json",
+  "title": "Offline SOXL/TQQQ clean-cutover snapshot manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "pair_id", "symbols", "payload_sha256", "calendar_sha256", "timezone", "coverage",
+    "adjustment_semantics", "evidence_generation", "plugin", "offline_fixture", "source_identity",
+    "producer_identity", "producer_contract_version", "materialized_at", "materialization_receipt", "compatibility", "size"
+  ],
+  "properties": {
+    "schema": {"const": "soxl_tqqq_clean_cutover_snapshot.v1"},
+    "pair_id": {"enum": ["QQQ_TQQQ", "SOXX_SOXL"]},
+    "symbols": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2, "uniqueItems": true},
+    "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "calendar_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timezone": {"const": "America/New_York"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first_available_session", "last_available_session", "completed_sessions", "row_count", "per_symbol_counts"],
+      "properties": {
+        "first_available_session": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "last_available_session": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "completed_sessions": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "minItems": 1, "uniqueItems": true},
+        "row_count": {"type": "integer", "minimum": 2},
+        "per_symbol_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "adjustment_semantics": {"const": "adjusted_close"},
+    "evidence_generation": {"const": "clean_cutover_v1"},
+    "plugin": {"const": "ABSENT_DISABLED"},
+    "offline_fixture": {"const": true},
+    "source_identity": {"type": "string", "minLength": 1},
+    "producer_identity": {"type": "string", "minLength": 1},
+    "producer_contract_version": {"const": "soxl_tqqq_clean_cutover_snapshot.materializer.v1"},
+    "materialized_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "materialization_receipt": {"const": "offline_fixture"},
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacy_read", "legacy_write", "dual_read", "auto_migration", "fallback", "side_by_side_namespace"],
+      "properties": {
+        "legacy_read": {"const": "historical_read_only"},
+        "legacy_write": {"const": "forbidden"},
+        "dual_read": {"const": "forbidden"},
+        "auto_migration": {"const": "forbidden"},
+        "fallback": {"const": "forbidden"},
+        "side_by_side_namespace": {"const": "required_new_namespace"}
+      }
+    },
+    "size": {"const": 0}
+  }
+}
