@@ -1,133 +1,111 @@
-"""Tests for gate_codex_app_review.py — static guard + App review gate."""
+"""Tests for the read-only GitHub Codex App final-review evidence gate."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.gate_codex_app_review import (
-    app_decision,
-    compile_patterns,
-    get_codex_review,
-    load_policy,
-    scan_diff,
-    BOT_LOGIN,
-)
+import scripts.gate_codex_app_review as gate
 
 
-# ── app_decision ─────────────────────────────────────────────────────────────
+HEAD_SHA = "a" * 40
+BOT_REVIEWER = {
+    "login": "chatgpt-codex-connector[bot]",
+    "id": 199175422,
+    "type": "Bot",
+}
 
 
-class TestAppDecision:
-    def test_changes_requested_blocks(self):
-        rc, title, _ = app_decision({"state": "CHANGES_REQUESTED", "submitted_at": "", "html_url": "", "body": "Bad"})
-        assert rc == 1
-        assert "BLOCKED" in title
-
-    def test_approved_passes(self):
-        rc, _, _ = app_decision({"state": "APPROVED", "submitted_at": "", "html_url": "", "body": ""})
-        assert rc == 0
-
-    def test_commented_passes(self):
-        rc, _, _ = app_decision({"state": "COMMENTED", "submitted_at": "", "html_url": "", "body": ""})
-        assert rc == 0
-
-    def test_dismissed_passes(self):
-        rc, _, _ = app_decision({"state": "DISMISSED", "submitted_at": "", "html_url": "", "body": ""})
-        assert rc == 0
-
-    def test_none_passes(self):
-        rc, title, _ = app_decision(None)
-        assert rc == 0
-        assert "no review" in title.lower()
-
-    def test_lowercase_handled(self):
-        rc, _, _ = app_decision({"state": "changes_requested", "submitted_at": "", "html_url": "", "body": ""})
-        assert rc == 1
+def pr(*, draft: bool = False, labels: list[str] | None = None, head: str = HEAD_SHA) -> dict[str, object]:
+    return {
+        "draft": draft,
+        "head": {"sha": head},
+        "labels": [{"name": label} for label in (labels or ["codex-final-review"])],
+    }
 
 
-# ── get_codex_review ─────────────────────────────────────────────────────────
+def approved_review(*, commit_id: str = HEAD_SHA, reviewer: dict[str, object] | None = None, body: str = "") -> dict[str, object]:
+    return {
+        "id": 17,
+        "commit_id": commit_id,
+        "state": "APPROVED",
+        "body": body,
+        "user": reviewer or BOT_REVIEWER,
+        "submitted_at": "2026-07-26T00:00:00Z",
+        "html_url": "https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines/pull/1#pullrequestreview-17",
+    }
 
 
-class TestGetCodexReview:
-    def test_returns_latest_bot_review(self):
-        from unittest.mock import patch
-        mock = [
-            {"id": 1, "user": {"login": "other"}, "state": "COMMENTED"},
-            {"id": 2, "user": {"login": BOT_LOGIN}, "state": "APPROVED"},
-            {"id": 3, "user": {"login": BOT_LOGIN}, "state": "CHANGES_REQUESTED"},
-        ]
-        with patch("scripts.gate_codex_app_review.github_request", return_value=mock):
-            r = get_codex_review("t", "r", 1)
-            assert r["state"] == "CHANGES_REQUESTED"
-
-    def test_none_when_no_bot(self):
-        from unittest.mock import patch
-        with patch("scripts.gate_codex_app_review.github_request",
-                   return_value=[{"user": {"login": "human"}}]):
-            assert get_codex_review("t", "r", 1) is None
-
-    def test_none_when_empty(self):
-        from unittest.mock import patch
-        with patch("scripts.gate_codex_app_review.github_request", return_value=[]):
-            assert get_codex_review("t", "r", 1) is None
-
-    def test_none_when_malformed(self):
-        from unittest.mock import patch
-        with patch("scripts.gate_codex_app_review.github_request", return_value={"bad": True}):
-            assert get_codex_review("t", "r", 1) is None
+def assert_blocked(result: object, expected: str) -> None:
+    assert result.exit_code == 1
+    assert expected in result.title
 
 
-# ── scan_diff ────────────────────────────────────────────────────────────────
+def test_draft_pr_is_blocked() -> None:
+    assert_blocked(gate.evaluate_final_review(pr(draft=True), [approved_review()], []), "draft")
 
 
-class TestScanDiff:
-    def test_detects_hardcoded_secret(self):
-        fake_key = "sk-" + "abcdefghijklmnopqrstuvwxyz1234567890"
-        diff = f'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+api_key = "{fake_key}"'
-        issues = scan_diff(diff, [])
-        assert len(issues) == 1
-        assert "Hardcoded secret" in issues[0]
-
-    def test_detects_blocked_file(self):
-        from scripts.gate_codex_app_review import compile_patterns
-        patterns = compile_patterns(load_policy())
-        diff = 'diff --git a/config/.env b/config/.env\nnew file mode 100644\n--- /dev/null\n+++ b/config/.env'
-        issues = scan_diff(diff, patterns)
-        assert len(issues) == 1
-        assert "Blocked file" in issues[0]
-
-    def test_pass_clean_diff(self):
-        diff = 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+def foo():\n+    return 42'
-        assert scan_diff(diff, []) == []
-
-    def test_skips_placeholder_secrets(self):
-        diff = 'diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1,2 @@\n+password = "your-password-here"'
-        assert scan_diff(diff, []) == []
-
-    def test_detects_credential_file(self):
-        from scripts.gate_codex_app_review import compile_patterns
-        patterns = compile_patterns(load_policy())
-        diff = 'diff --git a/src/credentials.py b/src/credentials.py\n--- a/src/credentials.py\n+++ b/src/credentials.py'
-        issues = scan_diff(diff, patterns)
-        assert len(issues) == 1
-        assert "credentials" in issues[0].lower()
+def test_missing_explicit_final_review_intent_is_blocked() -> None:
+    payload = pr()
+    payload["labels"] = []
+    assert_blocked(gate.evaluate_final_review(payload, [approved_review()], []), "intent")
 
 
-# ── policy ───────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("wrong_reviewer", [
+    {**BOT_REVIEWER, "login": "untrusted[bot]"},
+    {**BOT_REVIEWER, "id": 1},
+])
+def test_wrong_reviewer_identity_or_app_is_blocked(wrong_reviewer: dict[str, object]) -> None:
+    assert_blocked(gate.evaluate_final_review(pr(), [approved_review(reviewer=wrong_reviewer)], []), "trusted")
 
 
-class TestPolicy:
-    def test_load_default(self):
-        p = load_policy()
-        assert p["version"] == 1
-        assert len(p["blocked_path_patterns"]) > 0
+def test_stale_review_head_is_blocked() -> None:
+    assert_blocked(gate.evaluate_final_review(pr(), [approved_review(commit_id="b" * 40)], []), "current head")
 
-    def test_patterns_compile(self):
-        patterns = compile_patterns(load_policy())
-        assert len(patterns) > 0
-        for pat in patterns:
-            assert pat.search(".env")
+
+@pytest.mark.parametrize("severity", ["P0", "P1", "P2"])
+def test_unresolved_p0_p1_p2_findings_are_blocked(severity: str) -> None:
+    threads = [{
+        "isResolved": False,
+        "comments": [{"review_id": 17, "body": f"{severity}: fail closed", "author": BOT_REVIEWER}],
+    }]
+    assert_blocked(gate.evaluate_final_review(pr(), [approved_review()], threads), "unresolved P0/P1/P2")
+
+
+def test_api_error_timeout_or_missing_review_is_blocked() -> None:
+    assert_blocked(gate.evaluate_final_review(pr(), [], [], evidence_error="API timeout"), "evidence unavailable")
+    assert_blocked(gate.evaluate_final_review(pr(), [], []), "missing")
+
+
+def test_push_after_review_invalidates_the_old_review() -> None:
+    assert_blocked(
+        gate.evaluate_final_review(pr(head="c" * 40), [approved_review(commit_id=HEAD_SHA)], []),
+        "current head",
+    )
+
+
+def test_observer_sources_cannot_invoke_a_reviewer_or_external_provider() -> None:
+    workflow = (ROOT / ".github/workflows/codex_review_gate.yml").read_text(encoding="utf-8").lower()
+    script = (ROOT / "scripts/gate_codex_app_review.py").read_text(encoding="utf-8").lower()
+    observed = workflow + "\n" + script
+    for forbidden in (
+        "aiauditbridge",
+        "workflow_dispatch",
+        "repository_dispatch",
+        "time.sleep",
+        "id-token: write",
+        "openai_api_key",
+        "anthropic_api_key",
+        "provider_api_key",
+    ):
+        assert forbidden not in observed
+
+
+def test_exact_head_trusted_approved_review_with_no_blockers_passes() -> None:
+    result = gate.evaluate_final_review(pr(), [approved_review()], [])
+    assert result.exit_code == 0
+    assert "approved" in result.title
