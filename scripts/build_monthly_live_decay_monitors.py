@@ -15,7 +15,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from us_equity_snapshot_pipelines.live_decay_monitor import (  # noqa: E402
+from us_equity_snapshot_pipelines.pipelines.live_decay_monitor import (  # noqa: E402
     DEFAULT_PRIMARY_BENCHMARK,
     DEFAULT_SECONDARY_BENCHMARK,
     DEFAULT_WINDOWS,

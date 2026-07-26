@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines import live_strategy_health as health
+from us_equity_snapshot_pipelines.pipelines import live_strategy_health as health
 
 
 def _return_matrix() -> pd.DataFrame:

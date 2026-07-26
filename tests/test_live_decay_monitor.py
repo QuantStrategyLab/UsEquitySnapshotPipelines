@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines import live_decay_monitor as decay
+from us_equity_snapshot_pipelines.pipelines import live_decay_monitor as decay
 
 
 def _wide_returns() -> pd.DataFrame:

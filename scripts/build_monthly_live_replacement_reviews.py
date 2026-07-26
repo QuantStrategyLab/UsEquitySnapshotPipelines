@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from us_equity_snapshot_pipelines.live_replacement_review import build_live_replacement_review  # noqa: E402
-from us_equity_snapshot_pipelines.russell_1000_multi_factor_defensive_snapshot import read_table  # noqa: E402
+from us_equity_snapshot_pipelines.pipelines.russell_1000_multi_factor_defensive_snapshot import read_table  # noqa: E402
 
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "data" / "output"
 

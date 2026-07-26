@@ -173,7 +173,7 @@ class LeapsGrowthOverlayResearchTests(unittest.TestCase):
 
         self.assertEqual(
             scripts["useq-research-index-leaps-growth-overlay"],
-            "us_equity_snapshot_pipelines.leaps_growth_overlay_research:main",
+            "us_equity_snapshot_pipelines.research.leaps_growth_overlay_research:main",
         )
 
 

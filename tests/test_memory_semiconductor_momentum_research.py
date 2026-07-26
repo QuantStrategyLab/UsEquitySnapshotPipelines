@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines import memory_semiconductor_momentum_research as research
+from us_equity_snapshot_pipelines.research import memory_semiconductor_momentum_research as research
 
 
 def _price_history() -> pd.DataFrame:
