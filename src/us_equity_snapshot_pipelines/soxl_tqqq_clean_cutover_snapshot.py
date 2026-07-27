@@ -1,6 +1,7 @@
 """Offline trusted snapshot boundary for the QQQ/TQQQ clean-cutover package."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -35,11 +36,13 @@ class ExternalBindings:
     source_sha256: str
     calendar_sha256: str
     manifest_sha256: str
+    content_sha256: str
 
     def __post_init__(self) -> None:
         _digest(self.source_sha256, "source_sha256")
         _digest(self.calendar_sha256, "calendar_sha256")
         _digest(self.manifest_sha256, "manifest_sha256")
+        _digest(self.content_sha256, "content_sha256")
 
 
 def _canonical_json(value: dict[str, Any]) -> bytes:
@@ -84,10 +87,14 @@ def _validate(payload: object, bindings: ExternalBindings) -> dict[str, Any]:
         "snapshot_id": f"sha256-{bindings.manifest_sha256}",
     }
     for key, expected in constants.items():
-        if payload.get(key) != expected:
+        if type(expected) is bool:
+            valid = type(payload.get(key)) is bool and payload.get(key) is expected
+        else:
+            valid = payload.get(key) == expected
+        if not valid:
             raise SnapshotValidationError(f"{key} mismatch")
     sessions = payload["sessions"]
-    if not isinstance(sessions, list) or not sessions or sessions != sorted(set(sessions)):
+    if not isinstance(sessions, list) or not sessions or any(type(s) is not str for s in sessions) or sessions != sorted(set(sessions)):
         raise SnapshotValidationError("sessions must be sorted and unique")
     for session in sessions:
         if type(session) is not str or len(session) != 10:
@@ -155,16 +162,20 @@ class TrustedSnapshotPackage:
         except ValueError as exc:
             raise SnapshotValidationError("path escapes root") from exc
         target = root_path / relative
-        current = root_path
-        for part in relative.parts:
-            current = current / part
-            if current.is_symlink():
-                raise SnapshotValidationError("symlink path component")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        root_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        fd = root_fd
         try:
-            fd = os.open(target, flags)
+            for part in relative.parts[:-1]:
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            parent_fd = fd
+            fd = os.open(relative.parts[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+            os.close(parent_fd)
         except OSError as exc:
-            raise SnapshotValidationError("snapshot readback failed") from exc
+            os.close(fd)
+            message = "symlink path component" if exc.errno == errno.ELOOP else "snapshot readback failed"
+            raise SnapshotValidationError(message) from exc
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise SnapshotValidationError("snapshot must be regular file")
@@ -173,9 +184,13 @@ class TrustedSnapshotPackage:
                 raw += chunk
         finally:
             os.close(fd)
+        if hashlib.sha256(raw).hexdigest() != bindings.content_sha256:
+            raise SnapshotValidationError("content digest mismatch")
         try:
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except SnapshotValidationError:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise SnapshotValidationError("invalid snapshot JSON") from exc
         checked = _validate(payload, bindings)
         if _canonical_json(checked) != raw:

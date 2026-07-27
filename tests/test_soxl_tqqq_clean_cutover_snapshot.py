@@ -45,14 +45,14 @@ def write_snapshot(path: Path, value: dict | None = None) -> None:
     path.write_bytes((json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode())
 
 
-def bindings() -> ExternalBindings:
-    return ExternalBindings(source_sha256=SOURCE, calendar_sha256=CALENDAR, manifest_sha256=MANIFEST)
+def bindings(path: Path) -> ExternalBindings:
+    return ExternalBindings(source_sha256=SOURCE, calendar_sha256=CALENDAR, manifest_sha256=MANIFEST, content_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def test_readback_and_canonical_serializer(tmp_path: Path) -> None:
     path = tmp_path / "snapshot.json"
     write_snapshot(path)
-    package = TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings())
+    package = TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings(path))
     assert package.snapshot_id == f"sha256-{MANIFEST}"
     assert package.to_bytes() == path.read_bytes()
 
@@ -61,11 +61,19 @@ def test_external_digest_binding_and_file_safety(tmp_path: Path) -> None:
     path = tmp_path / "snapshot.json"
     write_snapshot(path)
     with pytest.raises(SnapshotValidationError, match="source_sha256"):
-        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=ExternalBindings("9" * 64, CALENDAR, MANIFEST))
+        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=ExternalBindings("9" * 64, CALENDAR, MANIFEST, hashlib.sha256(path.read_bytes()).hexdigest()))
     link = tmp_path / "link.json"
     link.symlink_to(path)
     with pytest.raises(SnapshotValidationError, match="symlink"):
-        TrustedSnapshotPackage.read(link, root=tmp_path, bindings=bindings())
+        TrustedSnapshotPackage.read(link, root=tmp_path, bindings=bindings(path))
+
+
+def test_content_digest_is_external_binding(tmp_path: Path) -> None:
+    path = tmp_path / "snapshot.json"
+    write_snapshot(path)
+    supplied = ExternalBindings(SOURCE, CALENDAR, MANIFEST, "9" * 64)
+    with pytest.raises(SnapshotValidationError, match="content digest"):
+        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=supplied)
 
 
 def test_duplicate_keys_and_noncanonical_bytes_rejected(tmp_path: Path) -> None:
@@ -73,13 +81,13 @@ def test_duplicate_keys_and_noncanonical_bytes_rejected(tmp_path: Path) -> None:
     raw = json.dumps(payload(), sort_keys=True, separators=(",", ":")).replace("\"pair_id\":\"QQQ_TQQQ\"", "\"pair_id\":\"QQQ_TQQQ\",\"pair_id\":\"QQQ_TQQQ\"")
     path.write_text(raw)
     with pytest.raises(SnapshotValidationError, match="duplicate"):
-        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings())
+        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings(path))
     write_snapshot(path)
     path.write_bytes(path.read_bytes().replace(b"\"12.5\"", b"12.50"))
     with pytest.raises(SnapshotValidationError, match="canonical"):
-        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings())
+        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings(path))
 
 
 def test_public_boundary_rejects_raw_inputs() -> None:
     with pytest.raises(TypeError):
-        TrustedSnapshotPackage(b"raw", bindings())  # type: ignore[arg-type]
+        TrustedSnapshotPackage(b"raw")  # type: ignore[arg-type]
