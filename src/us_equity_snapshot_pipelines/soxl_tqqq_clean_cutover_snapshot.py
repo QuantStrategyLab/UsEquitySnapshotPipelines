@@ -112,7 +112,7 @@ def _validate(payload: object, bindings: ExternalBindings) -> dict[str, Any]:
         if not isinstance(row, dict) or set(row) != {"session", "symbol", "adjusted_close"}:
             raise SnapshotValidationError("row fields do not match canonical contract")
         session, symbol = row["session"], row["symbol"]
-        if session not in sessions or symbol not in _SYMBOLS:
+        if type(session) is not str or type(symbol) is not str or session not in sessions or symbol not in _SYMBOLS:
             raise SnapshotValidationError("row identity mismatch")
         _canonical_decimal(row["adjusted_close"])
         expected_pairs.append((session, symbol))
@@ -162,7 +162,12 @@ class TrustedSnapshotPackage:
         except ValueError as exc:
             raise SnapshotValidationError("path escapes root") from exc
         target = root_path / relative
-        root_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        if not relative.parts:
+            raise SnapshotValidationError("snapshot path must be a file")
+        try:
+            root_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            raise SnapshotValidationError("snapshot root open failed") from exc
         fd = root_fd
         try:
             for part in relative.parts[:-1]:

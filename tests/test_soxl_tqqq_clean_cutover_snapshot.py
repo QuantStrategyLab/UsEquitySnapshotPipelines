@@ -76,6 +76,17 @@ def test_content_digest_is_external_binding(tmp_path: Path) -> None:
         TrustedSnapshotPackage.read(path, root=tmp_path, bindings=supplied)
 
 
+def test_invalid_root_and_row_identity_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(SnapshotValidationError, match="must be a file"):
+        TrustedSnapshotPackage.read(tmp_path, root=tmp_path, bindings=ExternalBindings(SOURCE, CALENDAR, MANIFEST, "0" * 64))
+    path = tmp_path / "snapshot.json"
+    value = payload()
+    value["rows"][0]["symbol"] = []
+    write_snapshot(path, value)
+    with pytest.raises(SnapshotValidationError, match="row identity"):
+        TrustedSnapshotPackage.read(path, root=tmp_path, bindings=bindings(path))
+
+
 def test_duplicate_keys_and_noncanonical_bytes_rejected(tmp_path: Path) -> None:
     path = tmp_path / "snapshot.json"
     raw = json.dumps(payload(), sort_keys=True, separators=(",", ":")).replace("\"pair_id\":\"QQQ_TQQQ\"", "\"pair_id\":\"QQQ_TQQQ\",\"pair_id\":\"QQQ_TQQQ\"")
