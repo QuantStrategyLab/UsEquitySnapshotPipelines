@@ -1,4 +1,7 @@
-"""Pure local materializer for the TQQQ R1 QQQ/TQQQ immutable price snapshot."""
+"""Pure local materializer for the TQQQ R1 QQQ/TQQQ immutable price snapshot.
+
+The filesystem contract requires Linux or macOS with POSIX descriptor-relative no-follow support.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +30,9 @@ PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+_FILESYSTEM_RUNTIME_ERROR = (
+    "TQQQ R1 snapshot filesystem contract requires Linux or macOS POSIX descriptor-anchored no-follow support"
+)
 
 
 class SnapshotValidationError(ValueError):
@@ -89,7 +95,7 @@ def _canonical_adjusted_close(value: object) -> int | float:
     except ValueError:
         integer = None
     if integer is not None and str(integer) == value:
-        if integer <= 0:
+        if integer <= 0 or integer > sys.float_info.max:
             _invalid("adjusted_close must be positive finite")
         return integer
     try:
@@ -216,6 +222,19 @@ def _snapshot_member_names(root_fd: int) -> tuple[str, ...]:
         return tuple(sorted(entry.name for entry in entries))
 
 
+def _require_supported_filesystem_runtime() -> None:
+    supported_platform = sys.platform == "darwin" or sys.platform.startswith("linux")
+    if (
+        os.name != "posix"
+        or not supported_platform
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or os.open not in getattr(os, "supports_dir_fd", ())
+        or os.stat not in getattr(os, "supports_follow_symlinks", ())
+    ):
+        _invalid(_FILESYSTEM_RUNTIME_ERROR)
+
+
 def _read_regular_file_at(root_fd: int, name: str) -> bytes:
     flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     member_fd = -1
@@ -243,8 +262,7 @@ def _read_regular_file_at(root_fd: int, name: str) -> bytes:
 
 
 def _read_snapshot_members(output: Path) -> dict[str, bytes]:
-    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
-        _invalid("descriptor-anchored snapshot readback is unavailable")
+    _require_supported_filesystem_runtime()
     root_fd = -1
     try:
         root_fd = os.open(
@@ -284,6 +302,7 @@ def verify_tqqq_r1_snapshot(
     *,
     expected_manifest_sha256: str,
 ) -> SnapshotResult:
+    """Verify an immutable snapshot on a supported Linux/macOS filesystem runtime."""
     output = Path(output_dir)
     members = _read_snapshot_members(output)
 
@@ -368,7 +387,8 @@ def materialize_tqqq_r1_snapshot(
     plugin: str = PLUGIN,
     size: int = 0,
 ) -> SnapshotResult:
-    """Validate fixture/local input and atomically write the four immutable contract files."""
+    """Validate and atomically write the four immutable files on a supported Linux/macOS runtime."""
+    _require_supported_filesystem_runtime()
     if mode != MODE:
         _invalid("mode must be core_only")
     if plugin != PLUGIN:

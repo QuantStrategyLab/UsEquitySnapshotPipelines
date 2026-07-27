@@ -222,6 +222,61 @@ def test_verify_rejects_lossy_numeric_text_readback(tmp_path: Path) -> None:
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
 
 
+def test_verify_rejects_huge_integer_as_validation_error(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    huge_integer = "1" + ("0" * 309)
+    (output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        f"2010-01-04,QQQ,{huge_integer}\n"
+        "2010-01-04,TQQQ,10.5\n"
+        "2010-01-05,QQQ,46\n"
+        "2010-01-05,TQQQ,11\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        output_dir / "sha256sums.json",
+        {
+            name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+            for name in ("prices.csv", "manifest.json", "validation.json")
+        },
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="positive finite"):
+        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+@pytest.mark.parametrize(
+    "missing_capability",
+    ["platform", "no-follow", "directory-open", "dir-fd", "follow-symlinks"],
+)
+def test_snapshot_apis_explicitly_reject_unsupported_filesystem_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_capability: str,
+) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    if missing_capability == "platform":
+        monkeypatch.setattr(snapshot.sys, "platform", "win32")
+    elif missing_capability == "no-follow":
+        monkeypatch.delattr(snapshot.os, "O_NOFOLLOW")
+    elif missing_capability == "directory-open":
+        monkeypatch.delattr(snapshot.os, "O_DIRECTORY")
+    elif missing_capability == "dir-fd":
+        monkeypatch.setattr(snapshot.os, "supports_dir_fd", snapshot.os.supports_dir_fd - {snapshot.os.open})
+    else:
+        monkeypatch.setattr(
+            snapshot.os,
+            "supports_follow_symlinks",
+            snapshot.os.supports_follow_symlinks - {snapshot.os.stat},
+        )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="requires Linux or macOS"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+    with pytest.raises(snapshot.SnapshotValidationError, match="requires Linux or macOS"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "unsupported")
+
+
 def test_verify_stays_anchored_when_root_path_is_replaced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
