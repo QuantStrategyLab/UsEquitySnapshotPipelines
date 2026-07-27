@@ -56,7 +56,7 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _canonical_decimal(value: object) -> str:
-    if type(value) is not str or not value or value.startswith("+") or value.startswith("-"):
+    if type(value) is not str or not value or value.startswith(("+", "-")):
         raise SnapshotValidationError("adjusted_close must be canonical")
     if value.startswith("0") and value != "0" and not value.startswith("0."):
         raise SnapshotValidationError("adjusted_close must be canonical")
@@ -137,7 +137,7 @@ class TrustedSnapshotPackage:
         raise TypeError("TrustedSnapshotPackage must be created by read()")
 
     @classmethod
-    def _create(cls, path: Path, raw: bytes, payload: dict[str, Any]) -> "TrustedSnapshotPackage":
+    def _create(cls, path: Path, raw: bytes, payload: dict[str, Any]) -> TrustedSnapshotPackage:
         self = object.__new__(cls)
         object.__setattr__(self, "path", path)
         object.__setattr__(self, "snapshot_id", payload["snapshot_id"])
@@ -145,7 +145,7 @@ class TrustedSnapshotPackage:
         return self
 
     @classmethod
-    def read(cls, path: str | os.PathLike[str], *, root: str | os.PathLike[str], bindings: ExternalBindings) -> "TrustedSnapshotPackage":
+    def read(cls, path: str | os.PathLike[str], *, root: str | os.PathLike[str], bindings: ExternalBindings) -> TrustedSnapshotPackage:
         root_path = Path(root).resolve()
         candidate = Path(path)
         lexical = candidate if candidate.is_absolute() else Path.cwd() / candidate
