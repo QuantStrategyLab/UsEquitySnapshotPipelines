@@ -1,1 +1,23 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"clean_cutover_v1 snapshot","type":"object","required":["schema_version","evidence_generation","pair_id","plugin_state","size_zero","source_sha256","calendar_sha256","external_manifest_sha256","sessions","rows","snapshot_identity"],"properties":{"schema_version":{"const":"soxl_tqqq_clean_cutover_snapshot.v1"},"evidence_generation":{"const":"clean_cutover_v1"},"pair_id":{"const":"QQQ_TQQQ"},"plugin_state":{"const":"ABSENT_DISABLED"},"size_zero":{"const":true},"sessions":{"type":"array","items":{"type":"string"}},"rows":{"type":"array"}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "clean_cutover_v1 snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evidence_generation", "pair_id", "plugin_state", "size_zero", "source_sha256", "calendar_sha256", "external_manifest_sha256", "adjusted_price_field", "timezone", "sessions", "rows", "snapshot_identity", "content_sha256"],
+  "properties": {
+    "schema_version": {"const": "soxl_tqqq_clean_cutover_snapshot.v1"},
+    "evidence_generation": {"const": "clean_cutover_v1"},
+    "pair_id": {"const": "QQQ_TQQQ"},
+    "plugin_state": {"const": "ABSENT_DISABLED"},
+    "size_zero": {"const": true},
+    "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "calendar_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adjusted_price_field": {"const": "adjusted_close"},
+    "timezone": {"const": "UTC"},
+    "sessions": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "minItems": 1, "uniqueItems": true},
+    "rows": {"type": "array", "minItems": 2, "items": {"type": "object", "additionalProperties": false, "required": ["session", "symbol", "adjusted_close"], "properties": {"session": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "symbol": {"enum": ["QQQ", "TQQQ"]}, "adjusted_close": {"type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"}}}},
+    "snapshot_identity": {"type": "string", "pattern": "^sha256-[0-9a-f]{64}$"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

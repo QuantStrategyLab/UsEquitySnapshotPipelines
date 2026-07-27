@@ -37,11 +37,11 @@ def test_materialize_and_strict_readback(tmp_path: Path):
 def test_no_clobber_and_digest_binding(tmp_path: Path):
     path = tmp_path / "snapshot.json"
     q = quarantined()
-    materialize_clean_cutover_snapshot(q, path, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST)
+    materialize_clean_cutover_snapshot(q, path, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST, sessions=["2026-07-24"])
     with pytest.raises(SnapshotValidationError, match="destination already exists"):
-        materialize_clean_cutover_snapshot(q, path, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST)
+        materialize_clean_cutover_snapshot(q, path, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST, sessions=["2026-07-24"])
     with pytest.raises(SnapshotValidationError, match="source digest mismatch"):
-        materialize_clean_cutover_snapshot(q, tmp_path / "other.json", source_sha256=SOURCE, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST)
+        materialize_clean_cutover_snapshot(q, tmp_path / "other.json", source_sha256=SOURCE, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST, sessions=["2026-07-24"])
 
 
 @pytest.mark.parametrize("rows", [
@@ -53,13 +53,13 @@ def test_rows_fail_closed(tmp_path: Path, rows):
     payload = json.dumps(rows).encode()
     q = quarantine_raw_payload(payload, {"source_sha256": hashlib.sha256(payload).hexdigest(), "retrieved_at": "now", "source_identity": "synthetic"})
     with pytest.raises(SnapshotValidationError):
-        materialize_clean_cutover_snapshot(q, tmp_path / "snapshot.json", source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST)
+        materialize_clean_cutover_snapshot(q, tmp_path / "snapshot.json", source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST, sessions=["2026-07-24"])
 
 
 def test_readback_rejects_symlink(tmp_path: Path):
     target = tmp_path / "target.json"
     q = quarantined()
-    materialize_clean_cutover_snapshot(q, target, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST)
+    materialize_clean_cutover_snapshot(q, target, source_sha256=q.receipt.source_sha256, calendar_sha256=CALENDAR, external_manifest_sha256=MANIFEST, sessions=["2026-07-24"])
     link = tmp_path / "link.json"
     link.symlink_to(target)
     with pytest.raises(SnapshotValidationError, match="symlink"):

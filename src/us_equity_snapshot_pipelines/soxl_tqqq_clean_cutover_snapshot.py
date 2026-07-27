@@ -10,6 +10,7 @@ import os
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,12 @@ def _canonical_number(value: Any) -> str:
     if not number.is_finite() or number <= 0:
         raise SnapshotValidationError("adjusted_close must be positive finite canonical numeric")
     # Decimal canonical text is stable and rejects exponent notation in persisted output.
-    text = format(number, "f").rstrip("0").rstrip(".")
+    if number.adjusted() > 308 or number.adjusted() < -324:
+        raise SnapshotValidationError("adjusted_close exceeds finite numeric range")
+    text = format(number, "f")
+    if "." in text:
+        integer, fraction = text.split(".", 1)
+        text = integer + ("." + fraction.rstrip("0") if fraction.rstrip("0") else "")
     if text in {"", "0"}:
         raise SnapshotValidationError("adjusted_close must be positive finite canonical numeric")
     return text
@@ -95,6 +101,11 @@ def _rows(raw: Any) -> list[dict[str, Any]]:
         session, symbol = row["session"], row["symbol"]
         if type(session) is not str or len(session) != 10 or session[4] != "-" or session[7] != "-":
             raise SnapshotValidationError("session must be canonical YYYY-MM-DD")
+        try:
+            if date.fromisoformat(session).isoformat() != session:
+                raise ValueError
+        except ValueError as exc:
+            raise SnapshotValidationError("session must be canonical YYYY-MM-DD") from exc
         if type(symbol) is not str or symbol not in SYMBOLS:
             raise SnapshotValidationError("symbol must be QQQ or TQQQ")
         rows.append({"session": session, "symbol": symbol, "adjusted_close": _canonical_number(row["adjusted_close"])})
@@ -132,7 +143,7 @@ def materialize_clean_cutover_snapshot(
     source_sha256: str,
     calendar_sha256: str,
     external_manifest_sha256: str,
-    sessions: Sequence[str] | None = None,
+    sessions: Sequence[str],
 ) -> CleanCutoverSnapshot:
     """Materialize synthetic/quarantined rows into one immutable JSON snapshot."""
     source_sha256 = _digest(source_sha256, "source_sha256")
@@ -140,9 +151,12 @@ def materialize_clean_cutover_snapshot(
     external_manifest_sha256 = _digest(external_manifest_sha256, "external_manifest_sha256")
     if isinstance(quarantined, QuarantinedRawPayload) and quarantined.receipt.source_sha256 != source_sha256:
         raise SnapshotValidationError("source digest mismatch")
+    if isinstance(quarantined, bytes) and hashlib.sha256(quarantined).hexdigest() != source_sha256:
+        raise SnapshotValidationError("source digest mismatch")
     rows = _payload_rows(quarantined)
     actual_sessions = sorted({r["session"] for r in rows})
-    if sessions is not None and list(sessions) != actual_sessions:
+    expected_sessions = list(sessions)
+    if expected_sessions != actual_sessions:
         raise SnapshotValidationError("session coverage mismatch")
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -159,6 +173,7 @@ def materialize_clean_cutover_snapshot(
         "rows": rows,
         "snapshot_identity": f"sha256-{external_manifest_sha256}",
     }
+    payload["content_sha256"] = hashlib.sha256((json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
     encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -188,12 +203,17 @@ def strict_readback_clean_cutover_snapshot(
     expected_source_sha256: str,
     expected_calendar_sha256: str,
     expected_external_manifest_sha256: str,
+    expected_content_sha256: str | None = None,
 ) -> CleanCutoverSnapshot:
     """Read and verify without following symlinks or writing anything."""
     path = Path(path)
-    for component in (path.parent, path):
-        if component.is_symlink():
+    current = Path(path.anchor)
+    for part in path.parts[1:-1]:
+        current = current / part
+        if current.is_symlink():
             raise SnapshotValidationError("symlink path is not allowed")
+    if path.is_symlink():
+        raise SnapshotValidationError("symlink path is not allowed")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
@@ -213,9 +233,16 @@ def strict_readback_clean_cutover_snapshot(
         _digest(expected, key)
         if payload.get(key) != expected:
             raise SnapshotValidationError(f"{key} mismatch")
-    if payload.get("schema_version") != SCHEMA_VERSION or payload.get("evidence_generation") != EVIDENCE_GENERATION or payload.get("pair_id") != PAIR_ID or payload.get("plugin_state") != PLUGIN_STATE or payload.get("size_zero") is not True:
+    if payload.get("schema_version") != SCHEMA_VERSION or payload.get("evidence_generation") != EVIDENCE_GENERATION or payload.get("pair_id") != PAIR_ID or payload.get("plugin_state") != PLUGIN_STATE or payload.get("size_zero") is not True or payload.get("timezone") != "UTC" or payload.get("adjusted_price_field") != "adjusted_close":
         raise SnapshotValidationError("snapshot identity mismatch")
     rows = _rows(payload.get("rows"))
+    content = payload.get("content_sha256")
+    _digest(content, "content_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("content_sha256", None)
+    actual_content = hashlib.sha256((json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
+    if actual_content != content or (expected_content_sha256 is not None and content != expected_content_sha256):
+        raise SnapshotValidationError("snapshot content digest mismatch")
     if payload.get("sessions") != sorted({r["session"] for r in rows}) or payload.get("snapshot_identity") != f"sha256-{expected_external_manifest_sha256}":
         raise SnapshotValidationError("snapshot identity mismatch")
     return CleanCutoverSnapshot(path, payload["snapshot_identity"], expected_external_manifest_sha256)
