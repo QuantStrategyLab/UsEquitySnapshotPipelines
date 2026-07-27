@@ -232,3 +232,27 @@ def test_verify_normalizes_csv_parse_failures(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_materialize_rejects_oversized_canonical_integer_before_numeric_conversion(tmp_path: Path) -> None:
+    prices = _fixture_prices().astype({"adjusted_close": object})
+    prices.loc[0, "adjusted_close"] = int("9" * 400)
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_verify_rejects_oversized_canonical_integer_csv(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    (output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        + "2010-01-04,QQQ," + "9" * 400 + "\n"
+        + "2010-01-04,TQQQ,10.5\n"
+        + "2010-01-05,QQQ,46\n"
+        + "2010-01-05,TQQQ,11\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
