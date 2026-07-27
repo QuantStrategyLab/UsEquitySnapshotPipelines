@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
-from io import BytesIO
 import json
 import math
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
 
 CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
 SYMBOLS = ("QQQ", "TQQQ")
@@ -23,6 +25,7 @@ PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+_MAX_FLOAT_INTEGER_DECIMAL = format(sys.float_info.max, ".0f")
 
 
 class SnapshotValidationError(ValueError):
@@ -45,6 +48,52 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _invalid(message: str) -> None:
     raise SnapshotValidationError(message)
+
+
+def _admit_raw_numeric(value: object) -> None:
+    """Reject non-canonical or out-of-range values before pandas numeric coercion."""
+    if isinstance(value, (bool, complex)) or pd.api.types.is_bool(value) or pd.api.types.is_complex(value):
+        _invalid("invalid adjusted_close numeric form")
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value > 0 and value.bit_length() > 1024:
+            _invalid("adjusted_close exceeds finite numeric range")
+        try:
+            text = str(value)
+        except ValueError as exc:
+            raise SnapshotValidationError("adjusted_close exceeds finite numeric range") from exc
+        if value <= 0 or len(text) > len(_MAX_FLOAT_INTEGER_DECIMAL) or (
+            len(text) == len(_MAX_FLOAT_INTEGER_DECIMAL) and text > _MAX_FLOAT_INTEGER_DECIMAL
+        ):
+            _invalid("adjusted_close exceeds finite numeric range")
+        return
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"true", "false"}:
+            _invalid("boolean adjusted_close is not allowed")
+        if text.isdigit():
+            if text != "0" and text.startswith("0"):
+                _invalid("noncanonical adjusted_close integer")
+            if text == "0" or len(text) > len(_MAX_FLOAT_INTEGER_DECIMAL) or (
+                len(text) == len(_MAX_FLOAT_INTEGER_DECIMAL) and text > _MAX_FLOAT_INTEGER_DECIMAL
+            ):
+                _invalid("adjusted_close exceeds finite numeric range")
+            return
+        try:
+            number = float(text)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SnapshotValidationError("invalid adjusted_close numeric form") from exc
+        if not math.isfinite(number) or number <= 0:
+            _invalid("adjusted_close exceeds finite numeric range")
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value) or value <= 0:
+            _invalid("adjusted_close exceeds finite numeric range")
+        return
+    try:
+        text = str(value)
+    except Exception as exc:
+        raise SnapshotValidationError("invalid adjusted_close numeric form") from exc
+    _admit_raw_numeric(text)
 
 
 def _normalize_session(value: object) -> pd.Timestamp:
@@ -123,7 +172,12 @@ def _normalized_prices(
         _invalid("boolean adjusted_close is not allowed")
     if pd.api.types.is_datetime64_any_dtype(adjusted_close) or pd.api.types.is_timedelta64_dtype(adjusted_close):
         _invalid("datetime-like adjusted_close is not allowed")
-    normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
+    for value in adjusted_close.array:
+        _admit_raw_numeric(value)
+    try:
+        normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SnapshotValidationError("invalid adjusted_close numeric form") from exc
     if (
         normalized[PRICE_FIELD].isna().any()
         or not normalized[PRICE_FIELD].map(math.isfinite).all()
@@ -160,6 +214,49 @@ def _parse_json_object(raw: bytes, name: str) -> dict[str, Any]:
         _invalid(f"invalid {name}")
     return value
 
+
+def _publish_noreplace(source: Path, destination: Path) -> None:
+    """Publish a directory without clobbering an existing destination."""
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            raise SnapshotValidationError("required no-clobber capability unavailable")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        parent_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_fd = os.open(destination.parent, parent_flags)
+        try:
+            result = renameat2(
+                parent_fd,
+                source.name.encode(),
+                parent_fd,
+                destination.name.encode(),
+                1,
+            )
+        finally:
+            os.close(parent_fd)
+        if result != 0:
+            error = ctypes.get_errno()
+            if error == errno.EEXIST:
+                raise SnapshotValidationError(f"immutable output already exists: {destination}")
+            raise SnapshotValidationError("atomic no-clobber publish failed")
+        return
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            raise SnapshotValidationError("required no-clobber capability unavailable")
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(str(source).encode(), str(destination).encode(), 4)
+        if result != 0:
+            error = ctypes.get_errno()
+            if error == errno.EEXIST:
+                raise SnapshotValidationError(f"immutable output already exists: {destination}")
+            raise SnapshotValidationError("atomic no-clobber publish failed")
+        return
+    raise SnapshotValidationError("unsupported platform for atomic no-clobber publish")
 
 def _has_exact_type(value: object, expected: object) -> bool:
     if type(value) is not type(expected):
@@ -207,7 +304,7 @@ def verify_tqqq_r1_snapshot(
 
     try:
         prices = _normalized_prices(
-            pd.read_csv(BytesIO(members["prices.csv"])),
+            pd.read_csv(BytesIO(members["prices.csv"]), dtype={PRICE_FIELD: "string"}),
             require_exact_columns=True,
             require_canonical_symbols=True,
             require_canonical_sessions=True,
@@ -280,7 +377,7 @@ def materialize_tqqq_r1_snapshot(
         )
         manifest_sha256 = _sha256(temporary / "manifest.json")
         verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=manifest_sha256)
-        os.replace(temporary, destination)
+        _publish_noreplace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
