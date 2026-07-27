@@ -7,7 +7,6 @@ from scripts.plan_codex_auto_merge_enablement import (
     discover_branch_protection_status_checks,
     discover_branch_ruleset_status_checks,
     discover_check_contexts,
-    discover_repository_variable,
     render_branch_protection_command,
     render_enablement_plan,
     render_label_commands,
@@ -60,7 +59,7 @@ def test_render_label_commands_are_copyable_and_idempotent() -> None:
     assert "Codex remediation PR requires human review before merge" in commands
 
 
-def test_render_enablement_plan_includes_readiness_enable_and_rollback_commands() -> None:
+def test_render_enablement_plan_reports_readiness_without_enablement_commands() -> None:
     plan = render_enablement_plan(
         repo="QuantStrategyLab/UsEquitySnapshotPipelines",
         branch="main",
@@ -79,20 +78,14 @@ def test_render_enablement_plan_includes_readiness_enable_and_rollback_commands(
         discovered_check_contexts=["test", "monthly-review"],
         discovered_branch_protection_status_checks=["test (strict)"],
         discovered_ruleset_status_checks=["test (strict)", "lint (non-strict)"],
-        auto_merge_variable_value="false",
         discovery_warnings=["Could not read commit statuses for abc123: HTTP 403"],
         protection_discovery_warnings=["No other branch protection checks found."],
         ruleset_discovery_warnings=["No other active branch rulesets found."],
     )
 
     assert "This plan is read-only" in plan
-    assert "## Current guarded auto-merge variable" in plan
-    assert "- `CODEX_AUDIT_AUTO_MERGE`: `false`" in plan
-    assert "runs only when this value is `true`, `True`, or `TRUE`" in plan
     assert "Human-review label: `human-review-required`" in plan
-    assert "feedback retry workflow are stable" in plan
     assert "both `auto-merge-ok` and `human-review-required` labels exist" in plan
-    assert "gh label create human-review-required --repo QuantStrategyLab/UsEquitySnapshotPipelines" in plan
     assert "branch protection is not enabled for main" in plan
     assert "## Discovered check contexts" in plan
     assert "- `test`" in plan
@@ -104,19 +97,14 @@ def test_render_enablement_plan_includes_readiness_enable_and_rollback_commands(
     assert "## Discovered branch protection required checks" in plan
     assert "No other branch protection checks found." in plan
     assert "Compare the expected checks with the discovered contexts, branch protection checks, and ruleset checks" in plan
-    assert "## Enablement preflight checklist" in plan
+    assert "## Readiness assessment checklist" in plan
     assert "- [ ] Readiness reports `Ready: yes`" in plan
-    assert "- [ ] `CODEX_AUDIT_AUTO_MERGE` is still `false` or unset before the final enablement step." in plan
     assert "- [ ] Required status checks are configured as strict/up-to-date checks: `test`." in plan
     assert "- [ ] Any existing branch protection or ruleset settings were reviewed" in plan
-    assert "- [ ] The first guarded Codex PR after enablement will be monitored" in plan
-    assert "GitHub's branch protection `PUT` API" in plan
-    assert "not unintentionally overwritten" in plan
-    assert "CODEX_AUDIT_READINESS_TOKEN" in plan
-    assert "scripts/check_codex_auto_merge_readiness.py" in plan
-    assert "--required-status-check test" in plan
-    assert "gh variable set CODEX_AUDIT_AUTO_MERGE --repo QuantStrategyLab/UsEquitySnapshotPipelines --body true" in plan
-    assert "gh variable set CODEX_AUDIT_AUTO_MERGE --repo QuantStrategyLab/UsEquitySnapshotPipelines --body false" in plan
+    assert "not unintentionally overwrite review, restriction, or admin-enforcement settings" in plan
+    assert "Automatic merge remains disabled." in plan
+    assert "CODEX_AUDIT_AUTO_MERGE" not in plan
+    assert "gh variable set" not in plan
 
 
 def test_render_enablement_plan_warns_when_expected_check_is_not_discovered() -> None:
@@ -258,41 +246,6 @@ def test_discover_branch_protection_status_checks_reports_missing_protection(mon
     assert warnings == ["No branch protection found for main."]
 
 
-def test_discover_repository_variable_reads_current_value(monkeypatch) -> None:
-    def fake_github_request(method: str, url: str, token: str, payload=None, *, timeout=30):
-        assert method == "GET"
-        assert token == "token"
-        assert url.endswith("/actions/variables/CODEX_AUDIT_AUTO_MERGE")
-        return {"name": "CODEX_AUDIT_AUTO_MERGE", "value": "false"}
-
-    monkeypatch.setattr(planner, "github_request", fake_github_request)
-
-    value, warnings = discover_repository_variable(
-        api_url="https://api.github.com",
-        repo="QuantStrategyLab/UsEquitySnapshotPipelines",
-        token="token",
-    )
-
-    assert value == "false"
-    assert warnings == []
-
-
-def test_discover_repository_variable_reports_missing_variable(monkeypatch) -> None:
-    def fake_github_request(method: str, url: str, token: str, payload=None, *, timeout=30):
-        raise GitHubApiError(method, url, 404, "Not Found")
-
-    monkeypatch.setattr(planner, "github_request", fake_github_request)
-
-    value, warnings = discover_repository_variable(
-        api_url="https://api.github.com",
-        repo="QuantStrategyLab/UsEquitySnapshotPipelines",
-        token="token",
-    )
-
-    assert value is None
-    assert warnings == ["Repository variable CODEX_AUDIT_AUTO_MERGE is not set."]
-
-
 def test_discover_check_contexts_reports_branch_errors(monkeypatch) -> None:
     def fake_github_request(method: str, url: str, token: str, payload=None, *, timeout=30):
         raise GitHubApiError(method, url, 403, "Forbidden")
@@ -308,3 +261,12 @@ def test_discover_check_contexts_reports_branch_errors(monkeypatch) -> None:
 
     assert contexts == []
     assert warnings == ["Could not read branch main for check context discovery: HTTP 403"]
+
+
+def test_planner_has_no_retired_workflow_or_auto_merge_enablement_cli(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["planner", "--repo", "org/repo", "--branch", "main"])
+
+    args = planner.parse_args()
+
+    assert not hasattr(args, "workflow_file")
+    assert not hasattr(args, "auto_merge")
