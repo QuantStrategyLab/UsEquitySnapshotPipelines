@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,6 +75,43 @@ def test_materialize_preserves_adjusted_close_float_round_trip_precision(tmp_pat
 
     actual = pd.read_csv(result.output_dir / "prices.csv").loc[lambda frame: frame["symbol"].eq("QQQ"), "adjusted_close"].iloc[0]
     assert actual == 1.0000000000000002
+
+
+def test_materialize_rejects_numeric_string_before_serialization(tmp_path: Path) -> None:
+    prices = _fixture_prices().astype({"adjusted_close": object})
+    prices.loc[0, "adjusted_close"] = "9007199254740993"
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="string adjusted_close"):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_materialize_preserves_raced_destination_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "snapshot"
+    real_verify = snapshot.verify_tqqq_r1_snapshot
+    raced = False
+
+    def verify_then_race(output_dir: str | Path, *, expected_manifest_sha256: str) -> snapshot.SnapshotResult:
+        nonlocal raced
+        result = real_verify(output_dir, expected_manifest_sha256=expected_manifest_sha256)
+        if not raced:
+            destination.mkdir()
+            raced = True
+        return result
+
+    monkeypatch.setattr(snapshot, "verify_tqqq_r1_snapshot", verify_then_race)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="immutable output already exists"):
+        snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), destination)
+
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    assert list(tmp_path.glob(".snapshot.*")) == []
+
+    destination.rmdir()
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), destination)
+    assert result.output_dir == destination
 
 
 @pytest.mark.parametrize("column", ["session", "symbol", "adjusted_close"])
@@ -166,6 +204,63 @@ def test_verify_rejects_noncanonical_symbol_readback(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError, match="canonical symbol"):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_verify_rejects_lossy_numeric_text_readback(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    output_dir = result.output_dir
+    (output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        "2010-01-04,QQQ,9007199254740993.0\n"
+        "2010-01-04,TQQQ,10.5\n"
+        "2010-01-05,QQQ,46\n"
+        "2010-01-05,TQQQ,11\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="canonical adjusted_close"):
+        snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_verify_stays_anchored_when_root_path_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "trusted")
+    attacker_prices = _fixture_prices()
+    attacker_prices["adjusted_close"] *= 2
+    attacker = snapshot.materialize_tqqq_r1_snapshot(attacker_prices, tmp_path / "attacker")
+    saved_trusted = tmp_path / "saved-trusted"
+    real_scandir = os.scandir
+    swapped = False
+
+    def scandir_then_replace_root(path: str | bytes | os.PathLike[str] | os.PathLike[bytes] | int) -> object:
+        nonlocal swapped
+        with real_scandir(path) as iterator:
+            entries = list(iterator)
+        if not swapped:
+            trusted.output_dir.rename(saved_trusted)
+            trusted.output_dir.symlink_to(attacker.output_dir, target_is_directory=True)
+            swapped = True
+
+        class FrozenScandir:
+            def __enter__(self) -> FrozenScandir:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def __iter__(self) -> object:
+                return iter(entries)
+
+        return FrozenScandir()
+
+    monkeypatch.setattr(os, "scandir", scandir_then_replace_root)
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.verify_tqqq_r1_snapshot(
+            trusted.output_dir,
+            expected_manifest_sha256=attacker.manifest_sha256,
+        )
 
 
 def test_verify_rejects_noncanonical_raw_session_encoding(tmp_path: Path) -> None:

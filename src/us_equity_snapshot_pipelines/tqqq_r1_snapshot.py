@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 from io import BytesIO
 import json
 import math
 import os
 import shutil
+import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,12 +77,39 @@ def _is_canonical_session(value: object) -> bool:
     )
 
 
+def _canonical_adjusted_close(value: object) -> int | float:
+    if type(value) is not str:
+        _invalid("prices.csv contains noncanonical adjusted_close")
+    if value in {"True", "False"}:
+        _invalid("boolean adjusted_close is not allowed")
+    if not value or value.strip() != value:
+        _invalid("prices.csv contains noncanonical adjusted_close")
+    try:
+        integer = int(value)
+    except ValueError:
+        integer = None
+    if integer is not None and str(integer) == value:
+        if integer <= 0:
+            _invalid("adjusted_close must be positive finite")
+        return integer
+    try:
+        numeric = float(value)
+    except ValueError as exc:
+        raise SnapshotValidationError("prices.csv contains noncanonical adjusted_close") from exc
+    if not math.isfinite(numeric) or numeric <= 0:
+        _invalid("adjusted_close must be positive finite")
+    if format(numeric, ".17g") != value:
+        _invalid("prices.csv contains noncanonical adjusted_close")
+    return numeric
+
+
 def _normalized_prices(
     prices: pd.DataFrame,
     *,
     require_exact_columns: bool = False,
     require_canonical_symbols: bool = False,
     require_canonical_sessions: bool = False,
+    require_canonical_adjusted_close: bool = False,
 ) -> pd.DataFrame:
     if not isinstance(prices, pd.DataFrame):
         _invalid("prices must be a DataFrame")
@@ -123,7 +154,16 @@ def _normalized_prices(
         _invalid("boolean adjusted_close is not allowed")
     if pd.api.types.is_datetime64_any_dtype(adjusted_close) or pd.api.types.is_timedelta64_dtype(adjusted_close):
         _invalid("datetime-like adjusted_close is not allowed")
-    normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
+    if require_canonical_adjusted_close:
+        normalized[PRICE_FIELD] = pd.Series(
+            [_canonical_adjusted_close(value) for value in adjusted_close],
+            index=normalized.index,
+            dtype=object,
+        )
+    else:
+        if adjusted_close.map(lambda value: type(value) is str).any():
+            _invalid("string adjusted_close is not allowed")
+        normalized[PRICE_FIELD] = pd.to_numeric(adjusted_close, errors="coerce")
     if (
         normalized[PRICE_FIELD].isna().any()
         or not normalized[PRICE_FIELD].map(math.isfinite).all()
@@ -171,26 +211,81 @@ def _has_exact_type(value: object, expected: object) -> bool:
     return value == expected
 
 
+def _snapshot_member_names(root_fd: int) -> tuple[str, ...]:
+    with os.scandir(root_fd) as entries:
+        return tuple(sorted(entry.name for entry in entries))
+
+
+def _read_regular_file_at(root_fd: int, name: str) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    member_fd = -1
+    try:
+        member_fd = os.open(name, flags, dir_fd=root_fd)
+        before = os.fstat(member_fd)
+        if not stat.S_ISREG(before.st_mode):
+            _invalid("snapshot members must be regular non-symlink files")
+        chunks: list[bytes] = []
+        while chunk := os.read(member_fd, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(member_fd)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    finally:
+        if member_fd >= 0:
+            os.close(member_fd)
+    identity = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if any(getattr(before, field) != getattr(after, field) for field in identity):
+        _invalid("snapshot member identity changed during readback")
+    content = b"".join(chunks)
+    if len(content) != before.st_size:
+        _invalid("snapshot member size changed during readback")
+    return content
+
+
+def _read_snapshot_members(output: Path) -> dict[str, bytes]:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+        _invalid("descriptor-anchored snapshot readback is unavailable")
+    root_fd = -1
+    try:
+        root_fd = os.open(
+            output,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0),
+        )
+        root_before = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_before.st_mode):
+            _invalid("snapshot root must be a regular directory")
+        names = _snapshot_member_names(root_fd)
+        if names != tuple(sorted(OUTPUT_FILENAMES)):
+            _invalid(f"unexpected output files: {names}")
+        members = {name: _read_regular_file_at(root_fd, name) for name in OUTPUT_FILENAMES}
+        if _snapshot_member_names(root_fd) != names:
+            _invalid("snapshot members changed during readback")
+        root_after = os.fstat(root_fd)
+        try:
+            path_after = os.stat(output, follow_symlinks=False)
+        except OSError as exc:
+            raise SnapshotValidationError("snapshot root identity changed during readback") from exc
+        if (
+            not stat.S_ISDIR(path_after.st_mode)
+            or (root_before.st_dev, root_before.st_ino) != (root_after.st_dev, root_after.st_ino)
+            or (root_before.st_dev, root_before.st_ino) != (path_after.st_dev, path_after.st_ino)
+        ):
+            _invalid("snapshot root identity changed during readback")
+        return members
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
 def verify_tqqq_r1_snapshot(
     output_dir: str | Path,
     *,
     expected_manifest_sha256: str,
 ) -> SnapshotResult:
     output = Path(output_dir)
-    if output.is_symlink():
-        _invalid("snapshot root symlink is not allowed")
-    try:
-        names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
-    if names != tuple(sorted(OUTPUT_FILENAMES)):
-        _invalid(f"unexpected output files: {names}")
-    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
-        _invalid("snapshot members must be regular non-symlink files")
-    try:
-        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
+    members = _read_snapshot_members(output)
 
     member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
     if type(expected_manifest_sha256) is not str or member_hashes["manifest.json"] != expected_manifest_sha256:
@@ -207,10 +302,11 @@ def verify_tqqq_r1_snapshot(
 
     try:
         prices = _normalized_prices(
-            pd.read_csv(BytesIO(members["prices.csv"])),
+            pd.read_csv(BytesIO(members["prices.csv"]), dtype=str, keep_default_na=False),
             require_exact_columns=True,
             require_canonical_symbols=True,
             require_canonical_sessions=True,
+            require_canonical_adjusted_close=True,
         )
     except (UnicodeDecodeError, ValueError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         if isinstance(exc, SnapshotValidationError):
@@ -234,6 +330,34 @@ def verify_tqqq_r1_snapshot(
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
     return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
+
+
+def _publish_directory_no_clobber(source: Path, destination: Path) -> None:
+    at_fdcwd = -100
+    rename_noreplace = 0x00000001
+    rename_excl = 0x00000004
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    libc = ctypes.CDLL(None, use_errno=True)
+    ctypes.set_errno(0)
+    if sys.platform == "darwin" and hasattr(libc, "renamex_np"):
+        rename = libc.renamex_np
+        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        rename.restype = ctypes.c_int
+        result = rename(source_bytes, destination_bytes, rename_excl)
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        rename.restype = ctypes.c_int
+        result = rename(at_fdcwd, source_bytes, at_fdcwd, destination_bytes, rename_noreplace)
+    else:
+        _invalid("atomic no-clobber publication is unavailable")
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        _invalid(f"immutable output already exists: {destination}")
+    raise OSError(error, os.strerror(error), destination)
 
 
 def materialize_tqqq_r1_snapshot(
@@ -280,8 +404,11 @@ def materialize_tqqq_r1_snapshot(
         )
         manifest_sha256 = _sha256(temporary / "manifest.json")
         verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=manifest_sha256)
-        os.replace(temporary, destination)
+        _publish_directory_no_clobber(temporary, destination)
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            shutil.rmtree(temporary)
+        except FileNotFoundError:
+            pass
         raise
     return SnapshotResult(output_dir=destination, manifest_sha256=manifest_sha256)
