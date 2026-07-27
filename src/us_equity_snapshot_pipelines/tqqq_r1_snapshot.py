@@ -55,7 +55,12 @@ def _admit_raw_numeric(value: object) -> None:
     if isinstance(value, (bool, complex)) or pd.api.types.is_bool(value) or pd.api.types.is_complex(value):
         _invalid("invalid adjusted_close numeric form")
     if isinstance(value, int) and not isinstance(value, bool):
-        text = str(value)
+        if value > 0 and value.bit_length() > 1024:
+            _invalid("adjusted_close exceeds finite numeric range")
+        try:
+            text = str(value)
+        except ValueError as exc:
+            raise SnapshotValidationError("adjusted_close exceeds finite numeric range") from exc
         if value <= 0 or len(text) > len(_MAX_FLOAT_INTEGER_DECIMAL) or (
             len(text) == len(_MAX_FLOAT_INTEGER_DECIMAL) and text > _MAX_FLOAT_INTEGER_DECIMAL
         ):
@@ -219,7 +224,8 @@ def _publish_noreplace(source: Path, destination: Path) -> None:
             raise SnapshotValidationError("required no-clobber capability unavailable")
         renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
         renameat2.restype = ctypes.c_int
-        parent_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        parent_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_fd = os.open(destination.parent, parent_flags)
         try:
             result = renameat2(
                 parent_fd,

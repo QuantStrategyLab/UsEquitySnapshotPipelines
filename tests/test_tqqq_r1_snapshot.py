@@ -256,3 +256,11 @@ def test_verify_rejects_oversized_canonical_integer_csv(tmp_path: Path) -> None:
 
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.verify_tqqq_r1_snapshot(output_dir, expected_manifest_sha256=_refresh_trusted_metadata(output_dir))
+
+
+def test_materialize_rejects_python_int_beyond_digit_limit(tmp_path: Path) -> None:
+    prices = _fixture_prices().astype({"adjusted_close": object})
+    prices.loc[0, "adjusted_close"] = 10**5000 - 1
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
