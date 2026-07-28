@@ -34,6 +34,24 @@ def test_retired_aiaudit_workflows_are_removed() -> None:
     assert not Path(".github/workflows/auto_merge_codex_pr.yml").exists()
     assert not Path(".github/workflows/ai_review.yml").exists()
 
+def test_retired_codex_bootstrap_paths_are_removed() -> None:
+    for path in (
+        ".github/codex_auto_merge_policy.json",
+        "scripts/evaluate_codex_pr_merge.py",
+        "scripts/gate_codex_app_review.py",
+        "scripts/post_codex_auto_merge_decision_comment.py",
+        "scripts/post_codex_auto_merge_preflight_comment.py",
+        "scripts/sync_codex_auto_merge_labels.py",
+        "tests/test_evaluate_codex_pr_merge.py",
+        "tests/test_gate_codex_app_review.py",
+        "tests/test_post_codex_auto_merge_decision_comment.py",
+        "tests/test_post_codex_auto_merge_preflight_comment.py",
+        "tests/test_sync_codex_auto_merge_labels.py",
+        "pyproject.toml",
+        "tests/test_run_codex_pr_review.py",
+    ):
+        assert not Path(path).exists()
+
 def test_automated_snapshot_publish_runs_after_source_input_refresh() -> None:
     workflow = PUBLISH_SNAPSHOT_ARTIFACTS.read_text(encoding="utf-8")
 
