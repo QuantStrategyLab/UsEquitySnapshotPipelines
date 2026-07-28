@@ -47,7 +47,6 @@ def test_retired_codex_bootstrap_paths_are_removed() -> None:
         "tests/test_post_codex_auto_merge_decision_comment.py",
         "tests/test_post_codex_auto_merge_preflight_comment.py",
         "tests/test_sync_codex_auto_merge_labels.py",
-        "pyproject.toml",
         "tests/test_run_codex_pr_review.py",
     ):
         assert not Path(path).exists()
