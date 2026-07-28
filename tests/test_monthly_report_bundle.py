@@ -183,7 +183,9 @@ def test_build_bundle_collects_profile_summaries_from_downloaded_artifacts(tmp_p
     assert len(bundle["profiles"]) == len(list_scheduled_profile_contracts())
     assert "US Equity Snapshot Monthly Review Input" in markdown
     assert "AAPL" in markdown
-    assert "Low-risk docs/tests/monthly-review reporting fixes may be automated" in markdown
+    assert "This evidence is advisory-only; it does not authorize automated remediation" in markdown
+    assert "Low-risk docs/tests/monthly-review reporting fixes may be automated" not in markdown
+    assert "unattended remediation" not in markdown
     assert "Missing profiles: `0`" in summary
     assert "Non-ready profiles: `0`" in summary
 

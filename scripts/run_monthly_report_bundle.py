@@ -1052,7 +1052,7 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
         "- Focus on artifact completeness, profile contract health, stale or missing snapshot evidence, and downstream impact.",
         "- Do not recommend production strategy changes from one monthly artifact alone.",
         "- Treat missing profile artifacts as review-blocking evidence gaps.",
-        "- Low-risk docs/tests/monthly-review reporting fixes may be automated; high-risk strategy, runtime, broker, dependency, secret, profile-contract, or live-allocation changes require human review.",
+        "- This evidence is advisory-only; it does not authorize automated remediation, workflow dispatch, repository configuration, or runtime changes. Follow-up decisions require separate human authorization.",
         "- Treat live strategy `review_for_retirement` states as evidence for a human follow-up issue, not as permission to delete or disable a strategy automatically.",
         "",
         "## Bundle Metadata",
@@ -1419,7 +1419,7 @@ def render_ai_review_input(bundle: dict[str, Any]) -> str:
             "7. If capacity stress reports are present, which NAV/slippage/split-day assumptions remain implementable?",
             "8. If live decay monitors are present, do recent QQQ/SPY or expected-edge gaps require human review without changing runtime automatically?",
             "9. If IBIT DCA research is present, does plugin-on beat buy-only DCA and parking-only baselines after cash-flow-adjusted returns and benchmark-relative review?",
-            "10. Which follow-up tasks are low/medium-risk enough for unattended remediation, and which must stay human-reviewed?",
+            "10. Which findings require a separately authorized human follow-up?",
         ]
     )
     return "\n".join(lines).strip() + "\n"
