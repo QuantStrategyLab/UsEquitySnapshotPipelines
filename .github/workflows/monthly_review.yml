@@ -28,6 +28,7 @@ jobs:
       group: monthly-snapshot-review-${{ github.ref_name }}
       cancel-in-progress: false
     permissions:
+      actions: read
       contents: read
       issues: write
 

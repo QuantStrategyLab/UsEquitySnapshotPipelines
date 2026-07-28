@@ -15,6 +15,7 @@ def test_monthly_review_workflow_is_report_only_and_creates_issue() -> None:
     assert "Publish Snapshot Artifacts" in workflow
     assert "github.event.workflow_run.event == 'workflow_run'" in workflow
     assert "contents: read" in workflow
+    assert "actions: read" in workflow
     assert "issues: write" in workflow
     assert "actions: write" not in workflow
     assert "Install monthly review dependencies" in workflow
