@@ -42,6 +42,7 @@ def test_retired_codex_bootstrap_paths_are_removed() -> None:
         "scripts/post_codex_auto_merge_decision_comment.py",
         "scripts/post_codex_auto_merge_preflight_comment.py",
         "scripts/sync_codex_auto_merge_labels.py",
+        "scripts/static_pr_guard.py",
         "scripts/check_codex_auto_merge_readiness.py",
         "scripts/plan_codex_auto_merge_enablement.py",
         "tests/test_check_codex_auto_merge_readiness.py",
