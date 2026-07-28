@@ -14,7 +14,6 @@ if str(ROOT) not in sys.path:
 
 from scripts.check_codex_auto_merge_readiness import (
     DEFAULT_API_URL,
-    DEFAULT_AUTO_MERGE_WORKFLOW,
     DEFAULT_POLICY_PATH,
     GitHubApiError,
     ReadinessError,
@@ -37,8 +36,6 @@ LABEL_COMMANDS = (
         "Codex remediation PR requires human review before merge",
     ),
 )
-AUTO_MERGE_VARIABLE = "CODEX_AUDIT_AUTO_MERGE"
-
 
 def branch_protection_payload(required_status_checks: tuple[str, ...]) -> dict[str, Any]:
     required_status_checks = validate_required_status_checks(required_status_checks)
@@ -232,33 +229,6 @@ def discover_branch_protection_status_checks(
     return discovered, warnings
 
 
-def discover_repository_variable(
-    *,
-    api_url: str,
-    repo: str,
-    token: str,
-    name: str = AUTO_MERGE_VARIABLE,
-) -> tuple[str | None, list[str]]:
-    if not token.strip():
-        return None, [f"GITHUB_TOKEN is not set; skipped {name} repository variable discovery."]
-
-    api_url = api_url.rstrip("/")
-    encoded_name = urllib.parse.quote(name, safe="")
-    try:
-        payload = github_request("GET", f"{api_url}/repos/{repo}/actions/variables/{encoded_name}", token)
-    except GitHubApiError as exc:
-        if exc.status_code == 404:
-            return None, [f"Repository variable {name} is not set."]
-        return None, [f"Could not read repository variable {name}: HTTP {exc.status_code}"]
-    if not isinstance(payload, dict):
-        return None, [f"Could not read repository variable {name}: invalid response"]
-
-    value = payload.get("value")
-    if not isinstance(value, str):
-        return None, [f"Repository variable {name} has an invalid value."]
-    return value, []
-
-
 def render_enablement_plan(
     *,
     repo: str,
@@ -268,14 +238,11 @@ def render_enablement_plan(
     discovered_check_contexts: list[str] | None = None,
     discovered_branch_protection_status_checks: list[str] | None = None,
     discovered_ruleset_status_checks: list[str] | None = None,
-    auto_merge_variable_value: str | None = None,
     discovery_warnings: list[str] | None = None,
     protection_discovery_warnings: list[str] | None = None,
     ruleset_discovery_warnings: list[str] | None = None,
-    variable_discovery_warnings: list[str] | None = None,
 ) -> str:
     branch_command = render_branch_protection_command(repo, branch, required_status_checks)
-    label_commands = render_label_commands(repo)
     required_checks = ", ".join(f"`{item}`" for item in required_status_checks)
     discovered_check_contexts = discovered_check_contexts or []
     discovered_branch_protection_status_checks = discovered_branch_protection_status_checks or []
@@ -283,21 +250,7 @@ def render_enablement_plan(
     discovery_warnings = discovery_warnings or []
     protection_discovery_warnings = protection_discovery_warnings or []
     ruleset_discovery_warnings = ruleset_discovery_warnings or []
-    variable_discovery_warnings = variable_discovery_warnings or []
     expected_missing = sorted(set(required_status_checks) - set(discovered_check_contexts)) if discovered_check_contexts else []
-    variable_section_lines = [
-        "## Current guarded auto-merge variable",
-        "",
-    ]
-    if auto_merge_variable_value is None:
-        variable_section_lines.append(f"- `{AUTO_MERGE_VARIABLE}`: unknown or not set")
-    else:
-        variable_section_lines.append(f"- `{AUTO_MERGE_VARIABLE}`: `{auto_merge_variable_value}`")
-    variable_section_lines.append("- The source auto-merge workflow runs only when this value is `true`, `True`, or `TRUE`.")
-    if variable_discovery_warnings:
-        variable_section_lines.extend(["", "### Variable discovery warnings"])
-        variable_section_lines.extend(f"- {item}" for item in variable_discovery_warnings)
-    variable_section = "\n".join(variable_section_lines).strip() + "\n\n"
     discovered_section = ""
     if discovered_check_contexts or discovery_warnings:
         discovered_section_lines = ["## Discovered check contexts", ""]
@@ -331,61 +284,32 @@ def render_enablement_plan(
             ruleset_section_lines.extend(f"- {item}" for item in ruleset_discovery_warnings)
         ruleset_section = "\n".join(ruleset_section_lines).strip() + "\n\n"
     preflight_section = (
-        "## Enablement preflight checklist\n\n"
+        "## Readiness assessment checklist\n\n"
         "- [ ] Readiness reports `Ready: yes` after labels and branch protection or rulesets are configured.\n"
-        f"- [ ] `{AUTO_MERGE_VARIABLE}` is still `false` or unset before the final enablement step.\n"
         f"- [ ] Required status checks are configured as strict/up-to-date checks: {required_checks}.\n"
         "- [ ] Any existing branch protection or ruleset settings were reviewed before applying the generated `PUT` command.\n"
-        "- [ ] The first guarded Codex PR after enablement will be monitored, and the rollback command below is ready.\n\n"
+        "- [ ] Keep automatic merge disabled; this report does not authorize workflow or repository-setting changes.\n\n"
     )
     return (
         "# Codex guarded auto-merge enablement plan\n\n"
         "This plan is read-only. It does not modify GitHub repository settings.\n\n"
         "## Current readiness\n\n"
         f"{render_summary(readiness)}\n"
-        f"{variable_section}"
         f"{discovered_section}"
         f"{protection_section}"
         f"{ruleset_section}"
         f"{preflight_section}"
-        "## Manual enablement steps\n\n"
-        "1. Confirm that source CI check contexts, merge guard, and feedback retry workflow are stable, and both `auto-merge-ok` and "
-        "`human-review-required` labels exist. This plan expects "
+        "## Read-only readiness guidance\n\n"
+        "1. Confirm that source CI check contexts and both `auto-merge-ok` and "
+        "`human-review-required` labels exist. This report expects "
         f"{required_checks}.\n"
-        "   Compare the expected checks with the discovered contexts, branch protection checks, and ruleset checks above before applying branch protection.\n"
-        "2. Create or update the labels used by the unattended and human-review paths:\n\n"
-        "```bash\n"
-        f"{label_commands}\n"
-        "```\n\n"
-        "3. Apply minimal branch protection or an equivalent active repository ruleset that requires the CI status check before merge.\n"
-        "   The command below uses GitHub's branch protection `PUT` API. If branch protection already exists, "
-        "review and merge the generated payload with the existing rules before running it so review, "
-        "restriction, or admin-enforcement settings are not unintentionally overwritten:\n\n"
+        "   Compare the expected checks with the discovered contexts, branch protection checks, and ruleset checks above.\n"
+        "2. Any future settings changes require separate authorization. The generated branch-protection payload is evidence only; "
+        "review existing settings first so review, restriction, and admin-enforcement settings are not overwritten.\n\n"
         "```bash\n"
         f"{branch_command}\n"
         "```\n\n"
-        "4. Verify readiness again before enabling dispatch-time auto-merge requests:\n\n"
-        "   If GitHub Actions' default token cannot read branch protection or label settings in this repository, "
-        "configure `CODEX_AUDIT_READINESS_TOKEN` as a source-repository secret for readiness checks only.\n\n"
-        "```bash\n"
-        "GITHUB_TOKEN=\"$(gh auth token)\" .venv/bin/python scripts/check_codex_auto_merge_readiness.py \\\n"
-        f"  --repo {repo} \\\n"
-        f"  --branch {branch} \\\n"
-        "  --auto-merge true \\\n"
-        + "".join(f"  --required-status-check {check} \\\n" for check in required_status_checks)
-        + "  --summary-file data/output/codex_auto_merge_readiness.md\n"
-        "```\n\n"
-        "5. Only after readiness reports `Ready: yes`, enable guarded requests from monthly review:\n\n"
-        "```bash\n"
-        "gh variable set CODEX_AUDIT_AUTO_MERGE --repo "
-        f"{repo} --body true\n"
-        "```\n\n"
-        "## Rollback\n\n"
-        "```bash\n"
-        "gh variable set CODEX_AUDIT_AUTO_MERGE --repo "
-        f"{repo} --body false\n"
-        "```\n\n"
-        "High-risk PRs remain blocked by the source merge guard even after enablement.\n"
+        "3. Re-run this read-only assessment before any separately authorized configuration work. Automatic merge remains disabled.\n"
     )
 
 
@@ -400,7 +324,6 @@ def parse_args() -> argparse.Namespace:
         help="Comma- or newline-separated required status check contexts. Repeated --required-status-check is still supported.",
     )
     parser.add_argument("--policy-file", type=Path, default=DEFAULT_POLICY_PATH)
-    parser.add_argument("--workflow-file", type=Path, default=DEFAULT_AUTO_MERGE_WORKFLOW)
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
     parser.add_argument("--output-file", type=Path)
     return parser.parse_args()
@@ -423,7 +346,6 @@ def main() -> int:
         branch=args.branch,
         token=token,
         policy_path=args.policy_file,
-        workflow_path=args.workflow_file,
         api_url=args.api_url,
         required_status_checks=required_status_checks,
     )
@@ -445,11 +367,6 @@ def main() -> int:
         branch=args.branch,
         token=token,
     )
-    auto_merge_variable_value, variable_discovery_warnings = discover_repository_variable(
-        api_url=args.api_url,
-        repo=args.repo,
-        token=token,
-    )
     plan = render_enablement_plan(
         repo=args.repo,
         branch=args.branch,
@@ -458,11 +375,9 @@ def main() -> int:
         discovered_check_contexts=discovered_contexts,
         discovered_branch_protection_status_checks=discovered_protection_checks,
         discovered_ruleset_status_checks=discovered_ruleset_checks,
-        auto_merge_variable_value=auto_merge_variable_value,
         discovery_warnings=discovery_warnings,
         protection_discovery_warnings=protection_discovery_warnings,
         ruleset_discovery_warnings=ruleset_discovery_warnings,
-        variable_discovery_warnings=variable_discovery_warnings,
     )
     if args.output_file:
         args.output_file.parent.mkdir(parents=True, exist_ok=True)

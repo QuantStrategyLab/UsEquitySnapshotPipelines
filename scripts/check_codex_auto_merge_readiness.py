@@ -14,9 +14,6 @@ from typing import Any
 
 DEFAULT_API_URL = "https://api.github.com"
 DEFAULT_POLICY_PATH = Path(".github/codex_auto_merge_policy.json")
-DEFAULT_AUTO_MERGE_WORKFLOW = Path(".github/workflows/auto_merge_codex_pr.yml")
-DEFAULT_CODEX_FEEDBACK_WORKFLOW = Path(".github/workflows/codex_pr_feedback.yml")
-DEFAULT_MONTHLY_REVIEW_WORKFLOW = Path(".github/workflows/monthly_review.yml")
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_REQUIRED_STATUS_CHECKS = ("test",)
 DEFAULT_HUMAN_REVIEW_LABEL = "human-review-required"
@@ -211,158 +208,6 @@ def load_policy_labels(policy_path: Path) -> dict[str, str]:
         raise ReadinessError("auto-merge and human-review labels must be distinct before enabling auto-merge")
     validate_policy_control_plane_guardrails(payload)
     return {"auto_merge_label": label, "human_review_label": human_review_label}
-
-
-def validate_auto_merge_workflow(workflow_path: Path) -> list[str]:
-    errors: list[str] = []
-    try:
-        workflow = workflow_path.read_text(encoding="utf-8")
-    except OSError:
-        return [f"auto-merge workflow is missing: {workflow_path}"]
-    required_snippets = {
-        "CI workflow_run trigger": 'workflows: ["CI"]',
-        "CI success guard": "github.event.workflow_run.conclusion == 'success'",
-        "Codex branch guard": "codex/monthly-review-issue-",
-        "repository variable hard switch": "vars.CODEX_AUDIT_AUTO_MERGE",
-        "strict true allowlist": '["true","True","TRUE"]',
-        "workflow-run same-repository guard": "github.event.workflow_run.head_repository.full_name == github.repository",
-        "configurable required status checks": "CODEX_AUDIT_REQUIRED_STATUS_CHECKS",
-        "required status checks argument": "--required-status-checks",
-        "explicit gh repository binding": '--repo "${{ github.repository }}"',
-        "same-repository PR resolution": "headRepository.nameWithOwner",
-        "PR additions for changed-line guard": "additions",
-        "PR deletions for changed-line guard": "deletions",
-        "PR review decision guard": "reviewDecision",
-        "paginated PR file metadata fetch": "pulls/${{ steps.pr.outputs.pr_number }}/files?per_page=100",
-        "PR file status guard": '"status": item.get("status", "")',
-        "PR previous filename capture": '"previous_filename": item.get("previous_filename", "")',
-        "source merge guard script": "scripts/evaluate_codex_pr_merge.py",
-        "same-repository guard": "--require-same-repository",
-        "merge-time readiness check": "Check guarded auto-merge readiness before merge",
-        "merge-time readiness step id": "id: merge_readiness",
-        "merge-time readiness soft-fail": "continue-on-error: true",
-        "merge-time readiness script": "scripts/check_codex_auto_merge_readiness.py",
-        "merge-time readiness hard true": "--auto-merge true",
-        "merge-time readiness failure comment": "Comment merge-time readiness failure",
-        "merge-time readiness failure decision": "readiness_decision.json",
-        "merge-time readiness failure comment artifact": "readiness_guard_decision_comment.md",
-        "merge-time readiness failure reason": "merge_readiness_failed",
-        "merge-time readiness failure hard stop": "Fail on merge-time readiness failure",
-        "merge gated by readiness outcome": "steps.merge_readiness.outcome == 'success'",
-        "optional readiness token fallback": "CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN",
-        "content write permission": "contents: write",
-        "issue write permission": "issues: write",
-        "pull request write permission": "pull-requests: write",
-        "auto-merge guard decision comment": "Comment auto-merge guard decision",
-        "auto-merge guard decision comment script": "scripts/post_codex_auto_merge_decision_comment.py",
-        "auto-merge guard decision comment artifact": "guard_decision_comment.md",
-        "auto-merge guard decision label hygiene": "--sync-labels",
-        "merge command": "gh pr merge",
-        "head SHA race guard": "--match-head-commit",
-        "workflow run head SHA": "github.event.workflow_run.head_sha",
-        "auto-merge diagnostic artifact upload": "Upload Codex auto-merge diagnostics",
-        "auto-merge diagnostic artifact always uploads": "if: always()",
-        "auto-merge diagnostic artifact action": "actions/upload-artifact@v7",
-        "auto-merge diagnostic artifact name": "codex-auto-merge-",
-        "auto-merge diagnostic artifact path": "data/output/codex_auto_merge/",
-        "auto-merge diagnostic artifact missing-file warning": "if-no-files-found: warn",
-    }
-    for label, snippet in required_snippets.items():
-        if snippet not in workflow:
-            errors.append(f"auto-merge workflow missing {label}")
-    return errors
-
-
-def validate_codex_feedback_workflow(workflow_path: Path) -> list[str]:
-    errors: list[str] = []
-    try:
-        workflow = workflow_path.read_text(encoding="utf-8")
-    except OSError:
-        return [f"Codex feedback workflow is missing: {workflow_path}"]
-    required_snippets = {
-        "CI failure workflow_run trigger": "workflow_run:",
-        "review feedback trigger": "pull_request_review:",
-        "CI same-repository guard": "github.event.workflow_run.head_repository.full_name == github.repository",
-        "review same-repository guard": "github.event.pull_request.head.repo.full_name == github.repository",
-        "Codex branch guard": "codex/monthly-review-issue-",
-        "explicit PR repository binding": 'gh pr list --repo "${GITHUB_REPOSITORY}"',
-        "same-repository PR filter": ".headRepository.nameWithOwner",
-        "explicit issue repository binding": 'gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}"',
-        "feedback retry limit": "CODEX_AUDIT_MAX_FEEDBACK_ROUNDS",
-        "feedback retry limit default": "vars.CODEX_AUDIT_MAX_FEEDBACK_ROUNDS || '3'",
-        "feedback retry limit fallback": "configured_max_rounds = 3",
-        "feedback retry limit clamp": "max_rounds = min(max(configured_max_rounds, 1), 10)",
-        "feedback stale auto-merge label lookup": "auto_merge_label",
-        "feedback stale auto-merge policy label validation": "load_policy_labels(DEFAULT_POLICY_PATH)",
-        "feedback stale auto-merge label cleanup skip": "Skipping stale guarded auto-merge label cleanup",
-        "feedback stale auto-merge label cleanup conditional": 'if [ -n "${guard_label}" ]; then',
-        "feedback stale auto-merge label cleanup": '--remove-label "${guard_label}"',
-        "feedback stale auto-merge label cleanup log": "Removed stale guarded auto-merge label",
-        "paginated feedback comment fetch": "gh api --paginate --slurp",
-        "feedback comment pages artifact": "comment_pages.json",
-        "feedback comments page size": "/comments?per_page=100",
-        "retry limit handoff": "--remove-label codex-bridge",
-        "dispatch hard switch": "env.CODEX_AUDIT_ENABLED",
-        "Bridge dispatch command": "gh workflow run codex_audit.yml",
-        "Bridge repository input": "--repo \"${TARGET_REPOSITORY}\"",
-        "source issue input": "--field issue_number=\"${ISSUE_NUMBER}\"",
-        "monthly task input": '--field task="monthly_snapshot_audit"',
-        "guarded auto-merge input": "--field auto_merge=\"${auto_merge}\"",
-        "feedback auto-merge readiness check": "scripts/check_codex_auto_merge_readiness.py",
-        "feedback optional readiness token fallback": "CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN",
-        "feedback configurable required status checks": "CODEX_AUDIT_REQUIRED_STATUS_CHECKS",
-        "feedback required status checks argument": "--required-status-checks",
-        "feedback auto-merge readiness soft-fail": "continue-on-error: true",
-        "feedback auto-merge readiness outcome gate": "AUTO_MERGE_READINESS_OUTCOME",
-        "feedback auto-merge downgrade": "dispatching Codex feedback retry with auto_merge=false",
-        "GitHub App token fallback": "CODEX_AUDIT_DISPATCH_TOKEN",
-        "GitHub App action permission": "permission-actions: write",
-        "dispatch output gate": "steps.feedback.outputs.dispatch_feedback == 'true'",
-        "feedback diagnostic artifact upload": "Upload Codex feedback diagnostics",
-        "feedback diagnostic artifact always uploads": "if: always()",
-        "feedback diagnostic artifact action": "actions/upload-artifact@v7",
-        "CI feedback diagnostic artifact": "codex-pr-feedback-ci-",
-        "review feedback diagnostic artifact": "codex-pr-feedback-review-",
-        "feedback diagnostic artifact path": "data/output/codex_feedback/",
-        "feedback diagnostic artifact missing-file warning": "if-no-files-found: warn",
-    }
-    for label, snippet in required_snippets.items():
-        if snippet not in workflow:
-            errors.append(f"Codex feedback workflow missing {label}")
-    return errors
-
-
-def validate_monthly_review_workflow(workflow_path: Path) -> list[str]:
-    errors: list[str] = []
-    try:
-        workflow = workflow_path.read_text(encoding="utf-8")
-    except OSError:
-        return [f"Monthly review workflow is missing: {workflow_path}"]
-    required_snippets = {
-        "Bridge dispatch workflow": "actions/workflows/codex_audit.yml/dispatches",
-        "guarded label sync step": "Ensure guarded auto-merge labels",
-        "guarded label sync script": "scripts/sync_codex_auto_merge_labels.py",
-        "guarded label sync artifact": "codex_auto_merge_label_sync.md",
-        "preflight label sync input": "--label-sync-file data/output/monthly_report_bundle/codex_auto_merge_label_sync.md",
-        "readiness check": "scripts/check_codex_auto_merge_readiness.py",
-        "optional readiness token fallback": "CODEX_AUDIT_READINESS_TOKEN || secrets.GITHUB_TOKEN",
-        "configurable required status checks": "CODEX_AUDIT_REQUIRED_STATUS_CHECKS",
-        "required status checks argument": "--required-status-checks",
-        "readiness step id": "id: auto_merge_readiness",
-        "readiness soft-fail": "continue-on-error: true",
-        "auto-merge requested input": "AUTO_MERGE_REQUESTED",
-        "readiness outcome gate": "AUTO_MERGE_READINESS_OUTCOME",
-        "auto-merge downgrade": "dispatching Codex audit with auto_merge=false",
-        "guarded auto-merge dispatch field": '"auto_merge": str(auto_merge).lower()',
-        "monthly task input": '"task": "monthly_snapshot_audit"',
-        "diagnostic bundle always uploads": "if: always()",
-        "diagnostic bundle month fallback": "steps.bundle.outputs.report_month || 'unknown'",
-        "diagnostic bundle missing-file warning": "if-no-files-found: warn",
-    }
-    for label, snippet in required_snippets.items():
-        if snippet not in workflow:
-            errors.append(f"Monthly review workflow missing {label}")
-    return errors
 
 
 def _protection_status_check_contexts(protection: dict[str, Any]) -> set[str]:
@@ -607,9 +452,6 @@ def evaluate_readiness(
     branch: str,
     token: str,
     policy_path: Path = DEFAULT_POLICY_PATH,
-    workflow_path: Path = DEFAULT_AUTO_MERGE_WORKFLOW,
-    feedback_workflow_path: Path = DEFAULT_CODEX_FEEDBACK_WORKFLOW,
-    monthly_workflow_path: Path = DEFAULT_MONTHLY_REVIEW_WORKFLOW,
     api_url: str = DEFAULT_API_URL,
     required_status_checks: tuple[str, ...] = DEFAULT_REQUIRED_STATUS_CHECKS,
 ) -> dict[str, Any]:
@@ -647,23 +489,6 @@ def evaluate_readiness(
         checks.append(f"Loaded auto-merge policy label `{label}`.")
         checks.append(f"Loaded high-risk human-review label `{human_review_label}`.")
 
-    workflow_errors = validate_auto_merge_workflow(workflow_path)
-    if workflow_errors:
-        errors.extend(workflow_errors)
-    else:
-        checks.append("Auto-merge workflow contains required CI, branch, guard, and merge checks.")
-
-    feedback_workflow_errors = validate_codex_feedback_workflow(feedback_workflow_path)
-    if feedback_workflow_errors:
-        errors.extend(feedback_workflow_errors)
-    else:
-        checks.append("Codex feedback workflow contains same-repository retry, limit, and Bridge dispatch checks.")
-
-    monthly_workflow_errors = validate_monthly_review_workflow(monthly_workflow_path)
-    if monthly_workflow_errors:
-        errors.extend(monthly_workflow_errors)
-    else:
-        checks.append("Monthly review workflow contains readiness-gated Bridge dispatch checks.")
 
     if not token.strip():
         errors.append("GITHUB_TOKEN is required when CODEX_AUDIT_AUTO_MERGE=true")
@@ -720,9 +545,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--auto-merge", default=os.environ.get("CODEX_AUDIT_AUTO_MERGE", "false"))
     parser.add_argument("--policy-file", type=Path, default=DEFAULT_POLICY_PATH)
-    parser.add_argument("--workflow-file", type=Path, default=DEFAULT_AUTO_MERGE_WORKFLOW)
-    parser.add_argument("--feedback-workflow-file", type=Path, default=DEFAULT_CODEX_FEEDBACK_WORKFLOW)
-    parser.add_argument("--monthly-workflow-file", type=Path, default=DEFAULT_MONTHLY_REVIEW_WORKFLOW)
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
     parser.add_argument("--required-status-check", action="append")
     parser.add_argument(
@@ -742,9 +564,6 @@ def main() -> int:
         branch=args.branch,
         token=os.environ.get("GITHUB_TOKEN", ""),
         policy_path=args.policy_file,
-        workflow_path=args.workflow_file,
-        feedback_workflow_path=args.feedback_workflow_file,
-        monthly_workflow_path=args.monthly_workflow_file,
         api_url=args.api_url,
         required_status_checks=parse_required_status_check_args(
             args.required_status_check,
