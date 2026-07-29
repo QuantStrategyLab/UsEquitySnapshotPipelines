@@ -111,8 +111,9 @@ def _read_regular(path: str | Path, name: str) -> bytes:
         raise TrustedSnapshotPackageError(f"unable to read {name}") from exc
 
 
-def _sha256(path: str | Path, name: str) -> str:
-    return hashlib.sha256(_read_regular(path, name)).hexdigest()
+def _read_evidence(path: str | Path, name: str) -> tuple[object, str]:
+    payload = _read_regular(path, name)
+    return read_strict_json(payload, name), hashlib.sha256(payload).hexdigest()
 
 
 def _is_sha256(value: object) -> bool:
@@ -192,21 +193,46 @@ def load_verified_trusted_snapshot_package(
     calendar_evidence_path: str | Path,
     *,
     expected_snapshot_manifest_sha256: str,
+    expected_package_manifest_sha256: str,
+    expected_receipt_sha256: str,
 ) -> TrustedSnapshotPackage:
-    """Verify all local evidence against the caller-owned snapshot hash trust anchor."""
-    if not _is_sha256(expected_snapshot_manifest_sha256):
-        _invalid("invalid expected snapshot manifest hash")
-    verified_snapshot = tqqq_r1_snapshot.verify_tqqq_r1_snapshot(
-        snapshot_dir,
-        expected_manifest_sha256=expected_snapshot_manifest_sha256,
-    )
-    manifest = _package_manifest(read_strict_json(_read_regular(package_manifest_path, "package manifest"), "package manifest"))
-    receipt = _receipt(read_strict_json(_read_regular(receipt_path, "receipt"), "receipt"))
-    calendar = _calendar(read_strict_json(_read_regular(calendar_evidence_path, "calendar evidence"), "calendar evidence"))
-    receipt_sha256 = _sha256(receipt_path, "receipt")
-    calendar_sha256 = _sha256(calendar_evidence_path, "calendar evidence")
+    """Verify all local evidence against caller-owned external trust anchors."""
+    if not all(
+        _is_sha256(value)
+        for value in (
+            expected_snapshot_manifest_sha256,
+            expected_package_manifest_sha256,
+            expected_receipt_sha256,
+        )
+    ):
+        _invalid("invalid expected evidence hash")
+    try:
+        verified_snapshot = tqqq_r1_snapshot.verify_tqqq_r1_snapshot(
+            snapshot_dir,
+            expected_manifest_sha256=expected_snapshot_manifest_sha256,
+        )
+    except tqqq_r1_snapshot.SnapshotValidationError as exc:
+        raise TrustedSnapshotPackageError("invalid verified snapshot") from exc
+    try:
+        resolved_snapshot_dir = verified_snapshot.output_dir.resolve(strict=True)
+    except OSError as exc:
+        raise TrustedSnapshotPackageError("unable to resolve verified snapshot") from exc
 
-    if manifest["snapshot_manifest_sha256"] != expected_snapshot_manifest_sha256 or receipt["snapshot_manifest_sha256"] != expected_snapshot_manifest_sha256:
+    manifest_value, package_manifest_sha256 = _read_evidence(package_manifest_path, "package manifest")
+    receipt_value, receipt_sha256 = _read_evidence(receipt_path, "receipt")
+    calendar_value, calendar_sha256 = _read_evidence(calendar_evidence_path, "calendar evidence")
+    if package_manifest_sha256 != expected_package_manifest_sha256:
+        _invalid("package manifest hash binding mismatch")
+    if receipt_sha256 != expected_receipt_sha256:
+        _invalid("receipt hash binding mismatch")
+    manifest = _package_manifest(manifest_value)
+    receipt = _receipt(receipt_value)
+    calendar = _calendar(calendar_value)
+
+    if (
+        manifest["snapshot_manifest_sha256"] != expected_snapshot_manifest_sha256
+        or receipt["snapshot_manifest_sha256"] != expected_snapshot_manifest_sha256
+    ):
         _invalid("snapshot manifest hash binding mismatch")
     if manifest["receipt_sha256"] != receipt_sha256:
         _invalid("receipt hash binding mismatch")
@@ -214,12 +240,12 @@ def load_verified_trusted_snapshot_package(
         _invalid("calendar hash binding mismatch")
     if manifest["session"] != receipt["session"] or manifest["session"] not in calendar["sessions"]:
         _invalid("calendar session binding mismatch")
-    if manifest["session"] not in _snapshot_sessions(verified_snapshot.output_dir):
+    if manifest["session"] not in _snapshot_sessions(resolved_snapshot_dir):
         _invalid("snapshot session binding mismatch")
 
     return TrustedSnapshotPackage(
         _verified=_VERIFIED_CONSTRUCTION,
-        snapshot_dir=verified_snapshot.output_dir,
+        snapshot_dir=resolved_snapshot_dir,
         session=manifest["session"],
         snapshot_manifest_sha256=expected_snapshot_manifest_sha256,
         receipt_sha256=receipt_sha256,
