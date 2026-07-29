@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -264,3 +265,56 @@ def test_materialize_rejects_python_int_beyond_digit_limit(tmp_path: Path) -> No
 
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_verify_uses_descriptor_backed_member_bytes_after_member_replacement(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    directory_fd = os.open(result.output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        verified = snapshot.verify_tqqq_r1_snapshot_fd(
+            directory_fd,
+            expected_manifest_sha256=result.manifest_sha256,
+        )
+    finally:
+        os.close(directory_fd)
+    (result.output_dir / "prices.csv").write_text("replaced\n", encoding="utf-8")
+
+    assert b"45.25" in dict(verified.verified_members)["prices.csv"]
+    assert "45.25" not in repr(verified)
+    with pytest.raises(TypeError):
+        hash(verified)
+
+
+def test_descriptor_verifier_rejects_fifo_member_without_blocking(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    prices_path = result.output_dir / "prices.csv"
+    prices_path.unlink()
+    os.mkfifo(prices_path)
+    directory_fd = os.open(result.output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        with pytest.raises(snapshot.SnapshotValidationError, match="regular non-symlink"):
+            snapshot.verify_tqqq_r1_snapshot_fd(directory_fd, expected_manifest_sha256=result.manifest_sha256)
+    finally:
+        os.close(directory_fd)
+
+
+def test_descriptor_member_reader_requires_nonblocking_and_size_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    open_file = snapshot.os.open
+    observed_flags: list[int] = []
+
+    def observe_member_open(path: str | bytes | Path, flags: int, *args: object, **kwargs: object) -> int:
+        if path in snapshot.OUTPUT_FILENAMES:
+            observed_flags.append(flags)
+        return open_file(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(snapshot.os, "open", observe_member_open)
+    directory_fd = os.open(result.output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        snapshot.verify_tqqq_r1_snapshot_fd(directory_fd, expected_manifest_sha256=result.manifest_sha256)
+    finally:
+        os.close(directory_fd)
+
+    assert observed_flags and all(flags & os.O_NOFOLLOW and flags & os.O_NONBLOCK for flags in observed_flags)
