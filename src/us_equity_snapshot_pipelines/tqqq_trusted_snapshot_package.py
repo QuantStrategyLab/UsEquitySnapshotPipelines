@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date
 from io import StringIO
@@ -70,6 +71,13 @@ def _reject_constant(_: str) -> None:
     _invalid("invalid strict JSON")
 
 
+def _parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        _invalid("invalid strict JSON")
+    return parsed
+
+
 def read_strict_json(payload: bytes, name: str) -> object:
     """Decode JSON while rejecting duplicate keys and non-finite constants."""
     if type(payload) is not bytes or type(name) is not str:
@@ -79,6 +87,7 @@ def read_strict_json(payload: bytes, name: str) -> object:
             payload.decode("utf-8"),
             object_pairs_hook=_no_duplicates,
             parse_constant=_reject_constant,
+            parse_float=_parse_finite_float,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, TrustedSnapshotPackageError) as exc:
         if isinstance(exc, TrustedSnapshotPackageError):

@@ -93,6 +93,11 @@ def test_strict_json_reader_rejects_non_finite_numbers(payload: bytes) -> None:
         package.read_strict_json(payload, "payload")
 
 
+def test_strict_json_reader_rejects_overflowed_float() -> None:
+    with pytest.raises(package.TrustedSnapshotPackageError, match="invalid strict JSON"):
+        package.read_strict_json(b'{"value":1e400}', "x")
+
+
 def test_verified_loader_preserves_existing_weekend_rejection(tmp_path: Path) -> None:
     args = _write_bound_package(tmp_path, session="2010-01-03")
 
