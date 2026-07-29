@@ -9,6 +9,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -268,27 +269,12 @@ def _has_exact_type(value: object, expected: object) -> bool:
     return value == expected
 
 
-def verify_tqqq_r1_snapshot(
-    output_dir: str | Path,
+def _verify_snapshot_members(
+    members: dict[str, bytes],
     *,
+    output_dir: Path,
     expected_manifest_sha256: str,
 ) -> SnapshotResult:
-    output = Path(output_dir)
-    if output.is_symlink():
-        _invalid("snapshot root symlink is not allowed")
-    try:
-        names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
-    if names != tuple(sorted(OUTPUT_FILENAMES)):
-        _invalid(f"unexpected output files: {names}")
-    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
-        _invalid("snapshot members must be regular non-symlink files")
-    try:
-        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
-
     member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
     if type(expected_manifest_sha256) is not str or member_hashes["manifest.json"] != expected_manifest_sha256:
         _invalid("trusted manifest hash mismatch")
@@ -330,7 +316,79 @@ def verify_tqqq_r1_snapshot(
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
+    return SnapshotResult(output_dir=output_dir, manifest_sha256=member_hashes["manifest.json"])
+
+
+def read_tqqq_r1_snapshot_member_fd(directory_fd: int, name: str) -> bytes:
+    if name not in OUTPUT_FILENAMES:
+        _invalid("invalid snapshot member")
+    try:
+        member_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    try:
+        member_stat = os.fstat(member_fd)
+        if not stat.S_ISREG(member_stat.st_mode):
+            _invalid("snapshot members must be regular non-symlink files")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(member_fd, 1024 * 1024)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    finally:
+        os.close(member_fd)
+
+
+def verify_tqqq_r1_snapshot_fd(
+    directory_fd: int,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
+    """Verify snapshot members relative to an already-open stable directory."""
+    if type(directory_fd) is not int or directory_fd < 0:
+        _invalid("invalid snapshot directory descriptor")
+    try:
+        names = tuple(sorted(os.listdir(directory_fd)))
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    if names != tuple(sorted(OUTPUT_FILENAMES)):
+        _invalid(f"unexpected output files: {names}")
+    members = {name: read_tqqq_r1_snapshot_member_fd(directory_fd, name) for name in OUTPUT_FILENAMES}
+    return _verify_snapshot_members(
+        members,
+        output_dir=Path(f"/proc/self/fd/{directory_fd}"),
+        expected_manifest_sha256=expected_manifest_sha256,
+    )
+
+
+def verify_tqqq_r1_snapshot(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
+    output = Path(output_dir)
+    if output.is_symlink():
+        _invalid("snapshot root symlink is not allowed")
+    try:
+        names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    if names != tuple(sorted(OUTPUT_FILENAMES)):
+        _invalid(f"unexpected output files: {names}")
+    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
+        _invalid("snapshot members must be regular non-symlink files")
+    try:
+        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    return _verify_snapshot_members(
+        members,
+        output_dir=output,
+        expected_manifest_sha256=expected_manifest_sha256,
+    )
 
 
 def materialize_tqqq_r1_snapshot(
