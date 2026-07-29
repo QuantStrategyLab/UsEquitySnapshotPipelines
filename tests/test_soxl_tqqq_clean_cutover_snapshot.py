@@ -240,6 +240,7 @@ def test_serializer_and_readback_share_the_same_byte_limit(monkeypatch, tmp_path
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.canonical_json_bytes({"oversized": "fixture"})
     path, bindings = _write_package(tmp_path)
+    monkeypatch.setattr(snapshot, "MAX_READ_BYTES", path.stat().st_size + 1)
     monkeypatch.setattr(snapshot.os, "read", lambda *_: b"")
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.build_trusted_snapshot_package(trusted_root=tmp_path, relative_path=path.name, bindings=bindings)
@@ -264,6 +265,17 @@ def test_rejects_huge_json_integer_before_conversion(tmp_path: Path) -> None:
     )
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.build_trusted_snapshot_package(trusted_root=tmp_path, relative_path="fixture.json", bindings=bindings)
+
+
+def test_factory_revalidates_mutated_external_bindings(tmp_path: Path) -> None:
+    path, bindings = _write_package(tmp_path)
+    object.__setattr__(bindings, "source_sha256", "invalid")
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.build_trusted_snapshot_package(trusted_root=tmp_path, relative_path=path.name, bindings=bindings)
+    path, bindings = _write_package(tmp_path)
+    object.__setattr__(bindings, "expected_sessions", ("not-a-date",))
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.build_trusted_snapshot_package(trusted_root=tmp_path, relative_path=path.name, bindings=bindings)
 
 
 def test_validator_rechecks_mutable_escape_hatches_against_external_bindings(tmp_path: Path) -> None:

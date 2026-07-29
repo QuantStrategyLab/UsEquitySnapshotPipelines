@@ -365,6 +365,7 @@ def build_trusted_snapshot_package(
     """Read, externally bind, and validate one offline fixture into the only public package type."""
     if type(bindings) is not ExternalBindings:
         _invalid("bindings must be an ExternalBindings value")
+    _validate_external_bindings(bindings)
     raw = _read_trusted_file(trusted_root=trusted_root, relative_path=relative_path)
     if hashlib.sha256(raw).hexdigest() != bindings.content_sha256:
         _invalid("external content digest does not match before JSON parsing")
