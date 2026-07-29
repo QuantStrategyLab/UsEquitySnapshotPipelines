@@ -41,6 +41,7 @@ class TrustedSnapshotPackage:
     receipt_sha256: str
     calendar_sha256: str
     _snapshot_fd: int
+    _snapshot_members: tuple[tuple[str, bytes], ...]
 
     def __init__(
         self,
@@ -52,6 +53,7 @@ class TrustedSnapshotPackage:
         receipt_sha256: str,
         calendar_sha256: str,
         snapshot_fd: int,
+        snapshot_members: tuple[tuple[str, bytes], ...],
     ) -> None:
         if _verified is not _VERIFIED_CONSTRUCTION:
             raise TrustedSnapshotPackageError("TrustedSnapshotPackage requires verified loader")
@@ -61,6 +63,7 @@ class TrustedSnapshotPackage:
         object.__setattr__(self, "receipt_sha256", receipt_sha256)
         object.__setattr__(self, "calendar_sha256", calendar_sha256)
         object.__setattr__(self, "_snapshot_fd", snapshot_fd)
+        object.__setattr__(self, "_snapshot_members", snapshot_members)
 
     def close(self) -> None:
         """Release the stable snapshot directory descriptor."""
@@ -76,10 +79,10 @@ class TrustedSnapshotPackage:
         """Read a verified snapshot member through the stable directory descriptor."""
         if self._snapshot_fd < 0:
             raise TrustedSnapshotPackageError("trusted snapshot package is closed")
-        try:
-            return tqqq_r1_snapshot.read_tqqq_r1_snapshot_member_fd(self._snapshot_fd, name)
-        except tqqq_r1_snapshot.SnapshotValidationError as exc:
-            raise TrustedSnapshotPackageError("invalid verified snapshot member") from exc
+        members = dict(self._snapshot_members)
+        if name not in members:
+            raise TrustedSnapshotPackageError("invalid verified snapshot member")
+        return members[name]
 
     def __enter__(self) -> "TrustedSnapshotPackage":
         return self
@@ -138,14 +141,14 @@ def read_strict_json(payload: bytes, name: str) -> object:
 def write_strict_json(path: str | Path, payload: object) -> None:
     """Write canonical JSON and reject NaN/Infinity rather than serializing them."""
     destination = Path(path)
-    if destination.is_symlink():
-        _invalid("strict JSON destination symlink is not allowed")
     try:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise TrustedSnapshotPackageError("non-finite or invalid strict JSON") from exc
     try:
-        destination.write_bytes(encoded + b"\n")
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+        with os.fdopen(fd, "wb") as output:
+            output.write(encoded + b"\n")
     except OSError as exc:
         raise TrustedSnapshotPackageError("unable to write strict JSON") from exc
 
@@ -252,14 +255,6 @@ def _calendar(value: object) -> dict[str, Any]:
     return calendar
 
 
-def _snapshot_sessions(snapshot_dir: Path) -> set[str]:
-    try:
-        rows = csv.DictReader(StringIO(_read_regular(snapshot_dir / "prices.csv", "snapshot prices").decode("utf-8")))
-        return {row["session"] for row in rows}
-    except (KeyError, UnicodeDecodeError, csv.Error) as exc:
-        raise TrustedSnapshotPackageError("invalid verified snapshot prices") from exc
-
-
 def load_verified_trusted_snapshot_package(
     snapshot_dir: str | Path,
     package_manifest_path: str | Path,
@@ -283,7 +278,7 @@ def load_verified_trusted_snapshot_package(
     snapshot_fd, stable_snapshot_dir = _open_stable_snapshot_dir(snapshot_dir)
     try:
         try:
-            tqqq_r1_snapshot.verify_tqqq_r1_snapshot_fd(
+            verified_snapshot = tqqq_r1_snapshot.verify_tqqq_r1_snapshot_fd(
                 snapshot_fd,
                 expected_manifest_sha256=expected_snapshot_manifest_sha256,
             )
@@ -317,14 +312,15 @@ def load_verified_trusted_snapshot_package(
             _invalid("calendar hash binding mismatch")
         if manifest["session"] != receipt["session"] or manifest["session"] not in calendar["sessions"]:
             _invalid("calendar session binding mismatch")
-        if manifest["session"] not in {
-            row["session"]
-            for row in csv.DictReader(
-                StringIO(
-                    tqqq_r1_snapshot.read_tqqq_r1_snapshot_member_fd(snapshot_fd, "prices.csv").decode("utf-8")
-                )
-            )
-        }:
+        try:
+            snapshot_members = dict(verified_snapshot.verified_members)
+            snapshot_sessions = {
+                row["session"]
+                for row in csv.DictReader(StringIO(snapshot_members["prices.csv"].decode("utf-8")))
+            }
+        except (KeyError, UnicodeDecodeError, csv.Error) as exc:
+            raise TrustedSnapshotPackageError("invalid verified snapshot prices") from exc
+        if manifest["session"] not in snapshot_sessions:
             _invalid("snapshot session binding mismatch")
 
         return TrustedSnapshotPackage(
@@ -335,6 +331,7 @@ def load_verified_trusted_snapshot_package(
             receipt_sha256=receipt_sha256,
             calendar_sha256=calendar_sha256,
             snapshot_fd=snapshot_fd,
+            snapshot_members=verified_snapshot.verified_members,
         )
     except Exception:
         os.close(snapshot_fd)

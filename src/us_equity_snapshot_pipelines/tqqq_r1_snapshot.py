@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import hashlib
 import json
 import math
@@ -12,7 +13,7 @@ import shutil
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ class SnapshotValidationError(ValueError):
 class SnapshotResult:
     output_dir: Path
     manifest_sha256: str
+    verified_members: tuple[tuple[str, bytes], ...] = field(default=(), repr=False, compare=False)
 
 
 def _sha256(path: Path) -> str:
@@ -316,14 +318,18 @@ def _verify_snapshot_members(
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output_dir, manifest_sha256=member_hashes["manifest.json"])
+    return SnapshotResult(
+        output_dir=output_dir,
+        manifest_sha256=member_hashes["manifest.json"],
+        verified_members=tuple(sorted(members.items())),
+    )
 
 
 def read_tqqq_r1_snapshot_member_fd(directory_fd: int, name: str) -> bytes:
     if name not in OUTPUT_FILENAMES:
         _invalid("invalid snapshot member")
     try:
-        member_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        member_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     except OSError as exc:
         raise SnapshotValidationError("unable to read snapshot members") from exc
     try:
@@ -357,9 +363,20 @@ def verify_tqqq_r1_snapshot_fd(
     if names != tuple(sorted(OUTPUT_FILENAMES)):
         _invalid(f"unexpected output files: {names}")
     members = {name: read_tqqq_r1_snapshot_member_fd(directory_fd, name) for name in OUTPUT_FILENAMES}
+    try:
+        if Path("/proc/self/fd").is_dir():
+            output_dir = Path(f"/proc/self/fd/{directory_fd}").resolve(strict=True)
+        elif sys.platform == "darwin":
+            output_dir = Path(
+                fcntl.fcntl(directory_fd, fcntl.F_GETPATH, b"\0" * 1024).split(b"\0", 1)[0].decode()
+            )
+        else:
+            _invalid("stable snapshot directory capability is unavailable")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SnapshotValidationError("unable to resolve snapshot directory descriptor") from exc
     return _verify_snapshot_members(
         members,
-        output_dir=Path(f"/proc/self/fd/{directory_fd}"),
+        output_dir=output_dir,
         expected_manifest_sha256=expected_manifest_sha256,
     )
 

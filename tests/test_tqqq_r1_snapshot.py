@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,20 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
         },
     )
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_descriptor_verifier_returns_a_usable_platform_path(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    directory_fd = os.open(result.output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        verified = snapshot.verify_tqqq_r1_snapshot_fd(
+            directory_fd,
+            expected_manifest_sha256=result.manifest_sha256,
+        )
+    finally:
+        os.close(directory_fd)
+
+    assert verified.output_dir.is_dir()
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:

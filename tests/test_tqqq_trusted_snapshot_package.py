@@ -243,3 +243,44 @@ def test_loader_keeps_verified_snapshot_directory_stable_after_replacement(
 
     assert trusted.snapshot_dir.is_absolute()
     assert b"999" not in trusted.read_snapshot_member("prices.csv")
+
+
+def test_package_preserves_verified_member_bytes_after_member_replacement(tmp_path: Path) -> None:
+    args = _write_bound_package(tmp_path)
+    trusted = _load(*args)
+    (args[0] / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n2010-01-05,QQQ,999\n",
+        encoding="utf-8",
+    )
+
+    assert b"999" not in trusted.read_snapshot_member("prices.csv")
+
+
+def test_snapshot_members_are_opened_nonblocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _write_bound_package(tmp_path)
+    open_file = snapshot.os.open
+
+    def require_nonblocking(path: str | bytes | Path, flags: int, *values: object, **options: object) -> int:
+        if path in snapshot.OUTPUT_FILENAMES:
+            assert flags & snapshot.os.O_NONBLOCK
+        return open_file(path, flags, *values, **options)
+
+    monkeypatch.setattr(snapshot.os, "open", require_nonblocking)
+
+    _load(*args)
+
+
+def test_strict_json_writer_does_not_follow_raced_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("unchanged\n", encoding="utf-8")
+    destination = tmp_path / "destination.json"
+    destination.symlink_to(target)
+    monkeypatch.setattr(Path, "is_symlink", lambda _self: False)
+
+    with pytest.raises(package.TrustedSnapshotPackageError, match="unable to write strict JSON"):
+        package.write_strict_json(destination, {"value": 1})
+
+    assert target.read_text(encoding="utf-8") == "unchanged\n"
