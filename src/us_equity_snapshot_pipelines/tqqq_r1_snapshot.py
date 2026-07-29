@@ -26,6 +26,7 @@ PRICE_FIELD = "adjusted_close"
 PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
+MAX_SNAPSHOT_MEMBER_BYTES = 16 * 1024 * 1024
 _MAX_FLOAT_INTEGER_DECIMAL = format(sys.float_info.max, ".0f")
 
 
@@ -290,14 +291,20 @@ def _read_snapshot_member_fd(directory_fd: int, name: str) -> bytes:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             _invalid("snapshot members must be regular non-symlink files")
+        if metadata.st_size < 0 or metadata.st_size > MAX_SNAPSHOT_MEMBER_BYTES:
+            _invalid("snapshot member exceeds size limit")
         chunks: list[bytes] = []
+        received = 0
         while True:
-            chunk = os.read(descriptor, 1024 * 1024)
+            chunk = os.read(descriptor, min(1024 * 1024, MAX_SNAPSHOT_MEMBER_BYTES - received + 1))
             if not chunk:
                 break
+            received += len(chunk)
+            if received > MAX_SNAPSHOT_MEMBER_BYTES:
+                _invalid("snapshot member exceeds size limit")
             chunks.append(chunk)
         final = os.fstat(descriptor)
-        if final.st_size != metadata.st_size or sum(map(len, chunks)) != metadata.st_size:
+        if final.st_size != metadata.st_size or received != metadata.st_size:
             _invalid("snapshot member changed while reading")
         return b"".join(chunks)
     except OSError as exc:

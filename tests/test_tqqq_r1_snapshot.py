@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -284,3 +285,22 @@ def test_verify_preserves_caller_path_without_reopening_members(tmp_path: Path) 
 
     assert verified.output_dir == result.output_dir
     assert member_reopens == []
+
+
+def test_snapshot_member_size_limit_rejects_before_streaming_or_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oversized = tmp_path / "prices.csv"
+    oversized.touch()
+    os.truncate(oversized, snapshot.MAX_SNAPSHOT_MEMBER_BYTES + 1)
+    directory_fd = os.open(tmp_path, snapshot._snapshot_open_flags(directory=True))
+
+    def fail_if_streamed(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("oversized snapshot member must not be streamed")
+
+    monkeypatch.setattr(snapshot.os, "read", fail_if_streamed)
+    try:
+        with pytest.raises(snapshot.SnapshotValidationError, match="snapshot member exceeds size limit"):
+            snapshot._read_snapshot_member_fd(directory_fd, "prices.csv")
+    finally:
+        os.close(directory_fd)
