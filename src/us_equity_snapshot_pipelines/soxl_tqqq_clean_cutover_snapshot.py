@@ -34,13 +34,12 @@ TOP_LEVEL_FIELDS = frozenset(
     }
 )
 ROW_FIELDS = frozenset({"adjusted_close", "session", "symbol"})
-CANONICAL_DECIMAL_PATTERN = r"(?:[1-9][0-9]*|[1-9][0-9]*\.[0-9]*[1-9])"
+CANONICAL_DECIMAL_PATTERN = r"(?:0\.[0-9]*[1-9]|[1-9][0-9]*(?:\.[0-9]*[1-9])?)"
 _DECIMAL_RE = re.compile(rf"^{CANONICAL_DECIMAL_PATTERN}$")
 MAX_DECIMAL_LENGTH = 32
 MAX_JSON_INT_DIGITS = 64
-MAX_READ_BYTES = 1_048_576
+MAX_READ_BYTES = 16 * 1_024 * 1_024
 _READ_CHUNK_BYTES = 65_536
-_MAX_ADJUSTED_CLOSE = Decimal("999999999999999999999999.999999")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PACKAGE_TOKEN = object()
 
@@ -56,9 +55,12 @@ def _invalid(message: str) -> None:
 def canonical_json_bytes(value: object) -> bytes:
     """Serialize JSON with the exact encoding shared by runtime and schema tests."""
     try:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise SnapshotValidationError("cannot canonicalize JSON") from exc
+    if len(encoded) > MAX_READ_BYTES:
+        _invalid("canonical JSON exceeds maximum read size")
+    return encoded
 
 
 def _validate_sha256(value: object, field: str) -> None:
@@ -84,6 +86,14 @@ def _validate_expected_sessions(value: object) -> None:
         _invalid("expected_sessions must be sorted and unique")
 
 
+def _validate_external_bindings(bindings: "ExternalBindings") -> None:
+    _validate_sha256(bindings.source_sha256, "source_sha256")
+    _validate_sha256(bindings.calendar_sha256, "calendar_sha256")
+    _validate_sha256(bindings.manifest_sha256, "manifest_sha256")
+    _validate_sha256(bindings.content_sha256, "content_sha256")
+    _validate_expected_sessions(bindings.expected_sessions)
+
+
 @dataclass(frozen=True, slots=True)
 class ExternalBindings:
     """Typed control-plane receipt binding for one complete offline fixture file."""
@@ -95,11 +105,7 @@ class ExternalBindings:
     expected_sessions: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _validate_sha256(self.source_sha256, "source_sha256")
-        _validate_sha256(self.calendar_sha256, "calendar_sha256")
-        _validate_sha256(self.manifest_sha256, "manifest_sha256")
-        _validate_sha256(self.content_sha256, "content_sha256")
-        _validate_expected_sessions(self.expected_sessions)
+        _validate_external_bindings(self)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -185,17 +191,43 @@ def _relative_components(relative_path: object) -> tuple[str, ...]:
     return components
 
 
-def _read_trusted_file(*, trusted_root: object, relative_path: object) -> bytes:
+def _open_trusted_root(trusted_root: object) -> int:
     if not isinstance(trusted_root, (str, Path)):
         _invalid("trusted_root must be a path string")
+    root_path = Path(trusted_root)
+    if root_path.is_absolute():
+        anchor = root_path.anchor
+        components = root_path.parts[1:]
+    else:
+        anchor = "."
+        components = root_path.parts
+    if any(component == ".." for component in components):
+        _invalid("trusted_root must not contain parent traversal")
+    descriptor = os.open(anchor, _required_open_flags(directory=True))
+    try:
+        for component in components:
+            child_descriptor = os.open(component, _required_open_flags(directory=True), dir_fd=descriptor)
+            if not stat.S_ISDIR(os.fstat(child_descriptor).st_mode):
+                os.close(child_descriptor)
+                _invalid("trusted_root is not a directory")
+            os.close(descriptor)
+            descriptor = child_descriptor
+        return descriptor
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+
+
+def _read_trusted_file(*, trusted_root: object, relative_path: object) -> bytes:
     components = _relative_components(relative_path)
     root_fd = -1
     parent_fd = -1
     file_fd = -1
     try:
-        root_fd = os.open(Path(trusted_root), _required_open_flags(directory=True))
-        if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
-            _invalid("trusted_root is not a directory")
+        root_fd = _open_trusted_root(trusted_root)
         parent_fd = root_fd
         root_fd = -1
         for component in components[:-1]:
@@ -219,6 +251,8 @@ def _read_trusted_file(*, trusted_root: object, relative_path: object) -> bytes:
             data.extend(chunk)
             if len(data) > MAX_READ_BYTES:
                 _invalid("candidate exceeds maximum read size")
+        if len(data) != file_stat.st_size:
+            _invalid("candidate changed during readback")
         return bytes(data)
     except SnapshotValidationError:
         raise
@@ -282,7 +316,7 @@ def _validate_decimal(value: object) -> None:
         decimal_value = Decimal(value)
     except InvalidOperation as exc:
         raise SnapshotValidationError("invalid canonical adjusted_close") from exc
-    if not decimal_value.is_finite() or decimal_value <= 0 or decimal_value > _MAX_ADJUSTED_CLOSE:
+    if not decimal_value.is_finite() or decimal_value <= 0:
         _invalid("adjusted_close is outside the permitted finite range")
 
 
@@ -345,6 +379,9 @@ def validate_trusted_snapshot_package(package: object) -> TrustedSnapshotPackage
         _invalid("consumer input must be a TrustedSnapshotPackage")
     if type(package.canonical_bytes) is not bytes or type(package.external_bindings) is not ExternalBindings:
         _invalid("trusted package has invalid fields")
+    _validate_external_bindings(package.external_bindings)
+    if hashlib.sha256(package.canonical_bytes).hexdigest() != package.external_bindings.content_sha256:
+        _invalid("trusted package content digest is invalid")
     expected_id = f"sha256-{package.external_bindings.manifest_sha256}"
     if package.snapshot_id != expected_id:
         _invalid("trusted package snapshot_id is invalid")
