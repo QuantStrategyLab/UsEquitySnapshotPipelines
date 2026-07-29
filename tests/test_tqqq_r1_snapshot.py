@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -264,3 +265,22 @@ def test_materialize_rejects_python_int_beyond_digit_limit(tmp_path: Path) -> No
 
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_verify_preserves_caller_path_without_reopening_members(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    original_open = snapshot.os.open
+    member_reopens: list[str] = []
+
+    def observe_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if isinstance(path, (str, bytes, Path)) and Path(path).parent == result.output_dir:
+            member_reopens.append(str(path))
+        return original_open(path, flags, *args, **kwargs)
+
+    with patch.object(snapshot.os, "open", observe_open):
+        verified = snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir, expected_manifest_sha256=result.manifest_sha256
+        )
+
+    assert verified.output_dir == result.output_dir
+    assert member_reopens == []

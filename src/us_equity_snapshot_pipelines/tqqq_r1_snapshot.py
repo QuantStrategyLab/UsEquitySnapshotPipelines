@@ -9,6 +9,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -268,26 +269,58 @@ def _has_exact_type(value: object, expected: object) -> bool:
     return value == expected
 
 
-def verify_tqqq_r1_snapshot(
-    output_dir: str | Path,
+def _snapshot_open_flags(*, directory: bool = False) -> int:
+    if os.name != "posix":
+        _invalid("descriptor-safe snapshot verification is unavailable")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    non_blocking = getattr(os, "O_NONBLOCK", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0) if directory else 0
+    if not no_follow or not non_blocking or (directory and not directory_flag):
+        _invalid("descriptor-safe snapshot verification is unavailable")
+    return os.O_RDONLY | no_follow | non_blocking | directory_flag
+
+
+def _read_snapshot_member_fd(directory_fd: int, name: str) -> bytes:
+    """Read one bounded regular member via an already-open directory descriptor."""
+    try:
+        descriptor = os.open(name, _snapshot_open_flags(), dir_fd=directory_fd)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            _invalid("snapshot members must be regular non-symlink files")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        final = os.fstat(descriptor)
+        if final.st_size != metadata.st_size or sum(map(len, chunks)) != metadata.st_size:
+            _invalid("snapshot member changed while reading")
+        return b"".join(chunks)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _verify_tqqq_r1_snapshot_fd(
+    directory_fd: int,
     *,
     expected_manifest_sha256: str,
-) -> SnapshotResult:
-    output = Path(output_dir)
-    if output.is_symlink():
-        _invalid("snapshot root symlink is not allowed")
+) -> tuple[str, tuple[tuple[str, bytes], ...]]:
+    """Verify a snapshot from one stable directory descriptor without path reopening."""
+    if type(directory_fd) is not int or directory_fd < 0:
+        _invalid("invalid snapshot directory descriptor")
     try:
-        names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
+        names = tuple(sorted(os.listdir(directory_fd)))
     except OSError as exc:
         raise SnapshotValidationError("unable to read snapshot members") from exc
     if names != tuple(sorted(OUTPUT_FILENAMES)):
         _invalid(f"unexpected output files: {names}")
-    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
-        _invalid("snapshot members must be regular non-symlink files")
-    try:
-        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
+    members = {name: _read_snapshot_member_fd(directory_fd, name) for name in OUTPUT_FILENAMES}
 
     member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
     if type(expected_manifest_sha256) is not str or member_hashes["manifest.json"] != expected_manifest_sha256:
@@ -330,7 +363,27 @@ def verify_tqqq_r1_snapshot(
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
+    return member_hashes["manifest.json"], tuple(sorted(members.items()))
+
+
+def verify_tqqq_r1_snapshot(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
+    """Verify immutable members while preserving the caller-provided output path."""
+    output = Path(output_dir)
+    try:
+        directory_fd = os.open(os.fspath(output), _snapshot_open_flags(directory=True))
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    try:
+        manifest_sha256, _ = _verify_tqqq_r1_snapshot_fd(
+            directory_fd, expected_manifest_sha256=expected_manifest_sha256
+        )
+    finally:
+        os.close(directory_fd)
+    return SnapshotResult(output_dir=output, manifest_sha256=manifest_sha256)
 
 
 def materialize_tqqq_r1_snapshot(
