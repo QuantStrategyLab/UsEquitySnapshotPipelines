@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import ctypes
+import csv
 import errno
 import hashlib
 import json
 import math
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
-from io import BytesIO
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,15 @@ PLUGIN = "ABSENT_DISABLED"
 MODE = "core_only"
 OUTPUT_FILENAMES = ("prices.csv", "manifest.json", "validation.json", "sha256sums.json")
 _MAX_FLOAT_INTEGER_DECIMAL = format(sys.float_info.max, ".0f")
+_MEMBER_BYTE_LIMITS = {
+    "prices.csv": 16 * 1024 * 1024,
+    "manifest.json": 1024 * 1024,
+    "validation.json": 1024 * 1024,
+    "sha256sums.json": 1024 * 1024,
+}
+_MAX_TOTAL_MEMBER_BYTES = 18 * 1024 * 1024
+_MAX_CSV_ROWS = 500_000
+_MAX_JSON_NUMBER_DIGITS = 128
 
 
 class SnapshotValidationError(ValueError):
@@ -193,6 +204,27 @@ def _write_prices(path: Path, prices: pd.DataFrame) -> None:
     output.to_csv(path, index=False, lineterminator="\n", float_format="%.17g")
 
 
+def _parse_prices_csv(raw: bytes) -> pd.DataFrame:
+    """Parse the single accepted CSV lexical form before semantic normalization."""
+    try:
+        reader = csv.reader(StringIO(raw.decode("utf-8"), newline=""), strict=True)
+        if next(reader, None) != ["session", "symbol", PRICE_FIELD]:
+            _invalid("prices.csv must contain exact columns")
+        rows: list[list[str]] = []
+        for row in reader:
+            if len(rows) >= _MAX_CSV_ROWS or len(row) != 3:
+                _invalid("invalid prices.csv")
+            rows.append(row)
+    except (UnicodeDecodeError, csv.Error, ValueError) as exc:
+        raise SnapshotValidationError("invalid prices.csv") from exc
+    return _normalized_prices(
+        pd.DataFrame(rows, columns=["session", "symbol", PRICE_FIELD]),
+        require_exact_columns=True,
+        require_canonical_symbols=True,
+        require_canonical_sessions=True,
+    )
+
+
 def _parse_json_object(raw: bytes, name: str) -> dict[str, Any]:
     def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -202,17 +234,127 @@ def _parse_json_object(raw: bytes, name: str) -> dict[str, Any]:
             result[key] = value
         return result
 
+    def parse_integer(value: str) -> int:
+        if len(value) > _MAX_JSON_NUMBER_DIGITS:
+            raise ValueError("integer exceeds resource limit")
+        return int(value)
+
+    def parse_float(value: str) -> float:
+        if len(value) > _MAX_JSON_NUMBER_DIGITS:
+            raise ValueError("float exceeds resource limit")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("non-finite")
+        return parsed
+
     try:
         value = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=no_duplicates,
+            parse_int=parse_integer,
+            parse_float=parse_float,
             parse_constant=lambda _: (_ for _ in ()).throw(ValueError("non-finite")),
         )
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, OverflowError, RecursionError) as exc:
         raise SnapshotValidationError(f"invalid {name}") from exc
     if type(value) is not dict:
         _invalid(f"invalid {name}")
     return value
+
+
+def _require_descriptor_capabilities() -> None:
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if (
+        sys.platform not in {"darwin"} and not sys.platform.startswith("linux")
+    ) or any(not hasattr(os, flag) for flag in required_flags):
+        _invalid("required descriptor capability unavailable")
+    if os.scandir not in os.supports_fd or os.open not in os.supports_dir_fd:
+        _invalid("required descriptor capability unavailable")
+
+
+def _stable_member_identity(member: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        member.st_dev,
+        member.st_ino,
+        member.st_mode,
+        member.st_size,
+        member.st_mtime_ns,
+        member.st_ctime_ns,
+    )
+
+
+def _read_member_from_root(root_fd: int, name: str, remaining_bytes: int) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        member_fd = os.open(name, flags, dir_fd=root_fd)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    try:
+        try:
+            before = os.fstat(member_fd)
+        except OSError as exc:
+            raise SnapshotValidationError("unable to read snapshot members") from exc
+        if not stat.S_ISREG(before.st_mode):
+            _invalid("snapshot members must be regular non-symlink files")
+        if before.st_size > _MEMBER_BYTE_LIMITS[name]:
+            _invalid("snapshot member exceeds size limit")
+        if before.st_size > remaining_bytes:
+            _invalid("snapshot members exceed total size limit")
+        raw = bytearray()
+        read_limit = before.st_size + 1
+        while len(raw) < read_limit:
+            try:
+                chunk = os.read(member_fd, read_limit - len(raw))
+            except OSError as exc:
+                raise SnapshotValidationError("unable to read snapshot members") from exc
+            if not chunk:
+                break
+            raw.extend(chunk)
+        try:
+            after = os.fstat(member_fd)
+        except OSError as exc:
+            raise SnapshotValidationError("unable to read snapshot members") from exc
+        if len(raw) != before.st_size or _stable_member_identity(before) != _stable_member_identity(after):
+            _invalid("snapshot member changed during read")
+        return bytes(raw)
+    finally:
+        os.close(member_fd)
+
+
+def _read_snapshot_members(output: Path) -> dict[str, bytes]:
+    _require_descriptor_capabilities()
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        root_fd = os.open(output, root_flags)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read snapshot members") from exc
+    try:
+        try:
+            root_stat = os.fstat(root_fd)
+        except OSError as exc:
+            raise SnapshotValidationError("unable to read snapshot members") from exc
+        if not stat.S_ISDIR(root_stat.st_mode):
+            _invalid("snapshot root must be a directory")
+        names: set[str] = set()
+        try:
+            with os.scandir(root_fd) as entries:
+                for entry_count, entry in enumerate(entries, start=1):
+                    if entry_count > len(OUTPUT_FILENAMES):
+                        _invalid("unexpected output files")
+                    names.add(entry.name)
+        except OSError as exc:
+            raise SnapshotValidationError("unable to read snapshot members") from exc
+        if names != set(OUTPUT_FILENAMES):
+            _invalid("unexpected output files")
+        members: dict[str, bytes] = {}
+        total_size = 0
+        for name in OUTPUT_FILENAMES:
+            raw = _read_member_from_root(root_fd, name, _MAX_TOTAL_MEMBER_BYTES - total_size)
+            total_size += len(raw)
+            members[name] = raw
+        return members
+    finally:
+        os.close(root_fd)
 
 
 def _publish_noreplace(source: Path, destination: Path) -> None:
@@ -274,28 +416,20 @@ def verify_tqqq_r1_snapshot(
     expected_manifest_sha256: str,
 ) -> SnapshotResult:
     output = Path(output_dir)
-    if output.is_symlink():
-        _invalid("snapshot root symlink is not allowed")
-    try:
-        names = tuple(sorted(path.name for path in output.iterdir())) if output.is_dir() else ()
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
-    if names != tuple(sorted(OUTPUT_FILENAMES)):
-        _invalid(f"unexpected output files: {names}")
-    if any(not (output / name).is_file() or (output / name).is_symlink() for name in OUTPUT_FILENAMES):
-        _invalid("snapshot members must be regular non-symlink files")
-    try:
-        members = {name: (output / name).read_bytes() for name in OUTPUT_FILENAMES}
-    except OSError as exc:
-        raise SnapshotValidationError("unable to read snapshot members") from exc
-
-    member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
-    if type(expected_manifest_sha256) is not str or member_hashes["manifest.json"] != expected_manifest_sha256:
+    if (
+        type(expected_manifest_sha256) is not str
+        or len(expected_manifest_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_manifest_sha256)
+    ):
+        _invalid("invalid trusted manifest hash")
+    members = _read_snapshot_members(output)
+    manifest_sha256 = hashlib.sha256(members["manifest.json"]).hexdigest()
+    if manifest_sha256 != expected_manifest_sha256:
         _invalid("trusted manifest hash mismatch")
 
-    sums = _parse_json_object(members["sha256sums.json"], "sha256sums")
     manifest = _parse_json_object(members["manifest.json"], "manifest")
-    validation = _parse_json_object(members["validation.json"], "validation")
+    sums = _parse_json_object(members["sha256sums.json"], "sha256sums")
+    member_hashes = {name: hashlib.sha256(content).hexdigest() for name, content in members.items()}
     if set(sums) != {"prices.csv", "manifest.json", "validation.json"}:
         _invalid("invalid sha256sums")
     for name, expected in sums.items():
@@ -303,12 +437,8 @@ def verify_tqqq_r1_snapshot(
             _invalid(f"hash mismatch: {name}")
 
     try:
-        prices = _normalized_prices(
-            pd.read_csv(BytesIO(members["prices.csv"]), dtype={PRICE_FIELD: "string"}),
-            require_exact_columns=True,
-            require_canonical_symbols=True,
-            require_canonical_sessions=True,
-        )
+        validation = _parse_json_object(members["validation.json"], "validation")
+        prices = _parse_prices_csv(members["prices.csv"])
     except (UnicodeDecodeError, ValueError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         if isinstance(exc, SnapshotValidationError):
             raise
@@ -330,7 +460,7 @@ def verify_tqqq_r1_snapshot(
     expected_validation = {"valid": True, "row_count": len(prices), "symbols": list(SYMBOLS)}
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
-    return SnapshotResult(output_dir=output, manifest_sha256=member_hashes["manifest.json"])
+    return SnapshotResult(output_dir=output, manifest_sha256=manifest_sha256)
 
 
 def materialize_tqqq_r1_snapshot(
