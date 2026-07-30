@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -40,6 +44,16 @@ def _refresh_trusted_metadata(output_dir: Path) -> str:
         },
     )
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def _rewrite_sha256sums(output_dir: Path) -> None:
+    _write_json(
+        output_dir / "sha256sums.json",
+        {
+            name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+            for name in ("prices.csv", "manifest.json", "validation.json")
+        },
+    )
 
 
 def test_materialize_writes_deterministic_immutable_artifacts(tmp_path: Path) -> None:
@@ -264,3 +278,207 @@ def test_materialize_rejects_python_int_beyond_digit_limit(tmp_path: Path) -> No
 
     with pytest.raises(snapshot.SnapshotValidationError):
         snapshot.materialize_tqqq_r1_snapshot(prices, tmp_path / "snapshot")
+
+
+def test_verify_rejects_four_field_csv_row_without_pandas_parser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "prices.csv").write_text(
+        "session,symbol,adjusted_close\n"
+        "2010-01-04,QQQ,45.25,unexpected\n"
+        "2010-01-04,TQQQ,10.5\n"
+        "2010-01-05,QQQ,46\n"
+        "2010-01-05,TQQQ,11\n",
+        encoding="utf-8",
+    )
+    expected_manifest_sha256 = _refresh_trusted_metadata(result.output_dir)
+
+    def pandas_parser_must_not_run(*args: object, **kwargs: object) -> pd.DataFrame:
+        pytest.fail("trusted CSV verification must not use pandas.read_csv")
+
+    monkeypatch.setattr(snapshot.pd, "read_csv", pandas_parser_must_not_run)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid prices.csv"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=expected_manifest_sha256)
+
+
+def test_verify_fails_closed_without_posix_descriptor_capabilities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    monkeypatch.setattr(snapshot.sys, "platform", "win32")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="descriptor"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_rejects_oversized_member_before_csv_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "prices.csv").write_bytes(b"session,symbol,adjusted_close\n" + b"x" * (17 * 1024 * 1024))
+    expected_manifest_sha256 = _refresh_trusted_metadata(result.output_dir)
+
+    def pandas_parser_must_not_run(*args: object, **kwargs: object) -> pd.DataFrame:
+        pytest.fail("oversized member reached CSV parser")
+
+    monkeypatch.setattr(snapshot.pd, "read_csv", pandas_parser_must_not_run)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="size limit"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=expected_manifest_sha256)
+
+
+def test_verify_normalizes_deep_json_recursion(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "manifest.json").write_bytes(b'{"x":' * 2_000 + b"0" + b"}" * 2_000)
+    manifest_sha256 = hashlib.sha256((result.output_dir / "manifest.json").read_bytes()).hexdigest()
+    _write_json(
+        result.output_dir / "sha256sums.json",
+        {
+            "prices.csv": hashlib.sha256((result.output_dir / "prices.csv").read_bytes()).hexdigest(),
+            "manifest.json": manifest_sha256,
+            "validation.json": hashlib.sha256((result.output_dir / "validation.json").read_bytes()).hexdigest(),
+        },
+    )
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid manifest"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir,
+            expected_manifest_sha256=manifest_sha256,
+        )
+
+
+def test_verify_authenticates_manifest_before_json_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+
+    def json_parser_must_not_run(*args: object, **kwargs: object) -> dict[str, object]:
+        pytest.fail("untrusted manifest reached a JSON parser")
+
+    monkeypatch.setattr(snapshot, "_parse_json_object", json_parser_must_not_run)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="trusted manifest hash mismatch"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256="0" * 64)
+
+
+def test_verify_rejects_fifth_entry_before_opening_members(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "unexpected.txt").write_text("extra", encoding="utf-8")
+
+    def member_reader_must_not_run(*args: object, **kwargs: object) -> bytes:
+        pytest.fail("directory admission opened a member")
+
+    monkeypatch.setattr(snapshot, "_read_member_from_root", member_reader_must_not_run)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="unexpected output files"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_rejects_member_symlink_by_descriptor(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    replacement = tmp_path / "replacement.csv"
+    replacement.write_text((result.output_dir / "prices.csv").read_text(encoding="utf-8"), encoding="utf-8")
+    (result.output_dir / "prices.csv").unlink()
+    (result.output_dir / "prices.csv").symlink_to(replacement)
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_rejects_root_symlink_by_descriptor(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    alias = tmp_path / "snapshot-alias"
+    alias.symlink_to(result.output_dir, target_is_directory=True)
+
+    with pytest.raises(snapshot.SnapshotValidationError):
+        snapshot.verify_tqqq_r1_snapshot(alias, expected_manifest_sha256=result.manifest_sha256)
+
+
+def test_verify_rejects_member_identity_change_during_descriptor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    original_fstat = snapshot.os.fstat
+    regular_fstat_calls = 0
+
+    def unstable_fstat(fd: int) -> os.stat_result | SimpleNamespace:
+        nonlocal regular_fstat_calls
+        observed = original_fstat(fd)
+        if snapshot.stat.S_ISREG(observed.st_mode):
+            regular_fstat_calls += 1
+            if regular_fstat_calls == 2:
+                return SimpleNamespace(
+                    st_dev=observed.st_dev,
+                    st_ino=observed.st_ino,
+                    st_mode=observed.st_mode,
+                    st_size=observed.st_size,
+                    st_mtime_ns=observed.st_mtime_ns + 1,
+                    st_ctime_ns=observed.st_ctime_ns,
+                )
+        return observed
+
+    monkeypatch.setattr(snapshot.os, "fstat", unstable_fstat)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="changed during read"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO capability unavailable")
+def test_verify_rejects_fifo_without_reading_it(tmp_path: Path) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "prices.csv").unlink()
+    os.mkfifo(result.output_dir / "prices.csv")
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="regular non-symlink"):
+        snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix-domain socket capability unavailable")
+def test_verify_rejects_socket_without_reading_it() -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="tq-") as directory:
+        result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), Path(directory) / "snapshot")
+        prices_path = result.output_dir / "prices.csv"
+        prices_path.unlink()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(str(prices_path))
+
+            with pytest.raises(snapshot.SnapshotValidationError):
+                snapshot.verify_tqqq_r1_snapshot(result.output_dir, expected_manifest_sha256=result.manifest_sha256)
+        finally:
+            listener.close()
+
+
+def test_verify_rejects_total_member_limit_before_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "prices.csv").write_bytes(b"p" * (16 * 1024 * 1024))
+    (result.output_dir / "manifest.json").write_bytes(b"m" * (1024 * 1024))
+    (result.output_dir / "validation.json").write_bytes(b"v" * (1024 * 1024))
+
+    def json_parser_must_not_run(*args: object, **kwargs: object) -> dict[str, object]:
+        pytest.fail("oversized aggregate reached a JSON parser")
+
+    monkeypatch.setattr(snapshot, "_parse_json_object", json_parser_must_not_run)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="total size limit"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir,
+            expected_manifest_sha256=hashlib.sha256((result.output_dir / "manifest.json").read_bytes()).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    "manifest_bytes",
+    [
+        b'{"x":1,"x":2}',
+        b'{"x":NaN}',
+        b'{"x":Infinity}',
+        b'{"x":1e10000}',
+        b'{"x":' + b"9" * 129 + b"}",
+    ],
+    ids=["duplicate-key", "nan", "infinity", "overflow-float", "oversized-integer"],
+)
+def test_verify_normalizes_strict_json_rejections(tmp_path: Path, manifest_bytes: bytes) -> None:
+    result = snapshot.materialize_tqqq_r1_snapshot(_fixture_prices(), tmp_path / "snapshot")
+    (result.output_dir / "manifest.json").write_bytes(manifest_bytes)
+    _rewrite_sha256sums(result.output_dir)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid manifest"):
+        snapshot.verify_tqqq_r1_snapshot(
+            result.output_dir,
+            expected_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        )
