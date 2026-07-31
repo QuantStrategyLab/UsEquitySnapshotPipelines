@@ -6,9 +6,9 @@ WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-QUANT_PLATFORM_KIT_REF = "ff09c889ed21e2eb6fcb37f6cdaa159190ec82da"
+QUANT_PLATFORM_KIT_REF = "8ba8276948ff71a8cc0a810f98b7437a1311c671"
 MARKET_REGIME_PLUGIN_REF = "1f3a27b8fd83d71b583f4f5160a748e95fbefaa1"
-US_EQUITY_STRATEGIES_REF = "b0b590ce5ac0233a40b8fb957c249cf375a6ff21"
+US_EQUITY_STRATEGIES_REF = "337f66bab1f88a7c4181d65ce8598ab182d2396c"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
