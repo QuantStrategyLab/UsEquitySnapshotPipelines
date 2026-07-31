@@ -19,8 +19,8 @@ from tempfile import mkdtemp
 from typing import Any, Literal, Mapping
 
 
-QPK_PIN = "ff09c889ed21e2eb6fcb37f6cdaa159190ec82da"
-UES_PIN = "b0b590ce5ac0233a40b8fb957c249cf375a6ff21"
+QPK_PIN = "8ba8276948ff71a8cc0a810f98b7437a1311c671"
+UES_PIN = "337f66bab1f88a7c4181d65ce8598ab182d2396c"
 PROFILE = "tqqq_growth_income"
 MODE = "local_private_no_order"
 ENVELOPE_SCHEMA = "qsl.tqqq_forward_input_envelope.v1"
