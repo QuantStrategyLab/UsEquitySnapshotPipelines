@@ -656,6 +656,61 @@ def _research_input_manifest(
     )
 
 
+def _validate_tqqq_r1_research_input_proof_claims(manifest: dict[str, Any], members: dict[str, bytes]) -> None:
+    """Bind the generic QPK manifest to the enclosed TQQQ snapshot proof."""
+    try:
+        prices_raw = members[f"{_PROOF_SNAPSHOT_DIR}/prices.csv"]
+        prices_sha256 = hashlib.sha256(prices_raw).hexdigest()
+        session = _parse_prices_csv(prices_raw)["session"].max().date()
+        producer = manifest["producer"]
+        commit_sha = producer["commit_sha"]
+        tree_sha = producer["tree_sha"]
+        if (
+            type(commit_sha) is not str
+            or type(tree_sha) is not str
+            or len(commit_sha) != 40
+            or len(tree_sha) != 40
+            or any(character not in "0123456789abcdef" for character in commit_sha + tree_sha)
+        ):
+            _invalid("invalid research input proof claims")
+        expected_producer = {
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit_sha": commit_sha,
+            "tree_sha": tree_sha,
+            "tool": "us_equity_snapshot_pipelines.tqqq_r1_snapshot.materialize_tqqq_r1_research_input_proof",
+            "tool_version": "tqqq_r1_research_input_proof.v1",
+        }
+        expected_calendar = {
+            "calendar_id": "UESP_TQQQ_R1_SYNTHETIC_FIXTURE_V1",
+            "timezone": "America/New_York",
+            "session_date": session.isoformat(),
+            "source": "tqqq_r1_snapshot.weekday_session_contract",
+            "source_revision": commit_sha,
+        }
+        expected_source = {
+            "source_id": "uesp:tqqq-r1:canonical-prices:v1",
+            "revision": CONTRACT_VERSION,
+            "observed_at": manifest["observed_at"],
+            "content_sha256": prices_sha256,
+        }
+        effective_at = datetime.combine(session, time(), tzinfo=ZoneInfo("America/New_York")).isoformat()
+        if (
+            manifest["schema_version"] != "research_input_manifest.v1"
+            or manifest["manifest_id"] != f"uesp.tqqq-r1.synthetic-proof.{prices_sha256}.v1"
+            or manifest["research_input_contract_id"] != CONTRACT_VERSION
+            or manifest["domain"] != "us_equity"
+            or manifest["profile"] != "tqqq_r1_synthetic_fixture_proof.v1"
+            or manifest["artifact_type"] != "immutable_price_snapshot"
+            or manifest["producer"] != expected_producer
+            or manifest["calendar"] != expected_calendar
+            or manifest["effective_at"] != effective_at
+            or manifest["sources"] != [expected_source]
+        ):
+            _invalid("invalid research input proof claims")
+    except (KeyError, TypeError, ValueError, SnapshotValidationError):
+        _invalid("invalid research input proof claims")
+
+
 def verify_tqqq_r1_research_input_proof(
     output_dir: str | Path,
     *,
@@ -685,6 +740,7 @@ def verify_tqqq_r1_research_input_proof(
             member = declared[path]
             if member["size_bytes"] != len(raw) or member["sha256"] != hashlib.sha256(raw).hexdigest():
                 _invalid("research input member hash mismatch")
+        _validate_tqqq_r1_research_input_proof_claims(manifest, members)
         inner_manifest_sha256 = hashlib.sha256(members[f"{_PROOF_SNAPSHOT_DIR}/manifest.json"]).hexdigest()
         verify_tqqq_r1_snapshot(output / _PROOF_SNAPSHOT_DIR, expected_manifest_sha256=inner_manifest_sha256)
     except (InvalidResearchInputEvidence, OSError, KeyError, TypeError, ValueError) as exc:

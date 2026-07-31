@@ -124,6 +124,33 @@ def test_verify_rejects_noncanonical_manifest_bytes(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.update(research_input_contract_id="other_contract.v1"),
+        lambda manifest: manifest.update(manifest_id="uesp.tqqq-r1.synthetic-proof." + "0" * 64 + ".v1"),
+        lambda manifest: manifest.update(profile="other_synthetic_fixture_proof.v1"),
+        lambda manifest: manifest.update(artifact_type="other_immutable_snapshot"),
+        lambda manifest: manifest["calendar"].update(session_date="2010-01-04"),
+        lambda manifest: manifest.update(effective_at="2010-01-04T00:00:00-05:00"),
+        lambda manifest: manifest["sources"][0].update(content_sha256="0" * 64),
+    ],
+    ids=["contract", "identity", "profile", "artifact", "calendar-session", "effective-session", "source-digest"],
+)
+def test_verify_rejects_manifest_claims_inconsistent_with_enclosed_snapshot(tmp_path: Path, mutate) -> None:
+    result = _proof(tmp_path)
+    manifest_path = result.output_dir / "research-input-manifest.json"
+    manifest = snapshot.read_research_input_manifest_json(manifest_path.read_bytes())
+    mutate(manifest)
+    payload = snapshot.canonical_research_input_manifest_bytes(manifest)
+    manifest_path.write_bytes(payload)
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="invalid research input proof claims"):
+        snapshot.verify_tqqq_r1_research_input_proof(
+            result.output_dir, expected_manifest_sha256=hashlib.sha256(payload).hexdigest()
+        )
+
+
 @pytest.mark.parametrize("kind", ["missing", "extra", "symlink", "nonregular", "oversized"])
 def test_verify_rejects_invalid_outer_members(tmp_path: Path, kind: str) -> None:
     result = _proof(tmp_path)
