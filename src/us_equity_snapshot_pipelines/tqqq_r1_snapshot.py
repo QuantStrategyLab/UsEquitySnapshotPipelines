@@ -14,11 +14,20 @@ import stat
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, time
 from io import StringIO
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+from quant_platform_kit.data.research_input import (
+    InvalidResearchInputEvidence,
+    canonical_research_input_manifest_bytes,
+    read_research_input_manifest_json,
+    research_input_manifest_sha256,
+    validate_research_input_manifest,
+)
 
 CONTRACT_VERSION = "tqqq_r1_qqq_tqqq_immutable_snapshot.v2"
 SYMBOLS = ("QQQ", "TQQQ")
@@ -37,6 +46,11 @@ _MEMBER_BYTE_LIMITS = {
 _MAX_TOTAL_MEMBER_BYTES = 18 * 1024 * 1024
 _MAX_CSV_ROWS = 500_000
 _MAX_JSON_NUMBER_DIGITS = 128
+_PROOF_MANIFEST_NAME = "research-input-manifest.json"
+_PROOF_SNAPSHOT_DIR = "tqqq_r1_snapshot"
+_PROOF_FILENAMES = tuple(sorted(f"{_PROOF_SNAPSHOT_DIR}/{name}" for name in OUTPUT_FILENAMES))
+_PROOF_MANIFEST_BYTE_LIMIT = 1024 * 1024
+_PROOF_TOTAL_BYTE_LIMIT = _MAX_TOTAL_MEMBER_BYTES + _PROOF_MANIFEST_BYTE_LIMIT
 
 
 class SnapshotValidationError(ValueError):
@@ -296,7 +310,7 @@ def _read_member_from_root(root_fd: int, name: str, remaining_bytes: int) -> byt
             raise SnapshotValidationError("unable to read snapshot members") from exc
         if not stat.S_ISREG(before.st_mode):
             _invalid("snapshot members must be regular non-symlink files")
-        if before.st_size > _MEMBER_BYTE_LIMITS[name]:
+        if before.st_size > _MEMBER_BYTE_LIMITS.get(name, remaining_bytes):
             _invalid("snapshot member exceeds size limit")
         if before.st_size > remaining_bytes:
             _invalid("snapshot members exceed total size limit")
@@ -410,19 +424,15 @@ def _has_exact_type(value: object, expected: object) -> bool:
     return value == expected
 
 
-def verify_tqqq_r1_snapshot(
-    output_dir: str | Path,
-    *,
-    expected_manifest_sha256: str,
+def _verify_tqqq_r1_snapshot_members(
+    output: Path, members: dict[str, bytes], *, expected_manifest_sha256: str
 ) -> SnapshotResult:
-    output = Path(output_dir)
     if (
         type(expected_manifest_sha256) is not str
         or len(expected_manifest_sha256) != 64
         or any(character not in "0123456789abcdef" for character in expected_manifest_sha256)
     ):
         _invalid("invalid trusted manifest hash")
-    members = _read_snapshot_members(output)
     manifest_sha256 = hashlib.sha256(members["manifest.json"]).hexdigest()
     if manifest_sha256 != expected_manifest_sha256:
         _invalid("trusted manifest hash mismatch")
@@ -461,6 +471,16 @@ def verify_tqqq_r1_snapshot(
     if not _has_exact_type(validation, expected_validation):
         _invalid("invalid validation")
     return SnapshotResult(output_dir=output, manifest_sha256=manifest_sha256)
+
+
+def verify_tqqq_r1_snapshot(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
+    output = Path(output_dir)
+    members = _read_snapshot_members(output)
+    return _verify_tqqq_r1_snapshot_members(output, members, expected_manifest_sha256=expected_manifest_sha256)
 
 
 def materialize_tqqq_r1_snapshot(
@@ -507,6 +527,293 @@ def materialize_tqqq_r1_snapshot(
         )
         manifest_sha256 = _sha256(temporary / "manifest.json")
         verify_tqqq_r1_snapshot(temporary, expected_manifest_sha256=manifest_sha256)
+        _publish_noreplace(temporary, destination)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return SnapshotResult(output_dir=destination, manifest_sha256=manifest_sha256)
+
+
+def _canonical_timestamp(value: object, field: str) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        _invalid(f"{field} must be timezone-aware")
+    return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _require_git_identity(value: object, field: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 40
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        _invalid(f"invalid producer {field}")
+    return value
+
+
+def _read_tqqq_r1_research_input_proof(output: Path) -> tuple[bytes, dict[str, bytes]]:
+    _require_descriptor_capabilities()
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        root_fd = os.open(output, root_flags)
+    except OSError as exc:
+        raise SnapshotValidationError("unable to read research input proof") from exc
+    try:
+        if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+            _invalid("research input proof root must be a directory")
+        names: set[str] = set()
+        with os.scandir(root_fd) as entries:
+            for entry_count, entry in enumerate(entries, start=1):
+                if entry_count > 2:
+                    _invalid("unexpected research input proof members")
+                names.add(entry.name)
+        if names != {_PROOF_MANIFEST_NAME, _PROOF_SNAPSHOT_DIR}:
+            _invalid("unexpected research input proof members")
+        manifest_raw = _read_member_from_root(root_fd, _PROOF_MANIFEST_NAME, _PROOF_MANIFEST_BYTE_LIMIT)
+        inner_fd = os.open(_PROOF_SNAPSHOT_DIR, root_flags, dir_fd=root_fd)
+        try:
+            if not stat.S_ISDIR(os.fstat(inner_fd).st_mode):
+                _invalid("research input snapshot member must be a directory")
+            names = set()
+            with os.scandir(inner_fd) as entries:
+                for entry_count, entry in enumerate(entries, start=1):
+                    if entry_count > len(OUTPUT_FILENAMES):
+                        _invalid("unexpected research input snapshot members")
+                    names.add(entry.name)
+            if names != set(OUTPUT_FILENAMES):
+                _invalid("unexpected research input snapshot members")
+            members: dict[str, bytes] = {}
+            total_size = len(manifest_raw)
+            inner_total_size = 0
+            for name in OUTPUT_FILENAMES:
+                raw = _read_member_from_root(
+                    inner_fd,
+                    name,
+                    min(
+                        _PROOF_TOTAL_BYTE_LIMIT - total_size,
+                        _MAX_TOTAL_MEMBER_BYTES - inner_total_size,
+                    ),
+                )
+                total_size += len(raw)
+                inner_total_size += len(raw)
+                members[f"{_PROOF_SNAPSHOT_DIR}/{name}"] = raw
+            return manifest_raw, members
+        finally:
+            os.close(inner_fd)
+    except (OSError, SnapshotValidationError):
+        raise
+    except Exception as exc:
+        raise SnapshotValidationError("unable to read research input proof") from exc
+    finally:
+        os.close(root_fd)
+
+
+def _research_input_manifest(
+    prices: pd.DataFrame,
+    *,
+    producer_commit_sha: str,
+    producer_tree_sha: str,
+    observed_at: str,
+    as_of: str,
+    members: dict[str, bytes],
+) -> dict[str, object]:
+    normalized = _normalized_prices(prices)
+    session = normalized["session"].max().date()
+    effective_at = datetime.combine(session, time(), tzinfo=ZoneInfo("America/New_York")).isoformat()
+    prices_sha256 = hashlib.sha256(members[f"{_PROOF_SNAPSHOT_DIR}/prices.csv"]).hexdigest()
+    return validate_research_input_manifest(
+        {
+            "schema_version": "research_input_manifest.v1",
+            "manifest_id": f"uesp.tqqq-r1.synthetic-proof.{prices_sha256}.v1",
+            "research_input_contract_id": CONTRACT_VERSION,
+            "domain": "us_equity",
+            "profile": "tqqq_r1_synthetic_fixture_proof.v1",
+            "artifact_type": "immutable_price_snapshot",
+            "observed_at": observed_at,
+            "effective_at": effective_at,
+            "as_of": as_of,
+            "producer": {
+                "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+                "commit_sha": producer_commit_sha,
+                "tree_sha": producer_tree_sha,
+                "tool": "us_equity_snapshot_pipelines.tqqq_r1_snapshot.materialize_tqqq_r1_research_input_proof",
+                "tool_version": "tqqq_r1_research_input_proof.v1",
+            },
+            "calendar": {
+                "calendar_id": "UESP_TQQQ_R1_SYNTHETIC_FIXTURE_V1",
+                "timezone": "America/New_York",
+                "session_date": session.isoformat(),
+                "source": "tqqq_r1_snapshot.weekday_session_contract",
+                "source_revision": producer_commit_sha,
+            },
+            "adjustment": {
+                "policy": "total_return_adjusted",
+                "source": "tqqq_r1_snapshot.adjusted_close",
+                "source_revision": producer_commit_sha,
+            },
+            "sources": [
+                {
+                    "source_id": "uesp:tqqq-r1:canonical-prices:v1",
+                    "revision": CONTRACT_VERSION,
+                    "observed_at": observed_at,
+                    "content_sha256": prices_sha256,
+                }
+            ],
+            "members": [
+                {
+                    "path": path,
+                    "media_type": "text/csv" if path.endswith("prices.csv") else "application/json",
+                    "size_bytes": len(members[path]),
+                    "sha256": hashlib.sha256(members[path]).hexdigest(),
+                }
+                for path in _PROOF_FILENAMES
+            ],
+        }
+    )
+
+
+def _validate_tqqq_r1_research_input_proof_claims(manifest: dict[str, Any], members: dict[str, bytes]) -> None:
+    """Bind the generic QPK manifest to the enclosed TQQQ snapshot proof."""
+    try:
+        prices_raw = members[f"{_PROOF_SNAPSHOT_DIR}/prices.csv"]
+        prices_sha256 = hashlib.sha256(prices_raw).hexdigest()
+        session = _parse_prices_csv(prices_raw)["session"].max().date()
+        producer = manifest["producer"]
+        commit_sha = producer["commit_sha"]
+        tree_sha = producer["tree_sha"]
+        if (
+            type(commit_sha) is not str
+            or type(tree_sha) is not str
+            or len(commit_sha) != 40
+            or len(tree_sha) != 40
+            or any(character not in "0123456789abcdef" for character in commit_sha + tree_sha)
+        ):
+            _invalid("invalid research input proof claims")
+        expected_producer = {
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit_sha": commit_sha,
+            "tree_sha": tree_sha,
+            "tool": "us_equity_snapshot_pipelines.tqqq_r1_snapshot.materialize_tqqq_r1_research_input_proof",
+            "tool_version": "tqqq_r1_research_input_proof.v1",
+        }
+        expected_calendar = {
+            "calendar_id": "UESP_TQQQ_R1_SYNTHETIC_FIXTURE_V1",
+            "timezone": "America/New_York",
+            "session_date": session.isoformat(),
+            "source": "tqqq_r1_snapshot.weekday_session_contract",
+            "source_revision": commit_sha,
+        }
+        expected_source = {
+            "source_id": "uesp:tqqq-r1:canonical-prices:v1",
+            "revision": CONTRACT_VERSION,
+            "observed_at": manifest["observed_at"],
+            "content_sha256": prices_sha256,
+        }
+        expected_adjustment = {
+            "policy": "total_return_adjusted",
+            "source": "tqqq_r1_snapshot.adjusted_close",
+            "source_revision": commit_sha,
+        }
+        effective_at = datetime.combine(session, time(), tzinfo=ZoneInfo("America/New_York")).isoformat()
+        if (
+            manifest["schema_version"] != "research_input_manifest.v1"
+            or manifest["manifest_id"] != f"uesp.tqqq-r1.synthetic-proof.{prices_sha256}.v1"
+            or manifest["research_input_contract_id"] != CONTRACT_VERSION
+            or manifest["domain"] != "us_equity"
+            or manifest["profile"] != "tqqq_r1_synthetic_fixture_proof.v1"
+            or manifest["artifact_type"] != "immutable_price_snapshot"
+            or manifest["producer"] != expected_producer
+            or manifest["calendar"] != expected_calendar
+            or manifest["adjustment"] != expected_adjustment
+            or manifest["effective_at"] != effective_at
+            or manifest["sources"] != [expected_source]
+        ):
+            _invalid("invalid research input proof claims")
+    except (KeyError, TypeError, ValueError, SnapshotValidationError):
+        _invalid("invalid research input proof claims")
+
+
+def verify_tqqq_r1_research_input_proof(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> SnapshotResult:
+    """Strictly verify the detached QPK manifest and existing immutable snapshot."""
+    if (
+        type(expected_manifest_sha256) is not str
+        or len(expected_manifest_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_manifest_sha256)
+    ):
+        _invalid("invalid trusted research input manifest hash")
+    output = Path(output_dir)
+    try:
+        manifest_raw, members = _read_tqqq_r1_research_input_proof(output)
+        if hashlib.sha256(manifest_raw).hexdigest() != expected_manifest_sha256:
+            _invalid("trusted research input manifest hash mismatch")
+        manifest = read_research_input_manifest_json(manifest_raw)
+        if manifest_raw != canonical_research_input_manifest_bytes(manifest):
+            _invalid("research input manifest is not canonical")
+        if research_input_manifest_sha256(manifest) != expected_manifest_sha256:
+            _invalid("research input manifest digest mismatch")
+        declared = {member["path"]: member for member in manifest["members"]}
+        if set(declared) != set(_PROOF_FILENAMES):
+            _invalid("invalid research input member mapping")
+        for path, raw in members.items():
+            member = declared[path]
+            expected_media_type = "text/csv" if path.endswith("prices.csv") else "application/json"
+            if (
+                member["media_type"] != expected_media_type
+                or member["size_bytes"] != len(raw)
+                or member["sha256"] != hashlib.sha256(raw).hexdigest()
+            ):
+                _invalid("research input member hash mismatch")
+        _validate_tqqq_r1_research_input_proof_claims(manifest, members)
+        inner_manifest_sha256 = hashlib.sha256(members[f"{_PROOF_SNAPSHOT_DIR}/manifest.json"]).hexdigest()
+        inner_members = {Path(path).name: raw for path, raw in members.items()}
+        _verify_tqqq_r1_snapshot_members(
+            output / _PROOF_SNAPSHOT_DIR, inner_members, expected_manifest_sha256=inner_manifest_sha256
+        )
+    except (InvalidResearchInputEvidence, OSError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, SnapshotValidationError):
+            raise
+        raise SnapshotValidationError("invalid research input proof") from None
+    return SnapshotResult(output_dir=output, manifest_sha256=expected_manifest_sha256)
+
+
+def materialize_tqqq_r1_research_input_proof(
+    prices: pd.DataFrame,
+    output_dir: str | Path,
+    *,
+    producer_commit_sha: str,
+    producer_tree_sha: str,
+    observed_at: datetime,
+    as_of: datetime,
+) -> SnapshotResult:
+    """Publish one local synthetic TQQQ proof package without data acquisition."""
+    commit_sha = _require_git_identity(producer_commit_sha, "commit")
+    tree_sha = _require_git_identity(producer_tree_sha, "tree")
+    observed = _canonical_timestamp(observed_at, "observed_at")
+    cutoff = _canonical_timestamp(as_of, "as_of")
+    destination = Path(output_dir)
+    if destination.exists() or destination.is_symlink():
+        _invalid(f"immutable output already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    try:
+        inner = materialize_tqqq_r1_snapshot(prices, temporary / _PROOF_SNAPSHOT_DIR)
+        members = _read_snapshot_members(inner.output_dir)
+        proof_members = {f"{_PROOF_SNAPSHOT_DIR}/{name}": raw for name, raw in members.items()}
+        manifest = _research_input_manifest(
+            prices,
+            producer_commit_sha=commit_sha,
+            producer_tree_sha=tree_sha,
+            observed_at=observed,
+            as_of=cutoff,
+            members=proof_members,
+        )
+        manifest_raw = canonical_research_input_manifest_bytes(manifest)
+        manifest_sha256 = research_input_manifest_sha256(manifest)
+        (temporary / _PROOF_MANIFEST_NAME).write_bytes(manifest_raw)
+        verify_tqqq_r1_research_input_proof(temporary, expected_manifest_sha256=manifest_sha256)
         _publish_noreplace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
