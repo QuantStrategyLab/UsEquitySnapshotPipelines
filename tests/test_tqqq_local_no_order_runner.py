@@ -51,8 +51,8 @@ output_dir = "data/output/tqqq_growth_income/plugins/market_regime_control"
 
 
 def test_tqqq_local_no_order_runner_uses_compatible_dependency_pins() -> None:
-    assert runner.QPK_PIN == "8ba8276948ff71a8cc0a810f98b7437a1311c671"
-    assert runner.UES_PIN == "337f66bab1f88a7c4181d65ce8598ab182d2396c"
+    assert runner.QPK_PIN == "5d4bbd0e7ef9a1434010e8b6a69905d39ee55f1b"
+    assert runner.UES_PIN == "94650c3441817667b5fc404e3b59efd03ff10b84"
 
 
 def test_tqqq_local_no_order_runner_exposes_only_the_frozen_inputs() -> None:
