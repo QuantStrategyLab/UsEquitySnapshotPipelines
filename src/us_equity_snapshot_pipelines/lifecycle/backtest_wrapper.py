@@ -22,6 +22,8 @@ class UsEquityBacktestRunner:
     Wraps the existing backtest scripts in UsEquitySnapshotPipelines/scripts/.
     """
 
+    runner_kind = "placeholder"
+
     def __init__(self, *, scripts_dir: str | None = None):
         from pathlib import Path
 
@@ -36,33 +38,10 @@ class UsEquityBacktestRunner:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> BacktestResult:
-        """Run backtest for a US equity strategy.
-
-        In production, this would subprocess or import the actual backtest script.
-        For now, returns a structured placeholder that validates the interface.
-        """
-        script_name = _US_EQUITY_BACKTEST_SCRIPTS.get(
-            strategy_profile, "backtest_us_equity_strategy_candidates"
-        )
-
-        # Placeholder: in production, this would call the actual backtest
-        return BacktestResult(
-            strategy_profile=strategy_profile,
-            domain="us_equity",
-            param_set_id="us_eq_1",
-            params=dict(params),
-            param_version=1,
-            sharpe_ratio=1.2,
-            calmar_ratio=0.8,
-            max_drawdown=-0.15,
-            cagr=0.18,
-            volatility=0.22,
-            win_rate=0.58,
-            start_date=start_date or date(2020, 1, 1),
-            end_date=end_date or date.today(),
-            observation_count=1500,
-            benchmark_symbol="buy_hold_SPY",
-            source_script=f"scripts/{script_name}.py",
+        """Reject the legacy placeholder instead of returning fabricated metrics."""
+        raise RuntimeError(
+            "legacy US equity backtest wrapper is a placeholder; "
+            "use an explicit runner_kind='real' promotion runner"
         )
 
 
