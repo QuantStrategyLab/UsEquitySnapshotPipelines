@@ -24,9 +24,43 @@ import us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner as runner_mo
 
 
 QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-UES_REVISION = "b49bde5910276187b83b4a587e4ddf210bcece89"
+UES_REVISION = "24fe759cca1140095ccb36badd872b36bd8ab837"
 RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+VARIANTS = ("explicit_qqq_fallback", "cash_origin")
+FIRST_ELIGIBLE_SESSION = {
+    "SGOV": "2020-05-26",
+    "SPYI": "2022-08-29",
+    "BOXX": "2022-12-27",
+    "QQQI": "2024-01-29",
+}
+AVAILABILITY_CONTRACT = {
+    "schema_version": "soxl_asset_availability.v1",
+    "universe": list(SOXL_PROMOTION_ASSETS),
+    "always_eligible": ["SOXL", "SOXX", "SCHD", "DGRO", "QQQ"],
+    "first_eligible_session": FIRST_ELIGIBLE_SESSION,
+    "ordered_variants": list(VARIANTS),
+    "primary_variant": "explicit_qqq_fallback",
+    "transition_rule": "qqq_to_qqqi_close_t_open_t_plus_1",
+    "unavailable_target_policy": "cash_without_renormalization",
+    "price_identity_policy": "actual_symbol_only_no_proxy_backfill_forward_fill_substitution",
+    "initial_state": "100_percent_cash",
+}
+SEGMENTS = (
+    ("2018-08-03", "2020-04-03", 420),
+    ("2020-04-06", "2020-05-04", 20),
+    ("2020-05-05", "2020-10-30", 126),
+    ("2020-11-02", "2020-11-30", 20),
+    ("2020-12-01", "2022-08-02", 420),
+    ("2022-08-03", "2022-08-30", 20),
+    ("2022-08-31", "2023-03-02", 126),
+    ("2023-03-03", "2023-03-30", 20),
+    ("2023-03-31", "2024-11-29", 420),
+    ("2024-12-02", "2024-12-30", 20),
+    ("2024-12-31", "2025-07-03", 126),
+    ("2025-07-07", "2025-08-01", 20),
+    ("2025-08-04", "2026-08-04", 252),
+)
 
 
 @pytest.fixture(autouse=True)
@@ -34,14 +68,57 @@ def _bind_runner_revision(monkeypatch):
     monkeypatch.setattr(runner_module, "_resolve_runner_revision", lambda: RUNNER_REVISION)
 
 
-def _sessions(count: int = 2_050) -> list[dict[str, object]]:
+def _segment_dates(start: str, end: str, count: int) -> list[date]:
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    weekdays = []
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5:
+            weekdays.append(current)
+        current += timedelta(days=1)
+    indexes = [round(offset * (len(weekdays) - 1) / (count - 1)) for offset in range(count)]
+    selected = [weekdays[index] for index in indexes]
+    required_dates = [
+        date.fromisoformat(value)
+        for value in FIRST_ELIGIBLE_SESSION.values()
+        if start_date <= date.fromisoformat(value) <= end_date
+    ]
+    for required_date in required_dates:
+        if required_date not in selected:
+            replace_index = min(
+                (
+                    index
+                    for index in range(1, len(selected) - 1)
+                    if selected[index] not in required_dates
+                ),
+                key=lambda index: abs((selected[index] - required_date).days),
+            )
+            selected[replace_index] = required_date
+            selected.sort()
+    assert len(set(selected)) == count
+    assert selected[0] == start_date
+    assert selected[-1] == end_date
+    return selected
+
+
+def _sessions() -> list[dict[str, object]]:
     sessions: list[dict[str, object]] = []
-    session_date = date(2018, 1, 2)
-    for index in range(count):
-        while session_date.weekday() >= 5:
-            session_date += timedelta(days=1)
+    session_dates = [
+        session_date
+        for start, end, count in SEGMENTS
+        for session_date in _segment_dates(start, end, count)
+    ]
+    assert len(session_dates) == 2_010
+    for index, session_date in enumerate(session_dates):
+        eligible_assets = tuple(
+            symbol
+            for symbol in SOXL_PROMOTION_ASSETS
+            if symbol not in FIRST_ELIGIBLE_SESSION
+            or session_date >= date.fromisoformat(FIRST_ELIGIBLE_SESSION[symbol])
+        )
         bars = {}
-        for symbol_index, symbol in enumerate(SOXL_PROMOTION_ASSETS):
+        for symbol_index, symbol in enumerate(eligible_assets):
             close = 50.0 + symbol_index * 5.0 + index * (0.025 + symbol_index * 0.001)
             bars[symbol] = {
                 "open": close * 0.999,
@@ -54,6 +131,7 @@ def _sessions(count: int = 2_050) -> list[dict[str, object]]:
             {
                 "date": session_date.isoformat(),
                 "bars": bars,
+                "eligible_assets": list(eligible_assets),
                 "market_regime": {
                     "plugin": "market_regime_control",
                     "schema_version": "market_regime_control.v1",
@@ -63,7 +141,6 @@ def _sessions(count: int = 2_050) -> list[dict[str, object]]:
                 },
             }
         )
-        session_date += timedelta(days=1)
     return sessions
 
 
@@ -73,7 +150,7 @@ def _manifest(sessions: list[dict[str, object]]) -> dict[str, object]:
     return {
         "schema_version": "research_input_manifest.v1",
         "manifest_id": "soxl-promotion-input-20260805",
-        "research_input_contract_id": "soxl_promotion_input.v1",
+        "research_input_contract_id": "soxl_promotion_input.v2",
         "domain": "us_equity",
         "profile": "soxl_soxx_trend_income",
         "artifact_type": "immutable_adjusted_ohlcv_and_pit_regime",
@@ -118,6 +195,10 @@ def _manifest(sessions: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+def _session_index(sessions: list[dict[str, object]], session_date: str) -> int:
+    return next(index for index, session in enumerate(sessions) if session["date"] == session_date)
+
+
 def _frozen_strategy_config() -> dict[str, object]:
     from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
@@ -128,8 +209,55 @@ def _payloads() -> tuple[dict[str, object], dict[str, object]]:
     sessions = _sessions()
     manifest = _manifest(sessions)
     frozen_config = _frozen_strategy_config()
-    config_sha256 = hashlib.sha256(canonical_json_bytes(frozen_config)).hexdigest()
     manifest_sha256 = research_input_manifest_sha256(manifest)
+    config_without_authority = {
+        "schema_version": "soxl_promotion_config.v2",
+        "strategy_profile": "soxl_soxx_trend_income",
+        "domain": "us_equity",
+        "account_mode": "single_strategy",
+        "strategy_revision": UES_REVISION,
+        "runner_revision": RUNNER_REVISION,
+        "qpk_revision": QPK_REVISION,
+        "frozen_strategy_config": frozen_config,
+        "availability_contract": json.loads(canonical_json_bytes(AVAILABILITY_CONTRACT)),
+        "ordered_variants": list(VARIANTS),
+        "initial_equity": 100_000.0,
+        "initial_weights": {},
+        "stop_loss_distance": 0.05,
+        "purge_sessions": 20,
+        "embargo_sessions": 20,
+        "folds": [
+            {
+                "train_start": "2018-08-03",
+                "train_end": "2020-04-03",
+                "test_start": "2020-05-05",
+                "test_end": "2020-10-30",
+            },
+            {
+                "train_start": "2020-12-01",
+                "train_end": "2022-08-02",
+                "test_start": "2022-08-31",
+                "test_end": "2023-03-02",
+            },
+            {
+                "train_start": "2023-03-31",
+                "train_end": "2024-11-29",
+                "test_start": "2024-12-31",
+                "test_end": "2025-07-03",
+            },
+        ],
+        "locked_oos": {"start": "2025-08-04", "end": "2026-08-04"},
+        "risk_standard_id": "soxl_p3_candidate_bound_v1",
+        "risk_standard_sha256": "f" * 64,
+        "input_license": "authority-bound private internal research",
+        "input_usage_scope": "non-commercial internal research",
+        "learning_only": False,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+    config_sha256 = hashlib.sha256(canonical_json_bytes(config_without_authority)).hexdigest()
     candidate = {
         "strategy_profile": "soxl_soxx_trend_income",
         "account_mode": "single_strategy",
@@ -167,56 +295,34 @@ def _payloads() -> tuple[dict[str, object], dict[str, object]]:
         "allowed_nonzero_assets": list(SOXL_PROMOTION_ASSETS),
         "source_revision": QPK_REVISION,
     }
-    folds = []
-    for train_start, train_end, test_start, test_end in (
-        (0, 419, 440, 565),
-        (586, 1005, 1026, 1151),
-        (1172, 1591, 1612, 1737),
-    ):
-        folds.append(
-            {
-                "train_start": sessions[train_start]["date"],
-                "train_end": sessions[train_end]["date"],
-                "test_start": sessions[test_start]["date"],
-                "test_end": sessions[test_end]["date"],
-            }
-        )
     config = {
-        "schema_version": "soxl_promotion_config.v1",
-        "strategy_profile": "soxl_soxx_trend_income",
-        "domain": "us_equity",
-        "account_mode": "single_strategy",
-        "strategy_revision": UES_REVISION,
-        "runner_revision": RUNNER_REVISION,
-        "qpk_revision": QPK_REVISION,
-        "frozen_strategy_config": frozen_config,
+        **config_without_authority,
         "candidate_identity": candidate,
         "mandate_provenance": mandate,
-        "initial_equity": 100_000.0,
-        "initial_weights": {"BOXX": 1.0},
-        "stop_loss_distance": 0.05,
-        "purge_sessions": 20,
-        "embargo_sessions": 20,
-        "folds": folds,
-        "locked_oos": {
-            "start": sessions[1758]["date"],
-            "end": sessions[2049]["date"],
-        },
-        "risk_standard_id": "soxl_p3_candidate_bound_v1",
-        "risk_standard_sha256": "f" * 64,
-        "input_license": "authority-bound private internal research",
-        "input_usage_scope": "non-commercial internal research",
-        "learning_only": False,
-        "promotion_eligible": False,
-        "live_ready": False,
-        "size_zero_required": True,
-        "no_order": True,
     }
     return {
-        "schema_version": "soxl_promotion_input.v1",
+        "schema_version": "soxl_promotion_input.v2",
         "input_manifest": manifest,
         "sessions": sessions,
     }, config
+
+
+def _rebind_config_identity(config: dict[str, object]) -> None:
+    config_sha256 = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                key: value
+                for key, value in config.items()
+                if key not in {"candidate_identity", "mandate_provenance"}
+            }
+        )
+    ).hexdigest()
+    config["candidate_identity"]["config_sha256"] = config_sha256
+    config["mandate_provenance"]["config_sha256"] = config_sha256
+    from quant_platform_kit.risk.contracts import CandidateRiskIdentity
+
+    candidate_sha256 = CandidateRiskIdentity(**config["candidate_identity"]).candidate_sha256
+    config["mandate_provenance"]["candidate_identity_sha256"] = candidate_sha256
 
 
 def _approve(decision: StrategyDecision):
@@ -231,19 +337,41 @@ def _approve(decision: StrategyDecision):
     )
 
 
-def test_input_contract_requires_all_eight_assets_and_bound_manifest() -> None:
+def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest() -> None:
     input_payload, config = _payloads()
-    assert tuple(input_payload["sessions"][0]["bars"]) == SOXL_PROMOTION_ASSETS
+    assert SOXL_PROMOTION_ASSETS == (
+        "SOXL",
+        "SOXX",
+        "BOXX",
+        "SCHD",
+        "DGRO",
+        "SGOV",
+        "SPYI",
+        "QQQI",
+        "QQQ",
+    )
+    assert tuple(input_payload["sessions"][0]["bars"]) == ("SOXL", "SOXX", "SCHD", "DGRO", "QQQ")
+    qqqi_index = _session_index(input_payload["sessions"], FIRST_ELIGIBLE_SESSION["QQQI"])
+    assert "QQQI" not in input_payload["sessions"][qqqi_index - 1]["bars"]
+    assert "QQQI" in input_payload["sessions"][qqqi_index]["bars"]
+    assert tuple(input_payload["sessions"][-1]["bars"]) == SOXL_PROMOTION_ASSETS
 
     missing = json.loads(json.dumps(input_payload))
-    del missing["sessions"][700]["bars"]["QQQI"]
-    with pytest.raises(SoxlPromotionContractError, match="complete eight-asset"):
-        SoxlPromotionRunner(missing, config)
+    del missing["sessions"][qqqi_index]["bars"]["QQQI"]
+    with pytest.raises(SoxlPromotionContractError, match="eligible bar set"):
+        SoxlPromotionRunner(missing, config, variant_id=VARIANTS[0])
+
+    backfilled = json.loads(json.dumps(input_payload))
+    backfilled["sessions"][qqqi_index - 1]["bars"]["QQQI"] = dict(
+        backfilled["sessions"][qqqi_index]["bars"]["QQQI"]
+    )
+    with pytest.raises(SoxlPromotionContractError, match="eligible bar set"):
+        SoxlPromotionRunner(backfilled, config, variant_id=VARIANTS[0])
 
     mismatched = json.loads(json.dumps(input_payload))
     mismatched["sessions"][700]["bars"]["SOXL"]["close"] += 0.001
     with pytest.raises(SoxlPromotionContractError, match="sessions.json digest"):
-        SoxlPromotionRunner(mismatched, config)
+        SoxlPromotionRunner(mismatched, config, variant_id=VARIANTS[0])
 
 
 @pytest.mark.parametrize(
@@ -256,20 +384,36 @@ def test_input_contract_requires_all_eight_assets_and_bound_manifest() -> None:
             lambda config: config["locked_oos"].update(end=config["folds"][2]["test_end"]),
             "locked OOS",
         ),
+        (lambda config: config.update(ordered_variants=list(reversed(VARIANTS))), "variant"),
+        (
+            lambda config: config["availability_contract"]["first_eligible_session"].update(
+                QQQI="2024-01-30"
+            ),
+            "availability",
+        ),
     ],
 )
 def test_window_contract_fails_closed(mutator, message: str) -> None:
     input_payload, config = _payloads()
     mutator(config)
+    _rebind_config_identity(config)
     with pytest.raises(SoxlPromotionContractError, match=message):
-        SoxlPromotionRunner(input_payload, config)
+        SoxlPromotionRunner(input_payload, config, variant_id=VARIANTS[0])
 
 
-def test_indicator_and_candidate_decision_use_point_in_time_inputs_once(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("variant_id", "fallback_symbol"),
+    (("explicit_qqq_fallback", "QQQ"), ("cash_origin", None)),
+)
+def test_indicator_and_candidate_decision_use_point_in_time_inputs_once(
+    monkeypatch, variant_id: str, fallback_symbol: str | None
+) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=variant_id, assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
-    index = 500
+    index = _session_index(input_payload["sessions"], "2023-03-02")
     indicator_builder = Mock(return_value={"SOXL": {"close": 1.0}, "SOXX": {"close": 1.0}})
     evaluator = Mock(
         return_value=_approve(
@@ -284,8 +428,6 @@ def test_indicator_and_candidate_decision_use_point_in_time_inputs_once(monkeypa
         "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.evaluate_soxl_soxx_trend_income_promotion_research",
         evaluator,
     )
-    state.normalized = True
-
     target = runner._evaluate_close(index, state)
 
     assert target == {"BOXX": 0.50}
@@ -293,6 +435,13 @@ def test_indicator_and_candidate_decision_use_point_in_time_inputs_once(monkeypa
     assert len(indicator_builder.call_args.kwargs["soxl_history"]) == index + 1
     assert indicator_builder.call_args.kwargs["soxl_history"][-1] == input_payload["sessions"][index]["bars"]["SOXL"]["close"]
     assert evaluator.call_count == 1
+    assert evaluator.call_args.kwargs["point_in_time_eligible_assets"] == frozenset(
+        input_payload["sessions"][index]["eligible_assets"]
+    )
+    assert evaluator.call_args.kwargs["qqqi_preinception_fallback_symbol"] == fallback_symbol
+    assert set(evaluator.call_args.kwargs["stop_loss_distances"]) == set(
+        input_payload["sessions"][index]["eligible_assets"]
+    )
     ctx = evaluator.call_args.args[0]
     assert ctx.portfolio.metadata["market_regime"]["as_of"] == input_payload["sessions"][index]["date"]
     assert ctx.portfolio.metadata["simulated_session"] == input_payload["sessions"][index]["date"]
@@ -300,10 +449,11 @@ def test_indicator_and_candidate_decision_use_point_in_time_inputs_once(monkeypa
 
 def test_real_qpk_indicator_ues_bridge_and_risk_engine_are_compatible(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
-    state.normalized = True
-    index = 500
+    index = _session_index(input_payload["sessions"], "2024-01-29")
     boxx_close = input_payload["sessions"][index]["bars"]["BOXX"]["close"]
     state.cash = 50_000.0
     state.quantities = {symbol: 0.0 for symbol in SOXL_PROMOTION_ASSETS}
@@ -322,6 +472,7 @@ def test_real_qpk_indicator_ues_bridge_and_risk_engine_are_compatible(monkeypatc
     assert set(target).issubset(SOXL_PROMOTION_ASSETS)
     assert state.assessment_count == 1
     engine.assess.assert_called_once()
+    assert "QQQI" in input_payload["sessions"][index]["eligible_assets"]
 
 
 def test_runner_revision_mismatch_fails_before_execution(monkeypatch) -> None:
@@ -329,57 +480,62 @@ def test_runner_revision_mismatch_fails_before_execution(monkeypatch) -> None:
     monkeypatch.setattr(runner_module, "_resolve_runner_revision", lambda: "d" * 40)
 
     with pytest.raises(SoxlPromotionContractError, match="candidate revision"):
-        SoxlPromotionRunner(input_payload, config)
+        SoxlPromotionRunner(input_payload, config, variant_id=VARIANTS[0])
 
 
-def test_initial_boxx_normalization_is_reduce_only_and_assessed_once(monkeypatch) -> None:
+def test_initial_state_is_cash_and_variant_bound() -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
-    state = runner._initial_state()
-    gate = Mock(side_effect=lambda decision, *args, **kwargs: _approve(decision))
-    monkeypatch.setattr(
-        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.assess_with_evidence",
-        gate,
+    primary = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
     )
+    sensitivity = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[1], assessment_clock=lambda: NOW
+    )
+    primary_state = primary._initial_state()
+    sensitivity_state = sensitivity._initial_state()
 
-    target = runner._evaluate_close(420, state)
+    assert primary_state.cash == 100_000.0
+    assert set(primary_state.quantities.values()) == {0.0}
+    assert not any(primary_state.lots.values())
+    assert primary_state.normalized is True
+    assert primary._state_digest(primary_state) != sensitivity._state_digest(sensitivity_state)
 
-    assert target == {"BOXX": 0.50}
-    assert gate.call_count == 1
-    assert gate.call_args.kwargs["normalization_origin_weights"] == {"BOXX": 1.0}
-    assert state.normalized is True
 
-
-def test_gap_stop_precedes_pending_order_and_blocks_same_session_reentry(monkeypatch) -> None:
+def test_qqq_gap_stop_precedes_pending_order_and_blocks_same_session_reentry(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
     state.normalized = True
     state.cash = 0.0
     state.quantities = {symbol: 0.0 for symbol in SOXL_PROMOTION_ASSETS}
-    state.quantities["SOXL"] = 100.0
-    state.lots["SOXL"] = [runner._lot(100.0, 100.0)]
-    state.pending_target = {"SOXL": 0.15, "BOXX": 0.35}
+    state.quantities["QQQ"] = 100.0
+    state.lots["QQQ"] = [runner._lot(100.0, 100.0)]
+    state.pending_target = {"QQQ": 0.15, "BOXX": 0.35}
     gate = Mock(side_effect=lambda decision, *args, **kwargs: _approve(decision))
     monkeypatch.setattr(
         "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.assess_with_evidence",
         gate,
     )
-    session = input_payload["sessions"][500]
-    session["bars"]["SOXL"].update(open=94.0, high=96.0, low=90.0, close=93.0)
+    index = _session_index(input_payload["sessions"], "2023-03-02")
+    session = runner.sessions[index]
+    session["bars"]["QQQ"].update(open=94.0, high=96.0, low=90.0, close=93.0)
 
-    runner._execute_open(500, state, total_cost_bps=5.0)
+    runner._execute_open(index, state, total_cost_bps=5.0)
 
-    assert state.quantities["SOXL"] == 0.0
-    assert "SOXL" in state.stopped_today
-    assert state.lots["SOXL"] == []
+    assert state.quantities["QQQ"] == 0.0
+    assert "QQQ" in state.stopped_today
+    assert state.lots["QQQ"] == []
     assert gate.call_count == 1
     assert state.assessment_count == 1
 
 
 def test_new_open_lot_is_not_stopped_by_same_sessions_pre_entry_low(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
     state.normalized = True
     state.cash = 100_000.0
@@ -390,19 +546,66 @@ def test_new_open_lot_is_not_stopped_by_same_sessions_pre_entry_low(monkeypatch)
         "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.assess_with_evidence",
         lambda decision, *args, **kwargs: _approve(decision),
     )
-    session = input_payload["sessions"][500]
+    index = _session_index(input_payload["sessions"], "2024-11-29")
+    session = input_payload["sessions"][index]
     session["bars"]["SOXL"].update(open=100.0, high=102.0, low=90.0, close=101.0)
 
-    runner._execute_open(500, state, total_cost_bps=5.0)
+    runner._execute_open(index, state, total_cost_bps=5.0)
 
     assert state.quantities["SOXL"] > 0.0
     assert len(state.lots["SOXL"]) == 1
     assert state.stop_count == 0
 
 
+def test_qqq_to_qqqi_transition_executes_next_open_with_full_half_l1_cost(monkeypatch) -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    state = runner._initial_state()
+    index = _session_index(input_payload["sessions"], "2024-01-29")
+    qqq_close = input_payload["sessions"][index]["bars"]["QQQ"]["close"]
+    state.cash = 90_000.0
+    state.quantities["QQQ"] = 10_000.0 / qqq_close
+    state.lots["QQQ"] = [runner._lot(state.quantities["QQQ"], qqq_close)]
+    evaluator = Mock(
+        return_value=_approve(
+            StrategyDecision(positions=(PositionTarget(symbol="QQQI", target_weight=0.10),))
+        )
+    )
+    monkeypatch.setattr(
+        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.build_semiconductor_rotation_indicators_from_history",
+        lambda **kwargs: {"SOXL": {}, "SOXX": {}},
+    )
+    monkeypatch.setattr(
+        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.evaluate_soxl_soxx_trend_income_promotion_research",
+        evaluator,
+    )
+
+    state.pending_target = runner._evaluate_close(index, state)
+    next_opens = {
+        symbol: float(value["open"])
+        for symbol, value in input_payload["sessions"][index + 1]["bars"].items()
+    }
+    equity_before = runner._equity(state, next_opens)
+    runner._execute_open(index + 1, state, total_cost_bps=5.0)
+
+    assert evaluator.call_count == 1
+    assert evaluator.call_args.kwargs["qqqi_preinception_fallback_symbol"] is None
+    assert state.quantities["QQQ"] == 0.0
+    assert state.quantities["QQQI"] > 0.0
+    assert state.turnover == pytest.approx(0.10)
+    assert state.costs_paid == pytest.approx(equity_before * 0.10 * 5.0 / 10_000.0)
+    assert state.lots["QQQI"][0].stop_price == pytest.approx(
+        state.lots["QQQI"][0].entry_price * 0.95
+    )
+
+
 def test_external_evaluation_exception_is_redacted_and_fails_closed(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
     state.normalized = True
     monkeypatch.setattr(
@@ -415,7 +618,7 @@ def test_external_evaluation_exception_is_redacted_and_fails_closed(monkeypatch)
     )
 
     with pytest.raises(SoxlPromotionContractError, match="candidate decision evaluation failed") as exc:
-        runner._evaluate_close(500, state)
+        runner._evaluate_close(_session_index(input_payload["sessions"], "2024-11-29"), state)
 
     assert "private provider detail" not in str(exc.value)
     assert state.assessment_count == 0
@@ -423,7 +626,9 @@ def test_external_evaluation_exception_is_redacted_and_fails_closed(monkeypatch)
 
 def test_half_l1_cost_and_continuous_state_are_recorded(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
     state.normalized = True
     state.cash = 100_000.0
@@ -435,7 +640,9 @@ def test_half_l1_cost_and_continuous_state_are_recorded(monkeypatch) -> None:
         lambda decision, *args, **kwargs: _approve(decision),
     )
 
-    runner._execute_open(420, state, total_cost_bps=10.0)
+    runner._execute_open(
+        _session_index(input_payload["sessions"], "2024-11-29"), state, total_cost_bps=10.0
+    )
 
     assert state.turnover == pytest.approx(0.50)
     assert state.costs_paid == pytest.approx(50.0)
@@ -446,7 +653,9 @@ def test_half_l1_cost_and_continuous_state_are_recorded(monkeypatch) -> None:
 
 def test_breakers_are_persistent_and_fail_closed(monkeypatch) -> None:
     input_payload, config = _payloads()
-    runner = SoxlPromotionRunner(input_payload, config, assessment_clock=lambda: NOW)
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
     state = runner._initial_state()
     state.normalized = True
     state.high_water_equity = 100_000.0
@@ -457,9 +666,10 @@ def test_breakers_are_persistent_and_fail_closed(monkeypatch) -> None:
         gate,
     )
 
-    assert runner._evaluate_close(500, state) == {}
+    index = _session_index(input_payload["sessions"], "2024-11-29")
+    assert runner._evaluate_close(index, state) == {}
     assert state.account_parked is True
-    assert runner._evaluate_close(501, state) == {}
+    assert runner._evaluate_close(index + 1, state) == {}
     assert gate.call_count == 2
 
 
@@ -467,8 +677,13 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
     input_payload, config = _payloads()
-    replay = Mock(side_effect=lambda start, end, cost: _synthetic_window(start, end, cost))
-    monkeypatch.setattr(SoxlPromotionRunner, "_replay_window", replay)
+    replay = Mock()
+
+    def replay_window(runner, start, end, cost):
+        replay(runner.variant_id, start, end, cost)
+        return _synthetic_window(start, end, cost)
+
+    monkeypatch.setattr(SoxlPromotionRunner, "_replay_window", replay_window)
 
     result = run_soxl_promotion_research(
         input_payload=input_payload,
@@ -483,10 +698,38 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
     assert stress_25_path.is_file()
     evidence = json.loads(evidence_path.read_text())
     stress_25 = json.loads(stress_25_path.read_text())
+    config_artifact = json.loads((tmp_path / "artifacts" / "config.json").read_text())
+    backtest_artifact = json.loads((tmp_path / "artifacts" / "backtest.json").read_text())
+    risk_artifact = json.loads((tmp_path / "artifacts" / "risk.json").read_text())
     assert evidence["backtest"]["orchestrator"] == "BacktestOrchestrator"
     assert [item["total_cost_bps"] for item in evidence["cost_stress"]["scenarios"]] == [5.0, 10.0, 15.0]
     assert stress_25["total_cost_bps"] == 25.0
-    assert stress_25["locked_oos_result"]["total_return"] == pytest.approx(0.20)
+    assert set(stress_25["variants"]) == set(VARIANTS)
+    assert stress_25["variants"][VARIANTS[0]]["locked_oos_result"]["total_return"] == pytest.approx(0.20)
+    assert config_artifact["availability_contract"] == AVAILABILITY_CONTRACT
+    assert config_artifact["ordered_variants"] == list(VARIANTS)
+    assert config_artifact["initial_weights"] == {}
+    assert backtest_artifact["schema_version"] == "soxl_promotion_backtest.v2"
+    availability_sha256 = hashlib.sha256(canonical_json_bytes(AVAILABILITY_CONTRACT)).hexdigest()
+    assert backtest_artifact["availability_contract_sha256"] == availability_sha256
+    assert backtest_artifact["availability_segments"]["pre_qqqi"]["observed_qqqi"] is False
+    assert backtest_artifact["availability_segments"]["locked_oos"] == {
+        "start": "2025-08-04",
+        "end": "2026-08-04",
+        "session_count": 252,
+        "actual_only": True,
+    }
+    assert set(backtest_artifact["variants"]) == set(VARIANTS)
+    assert risk_artifact["schema_version"] == "soxl_p3_acceptance.v2"
+    assert risk_artifact["availability_contract_sha256"] == availability_sha256
+    assert risk_artifact["status"] == "PASS"
+    assert risk_artifact["proxy_sensitive"] is False
+    assert all(risk_artifact["variants"][variant]["status"] == "PASS" for variant in VARIANTS)
+    assert all(risk_artifact["variants"][variant]["final_oos_actual_only"] for variant in VARIANTS)
+    promotion_run = evidence["backtest"]["promotion_run"]
+    assert promotion_run["locked_oos_start"] == "2025-08-04"
+    assert promotion_run["locked_oos_end"] == "2026-08-04"
+    assert promotion_run["locked_oos_result"]["observation_count"] == 252
     assert result["cost_stress_25bp_sha256"] == hashlib.sha256(stress_25_path.read_bytes()).hexdigest()
     assert evidence["human_acceptance"] is None
     assert evidence["lifecycle_claims"] == {
@@ -499,14 +742,48 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
     from quant_platform_kit.strategy_lifecycle import validate_evidence_package_v2
 
     assert validate_evidence_package_v2(evidence, base_dir=tmp_path) == ()
-    assert replay.call_count == 16
+    assert replay.call_count == 32
 
 
-def _synthetic_window(start: date, end: date, total_cost_bps: float):
+def test_producer_fails_proxy_sensitive_when_variant_direction_reverses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_payload, config = _payloads()
+
+    def replay_window(runner, start, end, cost):
+        promotion_passes = runner.variant_id == VARIANTS[0]
+        return _synthetic_window(start, end, cost, promotion_passes=promotion_passes)
+
+    monkeypatch.setattr(SoxlPromotionRunner, "_replay_window", replay_window)
+
+    with pytest.raises(SoxlPromotionContractError, match="PROXY_SENSITIVE"):
+        run_soxl_promotion_research(
+            input_payload=input_payload,
+            config_payload=config,
+            output_dir=tmp_path,
+            generated_at="2026-08-05T12:00:00Z",
+        )
+
+    risk_artifact = json.loads((tmp_path / "artifacts" / "risk.json").read_text())
+    assert risk_artifact["status"] == "PROXY_SENSITIVE"
+    assert risk_artifact["proxy_sensitive"] is True
+    assert risk_artifact["variants"][VARIANTS[0]]["status"] == "PASS"
+    assert risk_artifact["variants"][VARIANTS[1]]["status"] == "FAIL"
+
+
+def _synthetic_window(
+    start: date,
+    end: date,
+    total_cost_bps: float,
+    *,
+    promotion_passes: bool = True,
+):
     from quant_platform_kit.strategy_lifecycle.contracts import BacktestResult
     from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import WindowEvidence
 
-    total_return = 0.20 if total_cost_bps == 25.0 else 0.30 - total_cost_bps / 1_000.0
+    total_return = (
+        0.20 if total_cost_bps == 25.0 else 0.30 - total_cost_bps / 1_000.0
+    ) if promotion_passes else 0.05
     result = BacktestResult(
         strategy_profile="soxl_soxx_trend_income",
         domain="us_equity",
@@ -515,28 +792,28 @@ def _synthetic_window(start: date, end: date, total_cost_bps: float):
         sharpe_ratio=1.2,
         calmar_ratio=1.5,
         sortino_ratio=1.8,
-        max_drawdown=-0.10,
-        cagr=0.15,
+        max_drawdown=-0.10 if promotion_passes else -0.20,
+        cagr=0.15 if promotion_passes else 0.05,
         volatility=0.20,
         win_rate=0.55,
         total_return=total_return,
         start_date=start,
         end_date=end,
-        observation_count=270,
+        observation_count=252 if (start, end) == (date(2025, 8, 4), date(2026, 8, 4)) else 126,
         benchmark_symbol="SOXX",
         benchmark_cagr=0.10,
         benchmark_max_drawdown=-0.12,
-        excess_cagr=0.05,
+        excess_cagr=0.05 if promotion_passes else -0.05,
         oos_sharpe=1.2,
         oos_calmar=1.5,
-        oos_max_drawdown=-0.10,
+        oos_max_drawdown=-0.10 if promotion_passes else -0.20,
         walk_forward_stability=1.0,
         run_duration_seconds=0.01,
     )
     return WindowEvidence(
         result=result,
-        recovery_sessions=20,
-        recovery_censored=False,
+        recovery_sessions=20 if promotion_passes else None,
+        recovery_censored=not promotion_passes,
         benchmark_recovery_sessions=25,
         benchmark_recovery_censored=False,
         benchmark_total_return=0.10,

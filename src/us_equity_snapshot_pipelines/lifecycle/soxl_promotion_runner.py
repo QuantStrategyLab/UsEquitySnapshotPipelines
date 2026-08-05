@@ -41,12 +41,47 @@ from us_equity_strategies.entrypoints import evaluate_soxl_soxx_trend_income_pro
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
 
-SOXL_PROMOTION_ASSETS = ("SOXL", "SOXX", "BOXX", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI")
+SOXL_PROMOTION_ASSETS = (
+    "SOXL",
+    "SOXX",
+    "BOXX",
+    "SCHD",
+    "DGRO",
+    "SGOV",
+    "SPYI",
+    "QQQI",
+    "QQQ",
+)
 _QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-_UES_REVISION = "b49bde5910276187b83b4a587e4ddf210bcece89"
+_UES_REVISION = "24fe759cca1140095ccb36badd872b36bd8ab837"
 _PROFILE = "soxl_soxx_trend_income"
 _DOMAIN = "us_equity"
 _MIN_INDICATOR_SESSIONS = 420
+_ORDERED_VARIANTS = ("explicit_qqq_fallback", "cash_origin")
+_FIRST_ELIGIBLE_SESSION = {
+    "SGOV": "2020-05-26",
+    "SPYI": "2022-08-29",
+    "BOXX": "2022-12-27",
+    "QQQI": "2024-01-29",
+}
+_FROZEN_AVAILABILITY_CONTRACT = {
+    "schema_version": "soxl_asset_availability.v1",
+    "universe": list(SOXL_PROMOTION_ASSETS),
+    "always_eligible": ["SOXL", "SOXX", "SCHD", "DGRO", "QQQ"],
+    "first_eligible_session": _FIRST_ELIGIBLE_SESSION,
+    "ordered_variants": list(_ORDERED_VARIANTS),
+    "primary_variant": "explicit_qqq_fallback",
+    "transition_rule": "qqq_to_qqqi_close_t_open_t_plus_1",
+    "unavailable_target_policy": "cash_without_renormalization",
+    "price_identity_policy": "actual_symbol_only_no_proxy_backfill_forward_fill_substitution",
+    "initial_state": "100_percent_cash",
+}
+_FROZEN_FOLDS = (
+    ("2018-08-03", "2020-04-03", "2020-05-05", "2020-10-30"),
+    ("2020-12-01", "2022-08-02", "2022-08-31", "2023-03-02"),
+    ("2023-03-31", "2024-11-29", "2024-12-31", "2025-07-03"),
+)
+_FROZEN_LOCKED_OOS = ("2025-08-04", "2026-08-04")
 _CORE_FIELDS = (
     "schema_version",
     "evidence_package_id",
@@ -174,6 +209,15 @@ def _calendar_date(value: object, label: str) -> date:
         raise SoxlPromotionContractError(f"invalid {label}") from exc
 
 
+def _eligible_assets_on(session_date: date) -> tuple[str, ...]:
+    return tuple(
+        symbol
+        for symbol in SOXL_PROMOTION_ASSETS
+        if symbol not in _FIRST_ELIGIBLE_SESSION
+        or session_date >= date.fromisoformat(_FIRST_ELIGIBLE_SESSION[symbol])
+    )
+
+
 @dataclass
 class _Lot:
     quantity: float
@@ -255,8 +299,10 @@ class SoxlPromotionRunner:
         input_payload: Mapping[str, Any],
         config_payload: Mapping[str, Any],
         *,
+        variant_id: str,
         assessment_clock: Callable[[], datetime] | None = None,
     ) -> None:
+        self.variant_id = variant_id
         self._assessment_clock = assessment_clock or (lambda: datetime.now(timezone.utc))
         self.implementation_revision = _resolve_runner_revision()
         self.input_payload = copy.deepcopy(dict(input_payload))
@@ -276,7 +322,7 @@ class SoxlPromotionRunner:
             {"schema_version", "input_manifest", "sessions"},
             "input package",
         )
-        if payload["schema_version"] != "soxl_promotion_input.v1":
+        if payload["schema_version"] != "soxl_promotion_input.v2":
             raise SoxlPromotionContractError("invalid input schema")
         try:
             self.input_manifest = validate_research_input_manifest(payload["input_manifest"])
@@ -288,23 +334,31 @@ class SoxlPromotionRunner:
             or self.input_manifest["calendar"]["calendar_id"] != "XNYS"
             or self.input_manifest["calendar"]["timezone"] != "America/New_York"
             or self.input_manifest["adjustment"]["policy"] != "total_return_adjusted"
+            or self.input_manifest["research_input_contract_id"] != "soxl_promotion_input.v2"
         ):
             raise SoxlPromotionContractError("input manifest is not production-parity")
         raw_sessions = payload["sessions"]
-        if not isinstance(raw_sessions, list) or len(raw_sessions) < _MIN_INDICATOR_SESSIONS:
-            raise SoxlPromotionContractError("insufficient input sessions")
+        if not isinstance(raw_sessions, list) or len(raw_sessions) != 2_010:
+            raise SoxlPromotionContractError("exact frozen input sessions are required")
         self.sessions = copy.deepcopy(raw_sessions)
         previous_date: date | None = None
         for raw_session in self.sessions:
-            session = _exact_keys(raw_session, {"date", "bars", "market_regime"}, "session")
+            session = _exact_keys(
+                raw_session,
+                {"date", "bars", "eligible_assets", "market_regime"},
+                "session",
+            )
             session_date = _calendar_date(session["date"], "session date")
             if previous_date is not None and session_date <= previous_date:
                 raise SoxlPromotionContractError("sessions must be strictly ordered")
             previous_date = session_date
+            eligible_assets = _eligible_assets_on(session_date)
+            if session["eligible_assets"] != list(eligible_assets):
+                raise SoxlPromotionContractError("session eligibility calendar mismatch")
             bars = session["bars"]
-            if not isinstance(bars, Mapping) or set(bars) != set(SOXL_PROMOTION_ASSETS):
-                raise SoxlPromotionContractError("complete eight-asset session is required")
-            for symbol in SOXL_PROMOTION_ASSETS:
+            if not isinstance(bars, Mapping) or set(bars) != set(eligible_assets):
+                raise SoxlPromotionContractError("exact eligible bar set is required")
+            for symbol in eligible_assets:
                 bar = _exact_keys(bars[symbol], {"open", "high", "low", "close", "volume"}, "bar")
                 open_price = _finite(bar["open"], positive=True)
                 high = _finite(bar["high"], positive=True)
@@ -324,6 +378,18 @@ class SoxlPromotionRunner:
                 or _calendar_date(regime.get("as_of"), "market regime as_of") != session_date
             ):
                 raise SoxlPromotionContractError("point-in-time market regime mismatch")
+        if (
+            self.sessions[0]["date"] != "2018-08-03"
+            or self.sessions[-1]["date"] != "2026-08-04"
+        ):
+            raise SoxlPromotionContractError("exact frozen input range is required")
+        sessions_by_date = {session["date"]: session for session in self.sessions}
+        if any(
+            start not in sessions_by_date
+            or symbol not in sessions_by_date[start]["bars"]
+            for symbol, start in _FIRST_ELIGIBLE_SESSION.items()
+        ):
+            raise SoxlPromotionContractError("first eligible actual session is missing")
         sessions_bytes = canonical_json_bytes(self.sessions)
         members = self.input_manifest["members"]
         if len(members) != 1 or members[0]["path"] != "sessions.json":
@@ -345,6 +411,8 @@ class SoxlPromotionRunner:
             "runner_revision",
             "qpk_revision",
             "frozen_strategy_config",
+            "availability_contract",
+            "ordered_variants",
             "candidate_identity",
             "mandate_provenance",
             "initial_equity",
@@ -366,7 +434,7 @@ class SoxlPromotionRunner:
         }
         config = _exact_keys(self.config, expected, "promotion config")
         if (
-            config["schema_version"] != "soxl_promotion_config.v1"
+            config["schema_version"] != "soxl_promotion_config.v2"
             or config["strategy_profile"] != _PROFILE
             or config["domain"] != _DOMAIN
             or config["account_mode"] != "single_strategy"
@@ -379,8 +447,14 @@ class SoxlPromotionRunner:
         current_config = json.loads(canonical_json_bytes(soxl_soxx_trend_income_manifest.default_config))
         if config["frozen_strategy_config"] != current_config:
             raise SoxlPromotionContractError("frozen strategy config mismatch")
-        if config["initial_weights"] != {"BOXX": 1.0}:
-            raise SoxlPromotionContractError("initial state must be 100% BOXX")
+        if config["availability_contract"] != _FROZEN_AVAILABILITY_CONTRACT:
+            raise SoxlPromotionContractError("frozen availability contract mismatch")
+        if config["ordered_variants"] != list(_ORDERED_VARIANTS):
+            raise SoxlPromotionContractError("ordered variant contract mismatch")
+        if self.variant_id not in _ORDERED_VARIANTS:
+            raise SoxlPromotionContractError("invalid promotion variant")
+        if config["initial_weights"] != {}:
+            raise SoxlPromotionContractError("initial state must be 100% cash")
         self.initial_equity = _finite(config["initial_equity"], positive=True)
         self.stop_loss_distance = _finite(config["stop_loss_distance"], positive=True)
         if not math.isclose(self.stop_loss_distance, 0.05, abs_tol=1e-12):
@@ -401,7 +475,13 @@ class SoxlPromotionRunner:
             or config["no_order"] is not True
         ):
             raise SoxlPromotionContractError("promotion-research lifecycle claims are invalid")
-        config_sha256 = _sha256_json(config["frozen_strategy_config"])
+        config_sha256 = _sha256_json(
+            {
+                key: value
+                for key, value in config.items()
+                if key not in {"candidate_identity", "mandate_provenance"}
+            }
+        )
         try:
             self.candidate_identity = CandidateRiskIdentity(**config["candidate_identity"])
         except (TypeError, ValueError) as exc:
@@ -446,7 +526,7 @@ class SoxlPromotionRunner:
         index = {value: offset for offset, value in enumerate(dates)}
         folds: list[PurgedWalkForwardFold] = []
         previous_test_end_index: int | None = None
-        for raw_fold in raw_folds:
+        for fold_index, raw_fold in enumerate(raw_folds):
             fold = _exact_keys(raw_fold, {"train_start", "train_end", "test_start", "test_end"}, "fold")
             boundaries = tuple(
                 _calendar_date(fold[name], f"fold {name}")
@@ -455,10 +535,12 @@ class SoxlPromotionRunner:
             if any(boundary not in index for boundary in boundaries):
                 raise SoxlPromotionContractError("fold boundary is not an input session")
             train_start, train_end, test_start, test_end = boundaries
+            if tuple(value.isoformat() for value in boundaries) != _FROZEN_FOLDS[fold_index]:
+                raise SoxlPromotionContractError("fold boundary is not frozen")
             train_start_i, train_end_i, test_start_i, test_end_i = (index[value] for value in boundaries)
             if (
-                train_end_i - train_start_i + 1 < _MIN_INDICATOR_SESSIONS
-                or test_end_i - test_start_i + 1 < 126
+                train_end_i - train_start_i + 1 != _MIN_INDICATOR_SESSIONS
+                or test_end_i - test_start_i + 1 != 126
                 or test_start_i - train_end_i - 1 != 20
             ):
                 raise SoxlPromotionContractError("fold violates 20-session purge or minimum window")
@@ -469,44 +551,56 @@ class SoxlPromotionRunner:
         locked = _exact_keys(self.config["locked_oos"], {"start", "end"}, "locked OOS")
         locked_start = _calendar_date(locked["start"], "locked OOS start")
         locked_end = _calendar_date(locked["end"], "locked OOS end")
+        if (locked_start.isoformat(), locked_end.isoformat()) != _FROZEN_LOCKED_OOS:
+            raise SoxlPromotionContractError("locked OOS boundary is not frozen")
         if locked_start not in index or locked_end not in index:
             raise SoxlPromotionContractError("locked OOS boundary is not an input session")
         if (
             previous_test_end_index is None
             or index[locked_start] - previous_test_end_index - 1 != 20
-            or index[locked_end] - index[locked_start] + 1 < 252
+            or index[locked_end] - index[locked_start] + 1 != 252
             or locked_end < _add_calendar_months(locked_start, 12)
         ):
             raise SoxlPromotionContractError("locked OOS must be untouched, >=252 sessions, and >=12 months")
+        if any(
+            tuple(self.sessions[offset]["eligible_assets"]) != SOXL_PROMOTION_ASSETS
+            for offset in range(index[locked_start], index[locked_end] + 1)
+        ):
+            raise SoxlPromotionContractError("locked OOS must contain actual-only nine-asset sessions")
         return tuple(folds), locked_start, locked_end
 
     def _lot(self, quantity: float, entry_price: float) -> _Lot:
         return _Lot(quantity, entry_price, entry_price * (1.0 - self.stop_loss_distance))
 
     def _initial_state(self) -> _PortfolioState:
-        price = float(self.sessions[0]["bars"]["BOXX"]["close"])
-        quantity = self.initial_equity / price
         quantities = {symbol: 0.0 for symbol in SOXL_PROMOTION_ASSETS}
-        quantities["BOXX"] = quantity
         lots = {symbol: [] for symbol in SOXL_PROMOTION_ASSETS}
-        lots["BOXX"] = [self._lot(quantity, price)]
         return _PortfolioState(
-            cash=0.0,
+            cash=self.initial_equity,
             quantities=quantities,
             lots=lots,
+            normalized=True,
             high_water_equity=self.initial_equity,
             last_equity=self.initial_equity,
         )
 
     def _prices(self, index: int, field_name: str) -> dict[str, float]:
         return {
-            symbol: float(self.sessions[index]["bars"][symbol][field_name])
-            for symbol in SOXL_PROMOTION_ASSETS
+            symbol: float(bar[field_name])
+            for symbol, bar in self.sessions[index]["bars"].items()
         }
 
     @staticmethod
     def _equity(state: _PortfolioState, prices: Mapping[str, float]) -> float:
-        return state.cash + sum(state.quantities[symbol] * prices[symbol] for symbol in SOXL_PROMOTION_ASSETS)
+        equity = state.cash
+        for symbol in SOXL_PROMOTION_ASSETS:
+            quantity = state.quantities[symbol]
+            if quantity <= 1e-12:
+                continue
+            if symbol not in prices:
+                raise SoxlPromotionContractError("held asset is not point-in-time eligible")
+            equity += quantity * prices[symbol]
+        return equity
 
     def _weights(self, state: _PortfolioState, prices: Mapping[str, float]) -> dict[str, float]:
         equity = self._equity(state, prices)
@@ -515,7 +609,7 @@ class SoxlPromotionRunner:
         return {
             symbol: state.quantities[symbol] * prices[symbol] / equity
             for symbol in SOXL_PROMOTION_ASSETS
-            if state.quantities[symbol] > 1e-12
+            if state.quantities[symbol] > 1e-12 and symbol in prices
         }
 
     def _portfolio_snapshot(
@@ -542,7 +636,7 @@ class SoxlPromotionRunner:
                 ),
             )
             for symbol in SOXL_PROMOTION_ASSETS
-            if state.quantities[symbol] > 1e-12
+            if state.quantities[symbol] > 1e-12 and symbol in close_prices
         )
         return PortfolioSnapshot(
             as_of=self._assessment_clock(),
@@ -610,16 +704,6 @@ class SoxlPromotionRunner:
             state.strategy_parked = True
         if state.account_parked or state.strategy_parked:
             return self._assess_control(index, state, {}, reason="breaker_flatten")
-        if not state.normalized:
-            target = self._assess_control(
-                index,
-                state,
-                {"BOXX": 0.50},
-                reason="initial_boxx_reduce_only_normalization",
-                normalization_origin_weights={"BOXX": 1.0},
-            )
-            state.normalized = True
-            return target
         if index + 1 < _MIN_INDICATOR_SESSIONS:
             raise SoxlPromotionContractError("insufficient point-in-time indicator history")
         try:
@@ -644,14 +728,22 @@ class SoxlPromotionRunner:
             state=copy.deepcopy(state.strategy_state),
             runtime_config=copy.deepcopy(self.config["frozen_strategy_config"]),
         )
+        eligible_assets = frozenset(self.sessions[index]["eligible_assets"])
+        fallback_symbol = (
+            "QQQ"
+            if self.variant_id == "explicit_qqq_fallback" and "QQQI" not in eligible_assets
+            else None
+        )
         try:
             result = evaluate_soxl_soxx_trend_income_promotion_research(
                 ctx,
                 candidate_identity=self.candidate_identity,
                 mandate_provenance=self.mandate,
-                stop_loss_distances={symbol: self.stop_loss_distance for symbol in SOXL_PROMOTION_ASSETS},
+                stop_loss_distances={symbol: self.stop_loss_distance for symbol in eligible_assets},
                 drawdown_scalar=0.5 if drawdown > 0.05 else 1.0,
                 inputs_fresh=True,
+                point_in_time_eligible_assets=eligible_assets,
+                qqqi_preinception_fallback_symbol=fallback_symbol,
             )
         except Exception as exc:
             raise SoxlPromotionContractError("candidate decision evaluation failed") from exc
@@ -660,11 +752,13 @@ class SoxlPromotionRunner:
             raise SoxlPromotionContractError("candidate decision assessment rejected")
         targets: dict[str, float] = {}
         for position in result.decision.positions:
-            if position.symbol not in SOXL_PROMOTION_ASSETS or position.target_weight is None:
+            if position.symbol not in eligible_assets or position.target_weight is None:
                 raise SoxlPromotionContractError("candidate returned an invalid asset vector")
             weight = _finite(position.target_weight, nonnegative=True)
             if weight > 0.0:
                 targets[position.symbol] = weight
+        if "QQQI" in eligible_assets and targets.get("QQQ", 0.0) > 0.0:
+            raise SoxlPromotionContractError("QQQ is forbidden after the QQQI transition")
         factors = self.mandate["product_leverage_factors"]
         if sum(targets[symbol] * factors[symbol] for symbol in targets) > 0.50 + 1e-9:
             raise SoxlPromotionContractError("candidate exceeded effective exposure")
@@ -696,6 +790,8 @@ class SoxlPromotionRunner:
         target_weights: Mapping[str, float],
         total_cost_bps: float,
     ) -> None:
+        if not set(target_weights).issubset(prices):
+            raise SoxlPromotionContractError("target asset is not point-in-time eligible")
         equity = self._equity(state, prices)
         current = self._weights(state, prices)
         current_cash_weight = state.cash / equity
@@ -713,10 +809,13 @@ class SoxlPromotionRunner:
         equity_after_cost = equity - cost
         if equity_after_cost <= 0.0:
             raise SoxlPromotionContractError("transaction costs exhausted equity")
-        desired_quantities = {
-            symbol: equity_after_cost * target_weights.get(symbol, 0.0) / prices[symbol]
-            for symbol in SOXL_PROMOTION_ASSETS
-        }
+        desired_quantities = {}
+        for symbol in SOXL_PROMOTION_ASSETS:
+            target_weight = target_weights.get(symbol, 0.0)
+            if target_weight > 0.0:
+                desired_quantities[symbol] = equity_after_cost * target_weight / prices[symbol]
+            else:
+                desired_quantities[symbol] = 0.0
         for symbol in SOXL_PROMOTION_ASSETS:
             delta = desired_quantities[symbol] - state.quantities[symbol]
             if delta < -1e-12:
@@ -738,6 +837,8 @@ class SoxlPromotionRunner:
         for symbol in SOXL_PROMOTION_ASSETS:
             if not state.lots[symbol]:
                 continue
+            if symbol not in opens or symbol not in lows:
+                raise SoxlPromotionContractError("held asset is not point-in-time eligible")
             executable_stop = max(lot.stop_price for lot in state.lots[symbol])
             execution_price = (
                 opens[symbol]
@@ -776,6 +877,7 @@ class SoxlPromotionRunner:
     def _state_digest(self, state: _PortfolioState) -> str:
         return _sha256_json(
             {
+                "variant_id": self.variant_id,
                 "cash": state.cash,
                 "quantities": state.quantities,
                 "lots": {
@@ -973,6 +1075,7 @@ class SoxlPromotionRunner:
             "candidate_identity_sha256": self.candidate_identity.candidate_sha256,
             "config_sha256": self.candidate_identity.config_sha256,
             "input_manifest_sha256": self.candidate_identity.input_manifest_sha256,
+            "variant_id": self.variant_id,
         }:
             raise SoxlPromotionContractError("promotion params are not candidate-bound")
 
@@ -1118,93 +1221,182 @@ def run_soxl_promotion_research(
     output_root.mkdir(parents=True, exist_ok=True)
     artifacts_root = output_root / "artifacts"
     artifacts_root.mkdir()
-    runner = SoxlPromotionRunner(input_payload, config_payload)
-    orchestrator = BacktestOrchestrator(
-        store=PerformanceStore(cloud_bucket="", local_root=output_root / "orchestrator")
-    )
-    orchestrator.register_runner(_DOMAIN, runner)
-    params = {
-        "candidate_identity_sha256": runner.candidate_identity.candidate_sha256,
-        "config_sha256": runner.candidate_identity.config_sha256,
-        "input_manifest_sha256": runner.candidate_identity.input_manifest_sha256,
-    }
-    runs: dict[float, PromotionBacktestRun] = {}
-    for total_cost_bps in (5.0, 10.0, 15.0, 25.0):
-        cost_model = PromotionCostModel(
-            model_id=f"half_l1_{int(total_cost_bps)}bp_v1",
-            commission_bps=0.0,
-            slippage_bps=total_cost_bps,
-            market_impact_bps=0.0,
+    runners: dict[str, SoxlPromotionRunner] = {}
+    runs: dict[str, dict[float, PromotionBacktestRun]] = {}
+    details: dict[str, dict[float, dict[str, Any]]] = {}
+    for variant_id in _ORDERED_VARIANTS:
+        runner = SoxlPromotionRunner(input_payload, config_payload, variant_id=variant_id)
+        runners[variant_id] = runner
+        orchestrator = BacktestOrchestrator(
+            store=PerformanceStore(
+                cloud_bucket="",
+                local_root=output_root / "orchestrator" / variant_id,
+            )
         )
-        runs[total_cost_bps] = orchestrator.run_promotion(
-            _PROFILE,
-            domain=_DOMAIN,
-            params=params,
-            folds=runner.folds,
-            locked_oos_start=runner.locked_oos_start,
-            locked_oos_end=runner.locked_oos_end,
-            purge_days=20,
-            embargo_days=20,
-            source_revision=runner.candidate_identity.strategy_revision,
-            cost_model=cost_model,
-            param_set_id=f"soxl_p3_{int(total_cost_bps)}bp",
-        )
-    details = {
-        cost: {
-            "folds": [
-                runner.window_evidence(fold.test_start, fold.test_end, cost).to_dict()
-                for fold in runner.folds
-            ],
-            "locked_oos": runner.window_evidence(
-                runner.locked_oos_start, runner.locked_oos_end, cost
-            ).to_dict(),
+        orchestrator.register_runner(_DOMAIN, runner)
+        params = {
+            "candidate_identity_sha256": runner.candidate_identity.candidate_sha256,
+            "config_sha256": runner.candidate_identity.config_sha256,
+            "input_manifest_sha256": runner.candidate_identity.input_manifest_sha256,
+            "variant_id": variant_id,
         }
-        for cost in runs
+        variant_runs: dict[float, PromotionBacktestRun] = {}
+        for total_cost_bps in (5.0, 10.0, 15.0, 25.0):
+            cost_model = PromotionCostModel(
+                model_id=f"half_l1_{int(total_cost_bps)}bp_v1",
+                commission_bps=0.0,
+                slippage_bps=total_cost_bps,
+                market_impact_bps=0.0,
+            )
+            variant_runs[total_cost_bps] = orchestrator.run_promotion(
+                _PROFILE,
+                domain=_DOMAIN,
+                params=params,
+                folds=runner.folds,
+                locked_oos_start=runner.locked_oos_start,
+                locked_oos_end=runner.locked_oos_end,
+                purge_days=20,
+                embargo_days=20,
+                source_revision=runner.candidate_identity.strategy_revision,
+                cost_model=cost_model,
+                param_set_id=f"soxl_p3_{variant_id}_{int(total_cost_bps)}bp",
+            )
+        runs[variant_id] = variant_runs
+        details[variant_id] = {
+            cost: {
+                "folds": [
+                    runner.window_evidence(fold.test_start, fold.test_end, cost).to_dict()
+                    for fold in runner.folds
+                ],
+                "locked_oos": runner.window_evidence(
+                    runner.locked_oos_start, runner.locked_oos_end, cost
+                ).to_dict(),
+            }
+            for cost in variant_runs
+        }
+    primary_runner = runners[_ORDERED_VARIANTS[0]]
+    availability_contract_sha256 = _sha256_json(_FROZEN_AVAILABILITY_CONTRACT)
+    qqqi_start_index = primary_runner._date_to_index[date.fromisoformat(_FIRST_ELIGIBLE_SESSION["QQQI"])]
+    availability_segments = {
+        "pre_qqqi": {
+            "start": primary_runner.sessions[0]["date"],
+            "end": primary_runner.sessions[qqqi_start_index - 1]["date"],
+            "primary_policy": "independent_qqq_fallback",
+            "sensitivity_policy": "cash_origin",
+            "observed_qqqi": False,
+        },
+        "actual_qqqi": {
+            "start": _FIRST_ELIGIBLE_SESSION["QQQI"],
+            "end": primary_runner.sessions[-1]["date"],
+            "primary_policy": "actual_qqqi",
+            "sensitivity_policy": "actual_qqqi",
+            "observed_qqqi": True,
+        },
+        "locked_oos": {
+            "start": primary_runner.locked_oos_start.isoformat(),
+            "end": primary_runner.locked_oos_end.isoformat(),
+            "session_count": 252,
+            "actual_only": True,
+        },
     }
     stress_25_payload = {
-        "schema_version": "soxl_cost_stress.v1",
+        "schema_version": "soxl_cost_stress.v2",
         "total_cost_bps": 25.0,
-        "promotion_run": runs[25.0].to_dict(),
-        "locked_oos_result": details[25.0]["locked_oos"]["result"],
-        "window_evidence": details[25.0]["locked_oos"],
+        "ordered_variants": list(_ORDERED_VARIANTS),
+        "variants": {
+            variant_id: {
+                "promotion_run": runs[variant_id][25.0].to_dict(),
+                "locked_oos_result": details[variant_id][25.0]["locked_oos"]["result"],
+                "window_evidence": details[variant_id][25.0]["locked_oos"],
+            }
+            for variant_id in _ORDERED_VARIANTS
+        },
     }
     stress_25_record = _write_canonical(artifacts_root / "cost-stress-25bp.json", stress_25_payload)
     config_record = _write_canonical(artifacts_root / "config.json", config_payload)
     manifest_path = artifacts_root / "data-manifest.json"
-    manifest_path.write_bytes(canonical_research_input_manifest_bytes(runner.input_manifest))
+    manifest_path.write_bytes(canonical_research_input_manifest_bytes(primary_runner.input_manifest))
     manifest_record = {"path": manifest_path.as_posix(), "sha256": _sha256_bytes(manifest_path.read_bytes())}
     backtest_record = _write_canonical(
         artifacts_root / "backtest.json",
         {
-            "schema_version": "soxl_promotion_backtest.v1",
-            "runs": {str(int(cost)): run.to_dict() for cost, run in runs.items()},
-            "window_evidence": {str(int(cost)): value for cost, value in details.items()},
+            "schema_version": "soxl_promotion_backtest.v2",
+            "availability_contract_sha256": availability_contract_sha256,
+            "availability_segments": availability_segments,
+            "ordered_variants": list(_ORDERED_VARIANTS),
+            "variants": {
+                variant_id: {
+                    "runs": {
+                        str(int(cost)): run.to_dict()
+                        for cost, run in runs[variant_id].items()
+                    },
+                    "window_evidence": {
+                        str(int(cost)): value
+                        for cost, value in details[variant_id].items()
+                    },
+                }
+                for variant_id in _ORDERED_VARIANTS
+            },
         },
     )
-    primary = runner.window_evidence(runner.locked_oos_start, runner.locked_oos_end, 5.0)
-    fold_passes = sum(
-        _window_acceptance(runner.window_evidence(fold.test_start, fold.test_end, 5.0))
-        for fold in runner.folds
-    )
-    cost_positive = all(
-        runner.window_evidence(runner.locked_oos_start, runner.locked_oos_end, cost).result.total_return > 0.0
-        for cost in (5.0, 10.0, 25.0)
-    )
-    risk_pass = _window_acceptance(primary) and fold_passes >= 2 and cost_positive
-    risk_record = _write_canonical(
-        artifacts_root / "risk.json",
-        {
-            "schema_version": "soxl_p3_acceptance.v1",
-            "status": "PASS" if risk_pass else "FAIL",
-            "locked_oos_return_mdd_recovery": _window_acceptance(primary),
+    variant_risk: dict[str, dict[str, Any]] = {}
+    for variant_id in _ORDERED_VARIANTS:
+        runner = runners[variant_id]
+        locked_oos = runner.window_evidence(
+            runner.locked_oos_start, runner.locked_oos_end, 5.0
+        )
+        fold_passes = sum(
+            _window_acceptance(runner.window_evidence(fold.test_start, fold.test_end, 5.0))
+            for fold in runner.folds
+        )
+        cost_positive = all(
+            runner.window_evidence(
+                runner.locked_oos_start, runner.locked_oos_end, cost
+            ).result.total_return
+            > 0.0
+            for cost in (5.0, 10.0, 25.0)
+        )
+        variant_pass = _window_acceptance(locked_oos) and fold_passes >= 2 and cost_positive
+        variant_risk[variant_id] = {
+            "status": "PASS" if variant_pass else "FAIL",
+            "locked_oos_return_mdd_recovery": _window_acceptance(locked_oos),
             "ordered_fold_pass_count": fold_passes,
             "cost_5_10_25_positive": cost_positive,
             "capture_reported": True,
+            "final_oos_actual_only": True,
             "candidate_identity_sha256": runner.candidate_identity.candidate_sha256,
-            "state_digest_sha256": primary.state_digest_sha256,
-            "risk_assessment_count": primary.assessment_count,
+            "state_digest_sha256": locked_oos.state_digest_sha256,
+            "risk_assessment_count": locked_oos.assessment_count,
+        }
+    primary_pass = variant_risk[_ORDERED_VARIANTS[0]]["status"] == "PASS"
+    sensitivity_pass = variant_risk[_ORDERED_VARIANTS[1]]["status"] == "PASS"
+    proxy_sensitive = primary_pass != sensitivity_pass
+    risk_status = "PROXY_SENSITIVE" if proxy_sensitive else "PASS" if primary_pass else "FAIL"
+    risk_record = _write_canonical(
+        artifacts_root / "risk.json",
+        {
+            "schema_version": "soxl_p3_acceptance.v2",
+            "availability_contract_sha256": availability_contract_sha256,
+            "availability_segments": availability_segments,
+            "status": risk_status,
+            "proxy_sensitive": proxy_sensitive,
+            "ordered_variants": list(_ORDERED_VARIANTS),
+            "variants": variant_risk,
         },
     )
+    primary = primary_runner.window_evidence(
+        primary_runner.locked_oos_start, primary_runner.locked_oos_end, 5.0
+    )
+    variant_information = {}
+    for variant_id in _ORDERED_VARIANTS:
+        runner = runners[variant_id]
+        window = runner.window_evidence(runner.locked_oos_start, runner.locked_oos_end, 5.0)
+        variant_information[variant_id] = {
+            "information_coefficient": window.information_coefficient,
+            "information_ratio": window.information_ratio,
+            "upside_capture": window.upside_capture,
+            "upside_participation": window.upside_participation,
+        }
     information_record = _write_canonical(
         artifacts_root / "information-coefficient.json",
         {
@@ -1213,6 +1405,8 @@ def run_soxl_promotion_research(
             "information_ratio": primary.information_ratio,
             "upside_capture": primary.upside_capture,
             "upside_participation": primary.upside_participation,
+            "ordered_variants": list(_ORDERED_VARIANTS),
+            "variants": variant_information,
         },
     )
     cost_record = _write_canonical(
@@ -1222,11 +1416,12 @@ def run_soxl_promotion_research(
             "method": "half_l1_turnover",
             "v2_scenarios_bps": [5.0, 10.0, 15.0],
             "required_stress_bps": [10.0, 25.0],
+            "ordered_variants": list(_ORDERED_VARIANTS),
             "cost_stress_25bp_sha256": stress_25_record["sha256"],
         },
     )
-    if not risk_pass:
-        raise SoxlPromotionContractError("promotion acceptance failed")
+    if risk_status != "PASS":
+        raise SoxlPromotionContractError(f"promotion acceptance failed: {risk_status}")
     records = {
         "config": config_record,
         "data_manifest": manifest_record,
@@ -1238,25 +1433,28 @@ def run_soxl_promotion_research(
     for record in records.values():
         record["path"] = Path(record["path"]).relative_to(output_root).as_posix()
     generated = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    source = runner.input_manifest["sources"][0]
+    source = primary_runner.input_manifest["sources"][0]
     evidence: dict[str, Any] = {
         "schema_version": "strategy_evidence_package.v2",
-        "evidence_package_id": f"soxl_p3_{runner.candidate_identity.candidate_sha256[:12]}",
+        "evidence_package_id": f"soxl_p3_{primary_runner.candidate_identity.candidate_sha256[:12]}",
         "generated_at": generated,
         "requested_stage": "research_backtest_only",
         "strategy": {
             "profile": _PROFILE,
             "domain": _DOMAIN,
-            "source_revision": runner.candidate_identity.strategy_revision,
+            "source_revision": primary_runner.candidate_identity.strategy_revision,
         },
         "input_provenance": {
             "source": source["source_id"],
             "source_revision": source["revision"],
-            "license": runner.config["input_license"],
-            "usage_scope": runner.config["input_usage_scope"],
-            "range": {"start": runner.sessions[0]["date"], "end": runner.sessions[-1]["date"]},
-            "timestamp": runner.input_manifest["as_of"],
-            "manifest_sha256": runner.input_manifest_sha256,
+            "license": primary_runner.config["input_license"],
+            "usage_scope": primary_runner.config["input_usage_scope"],
+            "range": {
+                "start": primary_runner.sessions[0]["date"],
+                "end": primary_runner.sessions[-1]["date"],
+            },
+            "timestamp": primary_runner.input_manifest["as_of"],
+            "manifest_sha256": primary_runner.input_manifest_sha256,
         },
         "backtest": {
             "orchestrator": "BacktestOrchestrator",
@@ -1270,7 +1468,7 @@ def run_soxl_promotion_research(
                 "independent": True,
                 "reused_for_selection": False,
             },
-            "promotion_run": runs[5.0].to_dict(),
+            "promotion_run": runs[_ORDERED_VARIANTS[0]][5.0].to_dict(),
         },
         "artifacts": records,
         "metrics": {
@@ -1299,8 +1497,8 @@ def run_soxl_promotion_research(
         },
         "risk_assessment": {
             "status": "PASS",
-            "standard_id": runner.config["risk_standard_id"],
-            "standard_sha256": runner.config["risk_standard_sha256"],
+            "standard_id": primary_runner.config["risk_standard_id"],
+            "standard_sha256": primary_runner.config["risk_standard_sha256"],
         },
         "digests": {
             "config_sha256": records["config"]["sha256"],
