@@ -54,6 +54,19 @@ def test_core_only_receipt_is_deterministic_unavailable_and_digest_only() -> Non
     assert "VIX" not in str(first)
 
 
+def test_calendar_provenance_identifies_repo_local_generator() -> None:
+    rows = _raw_sessions()
+    source = validate_soxl_pit_regime_source_contract(
+        rows,
+        _source_contract(rows),
+        expected_sessions=FROZEN_XNYS_SESSIONS,
+    )
+
+    assert source.contract["calendar"]["source"] == "uesp_repo_local_xnys_holiday_rules"
+    assert source.contract["calendar"]["source_revision"] == "soxl_pit_input_packager.v1"
+    assert "exchange_calendars" not in str(source.contract["calendar"])
+
+
 def test_core_only_producer_has_no_qsp_builder_surface() -> None:
     rows = _raw_sessions()
     source = validate_soxl_pit_regime_source_contract(
