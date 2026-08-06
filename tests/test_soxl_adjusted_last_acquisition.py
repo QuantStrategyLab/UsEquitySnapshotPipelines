@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -174,9 +175,25 @@ def test_exact_match_preserves_strict_request_and_returns_no_failure_artifact(
     ("provider_message", "expected_cause"),
     [
         ("invalid endDateTime", "invalid_end_datetime"),
+        (
+            "Error validating request.-'bS' : cause - invalid end date/time",
+            "invalid_end_datetime",
+        ),
         ("invalid duration", "invalid_duration"),
+        (
+            "Error validating request.-'bS' : cause - invalid duration",
+            "invalid_duration",
+        ),
         ("invalid whatToShow", "invalid_what_to_show"),
+        (
+            "Error validating request.-'bS' : cause - invalid what to show",
+            "invalid_what_to_show",
+        ),
         ("invalid endDateTime and duration", "unknown_321"),
+        (
+            "Error validating request: invalid duration; invalid endDateTime",
+            "unknown_321",
+        ),
         (None, "unknown_321"),
     ],
 )
@@ -330,6 +347,45 @@ def test_request_validation_exception_and_logs_do_not_expose_sensitive_inputs(
     assert sensitive_message not in exposed
     assert sensitive_envelope.decode("utf-8") not in exposed
     assert "41" not in exposed
+
+
+@pytest.mark.parametrize(
+    "contradictory_fields",
+    [
+        {
+            "counts": (
+                ("matching_error_count", 0),
+                ("mismatching_error_count", 1),
+                ("matching_completion_count", 0),
+                ("mismatching_completion_count", 0),
+                ("expected_session_count", 2_264),
+                ("observed_session_count", 0),
+            )
+        },
+        {"request_completion_observed": True},
+    ],
+)
+def test_writer_rejects_contradictory_request_correlation_aggregates(
+    tmp_path: Path,
+    contradictory_fields: dict[str, object],
+) -> None:
+    diagnostic = classify_request_validation_321(
+        active_request_id=41,
+        error_request_id=41,
+        error_code=321,
+        provider_message="invalid duration",
+        request_envelope=REQUEST_ENVELOPE,
+        completion_request_ids=(),
+        expected_session_count=2_264,
+        observed_session_count=0,
+    )
+
+    with pytest.raises(ValueError):
+        write_sanitized_request_validation_321_diagnostic(
+            tmp_path / "contradictory.json",
+            replace(diagnostic, **contradictory_fields),
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

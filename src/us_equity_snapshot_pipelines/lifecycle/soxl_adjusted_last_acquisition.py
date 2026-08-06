@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from quant_platform_kit.ibkr import (
@@ -63,11 +64,40 @@ _REQUEST_VALIDATION_321_COUNTS = (
     "expected_session_count",
     "observed_session_count",
 )
-_PROVIDER_MESSAGE_CAUSES = {
-    "invalid enddatetime": "invalid_end_datetime",
-    "invalid duration": "invalid_duration",
-    "invalid whattoshow": "invalid_what_to_show",
-}
+_PROVIDER_MESSAGE_CAUSE_PATTERNS = (
+    (
+        re.compile(
+            r"(?<![a-z0-9])invalid\s+end(?:datetime|\s+date(?:\s*/\s*|\s+)time)(?![a-z0-9])"
+        ),
+        "invalid_end_datetime",
+    ),
+    (
+        re.compile(r"(?<![a-z0-9])invalid\s+duration(?![a-z0-9])"),
+        "invalid_duration",
+    ),
+    (
+        re.compile(
+            r"(?<![a-z0-9])invalid\s+what(?:toshow|\s+to\s+show)(?![a-z0-9])"
+        ),
+        "invalid_what_to_show",
+    ),
+)
+_PROVIDER_MESSAGE_FIELD_PATTERNS = (
+    (
+        re.compile(
+            r"(?<![a-z0-9])end(?:datetime|\s+date(?:\s*/\s*|\s+)time)(?![a-z0-9])"
+        ),
+        "invalid_end_datetime",
+    ),
+    (
+        re.compile(r"(?<![a-z0-9])duration(?![a-z0-9])"),
+        "invalid_duration",
+    ),
+    (
+        re.compile(r"(?<![a-z0-9])what(?:toshow|\s+to\s+show)(?![a-z0-9])"),
+        "invalid_what_to_show",
+    ),
+)
 _REQUEST_ENVELOPE_COMMITMENT_DOMAIN = b"qsl.soxl.request-envelope.v1"
 _PROVIDER_MESSAGE_COMMITMENT_DOMAIN = b"qsl.soxl.provider-message.v1"
 
@@ -189,7 +219,21 @@ def classify_request_validation_321(
             if provider_message is not None
             else ""
         )
-        cause = _PROVIDER_MESSAGE_CAUSES.get(normalized_message, "unknown_321")
+        matched_causes = {
+            candidate
+            for pattern, candidate in _PROVIDER_MESSAGE_CAUSE_PATTERNS
+            if pattern.search(normalized_message) is not None
+        }
+        mentioned_causes = {
+            candidate
+            for pattern, candidate in _PROVIDER_MESSAGE_FIELD_PATTERNS
+            if pattern.search(normalized_message) is not None
+        }
+        cause = (
+            matched_causes.pop()
+            if len(matched_causes) == 1 and matched_causes == mentioned_causes
+            else "unknown_321"
+        )
     else:
         cause = "request_id_mismatch"
 
@@ -316,6 +360,12 @@ def _request_validation_321_payload(
         not isinstance(counts, dict)
         or tuple(counts) != _REQUEST_VALIDATION_321_COUNTS
         or any(not _nonnegative_count(value) for value in counts.values())
+        or counts["matching_error_count"] + counts["mismatching_error_count"]
+        != 1
+        or (payload["cause"] == "request_id_mismatch")
+        != (counts["mismatching_error_count"] == 1)
+        or payload["request_completion_observed"]
+        != (counts["matching_completion_count"] > 0)
     ):
         raise SoxlAdjustedLastDiagnosticError(
             "invalid request-validation 321 diagnostic"
