@@ -20,11 +20,19 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import (
     canonical_json_bytes,
     run_soxl_promotion_research,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import INPUT_CONTRACT_ID
+from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer import (
+    CANDIDATE_ID,
+    CORE_ONLY_CONFIG_SHA256,
+    MARKET_REGIME_SCHEMA,
+    SOURCE_CONTRACT_SCHEMA,
+    UNAVAILABLE_COMPONENTS,
+)
 import us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner as runner_module
 
 
 QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-UES_REVISION = "24fe759cca1140095ccb36badd872b36bd8ab837"
+UES_REVISION = "f799ad115660b17bc888cbe6e7461255ccee1735"
 RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 VARIANTS = ("explicit_qqq_fallback", "cash_origin")
@@ -46,6 +54,7 @@ AVAILABILITY_CONTRACT = {
     "price_identity_policy": "actual_symbol_only_no_proxy_backfill_forward_fill_substitution",
     "initial_state": "100_percent_cash",
 }
+SOURCE_CONTRACT_SHA256 = "b" * 64
 SEGMENTS = (
     ("2018-08-03", "2020-04-03", 420),
     ("2020-04-06", "2020-05-04", 20),
@@ -133,11 +142,40 @@ def _sessions() -> list[dict[str, object]]:
                 "bars": bars,
                 "eligible_assets": list(eligible_assets),
                 "market_regime": {
-                    "plugin": "market_regime_control",
-                    "schema_version": "market_regime_control.v1",
+                    "schema_version": MARKET_REGIME_SCHEMA,
+                    "profile": "market_regime_control",
+                    "candidate_id": CANDIDATE_ID,
                     "as_of": session_date.isoformat(),
-                    "route": "no_action",
-                    "active": False,
+                    "market_regime_control_enabled": False,
+                    "component_signals": {
+                        component: {"enabled": False, "available": False}
+                        for component in UNAVAILABLE_COMPONENTS
+                    },
+                    "execution_controls": {
+                        "broker_order_allowed": False,
+                        "live_allocation_mutation_allowed": False,
+                        "repository_broker_write_allowed": False,
+                        "repository_allocation_mutation_allowed": False,
+                        "position_control_allowed": False,
+                        "consumption_evidence_status": "static_research_only",
+                    },
+                    "pit_provenance": {
+                        "source_contract_sha256": SOURCE_CONTRACT_SHA256,
+                        "candidate_contract_sha256": CORE_ONLY_CONFIG_SHA256,
+                        "producer_receipt_sha256": hashlib.sha256(
+                            f"producer:{session_date.isoformat()}".encode()
+                        ).hexdigest(),
+                        "prefix_input_manifest_sha256": hashlib.sha256(
+                            f"prefix:{session_date.isoformat()}".encode()
+                        ).hexdigest(),
+                        "logical_input_ids": list(SOXL_PROMOTION_ASSETS),
+                        "evidence_class": "synthetic_fixture",
+                        "real_producer": False,
+                        "prefix_session_count": index + 1,
+                        "prefix_end": session_date.isoformat(),
+                        "future_sessions_exposed": False,
+                        "raw_series_persisted": False,
+                    },
                 },
             }
         )
@@ -150,10 +188,10 @@ def _manifest(sessions: list[dict[str, object]]) -> dict[str, object]:
     return {
         "schema_version": "research_input_manifest.v1",
         "manifest_id": "soxl-promotion-input-20260805",
-        "research_input_contract_id": "soxl_promotion_input.v2",
+        "research_input_contract_id": INPUT_CONTRACT_ID,
         "domain": "us_equity",
         "profile": "soxl_soxx_trend_income",
-        "artifact_type": "immutable_adjusted_ohlcv_and_pit_regime",
+        "artifact_type": "immutable_adjusted_ohlcv_core_only",
         "observed_at": "2026-08-05T11:00:00Z",
         "effective_at": "2026-08-05T11:00:00Z",
         "as_of": "2026-08-05T12:00:00Z",
@@ -178,11 +216,14 @@ def _manifest(sessions: list[dict[str, object]]) -> dict[str, object]:
         },
         "sources": [
             {
-                "source_id": "bars-and-regime",
+                "source_id": symbol,
                 "revision": "fixture-v1",
                 "observed_at": "2026-08-05T11:00:00Z",
-                "content_sha256": hashlib.sha256(session_bytes).hexdigest(),
+                "content_sha256": hashlib.sha256(
+                    symbol.encode() + session_bytes
+                ).hexdigest(),
             }
+            for symbol in sorted(SOXL_PROMOTION_ASSETS)
         ],
         "members": [
             {
@@ -211,7 +252,16 @@ def _payloads() -> tuple[dict[str, object], dict[str, object]]:
     frozen_config = _frozen_strategy_config()
     manifest_sha256 = research_input_manifest_sha256(manifest)
     config_without_authority = {
-        "schema_version": "soxl_promotion_config.v2",
+        "schema_version": "soxl_p3_core_only_9_input_config.v1",
+        "candidate_id": CANDIDATE_ID,
+        "input_contract_id": INPUT_CONTRACT_ID,
+        "source_contract_schema": SOURCE_CONTRACT_SCHEMA,
+        "source_contract_sha256": SOURCE_CONTRACT_SHA256,
+        "candidate_contract_sha256": CORE_ONLY_CONFIG_SHA256,
+        "market_regime_control_enabled": False,
+        "benchmark_symbol": "SOXX",
+        "substitution_policy": "none_no_proxy_no_alias",
+        "position_control_allowed": False,
         "strategy_profile": "soxl_soxx_trend_income",
         "domain": "us_equity",
         "account_mode": "single_strategy",
@@ -273,7 +323,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object]]:
     factors = {symbol: 3 if symbol == "SOXL" else 1 for symbol in SOXL_PROMOTION_ASSETS}
     caps = {symbol: 0.15 if symbol == "SOXL" else 0.50 for symbol in SOXL_PROMOTION_ASSETS}
     mandate = {
-        "mandate_id": "soxl_p3_promotion_research_v1",
+        "mandate_id": "soxl_p3_core_only_9_input_research_v1",
         "mandate_version": "2026-08-05.1",
         "authority_receipt_sha256": "a" * 64,
         "authority_scope": "RESEARCH_ONLY",
@@ -301,7 +351,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object]]:
         "mandate_provenance": mandate,
     }
     return {
-        "schema_version": "soxl_promotion_input.v2",
+        "schema_version": INPUT_CONTRACT_ID,
         "input_manifest": manifest,
         "sessions": sessions,
     }, config
@@ -355,6 +405,17 @@ def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest()
     assert "QQQI" not in input_payload["sessions"][qqqi_index - 1]["bars"]
     assert "QQQI" in input_payload["sessions"][qqqi_index]["bars"]
     assert tuple(input_payload["sessions"][-1]["bars"]) == SOXL_PROMOTION_ASSETS
+    assert [source["source_id"] for source in input_payload["input_manifest"]["sources"]] == sorted(
+        SOXL_PROMOTION_ASSETS
+    )
+    first_regime = input_payload["sessions"][0]["market_regime"]
+    assert first_regime["market_regime_control_enabled"] is False
+    assert first_regime["component_signals"] == {
+        component: {"enabled": False, "available": False}
+        for component in UNAVAILABLE_COMPONENTS
+    }
+    assert first_regime["execution_controls"]["position_control_allowed"] is False
+    assert "VIX" not in canonical_json_bytes(input_payload).decode()
 
     missing = json.loads(json.dumps(input_payload))
     del missing["sessions"][qqqi_index]["bars"]["QQQI"]
@@ -377,6 +438,46 @@ def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest()
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
+        (
+            lambda payload: payload["input_manifest"]["sources"].append(
+                {
+                    "source_id": "VIX",
+                    "revision": "fixture-v1",
+                    "observed_at": "2026-08-05T11:00:00Z",
+                    "content_sha256": "f" * 64,
+                }
+            ),
+            "exact 9 input",
+        ),
+        (
+            lambda payload: payload["sessions"][0]["market_regime"]["component_signals"][
+                "crisis"
+            ].update(available=True),
+            "unavailable component",
+        ),
+        (
+            lambda payload: payload["sessions"][1]["market_regime"]["pit_provenance"].update(
+                source_contract_sha256="0" * 64
+            ),
+            "source contract identity",
+        ),
+        (
+            lambda payload: payload["sessions"][0]["market_regime"].update(route="no_action"),
+            "market regime fields",
+        ),
+    ],
+)
+def test_core_only_market_regime_contract_fails_closed(mutator, message: str) -> None:
+    input_payload, config = _payloads()
+    mutator(input_payload)
+
+    with pytest.raises(SoxlPromotionContractError, match=message):
+        SoxlPromotionRunner(input_payload, config, variant_id=VARIANTS[0])
+
+
+@pytest.mark.parametrize(
+    ("mutator", "message"),
+    [
         (lambda config: config.update(purge_sessions=19), "20-session purge"),
         (lambda config: config.update(embargo_sessions=19), "20-session embargo"),
         (lambda config: config.update(folds=config["folds"][:2]), "exactly three"),
@@ -390,6 +491,26 @@ def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest()
                 QQQI="2024-01-30"
             ),
             "availability",
+        ),
+        (lambda config: config.update(candidate_id="wrong"), "core-only candidate"),
+        (lambda config: config.update(benchmark_symbol="QQQ"), "SOXX benchmark"),
+        (
+            lambda config: config.update(source_contract_sha256="0" * 64),
+            "source contract identity",
+        ),
+        (
+            lambda config: config.update(position_control_allowed=True),
+            "lifecycle claims",
+        ),
+        (
+            lambda config: config["mandate_provenance"].update(
+                mandate_id="soxl_p3_promotion_research_v1"
+            ),
+            "core-only mandate",
+        ),
+        (
+            lambda config: config["mandate_provenance"].update(authority_scope="LIVE"),
+            "core-only mandate",
         ),
     ],
 )

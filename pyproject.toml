@@ -15,7 +15,7 @@ dependencies = [
   "yfinance>=0.2.40",
   "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2",
   "quant-strategy-plugins @ git+https://github.com/QuantStrategyLab/QuantStrategyPlugins.git@1f3a27b8fd83d71b583f4f5160a748e95fbefaa1",
-  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@24fe759cca1140095ccb36badd872b36bd8ab837",
+  "us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@f799ad115660b17bc888cbe6e7461255ccee1735",
 ]
 
 [project.optional-dependencies]
