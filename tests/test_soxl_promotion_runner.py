@@ -886,10 +886,50 @@ def test_producer_fails_proxy_sensitive_when_variant_direction_reverses(
         )
 
     risk_artifact = json.loads((tmp_path / "artifacts" / "risk.json").read_text())
+    terminal_artifact = json.loads((tmp_path / "promotion-research-result.v1.json").read_text())
     assert risk_artifact["status"] == "PROXY_SENSITIVE"
     assert risk_artifact["proxy_sensitive"] is True
     assert risk_artifact["variants"][VARIANTS[0]]["status"] == "PASS"
     assert risk_artifact["variants"][VARIANTS[1]]["status"] == "FAIL"
+    assert terminal_artifact["status"] == "PROXY_SENSITIVE"
+    assert terminal_artifact["human_acceptance"] is None
+    assert terminal_artifact["lifecycle_claims"] == {
+        "learning_only": False,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+    for record in terminal_artifact["artifacts"].values():
+        artifact_path = tmp_path / record["path"]
+        assert hashlib.sha256(artifact_path.read_bytes()).hexdigest() == record["sha256"]
+
+
+def test_producer_does_not_persist_pass_when_evidence_validation_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_payload, config = _payloads()
+    monkeypatch.setattr(
+        SoxlPromotionRunner,
+        "_replay_window",
+        lambda _runner, start, end, cost: _synthetic_window(start, end, cost),
+    )
+    monkeypatch.setattr(
+        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.validate_evidence_package_v2",
+        lambda *_args, **_kwargs: ("invalid evidence",),
+    )
+
+    with pytest.raises(SoxlPromotionContractError, match="evidence package validation failed"):
+        run_soxl_promotion_research(
+            input_payload=input_payload,
+            config_payload=config,
+            output_dir=tmp_path,
+            generated_at="2026-08-05T12:00:00Z",
+        )
+
+    terminal_artifact = json.loads((tmp_path / "promotion-research-result.v1.json").read_text())
+    assert terminal_artifact["status"] == "EVIDENCE_INVALID"
+    assert not (tmp_path / "strategy-evidence-package.v2.json").exists()
 
 
 def _synthetic_window(
