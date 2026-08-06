@@ -40,6 +40,15 @@ from quant_platform_kit.strategy_lifecycle.performance_store import PerformanceS
 from us_equity_strategies.entrypoints import evaluate_soxl_soxx_trend_income_promotion_research
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
+from .soxl_pit_input_packager import INPUT_CONTRACT_ID, MANDATE_ID
+from .soxl_pit_regime_component_producer import (
+    CANDIDATE_ID,
+    CORE_ONLY_CONFIG_SHA256,
+    MARKET_REGIME_SCHEMA,
+    SOURCE_CONTRACT_SCHEMA,
+    UNAVAILABLE_COMPONENTS,
+)
+
 
 SOXL_PROMOTION_ASSETS = (
     "SOXL",
@@ -53,7 +62,7 @@ SOXL_PROMOTION_ASSETS = (
     "QQQ",
 )
 _QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-_UES_REVISION = "24fe759cca1140095ccb36badd872b36bd8ab837"
+_UES_REVISION = "f799ad115660b17bc888cbe6e7461255ccee1735"
 _PROFILE = "soxl_soxx_trend_income"
 _DOMAIN = "us_equity"
 _MIN_INDICATOR_SESSIONS = 420
@@ -200,6 +209,16 @@ def _git_revision(value: object, label: str) -> str:
     return value
 
 
+def _sha256_digest(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise SoxlPromotionContractError(f"invalid {label}")
+    return value
+
+
 def _calendar_date(value: object, label: str) -> date:
     if not isinstance(value, str):
         raise SoxlPromotionContractError(f"invalid {label}")
@@ -316,13 +335,111 @@ class SoxlPromotionRunner:
         self.folds, self.locked_oos_start, self.locked_oos_end = self._validate_windows()
         self._window_evidence: dict[tuple[date, date, float], WindowEvidence] = {}
 
+    def _validate_market_regime(
+        self,
+        value: object,
+        *,
+        session_date: date,
+        session_index: int,
+        source_contract_sha256: str | None,
+    ) -> str:
+        regime = _exact_keys(
+            value,
+            {
+                "schema_version",
+                "profile",
+                "candidate_id",
+                "as_of",
+                "market_regime_control_enabled",
+                "component_signals",
+                "execution_controls",
+                "pit_provenance",
+            },
+            "market regime",
+        )
+        if (
+            regime["schema_version"] != MARKET_REGIME_SCHEMA
+            or regime["profile"] != "market_regime_control"
+            or regime["candidate_id"] != CANDIDATE_ID
+            or _calendar_date(regime["as_of"], "market regime as_of") != session_date
+            or regime["market_regime_control_enabled"] is not False
+        ):
+            raise SoxlPromotionContractError("point-in-time market regime mismatch")
+        unavailable = {
+            component: {"enabled": False, "available": False}
+            for component in UNAVAILABLE_COMPONENTS
+        }
+        if regime["component_signals"] != unavailable:
+            raise SoxlPromotionContractError("unavailable component identity mismatch")
+        execution_controls = _exact_keys(
+            regime["execution_controls"],
+            {
+                "broker_order_allowed",
+                "live_allocation_mutation_allowed",
+                "repository_broker_write_allowed",
+                "repository_allocation_mutation_allowed",
+                "position_control_allowed",
+                "consumption_evidence_status",
+            },
+            "market regime execution controls",
+        )
+        if execution_controls != {
+            "broker_order_allowed": False,
+            "live_allocation_mutation_allowed": False,
+            "repository_broker_write_allowed": False,
+            "repository_allocation_mutation_allowed": False,
+            "position_control_allowed": False,
+            "consumption_evidence_status": "static_research_only",
+        }:
+            raise SoxlPromotionContractError("market regime position control is forbidden")
+        provenance = _exact_keys(
+            regime["pit_provenance"],
+            {
+                "source_contract_sha256",
+                "candidate_contract_sha256",
+                "producer_receipt_sha256",
+                "prefix_input_manifest_sha256",
+                "logical_input_ids",
+                "evidence_class",
+                "real_producer",
+                "prefix_session_count",
+                "prefix_end",
+                "future_sessions_exposed",
+                "raw_series_persisted",
+            },
+            "market regime provenance",
+        )
+        current_source_sha256 = _sha256_digest(
+            provenance["source_contract_sha256"], "source contract digest"
+        )
+        if source_contract_sha256 is not None and current_source_sha256 != source_contract_sha256:
+            raise SoxlPromotionContractError("source contract identity mismatch")
+        evidence_class = provenance["evidence_class"]
+        if (
+            provenance["candidate_contract_sha256"] != CORE_ONLY_CONFIG_SHA256
+            or provenance["logical_input_ids"] != list(SOXL_PROMOTION_ASSETS)
+            or evidence_class not in {"synthetic_fixture", "provider_observed"}
+            or provenance["real_producer"] is not (evidence_class == "provider_observed")
+            or provenance["prefix_session_count"] != session_index + 1
+            or provenance["prefix_end"] != session_date.isoformat()
+            or provenance["future_sessions_exposed"] is not False
+            or provenance["raw_series_persisted"] is not False
+        ):
+            raise SoxlPromotionContractError("market regime provenance identity mismatch")
+        _sha256_digest(provenance["candidate_contract_sha256"], "candidate contract digest")
+        _sha256_digest(provenance["producer_receipt_sha256"], "producer receipt digest")
+        _sha256_digest(
+            provenance["prefix_input_manifest_sha256"], "prefix input manifest digest"
+        )
+        return current_source_sha256
+
     def _validate_input(self) -> None:
         payload = _exact_keys(
             self.input_payload,
             {"schema_version", "input_manifest", "sessions"},
             "input package",
         )
-        if payload["schema_version"] != "soxl_promotion_input.v2":
+        if payload["schema_version"] != INPUT_CONTRACT_ID:
             raise SoxlPromotionContractError("invalid input schema")
         try:
             self.input_manifest = validate_research_input_manifest(payload["input_manifest"])
@@ -334,15 +451,20 @@ class SoxlPromotionRunner:
             or self.input_manifest["calendar"]["calendar_id"] != "XNYS"
             or self.input_manifest["calendar"]["timezone"] != "America/New_York"
             or self.input_manifest["adjustment"]["policy"] != "total_return_adjusted"
-            or self.input_manifest["research_input_contract_id"] != "soxl_promotion_input.v2"
+            or self.input_manifest["research_input_contract_id"] != INPUT_CONTRACT_ID
+            or self.input_manifest["artifact_type"] != "immutable_adjusted_ohlcv_core_only"
         ):
             raise SoxlPromotionContractError("input manifest is not production-parity")
+        source_ids = [source["source_id"] for source in self.input_manifest["sources"]]
+        if source_ids != sorted(SOXL_PROMOTION_ASSETS):
+            raise SoxlPromotionContractError("exact 9 input sources are required")
         raw_sessions = payload["sessions"]
         if not isinstance(raw_sessions, list) or len(raw_sessions) != 2_010:
             raise SoxlPromotionContractError("exact frozen input sessions are required")
         self.sessions = copy.deepcopy(raw_sessions)
         previous_date: date | None = None
-        for raw_session in self.sessions:
+        source_contract_sha256: str | None = None
+        for session_index, raw_session in enumerate(self.sessions):
             session = _exact_keys(
                 raw_session,
                 {"date", "bars", "eligible_assets", "market_regime"},
@@ -367,17 +489,12 @@ class SoxlPromotionRunner:
                 _finite(bar["volume"], nonnegative=True)
                 if low > min(open_price, close) or high < max(open_price, close) or high < low:
                     raise SoxlPromotionContractError("invalid OHLC relationship")
-            regime = session["market_regime"]
-            if not isinstance(regime, Mapping):
-                raise SoxlPromotionContractError("point-in-time market regime is required")
-            profile = regime.get("plugin") or regime.get("profile")
-            if (
-                profile != "market_regime_control"
-                or not isinstance(regime.get("schema_version"), str)
-                or not regime.get("schema_version")
-                or _calendar_date(regime.get("as_of"), "market regime as_of") != session_date
-            ):
-                raise SoxlPromotionContractError("point-in-time market regime mismatch")
+            source_contract_sha256 = self._validate_market_regime(
+                session["market_regime"],
+                session_date=session_date,
+                session_index=session_index,
+                source_contract_sha256=source_contract_sha256,
+            )
         if (
             self.sessions[0]["date"] != "2018-08-03"
             or self.sessions[-1]["date"] != "2026-08-04"
@@ -400,10 +517,22 @@ class SoxlPromotionRunner:
         ):
             raise SoxlPromotionContractError("sessions.json digest mismatch")
         self.input_manifest_sha256 = research_input_manifest_sha256(self.input_manifest)
+        if source_contract_sha256 is None:
+            raise SoxlPromotionContractError("source contract identity is required")
+        self.source_contract_sha256 = source_contract_sha256
 
     def _validate_config(self) -> None:
         expected = {
             "schema_version",
+            "candidate_id",
+            "input_contract_id",
+            "source_contract_schema",
+            "source_contract_sha256",
+            "candidate_contract_sha256",
+            "market_regime_control_enabled",
+            "benchmark_symbol",
+            "substitution_policy",
+            "position_control_allowed",
             "strategy_profile",
             "domain",
             "account_mode",
@@ -434,7 +563,7 @@ class SoxlPromotionRunner:
         }
         config = _exact_keys(self.config, expected, "promotion config")
         if (
-            config["schema_version"] != "soxl_promotion_config.v2"
+            config["schema_version"] != "soxl_p3_core_only_9_input_config.v1"
             or config["strategy_profile"] != _PROFILE
             or config["domain"] != _DOMAIN
             or config["account_mode"] != "single_strategy"
@@ -443,6 +572,21 @@ class SoxlPromotionRunner:
             or config["runner_revision"] != self.implementation_revision
         ):
             raise SoxlPromotionContractError("candidate revision or profile mismatch")
+        if (
+            config["candidate_id"] != CANDIDATE_ID
+            or config["input_contract_id"] != INPUT_CONTRACT_ID
+            or config["source_contract_schema"] != SOURCE_CONTRACT_SCHEMA
+            or config["candidate_contract_sha256"] != CORE_ONLY_CONFIG_SHA256
+            or config["market_regime_control_enabled"] is not False
+            or config["substitution_policy"] != "none_no_proxy_no_alias"
+        ):
+            raise SoxlPromotionContractError("core-only candidate contract mismatch")
+        if config["benchmark_symbol"] != "SOXX":
+            raise SoxlPromotionContractError("SOXX benchmark is required")
+        if config["source_contract_sha256"] != self.source_contract_sha256:
+            raise SoxlPromotionContractError("source contract identity mismatch")
+        _sha256_digest(config["source_contract_sha256"], "source contract digest")
+        _sha256_digest(config["candidate_contract_sha256"], "candidate contract digest")
         _git_revision(config["runner_revision"], "runner revision")
         current_config = json.loads(canonical_json_bytes(soxl_soxx_trend_income_manifest.default_config))
         if config["frozen_strategy_config"] != current_config:
@@ -471,6 +615,7 @@ class SoxlPromotionRunner:
             config["learning_only"] is not False
             or config["promotion_eligible"] is not False
             or config["live_ready"] is not False
+            or config["position_control_allowed"] is not False
             or config["size_zero_required"] is not True
             or config["no_order"] is not True
         ):
@@ -510,6 +655,11 @@ class SoxlPromotionRunner:
         }
         if any(self.mandate.get(key) != value for key, value in expected_candidate_fields.items()):
             raise SoxlPromotionContractError("candidate-bound mandate mismatch")
+        if (
+            self.mandate.get("mandate_id") != MANDATE_ID
+            or self.mandate.get("authority_scope") != "RESEARCH_ONLY"
+        ):
+            raise SoxlPromotionContractError("core-only mandate mismatch")
         factors = self.mandate.get("product_leverage_factors")
         if (
             not isinstance(factors, Mapping)
@@ -1433,7 +1583,6 @@ def run_soxl_promotion_research(
     for record in records.values():
         record["path"] = Path(record["path"]).relative_to(output_root).as_posix()
     generated = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    source = primary_runner.input_manifest["sources"][0]
     evidence: dict[str, Any] = {
         "schema_version": "strategy_evidence_package.v2",
         "evidence_package_id": f"soxl_p3_{primary_runner.candidate_identity.candidate_sha256[:12]}",
@@ -1445,8 +1594,8 @@ def run_soxl_promotion_research(
             "source_revision": primary_runner.candidate_identity.strategy_revision,
         },
         "input_provenance": {
-            "source": source["source_id"],
-            "source_revision": source["revision"],
+            "source": CANDIDATE_ID,
+            "source_revision": primary_runner.source_contract_sha256,
             "license": primary_runner.config["input_license"],
             "usage_scope": primary_runner.config["input_usage_scope"],
             "range": {

@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from quant_platform_kit.data.research_input import (
     canonical_research_input_manifest_bytes,
@@ -22,16 +22,14 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_strategy_plugins import build_market_regime_control_signal
 
 from .soxl_pit_regime_component_producer import (
-    ACTIVE_COMPONENTS,
-    ADDITIONAL_REGIME_INPUTS,
-    DISABLED_COMPONENTS,
-    FROZEN_REGIME_CONFIG,
-    MARKET_REGIME_CONFIG_SHA256,
+    CANDIDATE_ID,
+    CORE_ONLY_CONFIG_SHA256,
+    MARKET_REGIME_SCHEMA,
     PRODUCER_RECEIPT_SCHEMA,
-    QSP_REVISION,
+    SOURCE_CONTRACT_SCHEMA,
+    UNAVAILABLE_COMPONENTS,
     SoxlPITRegimeProducerError,
     ValidatedSoxlPITRegimeSource,
     produce_soxl_pit_regime_component_receipts,
@@ -57,12 +55,11 @@ FIRST_ELIGIBLE_SESSION = {
     "QQQI": "2024-01-29",
 }
 QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-MANDATE_ID = "soxl_p3_promotion_research_9_asset_one_run_v1"
+INPUT_CONTRACT_ID = "soxl_p3_core_only_9_input.v1"
+MANDATE_ID = "soxl_p3_core_only_9_input_research_v1"
 _FROZEN_CALENDAR_SHA256 = "6e3bf4713cca22264987c583cf4c5c94923850de4a3d18e76f66f42e719f2290"
-_QSP_PLUGIN_SOURCE_SHA256 = "e69b11a15a08e5a7553397f7d63212c411184101ad3c97e25882949c783c6088"
 _QPK_RESEARCH_INPUT_SOURCE_SHA256 = "1b6c5413242dc8c3d9879f65d2bc0d9b4bbd8f886b7a901406259ce9abe9a544"
 _QPK_RISK_CONTRACTS_SOURCE_SHA256 = "2df6903c124a613ce2038e7176464b7df00530b1cc0c915aa6a60a480b560154"
-_MARKET_REGIME_CONFIG = FROZEN_REGIME_CONFIG
 _SENSITIVE_KEYS = frozenset(
     {
         "authorization",
@@ -92,21 +89,18 @@ _BINDING_KEYS = frozenset(
         "strategy_revision",
         "runner_revision",
         "qpk_revision",
-        "plugin_revision",
-        "plugin_config_sha256",
         "config_sha256",
         "input_manifest_sha256",
         "authority_receipt_sha256",
         "candidate_identity_sha256",
         "mandate_id",
         "mandate_digest_sha256",
+        "candidate_id",
+        "input_contract_id",
+        "source_contract_schema",
+        "source_contract_sha256",
+        "candidate_contract_sha256",
     }
-)
-_ALLOWED_REGIME_ROUTES = frozenset(
-    {"no_action", "watch", "opportunity_watch", "risk_reduced", "risk_off", "blocked"}
-)
-_ALLOWED_REGIME_ACTIONS = frozenset(
-    {"no_action", "watch_only", "notify_manual_review", "delever", "defend", "blocked"}
 )
 
 
@@ -134,7 +128,6 @@ def _sha256_bytes(value: bytes) -> str:
 
 def _verify_dependency_sources() -> None:
     expected = (
-        (build_market_regime_control_signal, _QSP_PLUGIN_SOURCE_SHA256),
         (validate_research_input_manifest, _QPK_RESEARCH_INPUT_SOURCE_SHA256),
         (CandidateRiskIdentity, _QPK_RISK_CONTRACTS_SOURCE_SHA256),
     )
@@ -232,6 +225,7 @@ class PreparedSoxlPITInput:
     contract_bytes: bytes
     source_contract_bytes: bytes
     input_manifest_sha256: str
+    source_contract_sha256: str
     producer_commit_sha: str
 
 
@@ -299,7 +293,7 @@ def _eligible_assets(session_date: str) -> tuple[str, ...]:
 def _validate_raw_session(raw_session: object, expected_date: str) -> dict[str, Any]:
     session = _exact_mapping(
         raw_session,
-        frozenset({"date", "bars", "regime_inputs"}),
+        frozenset({"date", "bars"}),
         "raw session",
     )
     if session["date"] != expected_date:
@@ -329,38 +323,7 @@ def _validate_raw_session(raw_session: object, expected_date: str) -> dict[str, 
             "close": close,
             "volume": volume,
         }
-    regime_inputs = session["regime_inputs"]
-    if not isinstance(regime_inputs, Mapping) or set(regime_inputs) != set(ADDITIONAL_REGIME_INPUTS):
-        raise SoxlPITPackagerError("exact regime input set is required")
-    canonical_regime_inputs = {
-        symbol: _finite(regime_inputs[symbol], positive=True)
-        for symbol in ADDITIONAL_REGIME_INPUTS
-    }
-    return {
-        "date": expected_date,
-        "bars": canonical_bars,
-        "regime_inputs": canonical_regime_inputs,
-    }
-
-
-def _string_list(value: object, label: str) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        raise SoxlPITPackagerError(f"invalid {label}")
-    result = []
-    for item in value:
-        if not isinstance(item, str):
-            raise SoxlPITPackagerError(f"invalid {label}")
-        result.append(item)
-    return result
-
-
-def _ratio(value: object, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SoxlPITPackagerError(f"invalid {label}")
-    result = float(value)
-    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
-        raise SoxlPITPackagerError(f"invalid {label}")
-    return result
+    return {"date": expected_date, "bars": canonical_bars}
 
 
 def _sanitized_regime(
@@ -371,12 +334,13 @@ def _sanitized_regime(
         frozenset(
             {
                 "schema_version",
+                "candidate_id",
                 "as_of",
                 "evidence_class",
                 "real_producer",
-                "active_components",
-                "disabled_components",
-                "price_rebound_context",
+                "market_regime_control_enabled",
+                "unavailable_components",
+                "position_control_allowed",
                 "provenance",
                 "receipt_sha256",
             }
@@ -384,117 +348,52 @@ def _sanitized_regime(
         "producer receipt",
     )
     receipt_sha256 = receipt.pop("receipt_sha256")
+    unavailable = {
+        component: {"enabled": False, "available": False}
+        for component in UNAVAILABLE_COMPONENTS
+    }
     if (
         receipt["schema_version"] != PRODUCER_RECEIPT_SCHEMA
+        or receipt["candidate_id"] != CANDIDATE_ID
         or receipt["as_of"] != session_date
+        or receipt["market_regime_control_enabled"] is not False
+        or receipt["unavailable_components"] != unavailable
+        or receipt["position_control_allowed"] is not False
         or receipt_sha256 != _sha256_bytes(canonical_json_bytes(receipt))
     ):
         raise SoxlPITPackagerError("producer receipt identity mismatch")
-    components = receipt["active_components"]
-    if not isinstance(components, Mapping) or set(components) != set(ACTIVE_COMPONENTS):
-        raise SoxlPITPackagerError("active component identity mismatch")
-    if receipt["disabled_components"] != {
-        component: {"enabled": False, "available": False} for component in DISABLED_COMPONENTS
-    }:
-        raise SoxlPITPackagerError("disabled component identity mismatch")
-    price_rebound = receipt["price_rebound_context"]
-    if not isinstance(price_rebound, Mapping) or price_rebound.get("as_of") != session_date:
-        raise SoxlPITPackagerError("price rebound identity mismatch")
-    try:
-        arbiter_config = cast(Mapping[str, Any], _MARKET_REGIME_CONFIG["arbiter"])
-        raw_signal = build_market_regime_control_signal(
-            components,
-            strategy_policy=str(arbiter_config["strategy_policy"]),
-            taco_opportunity_size_scalar=float(arbiter_config["taco_opportunity_size_scalar"]),
-            volatility_delever_price_rebound_context=price_rebound,
-            as_of=session_date,
-        )
-    except Exception as exc:
-        raise SoxlPITPackagerError("market regime construction failed") from exc
-    if not isinstance(raw_signal, Mapping):
-        raise SoxlPITPackagerError("market regime construction failed")
+    provenance = _exact_mapping(
+        receipt["provenance"],
+        frozenset(
+            {
+                "source_contract_sha256",
+                "candidate_contract_sha256",
+                "prefix_input_manifest_sha256",
+                "prefix_session_count",
+                "prefix_end",
+                "future_sessions_exposed",
+                "logical_input_ids",
+                "raw_series_persisted",
+            }
+        ),
+        "producer provenance",
+    )
     if (
-        raw_signal.get("schema_version") != "market_regime_control.v1"
-        or raw_signal.get("profile") != "market_regime_control"
-        or raw_signal.get("as_of") != session_date
+        provenance["candidate_contract_sha256"] != CORE_ONLY_CONFIG_SHA256
+        or provenance["prefix_session_count"] != prefix_session_count
+        or provenance["prefix_end"] != session_date
+        or provenance["future_sessions_exposed"] is not False
+        or provenance["logical_input_ids"] != list(SOXL_PROMOTION_ASSETS)
+        or provenance["raw_series_persisted"] is not False
     ):
-        raise SoxlPITPackagerError("market regime construction mismatch")
-    route = _nonblank(raw_signal.get("canonical_route"), "market regime route").lower()
-    action = _nonblank(raw_signal.get("suggested_action"), "market regime action").lower()
-    if route not in _ALLOWED_REGIME_ROUTES or action not in _ALLOWED_REGIME_ACTIONS:
-        raise SoxlPITPackagerError("market regime construction mismatch")
-    arbiter = raw_signal.get("arbiter")
-    position = raw_signal.get("position_control")
-    controls = raw_signal.get("execution_controls")
-    if not isinstance(arbiter, Mapping) or not isinstance(position, Mapping) or not isinstance(controls, Mapping):
-        raise SoxlPITPackagerError("market regime construction mismatch")
-    component_signals = raw_signal.get("component_signals")
-    if not isinstance(component_signals, Mapping) or set(component_signals) != {
-        *ACTIVE_COMPONENTS,
-        *DISABLED_COMPONENTS,
-    }:
-        raise SoxlPITPackagerError("market regime component mismatch")
-    if any(
-        not isinstance(component_signals[component], Mapping)
-        or component_signals[component].get("available") is not True
-        for component in ACTIVE_COMPONENTS
-    ):
-        raise SoxlPITPackagerError("active market regime component unavailable")
-    if any(component_signals[component] != {"available": False} for component in DISABLED_COMPONENTS):
-        raise SoxlPITPackagerError("disabled market regime component mismatch")
-    for key in (
-        "broker_order_allowed",
-        "live_allocation_mutation_allowed",
-        "repository_broker_write_allowed",
-        "repository_allocation_mutation_allowed",
-    ):
-        if controls.get(key) is not False:
-            raise SoxlPITPackagerError("market regime execution boundary mismatch")
-    volatility_context = position.get("volatility_delever_context")
-    if (
-        not isinstance(volatility_context, Mapping)
-        or volatility_context.get("price_rebound_context") != price_rebound
-    ):
-        raise SoxlPITPackagerError("market regime construction mismatch")
+        raise SoxlPITPackagerError("producer provenance identity mismatch")
     result = {
-        "schema_version": "market_regime_control.v1",
+        "schema_version": MARKET_REGIME_SCHEMA,
         "profile": "market_regime_control",
+        "candidate_id": CANDIDATE_ID,
         "as_of": session_date,
-        "canonical_route": route,
-        "suggested_action": action,
-        "would_trade_if_enabled": bool(raw_signal.get("would_trade_if_enabled")),
-        "arbiter": {
-            "schema_version": "market_regime_arbiter.v1",
-            "final_route": route,
-            "suggested_action": action,
-            "route_source": _nonblank(arbiter.get("route_source"), "market regime route source"),
-            "vetoes": _string_list(arbiter.get("vetoes", []), "market regime vetoes"),
-            "reason_codes": _string_list(
-                arbiter.get("reason_codes", []), "market regime reason codes"
-            ),
-        },
-        "position_control": {
-            "allowed": False,
-            "mode": "evidence_only",
-            "final_route": route,
-            "suggested_action": action,
-            "route_source": _nonblank(position.get("route_source"), "market regime route source"),
-            "risk_budget_scalar": _ratio(position.get("risk_budget_scalar"), "risk budget scalar"),
-            "leverage_scalar": _ratio(position.get("leverage_scalar"), "leverage scalar"),
-            "risk_asset_scalar": _ratio(position.get("risk_asset_scalar"), "risk asset scalar"),
-            "taco_allowed": bool(position.get("taco_allowed")),
-            "local_delever_veto_allowed": bool(position.get("local_delever_veto_allowed")),
-            "crisis_defense_required": bool(position.get("crisis_defense_required")),
-            "blocked_actions": _string_list(
-                position.get("blocked_actions", []), "market regime blocked actions"
-            ),
-            "vetoes": _string_list(position.get("vetoes", []), "market regime vetoes"),
-            "reason_codes": _string_list(
-                position.get("reason_codes", []), "market regime reason codes"
-            ),
-            "volatility_delever_context": copy.deepcopy(dict(volatility_context)),
-        },
-        "component_signals": copy.deepcopy(dict(component_signals)),
+        "market_regime_control_enabled": False,
+        "component_signals": unavailable,
         "execution_controls": {
             "broker_order_allowed": False,
             "live_allocation_mutation_allowed": False,
@@ -504,26 +403,19 @@ def _sanitized_regime(
             "consumption_evidence_status": "static_research_only",
         },
         "pit_provenance": {
-            "plugin_revision": QSP_REVISION,
-            "plugin_config_sha256": MARKET_REGIME_CONFIG_SHA256,
+            "source_contract_sha256": provenance["source_contract_sha256"],
+            "candidate_contract_sha256": CORE_ONLY_CONFIG_SHA256,
             "producer_receipt_sha256": receipt_sha256,
-            "source_contract_sha256": receipt["provenance"]["source_contract_sha256"],
-            "prefix_input_manifest_sha256": receipt["provenance"][
+            "prefix_input_manifest_sha256": provenance[
                 "prefix_input_manifest_sha256"
             ],
-            "component_output_sha256": copy.deepcopy(
-                receipt["provenance"]["component_output_sha256"]
-            ),
-            "price_rebound_output_sha256": receipt["provenance"][
-                "price_rebound_output_sha256"
-            ],
-            "active_components": list(ACTIVE_COMPONENTS),
-            "disabled_components": list(DISABLED_COMPONENTS),
+            "logical_input_ids": list(SOXL_PROMOTION_ASSETS),
             "evidence_class": receipt["evidence_class"],
             "real_producer": receipt["real_producer"],
             "prefix_session_count": prefix_session_count,
             "prefix_end": session_date,
             "future_sessions_exposed": False,
+            "raw_series_persisted": False,
         },
     }
     _reject_sensitive(result)
@@ -533,7 +425,9 @@ def _sanitized_regime(
 
 def _package_contract(source: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": "soxl_pit_packager_contract.v2",
+        "schema_version": "soxl_core_only_9_input_packager_contract.v1",
+        "candidate_id": CANDIDATE_ID,
+        "input_contract_id": INPUT_CONTRACT_ID,
         "assets": list(SOXL_PROMOTION_ASSETS),
         "availability": {
             "always_eligible": ["SOXL", "SOXX", "SCHD", "DGRO", "QQQ"],
@@ -616,18 +510,19 @@ def _package_contract(source: Mapping[str, Any]) -> dict[str, Any]:
             "source_revision": source["schema_version"],
         },
         "market_regime": {
-            "control_enabled": True,
-            "active_components": list(ACTIVE_COMPONENTS),
-            "disabled_components": list(DISABLED_COMPONENTS),
-            "price_rebound_context_enabled": True,
-            "logical_input_count": 17,
+            "control_enabled": False,
+            "unavailable_components": {
+                component: {"enabled": False, "available": False}
+                for component in UNAVAILABLE_COMPONENTS
+            },
+            "logical_input_count": 9,
             "component_as_of_policy": "exact_session_close",
             "missing_input_policy": "fail_closed",
             "prefix_only": True,
-            "plugin_revision": QSP_REVISION,
-            "plugin_source_sha256": _QSP_PLUGIN_SOURCE_SHA256,
-            "plugin_config_sha256": MARKET_REGIME_CONFIG_SHA256,
-            "generated_timestamp_policy": "omitted_from_digest_surface",
+            "source_contract_schema": SOURCE_CONTRACT_SCHEMA,
+            "candidate_contract_sha256": CORE_ONLY_CONFIG_SHA256,
+            "substitution_policy": "none_no_proxy_no_alias",
+            "position_control_allowed": False,
         },
         "dependency_sources": {
             "qpk_research_input_sha256": _QPK_RESEARCH_INPUT_SOURCE_SHA256,
@@ -706,10 +601,10 @@ def prepare_soxl_pit_input(
     manifest = {
         "schema_version": "research_input_manifest.v1",
         "manifest_id": f"soxl-pit-20180803-20260804-{_sha256_bytes(sessions_bytes)[:12]}",
-        "research_input_contract_id": "soxl_promotion_input.v2",
+        "research_input_contract_id": INPUT_CONTRACT_ID,
         "domain": "us_equity",
         "profile": "soxl_soxx_trend_income",
-        "artifact_type": "immutable_adjusted_ohlcv_and_pit_regime",
+        "artifact_type": "immutable_adjusted_ohlcv_core_only",
         "observed_at": source["observed_at"],
         "effective_at": source["effective_at"],
         "as_of": source["as_of"],
@@ -755,7 +650,7 @@ def prepare_soxl_pit_input(
         raise SoxlPITPackagerError("input manifest validation failed") from exc
     input_bytes = canonical_json_bytes(
         {
-            "schema_version": "soxl_promotion_input.v2",
+            "schema_version": INPUT_CONTRACT_ID,
             "input_manifest": manifest,
             "sessions": sessions,
         }
@@ -771,6 +666,7 @@ def prepare_soxl_pit_input(
         contract_bytes=canonical_json_bytes(contract),
         source_contract_bytes=canonical_json_bytes(source_summary),
         input_manifest_sha256=manifest_sha256,
+        source_contract_sha256=regime_source.source_contract_sha256,
         producer_commit_sha=source["producer"]["commit_sha"],
     )
 
@@ -788,10 +684,16 @@ def _validate_binding(prepared: PreparedSoxlPITInput, identity_binding: Mapping[
         raise SoxlPITPackagerError("producer and runner revision mismatch")
     if binding["qpk_revision"] != QPK_REVISION:
         raise SoxlPITPackagerError("QPK revision mismatch")
-    if binding["plugin_revision"] != QSP_REVISION:
-        raise SoxlPITPackagerError("plugin revision mismatch")
-    if binding["plugin_config_sha256"] != MARKET_REGIME_CONFIG_SHA256:
-        raise SoxlPITPackagerError("plugin config identity mismatch")
+    if binding["candidate_id"] != CANDIDATE_ID:
+        raise SoxlPITPackagerError("candidate identity mismatch")
+    if binding["input_contract_id"] != INPUT_CONTRACT_ID:
+        raise SoxlPITPackagerError("input contract identity mismatch")
+    if binding["source_contract_schema"] != SOURCE_CONTRACT_SCHEMA:
+        raise SoxlPITPackagerError("source contract identity mismatch")
+    if binding["source_contract_sha256"] != prepared.source_contract_sha256:
+        raise SoxlPITPackagerError("source contract identity mismatch")
+    if binding["candidate_contract_sha256"] != CORE_ONLY_CONFIG_SHA256:
+        raise SoxlPITPackagerError("candidate contract identity mismatch")
     if binding["input_manifest_sha256"] != prepared.input_manifest_sha256:
         raise SoxlPITPackagerError("input manifest identity mismatch")
     for field in (
@@ -800,6 +702,8 @@ def _validate_binding(prepared: PreparedSoxlPITInput, identity_binding: Mapping[
         "authority_receipt_sha256",
         "candidate_identity_sha256",
         "mandate_digest_sha256",
+        "source_contract_sha256",
+        "candidate_contract_sha256",
     ):
         _digest(binding[field], field)
     if binding["mandate_id"] != MANDATE_ID:
@@ -881,8 +785,10 @@ def publish_soxl_pit_input(
     ]
     source_contract = json.loads(prepared.source_contract_bytes)
     manifest = {
-        "schema_version": "soxl_pit_package_manifest.v2",
+        "schema_version": "soxl_core_only_9_input_package_manifest.v1",
         "package_type": "promotion_research_input_static_only",
+        "candidate_id": CANDIDATE_ID,
+        "input_contract_id": INPUT_CONTRACT_ID,
         "input_manifest_sha256": prepared.input_manifest_sha256,
         "source_contract": source_contract,
         "identity": binding,
@@ -890,6 +796,7 @@ def publish_soxl_pit_input(
         "members": members,
         "lifecycle_claims": {
             "promotion_eligible": False,
+            "live_ready": False,
             "paper_authority": False,
             "shadow_authority": False,
             "live_authority": False,
@@ -938,11 +845,13 @@ def publish_soxl_pit_input(
 
 
 __all__ = [
+    "CANDIDATE_ID",
+    "CORE_ONLY_CONFIG_SHA256",
     "FIRST_ELIGIBLE_SESSION",
     "FROZEN_XNYS_SESSIONS",
-    "MARKET_REGIME_CONFIG_SHA256",
+    "INPUT_CONTRACT_ID",
     "QPK_REVISION",
-    "QSP_REVISION",
+    "SOURCE_CONTRACT_SCHEMA",
     "SOXL_PROMOTION_ASSETS",
     "PreparedSoxlPITInput",
     "SoxlPITPackagerError",
