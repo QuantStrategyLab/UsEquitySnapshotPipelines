@@ -21,6 +21,17 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import (
     prepare_soxl_pit_input,
     publish_soxl_pit_input,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer import (
+    ACTIVE_COMPONENTS,
+    ADDITIONAL_REGIME_INPUTS,
+    ALL_LOGICAL_INPUTS,
+    DISABLED_COMPONENTS,
+    EVENT_CATALOG_SHA256,
+    QSP_SOURCE_IDENTITIES,
+    QSP_TREE_SHA,
+    SOURCE_CONTRACT_SCHEMA,
+    runtime_producer_source_identity,
+)
 from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import SoxlPromotionRunner
 
 
@@ -89,37 +100,161 @@ def _raw_sessions() -> list[dict[str, object]]:
             {
                 "date": session_date,
                 "bars": bars,
-                "regime_components": _components(session_date),
+                "regime_inputs": {
+                    symbol: 20.0 + input_index + session_index * 0.001
+                    for input_index, symbol in enumerate(ADDITIONAL_REGIME_INPUTS)
+                },
             }
         )
     return rows
 
 
+def _logical_payload(rows: list[dict[str, object]], logical_input_id: str) -> list[dict[str, object]]:
+    if logical_input_id in SOXL_PROMOTION_ASSETS:
+        return [
+            {"date": row["date"], **row["bars"][logical_input_id]}
+            for row in rows
+            if logical_input_id in row["bars"]
+        ]
+    return [
+        {"date": row["date"], "value": row["regime_inputs"][logical_input_id]}
+        for row in rows
+    ]
+
+
 def _source_contract(rows: list[dict[str, object]]) -> dict[str, object]:
+    logical_inputs = []
+    for logical_input_id in ALL_LOGICAL_INPUTS:
+        payload = _logical_payload(rows, logical_input_id)
+        is_vix = logical_input_id == "VIX"
+        logical_inputs.append(
+            {
+                "logical_input_id": logical_input_id,
+                "provider_instrument_id": logical_input_id,
+                "instrument_type": "index" if is_vix else "etf",
+                "venue": "CBOE_INDEX" if is_vix else "US_ETF",
+                "currency": "USD",
+                "provider_id": "synthetic-fixture",
+                "source_revision": "synthetic-fixture-v2",
+                "field": "unadjusted_index_close" if is_vix else (
+                    "adjusted_ohlcv" if logical_input_id in SOXL_PROMOTION_ASSETS else "adjusted_close"
+                ),
+                "frequency": "1d",
+                "timezone": "America/New_York",
+                "calendar": "XNYS",
+                "adjustment_contract": "unadjusted_index" if is_vix else "total_return_adjusted",
+                "corporate_action_basis": "not_applicable" if is_vix else "provider_adjusted",
+                "missing_value_policy": "reject",
+                "data_origin": "synthetic_fixture",
+                "substitution_policy": "none",
+                "entitlement_receipt_sha256": "4" * 64,
+                "license_or_usage_receipt_sha256": "5" * 64,
+                "retention_scope": "ephemeral-offline-test-memory-only",
+                "retention_expires_at": "2026-12-31T00:00:00Z",
+                "request_sha256": "6" * 64,
+                "observed_at": "2026-08-05T04:00:00Z",
+                "effective_at": "2026-08-05T04:00:00Z",
+                "fixed_cutoff": "2026-08-05T03:59:59Z",
+                "content_sha256": hashlib.sha256(canonical_json_bytes(payload)).hexdigest(),
+                "row_count": len(payload),
+                "first_date": payload[0]["date"],
+                "last_date": payload[-1]["date"],
+                "no_future_rows": True,
+            }
+        )
     return {
-        "source_id": "synthetic-offline-bars-and-regime-components",
-        "source_revision": "synthetic-fixture-v1",
+        "schema_version": SOURCE_CONTRACT_SCHEMA,
+        "data_class": "synthetic_fixture",
         "observed_at": "2026-08-05T04:00:00Z",
         "effective_at": "2026-08-05T04:00:00Z",
         "as_of": "2026-08-05T04:01:00Z",
         "fixed_cutoff": "2026-08-05T03:59:59Z",
-        "calendar_source": "exchange_calendars",
-        "calendar_source_revision": "4.13.2",
-        "adjustment_source": "synthetic-total-return-adjusted",
-        "adjustment_source_revision": "synthetic-fixture-v1",
-        "content_sha256": hashlib.sha256(canonical_json_bytes(rows)).hexdigest(),
-        "request_contract_sha256": "e" * 64,
-        "license_id": "synthetic-fixture-only",
-        "usage_scope": "offline-static-contract-tests-only",
-        "market_regime_control_enabled": True,
-        "producer": {
-            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
-            "commit_sha": RUNNER_REVISION,
-            "tree_sha": "f" * 40,
-            "tool": "soxl_pit_input_packager",
-            "tool_version": "1",
+        "input_content_sha256": hashlib.sha256(canonical_json_bytes(rows)).hexdigest(),
+        "calendar": {
+            "calendar_id": "XNYS",
+            "timezone": "America/New_York",
+            "source": "exchange_calendars",
+            "source_revision": "4.13.2",
+            "first_session": FROZEN_XNYS_SESSIONS[0],
+            "last_session": FROZEN_XNYS_SESSIONS[-1],
+            "session_count": len(FROZEN_XNYS_SESSIONS),
+            "sessions_sha256": hashlib.sha256(
+                canonical_json_bytes(list(FROZEN_XNYS_SESSIONS))
+            ).hexdigest(),
         },
+        "producer": runtime_producer_source_identity(
+            commit_sha=RUNNER_REVISION,
+            tree_sha="f" * 40,
+        ),
+        "qsp": {
+            "revision": QSP_REVISION,
+            "tree_sha": QSP_TREE_SHA,
+            "sources": copy.deepcopy(QSP_SOURCE_IDENTITIES),
+        },
+        "config_sha256": MARKET_REGIME_CONFIG_SHA256,
+        "event_catalog_sha256": EVENT_CATALOG_SHA256,
+        "active_components": list(ACTIVE_COMPONENTS),
+        "disabled_components": {
+            component: {"enabled": False, "available": False} for component in DISABLED_COMPONENTS
+        },
+        "auxiliary_contexts": {"volatility_delever_price_rebound": {"enabled": True}},
+        "logical_inputs": logical_inputs,
     }
+
+
+@pytest.fixture(autouse=True)
+def _stub_pinned_qsp_builders(monkeypatch):
+    import us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer as producer
+
+    monkeypatch.setattr(producer, "_verify_qsp_identity", lambda value: copy.deepcopy(value))
+    monkeypatch.setattr(
+        producer,
+        "build_crisis_response_shadow_signal",
+        lambda prices, **kwargs: {
+            "profile": "crisis_response_shadow",
+            "schema_version": "crisis_response_shadow.v1",
+            "as_of": kwargs["as_of"],
+            "canonical_route": "no_action",
+            "suggested_action": "no_action",
+            "reason_codes": [],
+            "generated_at": "variable",
+        },
+    )
+    monkeypatch.setattr(
+        producer,
+        "build_macro_risk_governor_signal",
+        lambda prices, **kwargs: {
+            "profile": "macro_risk_governor",
+            "schema_version": "macro_risk_governor.v1",
+            "as_of": kwargs["as_of"],
+            "canonical_route": "no_action",
+            "suggested_action": "no_action",
+            "reason_codes": [],
+            "generated_at": "variable",
+        },
+    )
+    monkeypatch.setattr(
+        producer,
+        "build_volatility_delever_price_rebound_context",
+        lambda prices, config: {
+            "schema_version": "volatility_delever_price_rebound_context.v1",
+            "enabled": True,
+            "confirmed": False,
+            "as_of": config["as_of"],
+            "benchmark_symbol": "SOXX",
+            "vix_symbol": "VIX",
+            "reason_codes": [],
+            "volatility_triggered": False,
+            "trend_ok": True,
+            "slope_ok": True,
+            "constructive": True,
+            "rebound_1d": False,
+            "rebound_nd": False,
+            "hard_filter": False,
+            "soft_filter": False,
+            "metrics": {"benchmark_close": 1.0},
+        },
+    )
 
 
 def _binding(input_manifest_sha256: str) -> dict[str, object]:
@@ -211,6 +346,10 @@ def test_exact_xnys_contract_and_atomic_package_are_deterministic(tmp_path: Path
     runner.input_payload = input_payload
     runner._validate_input()
     assert runner.input_manifest_sha256 == prepared.input_manifest_sha256
+    assert runner.sessions[0]["market_regime"] == sessions[0]["market_regime"]
+    assert runner.sessions[0]["market_regime"]["execution_controls"][
+        "position_control_allowed"
+    ] is False
     assert package_manifest["identity"] == binding
     assert package_manifest["input_manifest_sha256"] == prepared.input_manifest_sha256
     assert package_manifest["contract"]["assets"] == list(SOXL_PROMOTION_ASSETS)
@@ -249,6 +388,11 @@ def test_exact_xnys_contract_and_atomic_package_are_deterministic(tmp_path: Path
         "shadow_authority": False,
         "live_authority": False,
         "order_authority": False,
+        "position_control_allowed": False,
+        "size_zero_required": True,
+        "no_order": True,
+        "real_producer": False,
+        "synthetic_fixture": True,
         "real_backtest_executed": False,
     }
 
@@ -268,7 +412,15 @@ def test_exact_xnys_contract_and_atomic_package_are_deterministic(tmp_path: Path
         assert regime["pit_provenance"]["prefix_session_count"] == index + 1
         assert regime["pit_provenance"]["prefix_end"] == session["date"]
         assert regime["pit_provenance"]["future_sessions_exposed"] is False
+        assert regime["pit_provenance"]["evidence_class"] == "synthetic_fixture"
+        assert regime["pit_provenance"]["real_producer"] is False
+        assert regime["component_signals"]["crisis"]["available"] is True
+        assert regime["component_signals"]["macro"]["available"] is True
+        assert regime["component_signals"]["taco"] == {"available": False}
+        assert regime["component_signals"]["panic_reversal"] == {"available": False}
+        assert regime["position_control"]["allowed"] is False
         assert regime["execution_controls"]["position_control_allowed"] is False
+        assert "metrics" not in str(regime["position_control"]["volatility_delever_context"])
     _assert_no_sensitive_keys(input_payload)
     _assert_no_sensitive_keys(package_manifest)
 
@@ -277,34 +429,34 @@ def test_input_contract_fail_closed_matrix() -> None:
     original = _raw_sessions()
 
     cases: list[tuple[list[dict[str, object]], dict[str, object], str]] = []
-    missing_component = copy.deepcopy(original)
-    del missing_component[0]["regime_components"]["macro"]
-    cases.append((missing_component, _source_contract(missing_component), "regime components"))
+    missing_input = copy.deepcopy(original)
+    del missing_input[0]["regime_inputs"]["VIX"]
+    cases.append((missing_input, _source_contract(original), "regime input set"))
 
-    future_component = copy.deepcopy(original)
-    future_component[0]["regime_components"]["crisis"]["as_of"] = FROZEN_XNYS_SESSIONS[1]
-    cases.append((future_component, _source_contract(future_component), "component as_of"))
+    aliased_input = copy.deepcopy(original)
+    aliased_input[0]["regime_inputs"]["^VIX"] = aliased_input[0]["regime_inputs"].pop("VIX")
+    cases.append((aliased_input, _source_contract(original), "regime input set"))
 
     prelisting_bar = copy.deepcopy(original)
     prelisting_bar[0]["bars"]["SGOV"] = dict(prelisting_bar[0]["bars"]["QQQ"])
-    cases.append((prelisting_bar, _source_contract(prelisting_bar), "eligible bar set"))
+    cases.append((prelisting_bar, _source_contract(original), "eligible bar set"))
 
     missing_first_eligible = copy.deepcopy(original)
     first_eligible_index = FROZEN_XNYS_SESSIONS.index(FIRST_ELIGIBLE_SESSION["QQQI"])
     del missing_first_eligible[first_eligible_index]["bars"]["QQQI"]
-    cases.append((missing_first_eligible, _source_contract(missing_first_eligible), "eligible bar set"))
+    cases.append((missing_first_eligible, _source_contract(original), "eligible bar set"))
 
     wrong_calendar = copy.deepcopy(original)
     wrong_calendar[1]["date"] = wrong_calendar[0]["date"]
-    cases.append((wrong_calendar, _source_contract(wrong_calendar), "XNYS sessions"))
+    cases.append((wrong_calendar, _source_contract(original), "XNYS sessions"))
 
     sensitive = copy.deepcopy(original)
-    sensitive[0]["regime_components"]["crisis"]["authorization"] = "do-not-persist"
-    cases.append((sensitive, _source_contract(sensitive), "sensitive input"))
+    sensitive[0]["regime_inputs"]["authorization"] = 1.0
+    cases.append((sensitive, _source_contract(original), "sensitive input"))
 
     camel_case_sensitive = copy.deepcopy(original)
-    camel_case_sensitive[0]["regime_components"]["crisis"]["apiKey"] = "do-not-persist"
-    cases.append((camel_case_sensitive, _source_contract(camel_case_sensitive), "sensitive input"))
+    camel_case_sensitive[0]["regime_inputs"]["apiKey"] = 1.0
+    cases.append((camel_case_sensitive, _source_contract(original), "sensitive input"))
 
     for rows, source, message in cases:
         with pytest.raises(SoxlPITPackagerError, match=message):
@@ -316,14 +468,34 @@ def test_input_contract_fail_closed_matrix() -> None:
         prepare_soxl_pit_input(original, source)
 
     source = _source_contract(original)
-    source["content_sha256"] = "0" * 64
-    with pytest.raises(SoxlPITPackagerError, match="source digest"):
+    source["input_content_sha256"] = "0" * 64
+    with pytest.raises(SoxlPITPackagerError, match="input content digest"):
         prepare_soxl_pit_input(original, source)
 
     source = _source_contract(original)
-    source["market_regime_control_enabled"] = False
-    with pytest.raises(SoxlPITPackagerError, match="market regime control"):
+    source["config_sha256"] = "0" * 64
+    with pytest.raises(SoxlPITPackagerError, match="config identity"):
         prepare_soxl_pit_input(original, source)
+
+
+def test_packager_rejects_caller_supplied_component_payloads() -> None:
+    rows = _raw_sessions()
+    rows[0]["regime_components"] = _components(rows[0]["date"])
+    del rows[0]["regime_inputs"]
+
+    with pytest.raises(SoxlPITPackagerError, match="raw session"):
+        prepare_soxl_pit_input(rows, _source_contract(_raw_sessions()))
+
+
+def test_packager_binds_price_rebound_context() -> None:
+    rows = _raw_sessions()
+
+    prepared = prepare_soxl_pit_input(rows, _source_contract(rows))
+    sessions = json.loads(prepared.sessions_bytes)
+
+    assert "price_rebound_context" in sessions[0]["market_regime"]["position_control"][
+        "volatility_delever_context"
+    ]
 
 
 def test_identity_binding_and_publication_fail_closed(tmp_path: Path) -> None:
