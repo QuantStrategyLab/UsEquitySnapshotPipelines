@@ -115,8 +115,8 @@ def _source_contract(rows: list[dict[str, object]]) -> dict[str, object]:
         "calendar": {
             "calendar_id": "XNYS",
             "timezone": "America/New_York",
-            "source": "exchange_calendars",
-            "source_revision": "4.13.2",
+            "source": "uesp_repo_local_xnys_holiday_rules",
+            "source_revision": "soxl_pit_input_packager.v1",
             "first_session": FROZEN_XNYS_SESSIONS[0],
             "last_session": FROZEN_XNYS_SESSIONS[-1],
             "session_count": len(FROZEN_XNYS_SESSIONS),

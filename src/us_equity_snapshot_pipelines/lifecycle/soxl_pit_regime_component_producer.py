@@ -308,8 +308,8 @@ def validate_soxl_pit_regime_source_contract(
     expected_calendar = {
         "calendar_id": "XNYS",
         "timezone": "America/New_York",
-        "source": "exchange_calendars",
-        "source_revision": "4.13.2",
+        "source": "uesp_repo_local_xnys_holiday_rules",
+        "source_revision": "soxl_pit_input_packager.v1",
         "first_session": expected_sessions[0],
         "last_session": expected_sessions[-1],
         "session_count": len(expected_sessions),

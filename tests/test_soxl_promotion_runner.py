@@ -31,8 +31,8 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer i
 import us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner as runner_module
 
 
-QPK_REVISION = "2f75b59289ef24ab47a3ed8d522c9ef8d6aea6b2"
-UES_REVISION = "f799ad115660b17bc888cbe6e7461255ccee1735"
+QPK_REVISION = "9618b4bd8e179760ac174914713598762cab15d7"
+UES_REVISION = "69716807fa61746f3b472aad3bf072d3960bfbd8"
 RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 VARIANTS = ("explicit_qqq_fallback", "cash_origin")
