@@ -886,10 +886,23 @@ def test_producer_fails_proxy_sensitive_when_variant_direction_reverses(
         )
 
     risk_artifact = json.loads((tmp_path / "artifacts" / "risk.json").read_text())
+    terminal_artifact = json.loads((tmp_path / "promotion-research-result.v1.json").read_text())
     assert risk_artifact["status"] == "PROXY_SENSITIVE"
     assert risk_artifact["proxy_sensitive"] is True
     assert risk_artifact["variants"][VARIANTS[0]]["status"] == "PASS"
     assert risk_artifact["variants"][VARIANTS[1]]["status"] == "FAIL"
+    assert terminal_artifact["status"] == "PROXY_SENSITIVE"
+    assert terminal_artifact["human_acceptance"] is None
+    assert terminal_artifact["lifecycle_claims"] == {
+        "learning_only": False,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+    for record in terminal_artifact["artifacts"].values():
+        artifact_path = tmp_path / record["path"]
+        assert hashlib.sha256(artifact_path.read_bytes()).hexdigest() == record["sha256"]
 
 
 def _synthetic_window(

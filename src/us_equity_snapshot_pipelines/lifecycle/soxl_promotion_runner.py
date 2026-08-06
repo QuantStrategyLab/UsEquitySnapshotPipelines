@@ -1570,8 +1570,6 @@ def run_soxl_promotion_research(
             "cost_stress_25bp_sha256": stress_25_record["sha256"],
         },
     )
-    if risk_status != "PASS":
-        raise SoxlPromotionContractError(f"promotion acceptance failed: {risk_status}")
     records = {
         "config": config_record,
         "data_manifest": manifest_record,
@@ -1583,6 +1581,29 @@ def run_soxl_promotion_research(
     for record in records.values():
         record["path"] = Path(record["path"]).relative_to(output_root).as_posix()
     generated = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    terminal_record = _write_canonical(
+        output_root / "promotion-research-result.v1.json",
+        {
+            "schema_version": "soxl_promotion_research_result.v1",
+            "generated_at": generated,
+            "status": risk_status,
+            "candidate_id": CANDIDATE_ID,
+            "candidate_identity_sha256": primary_runner.candidate_identity.candidate_sha256,
+            "input_manifest_sha256": primary_runner.input_manifest_sha256,
+            "source_contract_sha256": primary_runner.source_contract_sha256,
+            "artifacts": records,
+            "human_acceptance": None,
+            "lifecycle_claims": {
+                "learning_only": False,
+                "promotion_eligible": False,
+                "live_ready": False,
+                "size_zero_required": True,
+                "no_order": True,
+            },
+        },
+    )
+    if risk_status != "PASS":
+        raise SoxlPromotionContractError(f"promotion acceptance failed: {risk_status}")
     evidence: dict[str, Any] = {
         "schema_version": "strategy_evidence_package.v2",
         "evidence_package_id": f"soxl_p3_{primary_runner.candidate_identity.candidate_sha256[:12]}",
@@ -1676,6 +1697,7 @@ def run_soxl_promotion_research(
     return {
         "evidence_sha256": _sha256_bytes(evidence_path.read_bytes()),
         "cost_stress_25bp_sha256": stress_25_record["sha256"],
+        "promotion_result_sha256": terminal_record["sha256"],
     }
 
 
