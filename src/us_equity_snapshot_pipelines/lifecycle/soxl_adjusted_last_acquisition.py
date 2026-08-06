@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -44,10 +46,56 @@ _COMMITMENT_KEYS = frozenset(
         "duplicate_sessions_sha256",
     }
 )
+_REQUEST_VALIDATION_321_CAUSES = frozenset(
+    {
+        "request_id_mismatch",
+        "invalid_end_datetime",
+        "invalid_duration",
+        "invalid_what_to_show",
+        "unknown_321",
+    }
+)
+_REQUEST_VALIDATION_321_COUNTS = (
+    "matching_error_count",
+    "mismatching_error_count",
+    "matching_completion_count",
+    "mismatching_completion_count",
+    "expected_session_count",
+    "observed_session_count",
+)
+_PROVIDER_MESSAGE_CAUSES = {
+    "invalid enddatetime": "invalid_end_datetime",
+    "invalid duration": "invalid_duration",
+    "invalid whattoshow": "invalid_what_to_show",
+}
+_REQUEST_ENVELOPE_COMMITMENT_DOMAIN = b"qsl.soxl.request-envelope.v1"
+_PROVIDER_MESSAGE_COMMITMENT_DOMAIN = b"qsl.soxl.provider-message.v1"
 
 
 class SoxlAdjustedLastDiagnosticError(ValueError):
     """The sanitized adjusted-history diagnostic violated its closed contract."""
+
+
+@dataclass(frozen=True)
+class RequestValidation321Diagnostic:
+    """Sanitized request-bound classification without raw provider surfaces."""
+
+    cause: str
+    numeric_code: int
+    request_envelope_sha256: str
+    provider_message_sha256: str
+    request_completion_observed: bool
+    counts: tuple[tuple[str, int], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cause": self.cause,
+            "numeric_code": self.numeric_code,
+            "request_envelope_sha256": self.request_envelope_sha256,
+            "provider_message_sha256": self.provider_message_sha256,
+            "request_completion_observed": self.request_completion_observed,
+            "counts": dict(self.counts),
+        }
 
 
 def acquire_strict_adjusted_last(
@@ -77,6 +125,99 @@ def _is_sha256(value: object) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _domain_separated_sha256(domain: bytes, value: bytes) -> str:
+    return hashlib.sha256(domain + b"\x00" + value).hexdigest()
+
+
+def _nonnegative_count(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def classify_request_validation_321(
+    *,
+    active_request_id: int,
+    error_request_id: int,
+    error_code: int,
+    provider_message: str | None,
+    request_envelope: bytes,
+    completion_request_ids: Sequence[int],
+    expected_session_count: int,
+    observed_session_count: int,
+) -> RequestValidation321Diagnostic:
+    """Correlate one synthetic 321 event and retain only closed aggregates."""
+    if (
+        isinstance(active_request_id, bool)
+        or not isinstance(active_request_id, int)
+        or active_request_id < 0
+        or isinstance(error_request_id, bool)
+        or not isinstance(error_request_id, int)
+        or isinstance(error_code, bool)
+        or error_code != 321
+        or (provider_message is not None and not isinstance(provider_message, str))
+        or not isinstance(request_envelope, bytes)
+        or not request_envelope
+        or not _nonnegative_count(expected_session_count)
+        or not _nonnegative_count(observed_session_count)
+    ):
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic input"
+        )
+    try:
+        completion_ids = tuple(completion_request_ids)
+    except TypeError:
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic input"
+        ) from None
+    if any(
+        isinstance(request_id, bool) or not isinstance(request_id, int)
+        for request_id in completion_ids
+    ):
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic input"
+        )
+
+    error_matches = error_request_id == active_request_id
+    matching_completion_count = sum(
+        request_id == active_request_id for request_id in completion_ids
+    )
+    if error_matches:
+        normalized_message = (
+            " ".join(provider_message.split()).casefold()
+            if provider_message is not None
+            else ""
+        )
+        cause = _PROVIDER_MESSAGE_CAUSES.get(normalized_message, "unknown_321")
+    else:
+        cause = "request_id_mismatch"
+
+    message_bytes = (
+        provider_message.encode("utf-8") if provider_message is not None else b""
+    )
+    counts = {
+        "matching_error_count": int(error_matches),
+        "mismatching_error_count": int(not error_matches),
+        "matching_completion_count": matching_completion_count,
+        "mismatching_completion_count": len(completion_ids)
+        - matching_completion_count,
+        "expected_session_count": expected_session_count,
+        "observed_session_count": observed_session_count,
+    }
+    return RequestValidation321Diagnostic(
+        cause=cause,
+        numeric_code=error_code,
+        request_envelope_sha256=_domain_separated_sha256(
+            _REQUEST_ENVELOPE_COMMITMENT_DOMAIN,
+            request_envelope,
+        ),
+        provider_message_sha256=_domain_separated_sha256(
+            _PROVIDER_MESSAGE_COMMITMENT_DOMAIN,
+            message_bytes,
+        ),
+        request_completion_observed=matching_completion_count > 0,
+        counts=tuple((key, counts[key]) for key in _REQUEST_VALIDATION_321_COUNTS),
     )
 
 
@@ -143,14 +284,52 @@ def _sanitized_payload(error: StrictAdjustedHistoryError) -> dict[str, Any]:
     return payload
 
 
-def write_sanitized_adjusted_last_diagnostic(
+def _request_validation_321_payload(
+    diagnostic: RequestValidation321Diagnostic,
+) -> dict[str, Any]:
+    if not isinstance(diagnostic, RequestValidation321Diagnostic):
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic"
+        )
+    payload = diagnostic.to_dict()
+    if (
+        set(payload)
+        != {
+            "cause",
+            "numeric_code",
+            "request_envelope_sha256",
+            "provider_message_sha256",
+            "request_completion_observed",
+            "counts",
+        }
+        or payload["cause"] not in _REQUEST_VALIDATION_321_CAUSES
+        or payload["numeric_code"] != 321
+        or not _is_sha256(payload["request_envelope_sha256"])
+        or not _is_sha256(payload["provider_message_sha256"])
+        or not isinstance(payload["request_completion_observed"], bool)
+    ):
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic"
+        )
+    counts = payload["counts"]
+    if (
+        not isinstance(counts, dict)
+        or tuple(counts) != _REQUEST_VALIDATION_321_COUNTS
+        or any(not _nonnegative_count(value) for value in counts.values())
+    ):
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-validation 321 diagnostic"
+        )
+    return payload
+
+
+def _write_exclusive_mode_0600_json(
     destination: str | Path,
-    error: StrictAdjustedHistoryError,
+    payload: dict[str, Any],
 ) -> None:
-    """Create one exclusive mode-0600 JSON diagnostic without raw market data."""
     path = Path(destination)
-    payload = json.dumps(
-        _sanitized_payload(error),
+    serialized = json.dumps(
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
@@ -163,7 +342,7 @@ def write_sanitized_adjusted_last_diagnostic(
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(payload)
+            handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
@@ -171,3 +350,22 @@ def write_sanitized_adjusted_last_diagnostic(
         raise
     finally:
         os.close(descriptor)
+
+
+def write_sanitized_adjusted_last_diagnostic(
+    destination: str | Path,
+    error: StrictAdjustedHistoryError,
+) -> None:
+    """Create one exclusive mode-0600 JSON diagnostic without raw market data."""
+    _write_exclusive_mode_0600_json(destination, _sanitized_payload(error))
+
+
+def write_sanitized_request_validation_321_diagnostic(
+    destination: str | Path,
+    diagnostic: RequestValidation321Diagnostic,
+) -> None:
+    """Create one exclusive mode-0600 request-bound 321 diagnostic."""
+    _write_exclusive_mode_0600_json(
+        destination,
+        _request_validation_321_payload(diagnostic),
+    )
