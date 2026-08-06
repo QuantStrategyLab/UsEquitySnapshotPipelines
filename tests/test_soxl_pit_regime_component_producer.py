@@ -153,6 +153,27 @@ def test_each_removed_external_field_is_rejected(external_field: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda bar: bar.pop("volume"),
+        lambda bar: bar.update(close="invalid"),
+        lambda bar: bar.update(close=-1.0),
+        lambda bar: bar.update(low=100.0, high=101.0),
+    ],
+)
+def test_direct_source_validator_rejects_invalid_bars(mutator) -> None:
+    rows = _raw_sessions()
+    mutator(rows[0]["bars"]["SOXL"])
+
+    with pytest.raises(SoxlPITRegimeProducerError, match="invalid bar"):
+        validate_soxl_pit_regime_source_contract(
+            rows,
+            _source_contract(rows),
+            expected_sessions=FROZEN_XNYS_SESSIONS,
+        )
+
+
 def test_future_duplicate_missing_proxy_and_post_validation_mutation_fail_closed() -> None:
     rows = _raw_sessions()
     source = _source_contract(rows)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -180,6 +181,30 @@ def _revision(value: object, label: str) -> str:
     return result
 
 
+def _bar_number(value: object, *, nonnegative: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SoxlPITRegimeProducerError("invalid bar")
+    result = float(value)
+    if not math.isfinite(result) or (result < 0.0 if nonnegative else result <= 0.0):
+        raise SoxlPITRegimeProducerError("invalid bar")
+    return result
+
+
+def _validate_bar(value: object) -> None:
+    bar = _exact_mapping(
+        value,
+        frozenset({"open", "high", "low", "close", "volume"}),
+        "bar",
+    )
+    open_price = _bar_number(bar["open"])
+    high = _bar_number(bar["high"])
+    low = _bar_number(bar["low"])
+    close = _bar_number(bar["close"])
+    _bar_number(bar["volume"], nonnegative=True)
+    if low > min(open_price, close) or high < max(open_price, close) or high < low:
+        raise SoxlPITRegimeProducerError("invalid bar")
+
+
 def _timestamp(value: object, label: str) -> datetime:
     result = _nonblank(value, label)
     if not result.endswith("Z"):
@@ -262,6 +287,8 @@ def validate_soxl_pit_regime_source_contract(
         }
         if not isinstance(session["bars"], Mapping) or set(session["bars"]) != expected_bars:
             raise SoxlPITRegimeProducerError("exact eligible input set is required")
+        for symbol in expected_bars:
+            _validate_bar(session["bars"][symbol])
     if contract["fixed_cutoff"] != FIXED_CUTOFF:
         raise SoxlPITRegimeProducerError("invalid fixed cutoff")
     effective = _timestamp(contract["effective_at"], "effective_at")
