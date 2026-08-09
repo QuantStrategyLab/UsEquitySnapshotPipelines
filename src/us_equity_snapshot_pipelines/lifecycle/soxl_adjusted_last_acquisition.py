@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
@@ -126,6 +127,106 @@ class RequestValidation321Diagnostic:
             "request_completion_observed": self.request_completion_observed,
             "counts": dict(self.counts),
         }
+
+
+@dataclass(frozen=True)
+class RequestBoundAdjustedHistoryOutcome:
+    """Strict history outcome plus sanitized counts for unrelated callbacks."""
+
+    history_outcome: StrictAdjustedHistoryRequestOutcome
+    foreign_error_code_counts: tuple[tuple[int, int], ...]
+    matching_historical_data_end_count: int
+    foreign_historical_data_end_count: int
+    request_validation_321_diagnostics: tuple[RequestValidation321Diagnostic, ...]
+
+
+def bind_strict_adjusted_history_request(
+    *,
+    active_request_id: int,
+    bars: Sequence[Any],
+    error_events: Sequence[tuple[int, int, str | None]],
+    historical_data_end_request_ids: Sequence[int],
+    informational_error_codes: Collection[int],
+    request_envelope: bytes,
+    expected_session_count: int,
+) -> RequestBoundAdjustedHistoryOutcome:
+    """Bind errors and completion to one exact IBKR historical request id.
+
+    Completion is derived only from a matching ``historicalDataEnd`` callback;
+    returning bars from a blocking request does not imply completion.
+    """
+    try:
+        normalized_bars = tuple(bars)
+        normalized_errors = tuple(error_events)
+        completion_ids = tuple(historical_data_end_request_ids)
+        informational_codes = frozenset(informational_error_codes)
+    except TypeError:
+        raise SoxlAdjustedLastDiagnosticError(
+            "invalid request-bound history input"
+        ) from None
+
+    def valid_int(value: object) -> bool:
+        return not isinstance(value, bool) and isinstance(value, int)
+
+    if (
+        not valid_int(active_request_id)
+        or active_request_id < 0
+        or not isinstance(request_envelope, bytes)
+        or not request_envelope
+        or not valid_int(expected_session_count)
+        or expected_session_count < 0
+        or any(
+            not isinstance(event, (tuple, list))
+            or len(event) != 3
+            or not valid_int(event[0])
+            or not valid_int(event[1])
+            or (event[2] is not None and not isinstance(event[2], str))
+            for event in normalized_errors
+        )
+        or any(not valid_int(request_id) for request_id in completion_ids)
+        or any(not valid_int(code) for code in informational_codes)
+    ):
+        raise SoxlAdjustedLastDiagnosticError("invalid request-bound history input")
+
+    matching_error_codes = tuple(
+        code
+        for request_id, code, _message in normalized_errors
+        if request_id == active_request_id and code not in informational_codes
+    )
+    foreign_error_counts = Counter(
+        code
+        for request_id, code, _message in normalized_errors
+        if request_id != active_request_id and code not in informational_codes
+    )
+    matching_completion_count = sum(
+        request_id == active_request_id for request_id in completion_ids
+    )
+    foreign_completion_count = len(completion_ids) - matching_completion_count
+    request_validation_diagnostics = tuple(
+        classify_request_validation_321(
+            active_request_id=active_request_id,
+            error_request_id=request_id,
+            error_code=code,
+            provider_message=message,
+            request_envelope=request_envelope,
+            completion_request_ids=completion_ids,
+            expected_session_count=expected_session_count,
+            observed_session_count=len(normalized_bars),
+        )
+        for request_id, code, message in normalized_errors
+        if code == 321 and code not in informational_codes
+    )
+    return RequestBoundAdjustedHistoryOutcome(
+        history_outcome=StrictAdjustedHistoryRequestOutcome(
+            bars=normalized_bars,
+            completion_observed=matching_completion_count > 0,
+            provider_error_codes=matching_error_codes,
+        ),
+        foreign_error_code_counts=tuple(sorted(foreign_error_counts.items())),
+        matching_historical_data_end_count=matching_completion_count,
+        foreign_historical_data_end_count=foreign_completion_count,
+        request_validation_321_diagnostics=request_validation_diagnostics,
+    )
 
 
 def acquire_strict_adjusted_last(

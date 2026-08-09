@@ -14,6 +14,7 @@ from quant_platform_kit.ibkr import (
     StrictAdjustedHistoryError,
     StrictAdjustedHistoryRequestOutcome,
 )
+from us_equity_snapshot_pipelines.lifecycle import soxl_adjusted_last_acquisition as adjusted_last
 from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition import (
     acquire_strict_adjusted_last,
     classify_request_validation_321,
@@ -169,6 +170,98 @@ def test_exact_match_preserves_strict_request_and_returns_no_failure_artifact(
     assert tuple(candle.session for candle in result.candles) == EXPECTED
     assert list(tmp_path.iterdir()) == []
     assert ib.history_calls == 0
+
+
+def test_foreign_321_does_not_pollute_exact_historical_request() -> None:
+    bound = adjusted_last.bind_strict_adjusted_history_request(
+        active_request_id=41,
+        bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
+        error_events=(
+            (99, 321, "synthetic foreign validation detail"),
+            (-1, 321, None),
+            (88, 10089, None),
+            (41, 2104, None),
+        ),
+        historical_data_end_request_ids=(41,),
+        informational_error_codes=(2104,),
+        request_envelope=REQUEST_ENVELOPE,
+        expected_session_count=len(EXPECTED),
+    )
+
+    result = acquire_strict_adjusted_last(
+        OfflineIB(),
+        "BOXX",
+        end_datetime=CUTOFF,
+        duration="9 Y",
+        expected_sessions=EXPECTED,
+        stock_factory=_stock,
+        requester=lambda _contract, **_kwargs: bound.history_outcome,
+    )
+
+    assert result.diagnostic.to_dict()["classification"] == "exact_match"
+    assert tuple(bound.history_outcome.provider_error_codes) == ()
+    assert bound.foreign_error_code_counts == ((321, 2), (10089, 1))
+    assert tuple(
+        diagnostic.cause for diagnostic in bound.request_validation_321_diagnostics
+    ) == ("request_id_mismatch", "request_id_mismatch")
+
+
+def test_matching_321_is_bound_only_to_its_historical_request() -> None:
+    bound = adjusted_last.bind_strict_adjusted_history_request(
+        active_request_id=41,
+        bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
+        error_events=((41, 321, "invalid duration"), (99, 10089, None)),
+        historical_data_end_request_ids=(41,),
+        informational_error_codes=(),
+        request_envelope=REQUEST_ENVELOPE,
+        expected_session_count=len(EXPECTED),
+    )
+
+    assert tuple(bound.history_outcome.provider_error_codes) == (321,)
+    assert bound.foreign_error_code_counts == ((10089, 1),)
+    assert tuple(
+        diagnostic.cause for diagnostic in bound.request_validation_321_diagnostics
+    ) == ("invalid_duration",)
+    with pytest.raises(StrictAdjustedHistoryError) as caught:
+        acquire_strict_adjusted_last(
+            OfflineIB(),
+            "BOXX",
+            end_datetime=CUTOFF,
+            duration="9 Y",
+            expected_sessions=EXPECTED,
+            stock_factory=_stock,
+            requester=lambda _contract, **_kwargs: bound.history_outcome,
+        )
+    assert caught.value.diagnostic is not None
+    assert caught.value.diagnostic.to_dict()["classification"] == "provider_error"
+
+
+def test_only_matching_historical_data_end_marks_request_complete() -> None:
+    bound = adjusted_last.bind_strict_adjusted_history_request(
+        active_request_id=41,
+        bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
+        error_events=(),
+        historical_data_end_request_ids=(99,),
+        informational_error_codes=(),
+        request_envelope=REQUEST_ENVELOPE,
+        expected_session_count=len(EXPECTED),
+    )
+
+    assert bound.history_outcome.completion_observed is False
+    assert bound.matching_historical_data_end_count == 0
+    assert bound.foreign_historical_data_end_count == 1
+    with pytest.raises(StrictAdjustedHistoryError) as caught:
+        acquire_strict_adjusted_last(
+            OfflineIB(),
+            "BOXX",
+            end_datetime=CUTOFF,
+            duration="9 Y",
+            expected_sessions=EXPECTED,
+            stock_factory=_stock,
+            requester=lambda _contract, **_kwargs: bound.history_outcome,
+        )
+    assert caught.value.diagnostic is not None
+    assert caught.value.diagnostic.to_dict()["classification"] == "completion_not_observed"
 
 
 @pytest.mark.parametrize(
