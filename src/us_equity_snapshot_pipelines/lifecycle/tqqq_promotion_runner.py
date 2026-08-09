@@ -30,7 +30,7 @@ _UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
 _PROFILE = "tqqq_etf_only_single_strategy_research_v1"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "BOXX"})
-_COST_SCENARIOS_BPS = (5, 10, 25)
+_COST_SCENARIOS_BPS = (5, 10, 15)
 
 
 class TqqqPromotionContractError(ValueError):
@@ -691,7 +691,7 @@ def run_tqqq_promotion_research(
             locked_oos_end=plan.locked_oos_end,
             purge_days=plan.purge_days,
             embargo_days=plan.embargo_days,
-            source_revision=identity.runner_revision,
+            source_revision=identity.ues_revision,
             cost_model=_cost_model(total_cost_bps),
             param_set_id=f"tqqq_etf_only_{total_cost_bps}bp",
         )
