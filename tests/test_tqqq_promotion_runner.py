@@ -116,9 +116,13 @@ def test_delegates_exact_three_cost_scenarios_to_qpk_promotion_orchestrator() ->
 
     assert TqqqPromotionRunner.runner_kind == "real"
     assert run_promotion.call_count == 3
-    assert [scenario.total_cost_bps for scenario in result.scenarios] == [5, 10, 25]
+    assert [scenario.total_cost_bps for scenario in result.scenarios] == [5, 10, 15]
     assert all(scenario.cost_model_scope == "ALL_IN_PER_SIDE" for scenario in result.scenarios)
     assert len(replay.calls) == 12
+    assert all(
+        scenario.promotion_run.source_revision == UES_REVISION
+        for scenario in result.scenarios
+    )
 
 
 def test_explicit_entrypoints_preserve_continuous_state_and_qqq_relative_metrics() -> None:
