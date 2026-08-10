@@ -27,7 +27,7 @@ EXPECTED = (date(2026, 8, 1), date(2026, 8, 2))
 CUTOFF = datetime(2026, 8, 5, 3, 59, 59, tzinfo=timezone.utc)
 REQUEST_ENVELOPE = (
     b'{"barSizeSetting":"1 day","durationStr":"9 Y",'
-    b'"endDateTime":"20260805 03:59:59 UTC","formatDate":1,'
+    b'"endDateTime":"","formatDate":1,'
     b'"keepUpToDate":false,"useRTH":true,"whatToShow":"ADJUSTED_LAST"}'
 )
 
@@ -481,13 +481,7 @@ def test_writer_rejects_contradictory_request_correlation_aggregates(
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize(
-    "provider_end_time",
-    ["20260805 03:59:59 UTC", "20260805-03:59:59"],
-)
-def test_frozen_request_fields_and_aware_or_legacy_end_time_representations(
-    provider_end_time: str,
-) -> None:
+def test_frozen_request_fields_use_empty_provider_end_time() -> None:
     captured: dict[str, object] = {}
 
     def requester(contract, **kwargs):
@@ -498,7 +492,7 @@ def test_frozen_request_fields_and_aware_or_legacy_end_time_representations(
             completion_observed=True,
         )
 
-    acquire_strict_adjusted_last(
+    result = acquire_strict_adjusted_last(
         OfflineIB(),
         "SOXL",
         end_datetime=CUTOFF,
@@ -515,7 +509,7 @@ def test_frozen_request_fields_and_aware_or_legacy_end_time_representations(
         "currency": "USD",
     }
     assert captured == {
-        "endDateTime": CUTOFF,
+        "endDateTime": "",
         "durationStr": "9 Y",
         "barSizeSetting": "1 day",
         "whatToShow": "ADJUSTED_LAST",
@@ -523,7 +517,35 @@ def test_frozen_request_fields_and_aware_or_legacy_end_time_representations(
         "formatDate": 1,
         "keepUpToDate": False,
     }
-    assert provider_end_time in {
-        CUTOFF.strftime("%Y%m%d %H:%M:%S UTC"),
-        CUTOFF.strftime("%Y%m%d-%H:%M:%S"),
-    }
+    assert result.provenance.end_datetime == "2026-08-05T03:59:59Z"
+
+
+def test_empty_end_time_filters_to_frozen_session_set_before_exact_equality() -> None:
+    captured: dict[str, object] = {}
+
+    def requester(_contract, **kwargs):
+        captured.update(kwargs)
+        return StrictAdjustedHistoryRequestOutcome(
+            bars=[
+                _bar(date(2017, 8, 4)),
+                _bar(EXPECTED[0]),
+                _bar(EXPECTED[1]),
+                _bar(CUTOFF.date()),
+                _bar(date(2026, 8, 6)),
+            ],
+            completion_observed=True,
+        )
+
+    result = acquire_strict_adjusted_last(
+        OfflineIB(),
+        "BOXX",
+        end_datetime=CUTOFF,
+        duration="9 Y",
+        expected_sessions=EXPECTED,
+        stock_factory=_stock,
+        requester=requester,
+    )
+
+    assert captured["endDateTime"] == ""
+    assert tuple(candle.session for candle in result.candles) == EXPECTED
+    assert result.diagnostic.to_dict()["classification"] == "exact_match"

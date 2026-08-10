@@ -239,15 +239,51 @@ def acquire_strict_adjusted_last(
     stock_factory: Callable[..., Any] | None = None,
     requester: Callable[..., StrictAdjustedHistoryRequestOutcome],
 ) -> StrictAdjustedHistoryResult:
-    """Run the QPK strict contract with explicit completion and error state."""
+    """Request current adjusted history, then enforce the frozen session contract."""
+    frozen_sessions = tuple(expected_sessions)
+
+    def request_frozen_sessions(
+        contract: Any,
+        **request_kwargs: Any,
+    ) -> StrictAdjustedHistoryRequestOutcome:
+        outcome = requester(contract, **{**request_kwargs, "endDateTime": ""})
+        if not isinstance(outcome, StrictAdjustedHistoryRequestOutcome):
+            return outcome
+        try:
+            bars = tuple(outcome.bars)
+        except TypeError:
+            return outcome
+
+        filtered_bars = []
+        for bar in bars:
+            raw_session = getattr(bar, "date", None)
+            try:
+                if isinstance(raw_session, datetime):
+                    session = raw_session.date()
+                elif isinstance(raw_session, date):
+                    session = raw_session
+                else:
+                    session = datetime.fromisoformat(str(raw_session)).date()
+            except (TypeError, ValueError):
+                filtered_bars.append(bar)
+                continue
+            if frozen_sessions[0] <= session < end_datetime.date():
+                filtered_bars.append(bar)
+
+        return StrictAdjustedHistoryRequestOutcome(
+            bars=tuple(filtered_bars),
+            completion_observed=outcome.completion_observed,
+            provider_error_codes=outcome.provider_error_codes,
+        )
+
     return fetch_strict_adjusted_historical_price_candles(
         ib,
         symbol,
         end_datetime=end_datetime,
         duration=duration,
-        expected_sessions=expected_sessions,
+        expected_sessions=frozen_sessions,
         stock_factory=stock_factory,
-        requester=requester,
+        requester=request_frozen_sessions,
     )
 
 
