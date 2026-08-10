@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import date, datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import stat
+from dataclasses import replace
+from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +17,7 @@ from quant_platform_kit.ibkr import (
 from us_equity_snapshot_pipelines.lifecycle import soxl_adjusted_last_acquisition as adjusted_last
 from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition import (
     acquire_strict_adjusted_last,
+    build_request_bound_ibkr_app,
     classify_request_validation_321,
     write_sanitized_adjusted_last_diagnostic,
     write_sanitized_request_validation_321_diagnostic,
@@ -24,7 +25,7 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition impor
 
 
 EXPECTED = (date(2026, 8, 1), date(2026, 8, 2))
-CUTOFF = datetime(2026, 8, 5, 3, 59, 59, tzinfo=timezone.utc)
+CUTOFF = datetime(2026, 8, 5, 3, 59, 59, tzinfo=UTC)
 REQUEST_ENVELOPE = (
     b'{"barSizeSetting":"1 day","durationStr":"9 Y",'
     b'"endDateTime":"","formatDate":1,'
@@ -598,3 +599,285 @@ def test_empty_end_time_filters_to_frozen_session_set_before_exact_equality() ->
     assert captured["endDateTime"] == ""
     assert tuple(candle.session for candle in result.candles) == EXPECTED
     assert result.diagnostic.to_dict()["classification"] == "exact_match"
+
+
+class _FakeWrapper:
+    def __init__(self) -> None:
+        pass
+
+
+class _FakeContract:
+    pass
+
+
+class _FakeClient:
+    def __init__(self, wrapper) -> None:
+        self.wrapper = wrapper
+        self.connected = True
+        self.history_calls = []
+        self.cancel_history_calls = []
+        self.contract_detail_calls = []
+        self.on_history = None
+        self.on_cancel_history = None
+        self.on_contract_details = None
+
+    def isConnected(self) -> bool:
+        return self.connected
+
+    def reqHistoricalData(self, *args) -> None:
+        self.history_calls.append(args)
+        if self.on_history is not None:
+            self.on_history(args[0])
+
+    def cancelHistoricalData(self, request_id: int) -> None:
+        self.cancel_history_calls.append(request_id)
+        if self.on_cancel_history is not None:
+            self.on_cancel_history(request_id)
+
+    def reqContractDetails(self, request_id: int, contract) -> None:
+        self.contract_detail_calls.append((request_id, contract))
+        if self.on_contract_details is not None:
+            self.on_contract_details(request_id, contract)
+
+    def run(self) -> None:
+        return None
+
+
+def _request_bound_app(*, handshake: bool = True):
+    app = build_request_bound_ibkr_app(
+        client_type=_FakeClient,
+        wrapper_type=_FakeWrapper,
+        contract_type=_FakeContract,
+        qualification_watchdog_seconds=0.01,
+        history_watchdog_seconds=0.01,
+        wait_poll_seconds=0.001,
+        request_id_start=40,
+    )
+    if handshake:
+        app.nextValidId(1)
+    return app
+
+
+def _request_history(app):
+    contract = _FakeContract()
+    contract.symbol = "SOXL"
+    contract.secType = "STK"
+    contract.exchange = "SMART"
+    contract.currency = "USD"
+    contract.conId = 123
+    return app.request_adjusted_history(
+        "SOXL",
+        contract,
+        expected_session_count=len(EXPECTED),
+        expected_duration="9 Y",
+        endDateTime="",
+        durationStr="9 Y",
+        barSizeSetting="1 day",
+        whatToShow="ADJUSTED_LAST",
+        useRTH=True,
+        formatDate=1,
+        keepUpToDate=False,
+    )
+
+
+def test_request_bound_lifecycle_accepts_on_demand_hmds_then_matching_end() -> None:
+    app = _request_bound_app()
+
+    def complete(request_id: int) -> None:
+        app.error(-1, 0, 2107, "raw inactive provider text")
+        app.error(-1, 0, 2106, "raw connected provider text")
+        app.historicalData(request_id, _bar(EXPECTED[0]))
+        app.historicalDataEnd(request_id, "raw start", "raw end")
+
+    app.on_history = complete
+    outcome = _request_history(app)
+
+    assert outcome.completion_observed is True
+    assert len(tuple(outcome.bars)) == 1
+    assert len(app.history_calls) == 1
+    assert app.cancel_history_calls == []
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle == {
+        "phase": "history",
+        "status": "SUCCESS",
+        "terminal_trigger": "response_callback",
+        "readiness_or_progress_observed": True,
+        "matching_callback_count": 2,
+        "foreign_callback_count": 0,
+        "matching_completion_count": 1,
+        "transition_code_counts": {"2106": 1, "2107": 1},
+        "cancellation_count": 0,
+        "elapsed_monotonic_ms": lifecycle["elapsed_monotonic_ms"],
+        "request_envelope_sha256": lifecycle["request_envelope_sha256"],
+    }
+    assert isinstance(lifecycle["elapsed_monotonic_ms"], int)
+    assert lifecycle["elapsed_monotonic_ms"] >= 0
+    serialized = json.dumps(lifecycle, sort_keys=True)
+    for forbidden in (
+        "raw inactive provider text",
+        "raw connected provider text",
+        "raw start",
+        "raw end",
+        "98765.4321",
+        "2026-08-01",
+        '"open"',
+        '"close"',
+        '"volume"',
+    ):
+        assert forbidden not in serialized
+
+
+def test_request_bound_lifecycle_requires_handshake_before_application_call() -> None:
+    app = _request_bound_app(handshake=False)
+
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="IBKR handshake unavailable",
+    ):
+        _request_history(app)
+
+    assert app.history_calls == []
+    assert app.sanitized_lifecycle() == ()
+
+
+@pytest.mark.parametrize("code", (2105, 1100, 1101, 1300))
+def test_request_bound_lifecycle_fails_closed_on_transport_code(code: int) -> None:
+    app = _request_bound_app()
+    app.on_history = lambda _request_id: app.error(-1, 0, code, "raw transport text")
+
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="transport terminal trigger:transport_stopped",
+    ):
+        _request_history(app)
+
+    assert len(app.history_calls) == 1
+    assert app.cancel_history_calls == []
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle["status"] == "FAILED_MATERIAL"
+    assert lifecycle["terminal_trigger"] == "transport_stopped"
+    assert lifecycle["transition_code_counts"] == {str(code): 1}
+    assert "raw transport text" not in json.dumps(lifecycle)
+
+
+def test_request_bound_lifecycle_keeps_request_alive_on_1102() -> None:
+    app = _request_bound_app()
+
+    def complete(request_id: int) -> None:
+        app.error(-1, 0, 1102, "raw maintained text")
+        app.historicalData(request_id, _bar(EXPECTED[0]))
+        app.historicalDataEnd(request_id, "raw start", "raw end")
+
+    app.on_history = complete
+    outcome = _request_history(app)
+
+    assert outcome.completion_observed is True
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle["status"] == "SUCCESS"
+    assert lifecycle["transition_code_counts"] == {"1102": 1}
+
+
+@pytest.mark.parametrize(
+    ("terminal_callback", "expected_trigger"),
+    (
+        (lambda app: app.connectionClosed(), "connection_closed"),
+        (lambda app: app.run_until_stopped(), "reader_stopped"),
+        (lambda app: setattr(app, "connected", False), "transport_stopped"),
+    ),
+)
+def test_request_bound_lifecycle_routes_explicit_transport_terminal(
+    terminal_callback,
+    expected_trigger: str,
+) -> None:
+    app = _request_bound_app()
+    app.on_history = lambda _request_id: terminal_callback(app)
+
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match=f"transport terminal trigger:{expected_trigger}",
+    ):
+        _request_history(app)
+
+    assert app.sanitized_lifecycle()[-1]["terminal_trigger"] == expected_trigger
+    assert app.cancel_history_calls == []
+
+
+def test_request_bound_lifecycle_watchdog_cancels_once_without_retry() -> None:
+    app = _request_bound_app()
+
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="transport terminal trigger:timeout",
+    ):
+        _request_history(app)
+
+    assert len(app.history_calls) == 1
+    assert len(app.cancel_history_calls) == 1
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle["terminal_trigger"] == "timeout"
+    assert lifecycle["cancellation_count"] == 1
+
+
+def test_request_bound_lifecycle_keeps_first_terminal_when_cleanup_gets_late_end() -> None:
+    app = _request_bound_app()
+    app.on_cancel_history = lambda request_id: app.historicalDataEnd(
+        request_id,
+        "raw late start",
+        "raw late end",
+    )
+
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="transport terminal trigger:timeout",
+    ):
+        _request_history(app)
+
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle["terminal_trigger"] == "timeout"
+    assert lifecycle["cancellation_count"] == 1
+
+
+def test_only_matching_callbacks_can_complete_request_bound_history() -> None:
+    app = _request_bound_app()
+
+    def foreign_callbacks(request_id: int) -> None:
+        app.historicalData(request_id + 1, _bar(EXPECTED[0]))
+        app.historicalDataEnd(request_id + 1, "raw start", "raw end")
+        app.error(request_id + 1, 0, 321, "raw foreign provider text")
+
+    app.on_history = foreign_callbacks
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="transport terminal trigger:timeout",
+    ):
+        _request_history(app)
+
+    lifecycle = app.sanitized_lifecycle()[-1]
+    assert lifecycle["matching_callback_count"] == 0
+    assert lifecycle["foreign_callback_count"] == 3
+    assert lifecycle["matching_completion_count"] == 0
+    assert lifecycle["cancellation_count"] == 1
+
+
+def test_request_bound_contract_qualification_is_single_and_exact() -> None:
+    app = _request_bound_app()
+
+    def qualify(request_id: int, requested) -> None:
+        qualified = _FakeContract()
+        qualified.symbol = requested.symbol
+        qualified.secType = "STK"
+        qualified.exchange = "SMART"
+        qualified.currency = "USD"
+        qualified.conId = 123
+        app.contractDetails(request_id, SimpleNamespace(contract=qualified))
+        app.contractDetailsEnd(request_id)
+
+    app.on_contract_details = qualify
+    template = SimpleNamespace(symbol="SOXL", exchange="SMART", currency="USD")
+
+    qualified = app.qualifyContracts(template)
+
+    assert len(qualified) == 1
+    assert qualified[0].symbol == "SOXL"
+    assert len(app.contract_detail_calls) == 1
+    assert app.sanitized_lifecycle()[-1]["phase"] == "qualification"

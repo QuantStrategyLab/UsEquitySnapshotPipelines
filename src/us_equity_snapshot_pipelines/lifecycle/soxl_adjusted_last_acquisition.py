@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
+import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-import hashlib
-import json
-import os
 from pathlib import Path
-import re
 from typing import Any
 
 from quant_platform_kit.ibkr import (
@@ -105,6 +107,11 @@ _PROVIDER_MESSAGE_FIELD_PATTERNS = (
 )
 _REQUEST_ENVELOPE_COMMITMENT_DOMAIN = b"qsl.soxl.request-envelope.v1"
 _PROVIDER_MESSAGE_COMMITMENT_DOMAIN = b"qsl.soxl.provider-message.v1"
+_CONNECTIVITY_TRANSITION_CODES = frozenset(
+    {1100, 1101, 1102, 1300, 2104, 2105, 2106, 2107, 2108, 2158}
+)
+_TRANSPORT_FAILURE_CODES = frozenset({1100, 1101, 1300, 2105})
+_INFORMATIONAL_ERROR_CODES = frozenset({1102, 2104, 2106, 2107, 2108, 2158})
 
 
 class SoxlAdjustedLastDiagnosticError(ValueError):
@@ -239,6 +246,466 @@ def bind_strict_adjusted_history_request(
         foreign_historical_data_end_count=foreign_completion_count,
         request_validation_321_diagnostics=request_validation_diagnostics,
     )
+
+
+def build_request_bound_ibkr_app(
+    *,
+    client_type: type[Any],
+    wrapper_type: type[Any],
+    contract_type: type[Any],
+    qualification_watchdog_seconds: float = 30.0,
+    history_watchdog_seconds: float = 240.0,
+    wait_poll_seconds: float = 0.1,
+    request_id_start: int = 1_000_000,
+) -> Any:
+    """Build the concrete IBKR callback boundary for the frozen acquisition CLI.
+
+    ``ibapi`` remains a runtime-provided integration: the repository does not add
+    a production dependency, and tests inject minimal EClient/EWrapper doubles.
+    """
+    if (
+        not isinstance(client_type, type)
+        or not isinstance(wrapper_type, type)
+        or not isinstance(contract_type, type)
+        or isinstance(request_id_start, bool)
+        or not isinstance(request_id_start, int)
+        or request_id_start < 0
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value <= 0
+            for value in (
+                qualification_watchdog_seconds,
+                history_watchdog_seconds,
+                wait_poll_seconds,
+            )
+        )
+    ):
+        raise SoxlAdjustedLastDiagnosticError("invalid IBKR lifecycle configuration")
+
+    class RequestBoundIbkrApp(wrapper_type, client_type):
+        def __init__(self) -> None:
+            wrapper_type.__init__(self)
+            client_type.__init__(self, self)
+            self._condition = threading.Condition()
+            self._handshake = threading.Event()
+            self._next_request_id = request_id_start
+            self._reader_thread: threading.Thread | None = None
+            self._reader_stopped = False
+            self._connection_closed = False
+            self._transport_terminal: str | None = None
+            self._hmds_ready = False
+            self._pending_transition_counts: Counter[int] = Counter()
+            self._lifecycle: list[dict[str, Any]] = []
+            self._active_request_id: int | None = None
+            self._phase: str | None = None
+            self._terminal_trigger: str | None = None
+            self._errors: list[tuple[int, int, str | None]] = []
+            self._completion_ids: list[int] = []
+            self._contract_details: list[Any] = []
+            self._bars: list[Any] = []
+            self._matching_callback_count = 0
+            self._foreign_callback_count = 0
+            self._transition_counts: Counter[int] = Counter()
+            self._readiness_or_progress_observed = False
+            self._cancellation_count = 0
+            self._request_started_monotonic: float | None = None
+
+        def nextValidId(self, orderId: int) -> None:
+            del orderId
+            self._handshake.set()
+
+        def wait_for_handshake(self) -> bool:
+            return self._handshake.wait(15.0)
+
+        def start_reader(self) -> None:
+            with self._condition:
+                if self._reader_thread is not None:
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "IBKR reader thread already started"
+                    )
+                reader = threading.Thread(
+                    target=self.run_until_stopped,
+                    name="soxl-tqqq-ibkr-reader",
+                    daemon=True,
+                )
+                self._reader_thread = reader
+            reader.start()
+
+        def run_until_stopped(self) -> None:
+            try:
+                client_type.run(self)
+            except Exception:  # noqa: BLE001 - provider text must not reach stderr
+                return
+            finally:
+                with self._condition:
+                    self._reader_stopped = True
+                    self._transport_terminal = "reader_stopped"
+                    if (
+                        self._active_request_id is not None
+                        and self._terminal_trigger is None
+                    ):
+                        self._terminal_trigger = "reader_stopped"
+                    self._condition.notify_all()
+
+        def connectionClosed(self) -> None:
+            with self._condition:
+                self._connection_closed = True
+                self._transport_terminal = "connection_closed"
+                if (
+                    self._active_request_id is not None
+                    and self._terminal_trigger is None
+                ):
+                    self._terminal_trigger = "connection_closed"
+                self._condition.notify_all()
+
+        def error(
+            self,
+            reqId: int,
+            errorTime: int,
+            errorCode: int,
+            errorString: str,
+            advancedOrderRejectJson: str = "",
+        ) -> None:
+            del errorTime, advancedOrderRejectJson
+            try:
+                request_id = int(reqId)
+                code = int(errorCode)
+            except (TypeError, ValueError):
+                return
+            with self._condition:
+                if code in _CONNECTIVITY_TRANSITION_CODES:
+                    counts = (
+                        self._transition_counts
+                        if self._active_request_id is not None
+                        else self._pending_transition_counts
+                    )
+                    counts[code] += 1
+                    if code == 2106:
+                        self._hmds_ready = True
+                        if self._active_request_id is not None:
+                            self._readiness_or_progress_observed = True
+                    elif code in {2105, 2107}:
+                        self._hmds_ready = False
+                    if code in _TRANSPORT_FAILURE_CODES:
+                        self._transport_terminal = "transport_stopped"
+                        if (
+                            self._active_request_id is not None
+                            and self._terminal_trigger is None
+                        ):
+                            self._terminal_trigger = "transport_stopped"
+                    self._condition.notify_all()
+                    return
+                if self._active_request_id is None:
+                    return
+                self._errors.append(
+                    (
+                        request_id,
+                        code,
+                        str(errorString) if errorString is not None else None,
+                    )
+                )
+                if request_id == self._active_request_id:
+                    self._matching_callback_count += 1
+                    if self._terminal_trigger is None:
+                        self._terminal_trigger = "response_callback"
+                else:
+                    self._foreign_callback_count += 1
+                self._condition.notify_all()
+
+        def contractDetails(self, reqId: int, contractDetails: Any) -> None:
+            with self._condition:
+                if self._phase == "qualification" and reqId == self._active_request_id:
+                    self._contract_details.append(contractDetails)
+                    self._matching_callback_count += 1
+                else:
+                    self._foreign_callback_count += 1
+                self._condition.notify_all()
+
+        def contractDetailsEnd(self, reqId: int) -> None:
+            with self._condition:
+                if self._phase == "qualification" and reqId == self._active_request_id:
+                    self._completion_ids.append(reqId)
+                    self._matching_callback_count += 1
+                    if self._terminal_trigger is None:
+                        self._terminal_trigger = "response_callback"
+                else:
+                    self._foreign_callback_count += 1
+                self._condition.notify_all()
+
+        def historicalData(self, reqId: int, bar: Any) -> None:
+            with self._condition:
+                if self._phase == "history" and reqId == self._active_request_id:
+                    self._bars.append(bar)
+                    self._matching_callback_count += 1
+                    self._readiness_or_progress_observed = True
+                else:
+                    self._foreign_callback_count += 1
+                self._condition.notify_all()
+
+        def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:
+            del start, end
+            with self._condition:
+                if self._phase == "history" and reqId == self._active_request_id:
+                    self._completion_ids.append(reqId)
+                    self._matching_callback_count += 1
+                    self._readiness_or_progress_observed = True
+                    if self._terminal_trigger is None:
+                        self._terminal_trigger = "response_callback"
+                else:
+                    self._foreign_callback_count += 1
+                self._condition.notify_all()
+
+        def _begin_request(self, phase: str) -> int:
+            with self._condition:
+                if self._active_request_id is not None:
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "concurrent IBKR request is forbidden"
+                    )
+                if not self._handshake.is_set():
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "IBKR handshake unavailable"
+                    )
+                self._next_request_id += 1
+                self._active_request_id = self._next_request_id
+                self._phase = phase
+                self._terminal_trigger = self._transport_terminal
+                self._errors = []
+                self._completion_ids = []
+                self._contract_details = []
+                self._bars = []
+                self._matching_callback_count = 0
+                self._foreign_callback_count = 0
+                self._transition_counts = Counter(self._pending_transition_counts)
+                self._pending_transition_counts.clear()
+                self._readiness_or_progress_observed = self._hmds_ready
+                self._cancellation_count = 0
+                self._request_started_monotonic = time.monotonic()
+                return self._active_request_id
+
+        def _wait_for_terminal(self, timeout_seconds: float) -> str:
+            deadline = time.monotonic() + timeout_seconds
+            with self._condition:
+                while self._terminal_trigger is None:
+                    if self._connection_closed:
+                        self._terminal_trigger = "connection_closed"
+                        break
+                    if self._reader_stopped:
+                        self._terminal_trigger = "reader_stopped"
+                        break
+                    if not self.isConnected():
+                        self._terminal_trigger = "transport_stopped"
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._terminal_trigger = "timeout"
+                        break
+                    self._condition.wait(min(wait_poll_seconds, remaining))
+                return self._terminal_trigger
+
+        def _finish_request(
+            self,
+            *,
+            status: str,
+            request_envelope_sha256: str | None = None,
+        ) -> None:
+            with self._condition:
+                elapsed_monotonic_ms = (
+                    max(
+                        0,
+                        int(
+                            (time.monotonic() - self._request_started_monotonic)
+                            * 1_000
+                        ),
+                    )
+                    if self._request_started_monotonic is not None
+                    else 0
+                )
+                payload: dict[str, Any] = {
+                    "phase": self._phase,
+                    "status": status,
+                    "terminal_trigger": self._terminal_trigger,
+                    "readiness_or_progress_observed": self._readiness_or_progress_observed,
+                    "matching_callback_count": self._matching_callback_count,
+                    "foreign_callback_count": self._foreign_callback_count,
+                    "matching_completion_count": sum(
+                        request_id == self._active_request_id
+                        for request_id in self._completion_ids
+                    ),
+                    "transition_code_counts": {
+                        str(code): count
+                        for code, count in sorted(self._transition_counts.items())
+                    },
+                    "cancellation_count": self._cancellation_count,
+                    "elapsed_monotonic_ms": elapsed_monotonic_ms,
+                }
+                if request_envelope_sha256 is not None:
+                    payload["request_envelope_sha256"] = request_envelope_sha256
+                self._lifecycle.append(payload)
+                self._active_request_id = None
+                self._phase = None
+                self._request_started_monotonic = None
+
+        def sanitized_lifecycle(self) -> tuple[dict[str, Any], ...]:
+            with self._condition:
+                return tuple(
+                    {
+                        **item,
+                        "transition_code_counts": dict(
+                            item["transition_code_counts"]
+                        ),
+                    }
+                    for item in self._lifecycle
+                )
+
+        def qualifyContracts(self, template: Any) -> tuple[Any, ...]:
+            request_id = self._begin_request("qualification")
+            status = "FAILED_MATERIAL"
+            try:
+                if self._terminal_trigger is not None or not self.isConnected():
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "transport terminal trigger:transport_stopped"
+                    )
+                contract = contract_type()
+                contract.symbol = getattr(template, "symbol", None)
+                contract.secType = "STK"
+                contract.exchange = "SMART"
+                contract.currency = "USD"
+                self.reqContractDetails(request_id, contract)
+                terminal = self._wait_for_terminal(
+                    qualification_watchdog_seconds
+                )
+                if terminal != "response_callback":
+                    raise SoxlAdjustedLastDiagnosticError(
+                        f"transport terminal trigger:{terminal}"
+                    )
+                matching_errors = tuple(
+                    code for event_id, code, _message in self._errors
+                    if event_id == request_id
+                )
+                matching_completions = self._completion_ids.count(request_id)
+                if (
+                    matching_errors
+                    or matching_completions != 1
+                    or len(self._contract_details) != 1
+                ):
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "IBKR contract qualification failed"
+                    )
+                qualified = self._contract_details[0].contract
+                if (
+                    getattr(qualified, "symbol", None) != contract.symbol
+                    or getattr(qualified, "secType", None) != "STK"
+                    or getattr(qualified, "exchange", None) != "SMART"
+                    or getattr(qualified, "currency", None) != "USD"
+                    or isinstance(getattr(qualified, "conId", None), bool)
+                    or not isinstance(getattr(qualified, "conId", None), int)
+                    or qualified.conId <= 0
+                ):
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "IBKR qualified contract identity mismatch"
+                    )
+                status = "SUCCESS"
+                return (qualified,)
+            finally:
+                self._finish_request(status=status)
+
+        def request_adjusted_history(
+            self,
+            symbol: str,
+            contract: Any,
+            *,
+            expected_session_count: int,
+            expected_duration: str,
+            **request_kwargs: Any,
+        ) -> StrictAdjustedHistoryRequestOutcome:
+            exact_request = {
+                "endDateTime": "",
+                "durationStr": expected_duration,
+                "barSizeSetting": "1 day",
+                "whatToShow": "ADJUSTED_LAST",
+                "useRTH": True,
+                "formatDate": 1,
+                "keepUpToDate": False,
+            }
+            if (
+                not isinstance(symbol, str)
+                or not symbol
+                or isinstance(expected_session_count, bool)
+                or not isinstance(expected_session_count, int)
+                or expected_session_count <= 0
+                or not isinstance(expected_duration, str)
+                or request_kwargs != exact_request
+            ):
+                raise SoxlAdjustedLastDiagnosticError(
+                    "IBKR historical request contract mismatch"
+                )
+            envelope = json.dumps(
+                {"symbol": symbol, "request": exact_request},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+            envelope_sha256 = hashlib.sha256(envelope).hexdigest()
+            request_id = self._begin_request("history")
+            status = "FAILED_MATERIAL"
+            try:
+                if self._terminal_trigger is not None or not self.isConnected():
+                    raise SoxlAdjustedLastDiagnosticError(
+                        "transport terminal trigger:transport_stopped"
+                    )
+                self.reqHistoricalData(
+                    request_id,
+                    contract,
+                    "",
+                    expected_duration,
+                    "1 day",
+                    "ADJUSTED_LAST",
+                    1,
+                    1,
+                    False,
+                    [],
+                )
+                terminal = self._wait_for_terminal(history_watchdog_seconds)
+                if terminal == "timeout":
+                    self._cancellation_count += 1
+                    self.cancelHistoricalData(request_id)
+                with self._condition:
+                    bars = tuple(self._bars)
+                    errors = tuple(self._errors)
+                    completion_ids = tuple(self._completion_ids)
+                bound = bind_strict_adjusted_history_request(
+                    active_request_id=request_id,
+                    terminal_trigger=terminal,
+                    bars=bars,
+                    error_events=errors,
+                    historical_data_end_request_ids=completion_ids,
+                    informational_error_codes=_INFORMATIONAL_ERROR_CODES,
+                    request_envelope=envelope,
+                    expected_session_count=expected_session_count,
+                )
+                completion_count = bound.matching_historical_data_end_count
+                matching_errors = tuple(bound.history_outcome.provider_error_codes)
+                status = (
+                    "SUCCESS"
+                    if not matching_errors and completion_count == 1
+                    else "FAILED_MATERIAL"
+                )
+                if completion_count == 1:
+                    return bound.history_outcome
+                return StrictAdjustedHistoryRequestOutcome(
+                    bars=bound.history_outcome.bars,
+                    completion_observed=False,
+                    provider_error_codes=bound.history_outcome.provider_error_codes,
+                )
+            finally:
+                self._finish_request(
+                    status=status,
+                    request_envelope_sha256=envelope_sha256,
+                )
+
+    RequestBoundIbkrApp.__name__ = "RequestBoundIbkrApp"
+    return RequestBoundIbkrApp()
 
 
 def acquire_strict_adjusted_last(
