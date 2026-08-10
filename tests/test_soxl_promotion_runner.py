@@ -501,7 +501,7 @@ def test_core_only_market_regime_contract_fails_closed(mutator, message: str) ->
         (lambda config: config.update(ordered_variants=list(reversed(VARIANTS))), "variant"),
         (
             lambda config: config["availability_contract"]["first_eligible_session"].update(
-                QQQI="2024-01-30"
+                QQQI="2024-01-29"
             ),
             "availability",
         ),
@@ -587,7 +587,7 @@ def test_real_qpk_indicator_ues_bridge_and_risk_engine_are_compatible(monkeypatc
         input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
     )
     state = runner._initial_state()
-    index = _session_index(input_payload["sessions"], "2024-01-29")
+    index = _session_index(input_payload["sessions"], "2024-01-30")
     boxx_close = input_payload["sessions"][index]["bars"]["BOXX"]["close"]
     state.cash = 50_000.0
     state.quantities = {symbol: 0.0 for symbol in SOXL_PROMOTION_ASSETS}
@@ -697,7 +697,7 @@ def test_qqq_to_qqqi_transition_executes_next_open_with_full_half_l1_cost(monkey
         input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
     )
     state = runner._initial_state()
-    index = _session_index(input_payload["sessions"], "2024-01-29")
+    index = _session_index(input_payload["sessions"], "2024-01-30")
     qqq_close = input_payload["sessions"][index]["bars"]["QQQ"]["close"]
     state.cash = 90_000.0
     state.quantities["QQQ"] = 10_000.0 / qqq_close

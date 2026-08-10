@@ -52,6 +52,19 @@ def test_spyi_first_trading_session_is_shared_by_all_consumers() -> None:
     assert "SPYI" in sessions[first_eligible_index]["bars"]
 
 
+def test_qqqi_first_trading_session_is_shared_by_all_consumers() -> None:
+    assert FIRST_ELIGIBLE_SESSION["QQQI"] == "2024-01-30"
+    assert acquisition_orchestration.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+    assert regime_producer.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+    assert promotion_runner.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+
+    sessions = _raw_sessions()
+    prelisting_index = FROZEN_XNYS_SESSIONS.index("2024-01-29")
+    first_eligible_index = FROZEN_XNYS_SESSIONS.index("2024-01-30")
+    assert "QQQI" not in sessions[prelisting_index]["bars"]
+    assert "QQQI" in sessions[first_eligible_index]["bars"]
+
+
 def _raw_sessions() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for session_index, session_date in enumerate(FROZEN_XNYS_SESSIONS):
