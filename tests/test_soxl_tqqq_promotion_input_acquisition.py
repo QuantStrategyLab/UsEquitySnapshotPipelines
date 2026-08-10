@@ -6,7 +6,10 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from quant_platform_kit.ibkr import StrictAdjustedHistoryError
+from quant_platform_kit.ibkr import (
+    StrictAdjustedHistoryDiagnostic,
+    StrictAdjustedHistoryError,
+)
 
 from scripts import acquire_soxl_tqqq_promotion_inputs_ibkr as acquisition_cli
 import us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration as orchestration
@@ -190,7 +193,8 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
     )
     monkeypatch.setattr(acquisition_cli, "_runtime", lambda: (app, object()))
 
-    def run_exact(_app, *, contract_factory):
+    def run_exact(_app, *, contract_factory, on_strict_history_failure):
+        assert callable(on_strict_history_failure)
         app.events.append("acquire")
         return {
             symbol: SimpleNamespace(private_bars="must not serialize")
@@ -252,6 +256,87 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         "account",
         "credential",
         '"bars"',
+        '"price"',
+        '"volume"',
+    ):
+        assert forbidden not in serialized.lower()
+
+
+def test_cli_retains_only_sanitized_strict_history_failure_diagnostic(
+    monkeypatch,
+    capsys,
+) -> None:
+    app = _FakeRuntimeApp()
+    diagnostic = StrictAdjustedHistoryDiagnostic(
+        classification="session_contract_mismatch",
+        completion_observed=True,
+        expected_count=986,
+        observed_in_window_count=985,
+        missing_count=1,
+        extra_count=0,
+        duplicate_count=0,
+        missing_sessions_sha256="b" * 64,
+        extra_sessions_sha256="c" * 64,
+        duplicate_sessions_sha256="d" * 64,
+        provider_error_code_counts=(),
+    )
+    monkeypatch.setattr(acquisition_cli, "_require_filevault_local_root", lambda: None)
+    monkeypatch.setattr(
+        acquisition_cli,
+        "resolve_soxl_runtime_identity",
+        lambda: ("a" * 40, "b" * 40),
+    )
+    monkeypatch.setattr(acquisition_cli, "_runtime", lambda: (app, object()))
+
+    def acquire_or_fail(_app, symbol, **_kwargs):
+        if symbol == "SPYI":
+            raise StrictAdjustedHistoryError(
+                "synthetic provider message must not serialize",
+                diagnostic=diagnostic,
+            )
+        return SimpleNamespace()
+
+    monkeypatch.setattr(acquisition_cli, "acquire_strict_adjusted_last", acquire_or_fail)
+
+    assert acquisition_cli.main(_valid_cli_args()) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "FAILED_MATERIAL"
+    assert payload["asset_count"] == 0
+    assert payload["lifecycle"] == list(app.sanitized_lifecycle())
+    assert payload["strict_history_failure"] == {
+        "classification": "session_contract_mismatch",
+        "commitments": {
+            "algorithm": "sha256",
+            "canonicalization": "sorted_unique_iso_sessions_json_utf8.v1",
+            "duplicate_sessions_sha256": "d" * 64,
+            "extra_sessions_sha256": "c" * 64,
+            "missing_sessions_sha256": "b" * 64,
+        },
+        "counts": {
+            "duplicate_count": 0,
+            "expected_count": 986,
+            "extra_count": 0,
+            "missing_count": 1,
+            "observed_in_window_count": 985,
+        },
+        "failing_symbol": "SPYI",
+        "provider_error_code_counts": {},
+        "request_completion_observed": True,
+        "schema_version": "strict_adjusted_history_diagnostic.v1",
+        "strict_complete_input_count": 6,
+        "terminal_trigger": "response_callback",
+    }
+    serialized = json.dumps(payload, sort_keys=True)
+    for forbidden in (
+        "synthetic provider message",
+        "provider_message",
+        "request_body",
+        "response_body",
+        "account",
+        "credential",
+        '"bars"',
+        '"date"',
         '"price"',
         '"volume"',
     ):

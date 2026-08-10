@@ -11,7 +11,9 @@ import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from quant_platform_kit.ibkr import StrictAdjustedHistoryError
 
 from us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration import (
     EXACT_DURATIONS,
@@ -46,6 +48,9 @@ def run_exact_acquisition(
     app: Any,
     *,
     contract_factory: Any,
+    on_strict_history_failure: (
+        Callable[[str, int, StrictAdjustedHistoryError], None] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Acquire the frozen nine inputs sequentially and stop on first failure."""
     results: dict[str, Any] = {}
@@ -74,15 +79,20 @@ def run_exact_acquisition(
                 **request_kwargs,
             )
 
-        results[symbol] = acquire_strict_adjusted_last(
-            app,
-            symbol,
-            end_datetime=_FIXED_CUTOFF,
-            duration=duration,
-            expected_sessions=expected_sessions,
-            stock_factory=contract_factory,
-            requester=requester,
-        )
+        try:
+            results[symbol] = acquire_strict_adjusted_last(
+                app,
+                symbol,
+                end_datetime=_FIXED_CUTOFF,
+                duration=duration,
+                expected_sessions=expected_sessions,
+                stock_factory=contract_factory,
+                requester=requester,
+            )
+        except StrictAdjustedHistoryError as exc:
+            if on_strict_history_failure is not None:
+                on_strict_history_failure(symbol, len(results), exc)
+            raise
     return results
 
 
@@ -223,6 +233,21 @@ def main(argv: list[str] | None = None) -> int:
     mandate_receipt_digest = None
     rerun_count = 0
     lifecycle: list[dict[str, Any]] = []
+    strict_history_failure: dict[str, Any] | None = None
+
+    def retain_strict_history_failure(
+        symbol: str,
+        strict_complete_input_count: int,
+        error: StrictAdjustedHistoryError,
+    ) -> None:
+        nonlocal strict_history_failure
+        if error.diagnostic is not None:
+            strict_history_failure = {
+                **error.diagnostic.to_dict(),
+                "failing_symbol": symbol,
+                "strict_complete_input_count": strict_complete_input_count,
+            }
+
     try:
         _require_filevault_local_root()
         runner_revision, runner_tree_sha = resolve_soxl_runtime_identity()
@@ -234,7 +259,11 @@ def main(argv: list[str] | None = None) -> int:
         app.start_reader()
         if not app.wait_for_handshake():
             raise RuntimeError("IBKR handshake unavailable")
-        results = run_exact_acquisition(app, contract_factory=contract_factory)
+        results = run_exact_acquisition(
+            app,
+            contract_factory=contract_factory,
+            on_strict_history_failure=retain_strict_history_failure,
+        )
         asset_count = len(results)
         outcome = orchestrate_soxl_promotion(
             results,
@@ -257,21 +286,22 @@ def main(argv: list[str] | None = None) -> int:
             if app.isConnected():
                 app.disconnect()
 
-    print(
-        json.dumps(
-            {
-                "asset_count": asset_count,
-                "evidence_digest": evidence_digest,
-                "lifecycle": lifecycle,
-                "mandate_receipt_digest": mandate_receipt_digest,
-                "rerun_count": rerun_count,
-                "snapshot_digest": snapshot_digest,
-                "status": status,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+    terminal = {
+        "asset_count": asset_count,
+        "evidence_digest": evidence_digest,
+        "lifecycle": lifecycle,
+        "mandate_receipt_digest": mandate_receipt_digest,
+        "rerun_count": rerun_count,
+        "snapshot_digest": snapshot_digest,
+        "status": status,
+    }
+    if strict_history_failure is not None:
+        if lifecycle:
+            strict_history_failure["terminal_trigger"] = lifecycle[-1][
+                "terminal_trigger"
+            ]
+        terminal["strict_history_failure"] = strict_history_failure
+    print(json.dumps(terminal, sort_keys=True, separators=(",", ":")))
     return 0 if status in {
         "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "IMMUTABLE_NEGATIVE_STRATEGY_EVIDENCE",
