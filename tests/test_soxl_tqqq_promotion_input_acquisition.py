@@ -100,7 +100,9 @@ def test_exact_acquisition_reuses_frozen_nine_input_contract(monkeypatch) -> Non
     assert calls[0]["expected_sessions"][0] == date(2018, 8, 3)
     assert calls[2]["expected_sessions"][0] == date(2022, 12, 28)
     assert calls[5]["expected_sessions"][0] == date(2020, 5, 28)
-    assert calls[7]["expected_sessions"][0] == date(2024, 1, 29)
+    assert calls[7]["expected_sessions"][0] == date.fromisoformat(
+        orchestration.FIRST_ELIGIBLE_SESSION["QQQI"]
+    ) == date(2024, 1, 30)
     assert all(
         item["expected_sessions"][-1] == date(2026, 8, 4) for item in calls
     )
