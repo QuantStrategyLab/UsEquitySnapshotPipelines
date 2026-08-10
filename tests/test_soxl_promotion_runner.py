@@ -20,7 +20,10 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import (
     canonical_json_bytes,
     run_soxl_promotion_research,
 )
-from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import INPUT_CONTRACT_ID
+from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import (
+    FIRST_ELIGIBLE_SESSION,
+    INPUT_CONTRACT_ID,
+)
 from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer import (
     CANDIDATE_ID,
     CORE_ONLY_CONFIG_SHA256,
@@ -36,12 +39,6 @@ UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
 RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 VARIANTS = ("explicit_qqq_fallback", "cash_origin")
-FIRST_ELIGIBLE_SESSION = {
-    "SGOV": "2020-05-28",
-    "SPYI": "2022-08-29",
-    "BOXX": "2022-12-28",
-    "QQQI": "2024-01-29",
-}
 AVAILABILITY_CONTRACT = {
     "schema_version": "soxl_asset_availability.v1",
     "universe": list(SOXL_PROMOTION_ASSETS),

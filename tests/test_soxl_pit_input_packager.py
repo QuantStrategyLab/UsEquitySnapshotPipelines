@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 
+import us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration as acquisition_orchestration
+import us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer as regime_producer
+import us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import (
     CANDIDATE_ID,
     CORE_ONLY_CONFIG_SHA256,
@@ -34,6 +37,19 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import SoxlPro
 RUNNER_REVISION = "c" * 40
 STRATEGY_REVISION = "d" * 40
 MANDATE_ID = "soxl_p3_core_only_9_input_research_v1"
+
+
+def test_spyi_first_trading_session_is_shared_by_all_consumers() -> None:
+    assert FIRST_ELIGIBLE_SESSION["SPYI"] == "2022-08-30"
+    assert acquisition_orchestration.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+    assert regime_producer.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+    assert promotion_runner.FIRST_ELIGIBLE_SESSION is FIRST_ELIGIBLE_SESSION
+
+    sessions = _raw_sessions()
+    first_eligible_index = FROZEN_XNYS_SESSIONS.index("2022-08-30")
+    assert sessions[first_eligible_index - 1]["date"] == "2022-08-29"
+    assert "SPYI" not in sessions[first_eligible_index - 1]["bars"]
+    assert "SPYI" in sessions[first_eligible_index]["bars"]
 
 
 def _raw_sessions() -> list[dict[str, object]]:
