@@ -59,6 +59,7 @@ def _sessions() -> list[date]:
         date(2022, 3, 31),
         date(2022, 5, 2),
         date(2022, 12, 27),
+        date(2022, 12, 28),
         date(2023, 12, 1),
         date(2023, 12, 4),
         date(2024, 5, 31),
@@ -89,7 +90,7 @@ def _input_payload() -> dict[str, object]:
         "schema_version": "tqqq_etf_only_private_bars.v1",
         "symbols": {
             "BOXX": [
-                _bar("BOXX", session, index) for index, session in enumerate(sessions) if session >= date(2022, 12, 27)
+                _bar("BOXX", session, index) for index, session in enumerate(sessions) if session >= date(2022, 12, 28)
             ],
             "QQQ": [_bar("QQQ", session, index) for index, session in enumerate(sessions)],
             "TQQQ": [_bar("TQQQ", session, index) for index, session in enumerate(sessions)],
@@ -180,6 +181,10 @@ def _config() -> dict[str, object]:
 
 
 def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None:
+    payload = _input_payload()
+    assert payload["bars"]["symbols"]["BOXX"][0]["date"] == "2022-12-28"
+    assert "2022-12-27" in {bar["date"] for bar in payload["bars"]["symbols"]["QQQ"]}
+
     with (
         patch(
             "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence._resolve_runner_revision",

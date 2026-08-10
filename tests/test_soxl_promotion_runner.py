@@ -39,7 +39,7 @@ VARIANTS = ("explicit_qqq_fallback", "cash_origin")
 FIRST_ELIGIBLE_SESSION = {
     "SGOV": "2020-05-26",
     "SPYI": "2022-08-29",
-    "BOXX": "2022-12-27",
+    "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",
 }
 AVAILABILITY_CONTRACT = {
@@ -93,6 +93,8 @@ def _segment_dates(start: str, end: str, count: int) -> list[date]:
         for value in FIRST_ELIGIBLE_SESSION.values()
         if start_date <= date.fromisoformat(value) <= end_date
     ]
+    if start_date <= date(2022, 12, 27) <= end_date:
+        required_dates.append(date(2022, 12, 27))
     for required_date in required_dates:
         if required_date not in selected:
             replace_index = min(
@@ -401,6 +403,10 @@ def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest()
         "QQQ",
     )
     assert tuple(input_payload["sessions"][0]["bars"]) == ("SOXL", "SOXX", "SCHD", "DGRO", "QQQ")
+    boxx_prelisting_index = _session_index(input_payload["sessions"], "2022-12-27")
+    boxx_index = _session_index(input_payload["sessions"], FIRST_ELIGIBLE_SESSION["BOXX"])
+    assert "BOXX" not in input_payload["sessions"][boxx_prelisting_index]["bars"]
+    assert "BOXX" in input_payload["sessions"][boxx_index]["bars"]
     qqqi_index = _session_index(input_payload["sessions"], FIRST_ELIGIBLE_SESSION["QQQI"])
     assert "QQQI" not in input_payload["sessions"][qqqi_index - 1]["bars"]
     assert "QQQI" in input_payload["sessions"][qqqi_index]["bars"]

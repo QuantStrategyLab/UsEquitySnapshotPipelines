@@ -70,7 +70,7 @@ _ORDERED_VARIANTS = ("explicit_qqq_fallback", "cash_origin")
 _FIRST_ELIGIBLE_SESSION = {
     "SGOV": "2020-05-26",
     "SPYI": "2022-08-29",
-    "BOXX": "2022-12-27",
+    "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",
 }
 _FROZEN_AVAILABILITY_CONTRACT = {
