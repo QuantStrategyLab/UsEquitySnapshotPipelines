@@ -40,7 +40,7 @@ from quant_platform_kit.strategy_lifecycle.performance_store import PerformanceS
 from us_equity_strategies.entrypoints import evaluate_soxl_soxx_trend_income_promotion_research
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
-from .soxl_pit_input_packager import INPUT_CONTRACT_ID, MANDATE_ID
+from .soxl_pit_input_packager import FIRST_ELIGIBLE_SESSION, INPUT_CONTRACT_ID, MANDATE_ID
 from .soxl_pit_regime_component_producer import (
     CANDIDATE_ID,
     CORE_ONLY_CONFIG_SHA256,
@@ -67,17 +67,11 @@ _PROFILE = "soxl_soxx_trend_income"
 _DOMAIN = "us_equity"
 _MIN_INDICATOR_SESSIONS = 420
 _ORDERED_VARIANTS = ("explicit_qqq_fallback", "cash_origin")
-_FIRST_ELIGIBLE_SESSION = {
-    "SGOV": "2020-05-28",
-    "SPYI": "2022-08-29",
-    "BOXX": "2022-12-28",
-    "QQQI": "2024-01-29",
-}
 _FROZEN_AVAILABILITY_CONTRACT = {
     "schema_version": "soxl_asset_availability.v1",
     "universe": list(SOXL_PROMOTION_ASSETS),
     "always_eligible": ["SOXL", "SOXX", "SCHD", "DGRO", "QQQ"],
-    "first_eligible_session": _FIRST_ELIGIBLE_SESSION,
+    "first_eligible_session": FIRST_ELIGIBLE_SESSION,
     "ordered_variants": list(_ORDERED_VARIANTS),
     "primary_variant": "explicit_qqq_fallback",
     "transition_rule": "qqq_to_qqqi_close_t_open_t_plus_1",
@@ -232,8 +226,8 @@ def _eligible_assets_on(session_date: date) -> tuple[str, ...]:
     return tuple(
         symbol
         for symbol in SOXL_PROMOTION_ASSETS
-        if symbol not in _FIRST_ELIGIBLE_SESSION
-        or session_date >= date.fromisoformat(_FIRST_ELIGIBLE_SESSION[symbol])
+        if symbol not in FIRST_ELIGIBLE_SESSION
+        or session_date >= date.fromisoformat(FIRST_ELIGIBLE_SESSION[symbol])
     )
 
 
@@ -504,7 +498,7 @@ class SoxlPromotionRunner:
         if any(
             start not in sessions_by_date
             or symbol not in sessions_by_date[start]["bars"]
-            for symbol, start in _FIRST_ELIGIBLE_SESSION.items()
+            for symbol, start in FIRST_ELIGIBLE_SESSION.items()
         ):
             raise SoxlPromotionContractError("first eligible actual session is missing")
         sessions_bytes = canonical_json_bytes(self.sessions)
@@ -1426,7 +1420,9 @@ def run_soxl_promotion_research(
         }
     primary_runner = runners[_ORDERED_VARIANTS[0]]
     availability_contract_sha256 = _sha256_json(_FROZEN_AVAILABILITY_CONTRACT)
-    qqqi_start_index = primary_runner._date_to_index[date.fromisoformat(_FIRST_ELIGIBLE_SESSION["QQQI"])]
+    qqqi_start_index = primary_runner._date_to_index[
+        date.fromisoformat(FIRST_ELIGIBLE_SESSION["QQQI"])
+    ]
     availability_segments = {
         "pre_qqqi": {
             "start": primary_runner.sessions[0]["date"],
@@ -1436,7 +1432,7 @@ def run_soxl_promotion_research(
             "observed_qqqi": False,
         },
         "actual_qqqi": {
-            "start": _FIRST_ELIGIBLE_SESSION["QQQI"],
+            "start": FIRST_ELIGIBLE_SESSION["QQQI"],
             "end": primary_runner.sessions[-1]["date"],
             "primary_policy": "actual_qqqi",
             "sensitivity_policy": "actual_qqqi",

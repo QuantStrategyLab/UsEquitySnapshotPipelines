@@ -36,12 +36,15 @@ UNAVAILABLE_COMPONENTS = (
     "panic_reversal",
     "volatility_delever_price_rebound",
 )
-_FIRST_LOGICAL_INPUT_SESSION = {
-    **{symbol: "2018-08-03" for symbol in ALL_LOGICAL_INPUTS},
+FIRST_ELIGIBLE_SESSION = {
     "SGOV": "2020-05-28",
-    "SPYI": "2022-08-29",
+    "SPYI": "2022-08-30",
     "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",
+}
+_FIRST_LOGICAL_INPUT_SESSION = {
+    **{symbol: "2018-08-03" for symbol in ALL_LOGICAL_INPUTS},
+    **FIRST_ELIGIBLE_SESSION,
 }
 FROZEN_CORE_ONLY_CONTRACT = {
     "schema_version": "soxl_core_only_9_input_contract.v1",
@@ -563,6 +566,7 @@ __all__ = [
     "ALL_LOGICAL_INPUTS",
     "CANDIDATE_ID",
     "CORE_ONLY_CONFIG_SHA256",
+    "FIRST_ELIGIBLE_SESSION",
     "FIXED_CUTOFF",
     "FROZEN_CORE_ONLY_CONTRACT",
     "MARKET_REGIME_SCHEMA",

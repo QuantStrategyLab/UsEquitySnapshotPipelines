@@ -26,6 +26,7 @@ from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from .soxl_pit_regime_component_producer import (
     CANDIDATE_ID,
     CORE_ONLY_CONFIG_SHA256,
+    FIRST_ELIGIBLE_SESSION,
     MARKET_REGIME_SCHEMA,
     PRODUCER_RECEIPT_SCHEMA,
     SOURCE_CONTRACT_SCHEMA,
@@ -48,12 +49,6 @@ SOXL_PROMOTION_ASSETS = (
     "QQQI",
     "QQQ",
 )
-FIRST_ELIGIBLE_SESSION = {
-    "SGOV": "2020-05-28",
-    "SPYI": "2022-08-29",
-    "BOXX": "2022-12-28",
-    "QQQI": "2024-01-29",
-}
 QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 INPUT_CONTRACT_ID = "soxl_p3_core_only_9_input.v1"
 MANDATE_ID = "soxl_p3_core_only_9_input_research_v1"
