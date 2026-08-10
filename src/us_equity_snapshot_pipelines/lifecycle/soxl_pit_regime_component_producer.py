@@ -38,7 +38,7 @@ UNAVAILABLE_COMPONENTS = (
 )
 _FIRST_LOGICAL_INPUT_SESSION = {
     **{symbol: "2018-08-03" for symbol in ALL_LOGICAL_INPUTS},
-    "SGOV": "2020-05-26",
+    "SGOV": "2020-05-28",
     "SPYI": "2022-08-29",
     "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",

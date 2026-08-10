@@ -68,7 +68,7 @@ _DOMAIN = "us_equity"
 _MIN_INDICATOR_SESSIONS = 420
 _ORDERED_VARIANTS = ("explicit_qqq_fallback", "cash_origin")
 _FIRST_ELIGIBLE_SESSION = {
-    "SGOV": "2020-05-26",
+    "SGOV": "2020-05-28",
     "SPYI": "2022-08-29",
     "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",

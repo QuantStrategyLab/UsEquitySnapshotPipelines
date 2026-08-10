@@ -37,7 +37,7 @@ RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 VARIANTS = ("explicit_qqq_fallback", "cash_origin")
 FIRST_ELIGIBLE_SESSION = {
-    "SGOV": "2020-05-26",
+    "SGOV": "2020-05-28",
     "SPYI": "2022-08-29",
     "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",
@@ -95,6 +95,9 @@ def _segment_dates(start: str, end: str, count: int) -> list[date]:
     ]
     if start_date <= date(2022, 12, 27) <= end_date:
         required_dates.append(date(2022, 12, 27))
+    for sgov_prelisting_session in (date(2020, 5, 26), date(2020, 5, 27)):
+        if start_date <= sgov_prelisting_session <= end_date:
+            required_dates.append(sgov_prelisting_session)
     for required_date in required_dates:
         if required_date not in selected:
             replace_index = min(
@@ -403,6 +406,13 @@ def test_input_contract_requires_exact_point_in_time_assets_and_bound_manifest()
         "QQQ",
     )
     assert tuple(input_payload["sessions"][0]["bars"]) == ("SOXL", "SOXX", "SCHD", "DGRO", "QQQ")
+    sgov_prelisting_indices = [
+        _session_index(input_payload["sessions"], session_date)
+        for session_date in ("2020-05-26", "2020-05-27")
+    ]
+    sgov_index = _session_index(input_payload["sessions"], FIRST_ELIGIBLE_SESSION["SGOV"])
+    assert all("SGOV" not in input_payload["sessions"][index]["bars"] for index in sgov_prelisting_indices)
+    assert "SGOV" in input_payload["sessions"][sgov_index]["bars"]
     boxx_prelisting_index = _session_index(input_payload["sessions"], "2022-12-27")
     boxx_index = _session_index(input_payload["sessions"], FIRST_ELIGIBLE_SESSION["BOXX"])
     assert "BOXX" not in input_payload["sessions"][boxx_prelisting_index]["bars"]

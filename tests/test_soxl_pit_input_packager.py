@@ -284,6 +284,16 @@ def test_exact_xnys_contract_and_atomic_package_are_deterministic(tmp_path: Path
         "real_backtest_executed": False,
     }
 
+    assert FIRST_ELIGIBLE_SESSION["SGOV"] == "2020-05-28"
+    sgov_index = FROZEN_XNYS_SESSIONS.index(FIRST_ELIGIBLE_SESSION["SGOV"])
+    assert [sessions[sgov_index - 2]["date"], sessions[sgov_index - 1]["date"]] == [
+        "2020-05-26",
+        "2020-05-27",
+    ]
+    assert "SGOV" not in sessions[sgov_index - 2]["bars"]
+    assert "SGOV" not in sessions[sgov_index - 1]["bars"]
+    assert "SGOV" in sessions[sgov_index]["bars"]
+
     assert FIRST_ELIGIBLE_SESSION["BOXX"] == "2022-12-28"
     boxx_index = FROZEN_XNYS_SESSIONS.index(FIRST_ELIGIBLE_SESSION["BOXX"])
     assert sessions[boxx_index - 1]["date"] == "2022-12-27"
