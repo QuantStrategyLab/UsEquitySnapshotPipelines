@@ -65,6 +65,10 @@ _REQUEST_VALIDATION_321_COUNTS = (
     "expected_session_count",
     "observed_session_count",
 )
+_RESPONSE_CALLBACK_TERMINAL_TRIGGER = "response_callback"
+_TRANSPORT_TERMINAL_TRIGGERS = frozenset(
+    {"timeout", "connection_closed", "reader_stopped", "transport_stopped"}
+)
 _PROVIDER_MESSAGE_CAUSE_PATTERNS = (
     (
         re.compile(
@@ -143,6 +147,7 @@ class RequestBoundAdjustedHistoryOutcome:
 def bind_strict_adjusted_history_request(
     *,
     active_request_id: int,
+    terminal_trigger: str,
     bars: Sequence[Any],
     error_events: Sequence[tuple[int, int, str | None]],
     historical_data_end_request_ids: Sequence[int],
@@ -171,6 +176,9 @@ def bind_strict_adjusted_history_request(
     if (
         not valid_int(active_request_id)
         or active_request_id < 0
+        or not isinstance(terminal_trigger, str)
+        or terminal_trigger
+        not in _TRANSPORT_TERMINAL_TRIGGERS | {_RESPONSE_CALLBACK_TERMINAL_TRIGGER}
         or not isinstance(request_envelope, bytes)
         or not request_envelope
         or not valid_int(expected_session_count)
@@ -187,6 +195,10 @@ def bind_strict_adjusted_history_request(
         or any(not valid_int(code) for code in informational_codes)
     ):
         raise SoxlAdjustedLastDiagnosticError("invalid request-bound history input")
+    if terminal_trigger in _TRANSPORT_TERMINAL_TRIGGERS:
+        raise SoxlAdjustedLastDiagnosticError(
+            f"transport terminal trigger:{terminal_trigger}"
+        )
 
     matching_error_codes = tuple(
         code
