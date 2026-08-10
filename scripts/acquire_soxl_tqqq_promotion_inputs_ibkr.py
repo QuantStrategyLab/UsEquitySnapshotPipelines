@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import secrets
 import subprocess
@@ -14,6 +15,7 @@ from typing import Any
 
 from us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration import (
     EXACT_DURATIONS,
+    OFFICIAL_IBAPI_PROVENANCE_SHA256,
     SoxlOrchestrationAuthority,
     orchestrate_soxl_promotion,
     resolve_soxl_runtime_identity,
@@ -35,8 +37,9 @@ EXACT_ASSETS = SOXL_PROMOTION_ASSETS
 _EXACT_DURATIONS = EXACT_DURATIONS
 _FIXED_CUTOFF = datetime.fromisoformat(FIXED_CUTOFF)
 _HOST = "127.0.0.1"
-_PAPER_GATEWAY_PORT = 4002
+_SESSION_PORT = {"paper": 4002, "live-data-only": 4001}
 _LOCAL_RESEARCH_ROOT = Path.home() / ".local/share/qsl/soxl-promotion-evidence-v2"
+_OFFICIAL_IBAPI_ROOT = Path.home() / ".local/share/qsl/ibkr-tws-api-v1049.02"
 
 
 def run_exact_acquisition(
@@ -85,7 +88,24 @@ def run_exact_acquisition(
 
 def _runtime() -> tuple[Any, Any]:
     """Load the already-approved local official IBKR runtime without fallback."""
+    provenance_path = _OFFICIAL_IBAPI_ROOT / "provenance.installed.json"
     try:
+        if (
+            provenance_path.is_symlink()
+            or not provenance_path.is_file()
+            or provenance_path.stat().st_mode & 0o777 != 0o600
+        ):
+            raise RuntimeError("approved local IBKR API provenance identity mismatch")
+        provenance_payload = provenance_path.read_bytes()
+    except OSError:
+        raise RuntimeError("approved local IBKR API provenance is unavailable") from None
+    if (
+        hashlib.sha256(provenance_payload).hexdigest()
+        != OFFICIAL_IBAPI_PROVENANCE_SHA256
+    ):
+        raise RuntimeError("approved local IBKR API provenance identity mismatch")
+    try:
+        import ibapi
         from ibapi.client import EClient
         from ibapi.contract import Contract
         from ibapi.wrapper import EWrapper
@@ -95,6 +115,9 @@ def _runtime() -> tuple[Any, Any]:
         EClient.__module__ != "ibapi.client"
         or EWrapper.__module__ != "ibapi.wrapper"
         or Contract.__module__ != "ibapi.contract"
+        or not Path(ibapi.__file__).resolve().is_relative_to(
+            _OFFICIAL_IBAPI_ROOT.resolve()
+        )
     ):
         raise RuntimeError("approved local IBKR API runtime identity mismatch")
 
@@ -145,7 +168,7 @@ class _SanitizedParser(argparse.ArgumentParser):
         raise ValueError("invalid arguments")
 
 
-def _authority(raw_argv: list[str]) -> SoxlOrchestrationAuthority:
+def _authority(raw_argv: list[str]) -> tuple[SoxlOrchestrationAuthority, str]:
     parser = _SanitizedParser(add_help=False)
     parser.add_argument("--authority-receipt-sha256", required=True)
     parser.add_argument("--entitlement-receipt-sha256", required=True)
@@ -155,23 +178,33 @@ def _authority(raw_argv: list[str]) -> SoxlOrchestrationAuthority:
     parser.add_argument("--risk-standard-sha256", required=True)
     parser.add_argument("--input-license", required=True)
     parser.add_argument("--input-usage-scope", required=True)
+    parser.add_argument(
+        "--session-mode",
+        choices=tuple(_SESSION_PORT),
+        default="paper",
+    )
     args = parser.parse_args(raw_argv)
-    return SoxlOrchestrationAuthority(
-        authority_receipt_sha256=args.authority_receipt_sha256,
-        entitlement_receipt_sha256=args.entitlement_receipt_sha256,
-        license_receipt_sha256=args.license_receipt_sha256,
-        retention_expires_at=args.retention_expires_at,
-        risk_standard_id=args.risk_standard_id,
-        risk_standard_sha256=args.risk_standard_sha256,
-        input_license=args.input_license,
-        input_usage_scope=args.input_usage_scope,
+    return (
+        SoxlOrchestrationAuthority(
+            authority_receipt_sha256=args.authority_receipt_sha256,
+            entitlement_receipt_sha256=args.entitlement_receipt_sha256,
+            license_receipt_sha256=args.license_receipt_sha256,
+            retention_expires_at=args.retention_expires_at,
+            risk_standard_id=args.risk_standard_id,
+            risk_standard_sha256=args.risk_standard_sha256,
+            input_license=args.input_license,
+            input_usage_scope=args.input_usage_scope,
+        ),
+        args.session_mode,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the closed acquisition envelope and emit only a sanitized terminal."""
     try:
-        authority = _authority(list(sys.argv[1:] if argv is None else argv))
+        authority, session_class = _authority(
+            list(sys.argv[1:] if argv is None else argv)
+        )
     except (TypeError, ValueError):
         print(
             json.dumps(
@@ -195,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         runner_revision, runner_tree_sha = resolve_soxl_runtime_identity()
         app, contract_factory = _runtime()
         client_id = secrets.randbelow(2_000_000_000) + 1
-        app.connect(_HOST, _PAPER_GATEWAY_PORT, client_id)
+        app.connect(_HOST, _SESSION_PORT[session_class], client_id)
         if not app.isConnected():
             raise RuntimeError("IBKR transport unavailable")
         app.start_reader()
@@ -209,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=_LOCAL_RESEARCH_ROOT,
             runner_revision=runner_revision,
             runner_tree_sha=runner_tree_sha,
+            session_class=session_class,
         )
         status = outcome["status"]
         snapshot_digest = outcome["snapshot_digest"]

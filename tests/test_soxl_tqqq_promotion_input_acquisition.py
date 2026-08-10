@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import date
 from types import SimpleNamespace
@@ -8,6 +9,8 @@ import pytest
 from quant_platform_kit.ibkr import StrictAdjustedHistoryError
 
 from scripts import acquire_soxl_tqqq_promotion_inputs_ibkr as acquisition_cli
+import us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration as orchestration
+import us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition as acquisition
 
 
 def _valid_cli_args() -> list[str]:
@@ -161,10 +164,20 @@ class _FakeRuntimeApp:
         )
 
 
+@pytest.mark.parametrize(
+    ("session_args", "expected_port", "expected_session_class"),
+    [
+        ([], 4002, "paper"),
+        (["--session-mode", "live-data-only"], 4001, "live-data-only"),
+    ],
+)
 def test_cli_connects_once_and_passes_results_to_single_orchestration(
     monkeypatch,
     capsys,
     tmp_path,
+    session_args,
+    expected_port,
+    expected_session_class,
 ) -> None:
     app = _FakeRuntimeApp()
     events = []
@@ -192,6 +205,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         assert kwargs["runner_revision"] == "a" * 40
         assert kwargs["runner_tree_sha"] == "b" * 40
         assert kwargs["authority"].authority_receipt_sha256 == "1" * 64
+        assert kwargs["session_class"] == expected_session_class
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 9,
@@ -204,7 +218,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
     monkeypatch.setattr(acquisition_cli, "run_exact_acquisition", run_exact)
     monkeypatch.setattr(acquisition_cli, "orchestrate_soxl_promotion", orchestrate)
 
-    assert acquisition_cli.main(_valid_cli_args()) == 0
+    assert acquisition_cli.main([*_valid_cli_args(), *session_args]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
@@ -217,7 +231,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
     assert len(app.connect_calls) == 1
-    assert app.connect_calls[0][0:2] == ("127.0.0.1", 4002)
+    assert app.connect_calls[0][0:2] == ("127.0.0.1", expected_port)
     assert app.start_reader_calls == 1
     assert app.disconnect_calls == 1
     assert app.events == [
@@ -242,6 +256,109 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         '"volume"',
     ):
         assert forbidden not in serialized.lower()
+
+
+def test_live_data_only_source_identity_binds_session_and_official_runtime(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        orchestration,
+        "runtime_producer_source_identity",
+        lambda **_kwargs: {"repository": "synthetic"},
+    )
+    raw_sessions = [
+        {
+            "date": "2026-08-04",
+            "bars": {
+                symbol: {
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "volume": 1_000_000.0,
+                }
+                for symbol in orchestration.SOXL_PROMOTION_ASSETS
+            },
+        }
+    ]
+    results = {
+        symbol: SimpleNamespace(
+            provenance=SimpleNamespace(
+                exchange="SMART",
+                currency="USD",
+                duration=orchestration.EXACT_DURATIONS[symbol],
+                bar_size="1 day",
+                what_to_show="ADJUSTED_LAST",
+                use_rth=True,
+                format_date=1,
+                keep_up_to_date=False,
+            )
+        )
+        for symbol in orchestration.SOXL_PROMOTION_ASSETS
+    }
+    kwargs = {
+        "authority": SimpleNamespace(
+            entitlement_receipt_sha256="1" * 64,
+            license_receipt_sha256="2" * 64,
+            retention_expires_at="2026-12-31T00:00:00Z",
+        ),
+        "runner_revision": "a" * 40,
+        "runner_tree_sha": "b" * 40,
+        "observed_at": "2026-08-11T00:00:00Z",
+    }
+
+    paper = orchestration._source_contract(
+        raw_sessions,
+        results,
+        session_class="paper",
+        **kwargs,
+    )
+    live = orchestration._source_contract(
+        raw_sessions,
+        results,
+        session_class="live-data-only",
+        **kwargs,
+    )
+
+    assert {item["provider_id"] for item in paper["logical_inputs"]} == {
+        "IBKR_PAPER_GATEWAY"
+    }
+    assert {item["provider_id"] for item in live["logical_inputs"]} == {
+        "IBKR_LIVE_GATEWAY_DATA_ONLY"
+    }
+    assert {item["source_revision"] for item in live["logical_inputs"]} == {
+        orchestration.OFFICIAL_IBAPI_PROVENANCE_SHA256
+    }
+    assert [item["request_sha256"] for item in paper["logical_inputs"]] != [
+        item["request_sha256"] for item in live["logical_inputs"]
+    ]
+
+
+def test_committed_caller_has_historical_data_only_api_surface() -> None:
+    cli_source = inspect.getsource(acquisition_cli)
+    acquisition_source = inspect.getsource(acquisition)
+    source = "\n".join((cli_source, acquisition_source))
+    assert cli_source.count("app.connect(") == 1
+    assert acquisition_source.count("self.reqContractDetails(") == 1
+    assert acquisition_source.count("self.reqHistoricalData(") == 1
+    assert acquisition_source.count("self.cancelHistoricalData(") == 1
+    assert "reqContractDetails" in source
+    assert "reqHistoricalData" in source
+    assert "cancelHistoricalData" in source
+    for forbidden in (
+        "reqAccount",
+        "reqPositions",
+        "reqOpenOrders",
+        "placeOrder",
+        "cancelOrder",
+        "reqExecutions",
+        "reqPnL",
+        "reqIds",
+        "reqGlobalCancel",
+        "reqCompletedOrders",
+        "exerciseOptions",
+    ):
+        assert forbidden not in source
 
 
 def test_cli_filevault_failure_stops_before_runtime_or_provider(monkeypatch, capsys) -> None:
