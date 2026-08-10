@@ -40,7 +40,7 @@ _FIRST_LOGICAL_INPUT_SESSION = {
     **{symbol: "2018-08-03" for symbol in ALL_LOGICAL_INPUTS},
     "SGOV": "2020-05-26",
     "SPYI": "2022-08-29",
-    "BOXX": "2022-12-27",
+    "BOXX": "2022-12-28",
     "QQQI": "2024-01-29",
 }
 FROZEN_CORE_ONLY_CONTRACT = {

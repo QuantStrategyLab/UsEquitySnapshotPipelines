@@ -284,6 +284,12 @@ def test_exact_xnys_contract_and_atomic_package_are_deterministic(tmp_path: Path
         "real_backtest_executed": False,
     }
 
+    assert FIRST_ELIGIBLE_SESSION["BOXX"] == "2022-12-28"
+    boxx_index = FROZEN_XNYS_SESSIONS.index(FIRST_ELIGIBLE_SESSION["BOXX"])
+    assert sessions[boxx_index - 1]["date"] == "2022-12-27"
+    assert "BOXX" not in sessions[boxx_index - 1]["bars"]
+    assert "BOXX" in sessions[boxx_index]["bars"]
+
     qqqi_index = FROZEN_XNYS_SESSIONS.index(FIRST_ELIGIBLE_SESSION["QQQI"])
     assert "QQQI" not in sessions[qqqi_index - 1]["bars"]
     assert "QQQ" in sessions[qqqi_index - 1]["bars"]
