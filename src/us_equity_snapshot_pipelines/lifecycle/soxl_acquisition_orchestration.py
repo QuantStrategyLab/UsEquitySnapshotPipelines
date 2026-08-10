@@ -54,6 +54,13 @@ EXACT_DURATIONS = {
     "QQQI": "3 Y",
     "QQQ": "9 Y",
 }
+OFFICIAL_IBAPI_PROVENANCE_SHA256 = (
+    "dcfffc68992d46081a611d100ef6e7c74fccfbb5621295147cba29ef767318f0"
+)
+_SESSION_PROVIDER_ID = {
+    "paper": "IBKR_PAPER_GATEWAY",
+    "live-data-only": "IBKR_LIVE_GATEWAY_DATA_ONLY",
+}
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 
@@ -220,11 +227,14 @@ def _source_contract(
     raw_sessions: list[dict[str, Any]],
     results: Mapping[str, StrictAdjustedHistoryResult],
     *,
+    session_class: str,
     authority: SoxlOrchestrationAuthority,
     runner_revision: str,
     runner_tree_sha: str,
     observed_at: str,
 ) -> dict[str, Any]:
+    if session_class not in _SESSION_PROVIDER_ID:
+        raise SoxlOrchestrationError("invalid IBKR session class")
     observed = _parse_utc_timestamp(observed_at)
     if _parse_utc_timestamp(authority.retention_expires_at) < observed:
         raise SoxlOrchestrationError("retention authority is expired")
@@ -237,6 +247,7 @@ def _source_contract(
             if symbol in session["bars"]
         ]
         request_contract = {
+            "session_class": session_class,
             "symbol": symbol,
             "exchange": result.provenance.exchange,
             "currency": result.provenance.currency,
@@ -256,8 +267,8 @@ def _source_contract(
                 "instrument_type": "etf",
                 "venue": "SMART",
                 "currency": "USD",
-                "provider_id": "IBKR_PAPER_GATEWAY",
-                "source_revision": request_sha256,
+                "provider_id": _SESSION_PROVIDER_ID[session_class],
+                "source_revision": OFFICIAL_IBAPI_PROVENANCE_SHA256,
                 "field": "adjusted_ohlcv",
                 "frequency": "1d",
                 "timezone": "America/New_York",
@@ -405,6 +416,7 @@ def orchestrate_soxl_promotion(
     output_root: str | Path,
     runner_revision: str,
     runner_tree_sha: str,
+    session_class: str = "paper",
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Publish one exact snapshot, consume one nonce, then run one frozen rerun."""
@@ -418,6 +430,7 @@ def orchestrate_soxl_promotion(
     source_contract = _source_contract(
         raw_sessions,
         results,
+        session_class=session_class,
         authority=authority,
         runner_revision=runner_revision,
         runner_tree_sha=runner_tree_sha,
@@ -575,6 +588,7 @@ def orchestrate_soxl_promotion(
 
 __all__ = [
     "EXACT_DURATIONS",
+    "OFFICIAL_IBAPI_PROVENANCE_SHA256",
     "SoxlOrchestrationAuthority",
     "SoxlOrchestrationError",
     "orchestrate_soxl_promotion",
