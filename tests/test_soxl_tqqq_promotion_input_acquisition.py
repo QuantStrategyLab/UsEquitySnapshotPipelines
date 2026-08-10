@@ -10,6 +10,27 @@ from quant_platform_kit.ibkr import StrictAdjustedHistoryError
 from scripts import acquire_soxl_tqqq_promotion_inputs_ibkr as acquisition_cli
 
 
+def _valid_cli_args() -> list[str]:
+    return [
+        "--authority-receipt-sha256",
+        "1" * 64,
+        "--entitlement-receipt-sha256",
+        "2" * 64,
+        "--license-receipt-sha256",
+        "3" * 64,
+        "--retention-expires-at",
+        "2026-12-31T00:00:00Z",
+        "--risk-standard-id",
+        "soxl_p3_candidate_bound_v1",
+        "--risk-standard-sha256",
+        "4" * 64,
+        "--input-license",
+        "authority-bound private internal research",
+        "--input-usage-scope",
+        "non-commercial internal research",
+    ]
+
+
 def test_exact_acquisition_reuses_frozen_nine_input_contract(monkeypatch) -> None:
     calls = []
 
@@ -140,12 +161,22 @@ class _FakeRuntimeApp:
         )
 
 
-def test_cli_connects_once_and_outputs_only_sanitized_terminal(
+def test_cli_connects_once_and_passes_results_to_single_orchestration(
     monkeypatch,
     capsys,
+    tmp_path,
 ) -> None:
     app = _FakeRuntimeApp()
+    events = []
+    monkeypatch.setattr(acquisition_cli, "_LOCAL_RESEARCH_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(acquisition_cli, "_require_filevault_local_root", lambda: events.append("filevault"))
+    monkeypatch.setattr(
+        acquisition_cli,
+        "resolve_soxl_runtime_identity",
+        lambda: events.append("identity") or ("a" * 40, "b" * 40),
+    )
     monkeypatch.setattr(acquisition_cli, "_runtime", lambda: (app, object()))
+
     def run_exact(_app, *, contract_factory):
         app.events.append("acquire")
         return {
@@ -153,15 +184,37 @@ def test_cli_connects_once_and_outputs_only_sanitized_terminal(
             for symbol in acquisition_cli.EXACT_ASSETS
         }
 
-    monkeypatch.setattr(acquisition_cli, "run_exact_acquisition", run_exact)
+    def orchestrate(results, **kwargs):
+        events.append("orchestrate")
+        assert tuple(results) == acquisition_cli.EXACT_ASSETS
+        assert all(result.private_bars == "must not serialize" for result in results.values())
+        assert kwargs["output_root"] == tmp_path / "runs"
+        assert kwargs["runner_revision"] == "a" * 40
+        assert kwargs["runner_tree_sha"] == "b" * 40
+        assert kwargs["authority"].authority_receipt_sha256 == "1" * 64
+        return {
+            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "asset_count": 9,
+            "snapshot_digest": "5" * 64,
+            "evidence_digest": "6" * 64,
+            "mandate_receipt_digest": "7" * 64,
+            "rerun_count": 1,
+        }
 
-    assert acquisition_cli.main([]) == 0
+    monkeypatch.setattr(acquisition_cli, "run_exact_acquisition", run_exact)
+    monkeypatch.setattr(acquisition_cli, "orchestrate_soxl_promotion", orchestrate)
+
+    assert acquisition_cli.main(_valid_cli_args()) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "asset_count": 9,
+        "evidence_digest": "6" * 64,
         "lifecycle": list(app.sanitized_lifecycle()),
-        "status": "STRICT_COMPLETE",
+        "mandate_receipt_digest": "7" * 64,
+        "rerun_count": 1,
+        "snapshot_digest": "5" * 64,
+        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
     assert len(app.connect_calls) == 1
     assert app.connect_calls[0][0:2] == ("127.0.0.1", 4002)
@@ -174,6 +227,7 @@ def test_cli_connects_once_and_outputs_only_sanitized_terminal(
         "acquire",
         "disconnect",
     ]
+    assert events == ["filevault", "identity", "orchestrate"]
     serialized = json.dumps(payload, sort_keys=True)
     assert "private_bars" not in serialized
     assert "must not serialize" not in serialized
@@ -188,3 +242,26 @@ def test_cli_connects_once_and_outputs_only_sanitized_terminal(
         '"volume"',
     ):
         assert forbidden not in serialized.lower()
+
+
+def test_cli_filevault_failure_stops_before_runtime_or_provider(monkeypatch, capsys) -> None:
+    runtime_calls = []
+
+    def fail_filevault() -> None:
+        raise RuntimeError("synthetic FileVault failure")
+
+    monkeypatch.setattr(acquisition_cli, "_require_filevault_local_root", fail_filevault)
+    monkeypatch.setattr(acquisition_cli, "_runtime", lambda: runtime_calls.append(True))
+
+    assert acquisition_cli.main(_valid_cli_args()) == 1
+
+    assert runtime_calls == []
+    assert json.loads(capsys.readouterr().out) == {
+        "asset_count": 0,
+        "evidence_digest": None,
+        "lifecycle": [],
+        "mandate_receipt_digest": None,
+        "rerun_count": 0,
+        "snapshot_digest": None,
+        "status": "FAILED_MATERIAL",
+    }
