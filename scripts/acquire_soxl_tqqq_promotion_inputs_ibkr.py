@@ -3,12 +3,21 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import secrets
+import subprocess
 import sys
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
+from us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration import (
+    EXACT_DURATIONS,
+    SoxlOrchestrationAuthority,
+    orchestrate_soxl_promotion,
+    resolve_soxl_runtime_identity,
+)
 from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition import (
     acquire_strict_adjusted_last,
     build_request_bound_ibkr_app,
@@ -22,22 +31,12 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer i
     FIXED_CUTOFF,
 )
 
-
 EXACT_ASSETS = SOXL_PROMOTION_ASSETS
-_EXACT_DURATIONS = {
-    "SOXL": "9 Y",
-    "SOXX": "9 Y",
-    "BOXX": "4 Y",
-    "SCHD": "9 Y",
-    "DGRO": "9 Y",
-    "SGOV": "7 Y",
-    "SPYI": "4 Y",
-    "QQQI": "3 Y",
-    "QQQ": "9 Y",
-}
+_EXACT_DURATIONS = EXACT_DURATIONS
 _FIXED_CUTOFF = datetime.fromisoformat(FIXED_CUTOFF)
 _HOST = "127.0.0.1"
 _PAPER_GATEWAY_PORT = 4002
+_LOCAL_RESEARCH_ROOT = Path.home() / ".local/share/qsl/soxl-promotion-evidence-v2"
 
 
 def run_exact_acquisition(
@@ -117,9 +116,63 @@ def _runtime() -> tuple[Any, Any]:
     return app, stock_factory
 
 
+def _require_filevault_local_root() -> None:
+    home = Path.home().resolve()
+    root = _LOCAL_RESEARCH_ROOT.expanduser()
+    if not root.is_absolute() or not root.resolve(strict=False).is_relative_to(home):
+        raise RuntimeError("approved FileVault-local output root is unavailable")
+    current = root
+    while current != current.parent:
+        if current.exists() and current.is_symlink():
+            raise RuntimeError("approved FileVault-local output root is unavailable")
+        current = current.parent
+    try:
+        status = subprocess.run(
+            ["/usr/bin/fdesetup", "status"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("FileVault status is unavailable") from exc
+    if status.stdout.strip() != "FileVault is On.":
+        raise RuntimeError("FileVault is required")
+
+
+class _SanitizedParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError("invalid arguments")
+
+
+def _authority(raw_argv: list[str]) -> SoxlOrchestrationAuthority:
+    parser = _SanitizedParser(add_help=False)
+    parser.add_argument("--authority-receipt-sha256", required=True)
+    parser.add_argument("--entitlement-receipt-sha256", required=True)
+    parser.add_argument("--license-receipt-sha256", required=True)
+    parser.add_argument("--retention-expires-at", required=True)
+    parser.add_argument("--risk-standard-id", required=True)
+    parser.add_argument("--risk-standard-sha256", required=True)
+    parser.add_argument("--input-license", required=True)
+    parser.add_argument("--input-usage-scope", required=True)
+    args = parser.parse_args(raw_argv)
+    return SoxlOrchestrationAuthority(
+        authority_receipt_sha256=args.authority_receipt_sha256,
+        entitlement_receipt_sha256=args.entitlement_receipt_sha256,
+        license_receipt_sha256=args.license_receipt_sha256,
+        retention_expires_at=args.retention_expires_at,
+        risk_standard_id=args.risk_standard_id,
+        risk_standard_sha256=args.risk_standard_sha256,
+        input_license=args.input_license,
+        input_usage_scope=args.input_usage_scope,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the closed acquisition envelope and emit only a sanitized terminal."""
-    if list(sys.argv[1:] if argv is None else argv):
+    try:
+        authority = _authority(list(sys.argv[1:] if argv is None else argv))
+    except (TypeError, ValueError):
         print(
             json.dumps(
                 {"asset_count": 0, "lifecycle": [], "status": "INVALID_ARGUMENTS"},
@@ -132,8 +185,14 @@ def main(argv: list[str] | None = None) -> int:
     app: Any | None = None
     status = "FAILED_MATERIAL"
     asset_count = 0
+    snapshot_digest = None
+    evidence_digest = None
+    mandate_receipt_digest = None
+    rerun_count = 0
     lifecycle: list[dict[str, Any]] = []
     try:
+        _require_filevault_local_root()
+        runner_revision, runner_tree_sha = resolve_soxl_runtime_identity()
         app, contract_factory = _runtime()
         client_id = secrets.randbelow(2_000_000_000) + 1
         app.connect(_HOST, _PAPER_GATEWAY_PORT, client_id)
@@ -144,7 +203,18 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("IBKR handshake unavailable")
         results = run_exact_acquisition(app, contract_factory=contract_factory)
         asset_count = len(results)
-        status = "STRICT_COMPLETE"
+        outcome = orchestrate_soxl_promotion(
+            results,
+            authority=authority,
+            output_root=_LOCAL_RESEARCH_ROOT,
+            runner_revision=runner_revision,
+            runner_tree_sha=runner_tree_sha,
+        )
+        status = outcome["status"]
+        snapshot_digest = outcome["snapshot_digest"]
+        evidence_digest = outcome["evidence_digest"]
+        mandate_receipt_digest = outcome["mandate_receipt_digest"]
+        rerun_count = outcome["rerun_count"]
     except Exception:  # noqa: BLE001 - terminal output must remain sanitized
         status = "FAILED_MATERIAL"
     finally:
@@ -157,14 +227,21 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "asset_count": asset_count,
+                "evidence_digest": evidence_digest,
                 "lifecycle": lifecycle,
+                "mandate_receipt_digest": mandate_receipt_digest,
+                "rerun_count": rerun_count,
+                "snapshot_digest": snapshot_digest,
                 "status": status,
             },
             sort_keys=True,
             separators=(",", ":"),
         )
     )
-    return 0 if status == "STRICT_COMPLETE" else 1
+    return 0 if status in {
+        "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "IMMUTABLE_NEGATIVE_STRATEGY_EVIDENCE",
+    } else 1
 
 
 if __name__ == "__main__":
