@@ -19,6 +19,7 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_acquisition_orchestration impor
     EXACT_DURATIONS,
     OFFICIAL_IBAPI_PROVENANCE_SHA256,
     SoxlOrchestrationAuthority,
+    SoxlOrchestrationError,
     orchestrate_soxl_promotion,
     resolve_soxl_runtime_identity,
 )
@@ -233,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     mandate_receipt_digest = None
     rerun_count = 0
     lifecycle: list[dict[str, Any]] = []
+    orchestration_failure: dict[str, Any] | None = None
     strict_history_failure: dict[str, Any] | None = None
 
     def retain_strict_history_failure(
@@ -278,6 +280,15 @@ def main(argv: list[str] | None = None) -> int:
         evidence_digest = outcome["evidence_digest"]
         mandate_receipt_digest = outcome["mandate_receipt_digest"]
         rerun_count = outcome["rerun_count"]
+    except SoxlOrchestrationError as exc:
+        status = "FAILED_MATERIAL"
+        if exc.sanitized_failure is not None:
+            orchestration_failure = dict(exc.sanitized_failure)
+            snapshot_digest = orchestration_failure["snapshot_digest"]
+            mandate_receipt_digest = orchestration_failure[
+                "mandate_receipt_digest"
+            ]
+            rerun_count = orchestration_failure["runner_completion_count"]
     except Exception:  # noqa: BLE001 - terminal output must remain sanitized
         status = "FAILED_MATERIAL"
     finally:
@@ -301,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
                 "terminal_trigger"
             ]
         terminal["strict_history_failure"] = strict_history_failure
+    if orchestration_failure is not None:
+        terminal["orchestration_failure"] = orchestration_failure
     print(json.dumps(terminal, sort_keys=True, separators=(",", ":")))
     return 0 if status in {
         "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",

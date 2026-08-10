@@ -264,6 +264,86 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         assert forbidden not in serialized.lower()
 
 
+def test_cli_retains_only_sanitized_post_snapshot_failure_state(
+    monkeypatch,
+    capsys,
+) -> None:
+    app = _FakeRuntimeApp()
+    failure = {
+        "backtest_orchestrator_invocation_count": None,
+        "classification": "promotion_rerun_failed",
+        "evidence_artifact_count": 0,
+        "mandate_digest": "6" * 64,
+        "mandate_receipt_digest": "7" * 64,
+        "risk_engine_assessment_count": None,
+        "runner_completion_count": 0,
+        "runner_invocation_count": 1,
+        "snapshot_digest": "5" * 64,
+        "stage": "promotion_runner_pre_evidence",
+    }
+    monkeypatch.setattr(acquisition_cli, "_require_filevault_local_root", lambda: None)
+    monkeypatch.setattr(
+        acquisition_cli,
+        "resolve_soxl_runtime_identity",
+        lambda: ("a" * 40, "b" * 40),
+    )
+    monkeypatch.setattr(acquisition_cli, "_runtime", lambda: (app, object()))
+    monkeypatch.setattr(
+        acquisition_cli,
+        "run_exact_acquisition",
+        lambda *_args, **_kwargs: {
+            symbol: SimpleNamespace(private_bars="must not serialize")
+            for symbol in acquisition_cli.EXACT_ASSETS
+        },
+    )
+
+    def fail_orchestration(*_args, **_kwargs):
+        raise orchestration.SoxlOrchestrationError(
+            "private runner exception must not serialize",
+            stage="promotion_runner_pre_evidence",
+            snapshot_digest="5" * 64,
+            mandate_digest="6" * 64,
+            mandate_receipt_digest="7" * 64,
+            evidence_artifact_count=0,
+        )
+
+    monkeypatch.setattr(
+        acquisition_cli,
+        "orchestrate_soxl_promotion",
+        fail_orchestration,
+    )
+
+    assert acquisition_cli.main(_valid_cli_args()) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "asset_count": 9,
+        "evidence_digest": None,
+        "lifecycle": list(app.sanitized_lifecycle()),
+        "mandate_receipt_digest": "7" * 64,
+        "orchestration_failure": failure,
+        "rerun_count": 0,
+        "snapshot_digest": "5" * 64,
+        "status": "FAILED_MATERIAL",
+    }
+    serialized = json.dumps(payload, sort_keys=True)
+    for forbidden in (
+        "private runner exception",
+        "provider_message",
+        "request_body",
+        "response_body",
+        "account",
+        "credential",
+        "private_bars",
+        "must not serialize",
+        '"bars"',
+        '"date"',
+        '"price"',
+        '"volume"',
+    ):
+        assert forbidden not in serialized.lower()
+
+
 def test_cli_retains_only_sanitized_strict_history_failure_diagnostic(
     monkeypatch,
     capsys,
