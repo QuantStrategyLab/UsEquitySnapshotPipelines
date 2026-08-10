@@ -237,3 +237,55 @@ def test_incomplete_results_fail_before_snapshot_nonce_or_rerun(tmp_path: Path) 
         )
 
     assert not (tmp_path / "runs").exists()
+
+
+def test_post_snapshot_runner_failure_retains_only_sanitized_committed_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_before_first_artifact(*, output_dir, **_kwargs):
+        evidence_root = Path(output_dir)
+        evidence_root.mkdir()
+        (evidence_root / "artifacts").mkdir()
+        raise orchestration.SoxlPromotionContractError(
+            "private runner exception must not serialize"
+        )
+
+    monkeypatch.setattr(
+        orchestration,
+        "run_soxl_promotion_research",
+        fail_before_first_artifact,
+    )
+    monkeypatch.setattr(
+        orchestration.promotion_runner,
+        "_resolve_runner_revision",
+        lambda: RUNNER_REVISION,
+    )
+
+    with pytest.raises(SoxlOrchestrationError, match="promotion rerun failed") as caught:
+        orchestrate_soxl_promotion(
+            _results(),
+            authority=_authority(),
+            output_root=tmp_path / "runs",
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha=RUNNER_TREE_SHA,
+            clock=lambda: datetime(2026, 8, 10, 14, 0, tzinfo=UTC),
+        )
+
+    failure = caught.value.sanitized_failure
+    assert failure == {
+        "backtest_orchestrator_invocation_count": None,
+        "classification": "promotion_rerun_failed",
+        "evidence_artifact_count": 0,
+        "mandate_digest": failure["mandate_digest"],
+        "mandate_receipt_digest": failure["mandate_receipt_digest"],
+        "risk_engine_assessment_count": None,
+        "runner_completion_count": 0,
+        "runner_invocation_count": 1,
+        "snapshot_digest": failure["snapshot_digest"],
+        "stage": "promotion_runner_pre_evidence",
+    }
+    assert len(failure["snapshot_digest"]) == 64
+    assert len(failure["mandate_digest"]) == 64
+    assert len(failure["mandate_receipt_digest"]) == 64
+    assert "private runner exception" not in str(caught.value)

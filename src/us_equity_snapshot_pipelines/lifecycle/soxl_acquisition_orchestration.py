@@ -68,6 +68,51 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 class SoxlOrchestrationError(ValueError):
     """Sanitized fail-closed error for the concrete one-shot orchestration."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str | None = None,
+        snapshot_digest: str | None = None,
+        mandate_digest: str | None = None,
+        mandate_receipt_digest: str | None = None,
+        evidence_artifact_count: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        if stage is None:
+            self.sanitized_failure = None
+            return
+        if (
+            stage not in {"promotion_runner", "promotion_runner_pre_evidence"}
+            or any(
+                not isinstance(value, str) or not _DIGEST.fullmatch(value)
+                for value in (
+                    snapshot_digest,
+                    mandate_digest,
+                    mandate_receipt_digest,
+                )
+            )
+            or evidence_artifact_count is not None
+            and (
+                isinstance(evidence_artifact_count, bool)
+                or not isinstance(evidence_artifact_count, int)
+                or evidence_artifact_count < 0
+            )
+        ):
+            raise ValueError("invalid sanitized orchestration failure")
+        self.sanitized_failure = {
+            "backtest_orchestrator_invocation_count": None,
+            "classification": "promotion_rerun_failed",
+            "evidence_artifact_count": evidence_artifact_count,
+            "mandate_digest": mandate_digest,
+            "mandate_receipt_digest": mandate_receipt_digest,
+            "risk_engine_assessment_count": None,
+            "runner_completion_count": 0,
+            "runner_invocation_count": 1,
+            "snapshot_digest": snapshot_digest,
+            "stage": stage,
+        }
+
 
 def _utc_timestamp(value: datetime) -> str:
     if not isinstance(value, datetime) or value.tzinfo is None:
@@ -547,9 +592,9 @@ def orchestrate_soxl_promotion(
                 output_dir=evidence_root,
                 generated_at=observed_at,
             )
-        except SoxlPromotionContractError as exc:
+        except Exception as exc:
             result_path = evidence_root / "promotion-research-result.v1.json"
-            if result_path.is_file():
+            if isinstance(exc, SoxlPromotionContractError) and result_path.is_file():
                 terminal = json.loads(result_path.read_bytes())
                 if terminal.get("status") in {"FAIL", "PROXY_SENSITIVE"}:
                     _seal_private_tree(run_root)
@@ -561,7 +606,24 @@ def orchestrate_soxl_promotion(
                         "mandate_receipt_digest": consumption.receipt_digest,
                         "rerun_count": 1,
                     }
-            raise SoxlOrchestrationError("promotion rerun failed") from exc
+            try:
+                evidence_artifact_count = sum(
+                    path.is_file() for path in evidence_root.rglob("*")
+                )
+            except OSError:
+                evidence_artifact_count = None
+            raise SoxlOrchestrationError(
+                "promotion rerun failed",
+                stage=(
+                    "promotion_runner_pre_evidence"
+                    if evidence_artifact_count == 0
+                    else "promotion_runner"
+                ),
+                snapshot_digest=snapshot["package_manifest_sha256"],
+                mandate_digest=mandate.mandate_digest,
+                mandate_receipt_digest=consumption.receipt_digest,
+                evidence_artifact_count=evidence_artifact_count,
+            ) from exc
         evidence_path = evidence_root / "strategy-evidence-package.v2.json"
         evidence_bytes = evidence_path.read_bytes()
         evidence = json.loads(evidence_bytes)
@@ -580,6 +642,8 @@ def orchestrate_soxl_promotion(
             "mandate_receipt_digest": consumption.receipt_digest,
             "rerun_count": 1,
         }
+    except SoxlOrchestrationError:
+        raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise SoxlOrchestrationError("promotion orchestration failed") from exc
     finally:
