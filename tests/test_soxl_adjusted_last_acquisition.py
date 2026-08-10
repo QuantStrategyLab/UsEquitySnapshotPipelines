@@ -175,6 +175,7 @@ def test_exact_match_preserves_strict_request_and_returns_no_failure_artifact(
 def test_foreign_321_does_not_pollute_exact_historical_request() -> None:
     bound = adjusted_last.bind_strict_adjusted_history_request(
         active_request_id=41,
+        terminal_trigger="response_callback",
         bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
         error_events=(
             (99, 321, "synthetic foreign validation detail"),
@@ -209,6 +210,7 @@ def test_foreign_321_does_not_pollute_exact_historical_request() -> None:
 def test_matching_321_is_bound_only_to_its_historical_request() -> None:
     bound = adjusted_last.bind_strict_adjusted_history_request(
         active_request_id=41,
+        terminal_trigger="response_callback",
         bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
         error_events=((41, 321, "invalid duration"), (99, 10089, None)),
         historical_data_end_request_ids=(41,),
@@ -239,6 +241,7 @@ def test_matching_321_is_bound_only_to_its_historical_request() -> None:
 def test_only_matching_historical_data_end_marks_request_complete() -> None:
     bound = adjusted_last.bind_strict_adjusted_history_request(
         active_request_id=41,
+        terminal_trigger="response_callback",
         bars=[_bar(EXPECTED[0]), _bar(EXPECTED[1])],
         error_events=(),
         historical_data_end_request_ids=(99,),
@@ -262,6 +265,52 @@ def test_only_matching_historical_data_end_marks_request_complete() -> None:
         )
     assert caught.value.diagnostic is not None
     assert caught.value.diagnostic.to_dict()["classification"] == "completion_not_observed"
+
+
+@pytest.mark.parametrize(
+    "terminal_trigger",
+    ("timeout", "connection_closed", "reader_stopped", "transport_stopped"),
+)
+def test_transport_terminal_trigger_cannot_be_classified_as_completion_not_observed(
+    terminal_trigger: str,
+) -> None:
+    with pytest.raises(
+        adjusted_last.SoxlAdjustedLastDiagnosticError,
+        match="transport terminal trigger",
+    ):
+        adjusted_last.bind_strict_adjusted_history_request(
+            active_request_id=41,
+            terminal_trigger=terminal_trigger,
+            bars=(),
+            error_events=(),
+            historical_data_end_request_ids=(),
+            informational_error_codes=(),
+            request_envelope=REQUEST_ENVELOPE,
+            expected_session_count=len(EXPECTED),
+        )
+
+    with pytest.raises(StrictAdjustedHistoryError) as caught:
+        acquire_strict_adjusted_last(
+            OfflineIB(),
+            "SOXL",
+            end_datetime=CUTOFF,
+            duration="9 Y",
+            expected_sessions=EXPECTED,
+            stock_factory=_stock,
+            requester=lambda _contract, **_kwargs: adjusted_last.bind_strict_adjusted_history_request(
+                active_request_id=41,
+                terminal_trigger=terminal_trigger,
+                bars=(),
+                error_events=(),
+                historical_data_end_request_ids=(),
+                informational_error_codes=(),
+                request_envelope=REQUEST_ENVELOPE,
+                expected_session_count=len(EXPECTED),
+            ).history_outcome,
+        )
+
+    assert caught.value.diagnostic is not None
+    assert caught.value.diagnostic.to_dict()["classification"] == "transport_error"
 
 
 @pytest.mark.parametrize(
