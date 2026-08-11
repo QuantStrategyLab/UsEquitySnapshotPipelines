@@ -719,6 +719,12 @@ class _ImmutableReplayProducer:
         state.assessment_count += 1
         self._scenario_counts[self._scenario]["assessments"] += 1
         if result.outcome != "APPROVE":
+            if result.outcome == "REJECT" and result.reason_codes and set(result.reason_codes) <= {
+                "strategy_breaker_triggered",
+                "account_breaker_triggered",
+            }:
+                state.parked = True
+                return None, 0.0
             raise TqqqPromotionEvidenceError(
                 "RiskEngine rejected immutable replay decision:" + ",".join(result.reason_codes)
             )

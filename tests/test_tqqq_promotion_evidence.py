@@ -5,6 +5,7 @@ import hashlib
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -324,3 +325,73 @@ def test_same_asset_drawdown_target_is_reduced_without_round_trip() -> None:
     assert producer._state.cash == pytest.approx(89_997.5)
     assert producer._state.turnover == pytest.approx(0.05)
     assert producer._state.trade_count == 1
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason_codes", "protective"),
+    [
+        ("REJECT", ("strategy_breaker_triggered",), True),
+        ("REJECT", ("account_breaker_triggered",), True),
+        ("REJECT", (), False),
+        ("REJECT", ("risk_engine_non_approve",), False),
+        ("REJECT", ("strategy_breaker_triggered_extra",), False),
+        ("REJECT", ("strategy_breaker_triggered", "risk_engine_non_approve"), False),
+        ("ERROR", ("strategy_breaker_triggered",), False),
+    ],
+)
+def test_non_approve_disposition_is_exact_and_fail_closed(
+    outcome: str,
+    reason_codes: tuple[str, ...],
+    protective: bool,
+) -> None:
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.config = {"signal_model": "qqq_sma_200_close_t_open_t_plus_1"}
+    producer.candidate = SimpleNamespace(
+        authority_receipt_sha256="1" * 64,
+        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision="2" * 40,
+        runner_revision="3" * 40,
+        config_sha256="4" * 64,
+        input_manifest_sha256="5" * 64,
+        candidate_sha256="6" * 64,
+    )
+    producer.qqq = tuple(
+        _Bar(
+            date(2024, 1, 1) + timedelta(days=index),
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+            1_000_000.0,
+        )
+        for index in range(200)
+    )
+    producer._state = _ReplayState()
+    producer._state_sha256 = "7" * 64
+    producer._scenario = 5
+    producer._scenario_counts = {5: {"assessments": 0, "decisions": 0}}
+    rejected = SimpleNamespace(outcome=outcome, reason_codes=reason_codes)
+
+    with patch(
+        "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence.evaluate_tqqq_research_contract",
+        return_value=rejected,
+    ) as assess:
+        if protective:
+            assert producer._assessment(199, date(2025, 1, 2), 100_000.0) == (None, 0.0)
+            assert producer._assessment(199, date(2025, 1, 3), 100_000.0) == (None, 0.0)
+        else:
+            with pytest.raises(TqqqPromotionEvidenceError):
+                producer._assessment(199, date(2025, 1, 2), 100_000.0)
+
+    expected_assessments = 2 if protective else 1
+    assert producer._state.parked is protective
+    assert producer._state.assessment_count == expected_assessments
+    assert producer._scenario_counts[5] == {
+        "assessments": expected_assessments,
+        "decisions": 0,
+    }
+    assert assess.call_count == expected_assessments
+    assert assess.call_args_list[0].args[0].positions
+    if protective:
+        assert assess.call_args_list[1].args[0].positions == ()
