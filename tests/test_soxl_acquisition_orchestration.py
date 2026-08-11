@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -407,6 +408,67 @@ def test_existing_snapshot_validates_then_consumes_one_fresh_mandate_and_runs_on
     assert result["rerun_count"] == 1
 
 
+def test_existing_snapshot_compatible_ancestor_binds_fresh_current_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    snapshot, snapshot_digest = _published_snapshot(monkeypatch, tmp_path)
+    _allow_pinned_dependency_provenance(monkeypatch)
+    current_revision = "9" * 40
+    current_tree = "8" * 40
+    compatibility_calls = []
+    observed_config = {}
+
+    monkeypatch.setattr(
+        orchestration,
+        "_require_snapshot_execution_compatibility",
+        lambda snapshot_revision, snapshot_tree, runner_revision, runner_tree: (
+            compatibility_calls.append(
+                (snapshot_revision, snapshot_tree, runner_revision, runner_tree)
+            )
+        ),
+        raising=False,
+    )
+
+    def run(*, config_payload, output_dir, **_kwargs):
+        observed_config.update(config_payload)
+        output = Path(output_dir)
+        output.mkdir()
+        evidence = output / "strategy-evidence-package.v2.json"
+        evidence.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        return {
+            "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+            "cost_stress_25bp_sha256": "4" * 64,
+            "promotion_result_sha256": "5" * 64,
+        }
+
+    monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
+    monkeypatch.setattr(
+        orchestration,
+        "validate_evidence_package_v2",
+        lambda *_args, **_kwargs: [],
+    )
+
+    result = orchestrate_existing_soxl_snapshot(
+        snapshot,
+        expected_snapshot_digest=snapshot_digest,
+        authority=_fresh_authority(),
+        output_root=tmp_path / "compatible-rerun",
+        runner_revision=current_revision,
+        runner_tree_sha=current_tree,
+        clock=lambda: datetime(2026, 8, 10, 15, 0, tzinfo=UTC),
+    )
+
+    assert compatibility_calls == [
+        (RUNNER_REVISION, RUNNER_TREE_SHA, current_revision, current_tree)
+    ]
+    assert observed_config["runner_revision"] == current_revision
+    assert observed_config["candidate_identity"]["runner_revision"] == current_revision
+    assert observed_config["mandate_provenance"]["runner_revision"] == current_revision
+    assert result["status"] == "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE"
+    assert result["rerun_count"] == 1
+
+
 def test_existing_snapshot_config_mismatch_fails_before_mandate_or_runner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -444,7 +506,16 @@ def test_existing_snapshot_revision_and_installed_provenance_mismatch_fail_close
     snapshot, snapshot_digest = _published_snapshot(monkeypatch, tmp_path)
     _allow_pinned_dependency_provenance(monkeypatch)
 
-    with pytest.raises(SoxlOrchestrationError, match="runner revision mismatch"):
+    def reject_incompatible_source(*_args):
+        raise SoxlOrchestrationError("snapshot execution source mismatch")
+
+    monkeypatch.setattr(
+        orchestration,
+        "_require_snapshot_execution_compatibility",
+        reject_incompatible_source,
+    )
+
+    with pytest.raises(SoxlOrchestrationError, match="execution source mismatch"):
         orchestrate_existing_soxl_snapshot(
             snapshot,
             expected_snapshot_digest=snapshot_digest,
@@ -453,6 +524,10 @@ def test_existing_snapshot_revision_and_installed_provenance_mismatch_fail_close
             runner_revision="9" * 40,
             runner_tree_sha=RUNNER_TREE_SHA,
         )
+    assert not (tmp_path / "revision-rerun").exists()
+
+    monkeypatch.undo()
+    _allow_pinned_dependency_provenance(monkeypatch)
 
     monkeypatch.setattr(orchestration, "_installed_vcs_revision", lambda _name: "8" * 40)
     with pytest.raises(SoxlOrchestrationError, match="installed dependency revision mismatch"):
@@ -463,6 +538,142 @@ def test_existing_snapshot_revision_and_installed_provenance_mismatch_fail_close
             output_root=tmp_path / "provenance-rerun",
             runner_revision=RUNNER_REVISION,
             runner_tree_sha=RUNNER_TREE_SHA,
+        )
+
+
+def test_existing_snapshot_current_non_runner_contract_change_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    snapshot, snapshot_digest = _published_snapshot(monkeypatch, tmp_path)
+    _allow_pinned_dependency_provenance(monkeypatch)
+    current_revision = "9" * 40
+    real_builder = orchestration._config_without_authority
+
+    monkeypatch.setattr(
+        orchestration,
+        "_require_snapshot_execution_compatibility",
+        lambda *_args: None,
+    )
+
+    def changed_current_config(*, source_contract_sha256, runner_revision, authority):
+        config = real_builder(
+            source_contract_sha256=source_contract_sha256,
+            runner_revision=runner_revision,
+            authority=authority,
+        )
+        if runner_revision == current_revision:
+            config["benchmark_symbol"] = "QQQ"
+        return config
+
+    monkeypatch.setattr(orchestration, "_config_without_authority", changed_current_config)
+    monkeypatch.setattr(
+        orchestration,
+        "ResearchMandateAuthorityGuard",
+        lambda *_args, **_kwargs: pytest.fail("mandate must not be created"),
+    )
+
+    with pytest.raises(SoxlOrchestrationError, match="execution contract mismatch"):
+        orchestrate_existing_soxl_snapshot(
+            snapshot,
+            expected_snapshot_digest=snapshot_digest,
+            authority=_fresh_authority(),
+            output_root=tmp_path / "contract-rerun",
+            runner_revision=current_revision,
+            runner_tree_sha="8" * 40,
+        )
+    assert not (tmp_path / "contract-rerun").exists()
+
+
+def test_existing_snapshot_same_revision_wrong_current_tree_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    snapshot, snapshot_digest = _published_snapshot(monkeypatch, tmp_path)
+    _allow_pinned_dependency_provenance(monkeypatch)
+    monkeypatch.setattr(
+        orchestration,
+        "ResearchMandateAuthorityGuard",
+        lambda *_args, **_kwargs: pytest.fail("mandate must not be created"),
+    )
+
+    with pytest.raises(SoxlOrchestrationError, match="current runner tree mismatch"):
+        orchestrate_existing_soxl_snapshot(
+            snapshot,
+            expected_snapshot_digest=snapshot_digest,
+            authority=_fresh_authority(),
+            output_root=tmp_path / "tree-rerun",
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha="8" * 40,
+        )
+    assert not (tmp_path / "tree-rerun").exists()
+
+
+def test_snapshot_execution_compatibility_requires_ancestor_and_fixed_blob_equality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_revision = "1" * 40
+    current_revision = "2" * 40
+    snapshot_tree = "3" * 40
+    current_tree = "4" * 40
+    state = {"ancestor": True, "mismatch_path": None}
+    compared_paths = []
+
+    def run(arguments, *, check, capture_output, text):
+        assert capture_output is True
+        assert text is True
+        git_arguments = arguments[3:]
+        if git_arguments[:2] == ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(
+                arguments,
+                0 if state["ancestor"] else 1,
+                "",
+                "",
+            )
+        assert check is True
+        assert git_arguments[0] == "rev-parse"
+        identity = git_arguments[1]
+        if identity == f"{snapshot_revision}^{{tree}}":
+            value = snapshot_tree
+        elif identity == f"{current_revision}^{{tree}}":
+            value = current_tree
+        else:
+            revision, path = identity.split(":", maxsplit=1)
+            if revision == snapshot_revision:
+                compared_paths.append(path)
+            value = (
+                "6" * 40
+                if path == state["mismatch_path"] and revision == current_revision
+                else "5" * 40
+            )
+        return subprocess.CompletedProcess(arguments, 0, value + "\n", "")
+
+    monkeypatch.setattr(orchestration.subprocess, "run", run)
+    orchestration._require_snapshot_execution_compatibility(
+        snapshot_revision,
+        snapshot_tree,
+        current_revision,
+        current_tree,
+    )
+    assert compared_paths == list(orchestration._SNAPSHOT_EXECUTION_CONTRACT_PATHS)
+
+    state["mismatch_path"] = orchestration._SNAPSHOT_EXECUTION_CONTRACT_PATHS[0]
+    with pytest.raises(SoxlOrchestrationError, match="execution source mismatch"):
+        orchestration._require_snapshot_execution_compatibility(
+            snapshot_revision,
+            snapshot_tree,
+            current_revision,
+            current_tree,
+        )
+
+    state["mismatch_path"] = None
+    state["ancestor"] = False
+    with pytest.raises(SoxlOrchestrationError, match="not a current ancestor"):
+        orchestration._require_snapshot_execution_compatibility(
+            snapshot_revision,
+            snapshot_tree,
+            current_revision,
+            current_tree,
         )
 
 
