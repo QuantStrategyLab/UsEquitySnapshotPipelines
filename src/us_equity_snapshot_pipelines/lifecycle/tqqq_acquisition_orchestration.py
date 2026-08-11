@@ -54,6 +54,14 @@ _DEPENDENCY_REPOSITORIES = {
     "quant-platform-kit": "https://github.com/QuantStrategyLab/QuantPlatformKit.git",
     "us-equity-strategies": "https://github.com/QuantStrategyLab/UsEquityStrategies.git",
 }
+_SESSION_PROVIDER = {
+    "paper": "IBKR Paper Gateway TWS API",
+    "live-data-only": "IBKR Live Gateway Data Only TWS API",
+}
+_SESSION_TOOL = {
+    "paper": "tqqq_ibkr_paper_single_acquisition",
+    "live-data-only": "tqqq_ibkr_live_data_only_single_acquisition",
+}
 
 
 def _canonical(value: Any) -> bytes:
@@ -298,6 +306,7 @@ def _source_identity(
     authority: TqqqOrchestrationAuthority,
     *,
     observed_at: str,
+    session_class: str,
 ) -> str:
     requests = [
         {
@@ -310,13 +319,15 @@ def _source_identity(
             "use_rth": True,
             "format_date": 1,
             "keep_up_to_date": False,
+            "session_class": session_class,
         }
         for symbol in TQQQ_PROMOTION_ASSETS
     ]
     return hashlib.sha256(
         _canonical(
             {
-                "provider": "IBKR Paper Gateway TWS API",
+                "provider": _SESSION_PROVIDER[session_class],
+                "session_class": session_class,
                 "official_ibapi_provenance_sha256": OFFICIAL_IBAPI_PROVENANCE_SHA256,
                 "entitlement_receipt_sha256": authority.entitlement_receipt_sha256,
                 "license_receipt_sha256": authority.license_receipt_sha256,
@@ -341,9 +352,15 @@ def _input_payload(
     runner_revision: str,
     runner_tree_sha: str,
     observed_at: str,
+    session_class: str,
 ) -> tuple[dict[str, Any], bytes, bytes, str]:
     bars_bytes = _canonical(bars)
-    source_revision = _source_identity(results, authority, observed_at=observed_at)
+    source_revision = _source_identity(
+        results,
+        authority,
+        observed_at=observed_at,
+        session_class=session_class,
+    )
     sources = [
         {
             "source_id": f"ibkr:{symbol}",
@@ -359,7 +376,7 @@ def _input_payload(
         {
             "schema_version": "research_input_manifest.v1",
             "manifest_id": (
-                "tqqq-ibkr-paper-single-acquisition-"
+                f"tqqq-ibkr-{session_class}-single-acquisition-"
                 f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
             ),
             "research_input_contract_id": _INPUT_CONTRACT_ID,
@@ -373,7 +390,7 @@ def _input_payload(
                 "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
                 "commit_sha": runner_revision,
                 "tree_sha": runner_tree_sha,
-                "tool": "tqqq_ibkr_paper_single_acquisition",
+                "tool": _SESSION_TOOL[session_class],
                 "tool_version": "v1",
             },
             "calendar": {
@@ -405,8 +422,9 @@ def _input_payload(
         "provenance": {
             "evidence_class": "provider_observed",
             "real_producer": True,
-            "provider": "IBKR Paper Gateway TWS API",
+            "provider": _SESSION_PROVIDER[session_class],
             "provider_revision": source_revision,
+            "session_class": session_class,
             "license": INPUT_LICENSE,
             "usage_scope": INPUT_USAGE_SCOPE,
         },
@@ -416,7 +434,9 @@ def _input_payload(
     return payload, bars_bytes, manifest_bytes, manifest_sha256
 
 
-def _config(authority: TqqqOrchestrationAuthority) -> dict[str, Any]:
+def _config(
+    authority: TqqqOrchestrationAuthority, *, session_class: str
+) -> dict[str, Any]:
     return {
         "schema_version": "tqqq_etf_only_replay_config.v1",
         "strategy_profile": _PROFILE,
@@ -431,6 +451,7 @@ def _config(authority: TqqqOrchestrationAuthority) -> dict[str, Any]:
         "platform_execution_revision": authority.platform_execution_revision,
         "input_license": INPUT_LICENSE,
         "input_usage_scope": INPUT_USAGE_SCOPE,
+        "session_class": session_class,
     }
 
 
@@ -575,11 +596,14 @@ def orchestrate_tqqq_promotion(
     output_root: str | Path,
     runner_revision: str,
     runner_tree_sha: str,
+    session_class: str = "paper",
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Publish exact input, consume one mandate, then invoke existing evidence once."""
     if not isinstance(authority, TqqqOrchestrationAuthority):
         raise TqqqOrchestrationError("invalid orchestration authority")
+    if session_class not in _SESSION_PROVIDER:
+        raise TqqqOrchestrationError("invalid provider session identity")
     runner_revision = _require_revision(runner_revision, "runner revision")
     runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")
     if (
@@ -602,8 +626,9 @@ def orchestrate_tqqq_promotion(
         runner_revision=runner_revision,
         runner_tree_sha=runner_tree_sha,
         observed_at=observed_at,
+        session_class=session_class,
     )
-    config = _config(authority)
+    config = _config(authority, session_class=session_class)
     config_sha256 = hashlib.sha256(_canonical(config)).hexdigest()
     candidate = CandidateRiskIdentity(
         strategy_profile=_PROFILE,

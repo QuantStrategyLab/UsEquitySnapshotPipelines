@@ -52,6 +52,14 @@ _CONFIG_SCHEMA = "tqqq_etf_only_replay_config.v1"
 _MANDATE_ID = "tqqq_etf_only_research_v1"
 _LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 _USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
+_SESSION_PROVIDER = {
+    "paper": "IBKR Paper Gateway TWS API",
+    "live-data-only": "IBKR Live Gateway Data Only TWS API",
+}
+_SESSION_TOOL = {
+    "paper": "tqqq_ibkr_paper_single_acquisition",
+    "live-data-only": "tqqq_ibkr_live_data_only_single_acquisition",
+}
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
 _COST_SCENARIOS = (5, 10, 15)
 _CORE_FIELDS = (
@@ -217,6 +225,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         "platform_execution_revision",
         "input_license",
         "input_usage_scope",
+        "session_class",
     }
     config = _exact_mapping(value, fields, "config")
     if (
@@ -231,6 +240,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         or not config["risk_standard_id"]
         or config["input_license"] != _LICENSE
         or config["input_usage_scope"] != _USAGE_SCOPE
+        or config["session_class"] not in _SESSION_PROVIDER
     ):
         raise TqqqPromotionEvidenceError("invalid frozen config")
     _digest_text(config["risk_standard_sha256"], 64, "risk standard digest")
@@ -272,13 +282,15 @@ def _validate_input(
             "provider_revision",
             "license",
             "usage_scope",
+            "session_class",
         },
         "input provenance",
     )
     if (
         provenance["evidence_class"] != "provider_observed"
         or provenance["real_producer"] is not True
-        or provenance["provider"] != "IBKR Paper Gateway TWS API"
+        or provenance["session_class"] != config["session_class"]
+        or provenance["provider"] != _SESSION_PROVIDER[config["session_class"]]
         or not isinstance(provenance["provider_revision"], str)
         or not provenance["provider_revision"]
         or provenance["license"] != config["input_license"]
@@ -300,6 +312,19 @@ def _validate_input(
         or manifest["adjustment"]["source"] != "IBKR_ADJUSTED_LAST"
     ):
         raise TqqqPromotionEvidenceError("invalid immutable input contract")
+    session_class = config["session_class"]
+    manifest_prefix = f"tqqq-ibkr-{session_class}-single-acquisition-"
+    manifest_suffix = manifest["manifest_id"].removeprefix(manifest_prefix)
+    producer = manifest["producer"]
+    if (
+        not manifest["manifest_id"].startswith(manifest_prefix)
+        or len(manifest_suffix) != 24
+        or any(character not in "0123456789abcdef" for character in manifest_suffix)
+        or producer["repository"] != "QuantStrategyLab/UsEquitySnapshotPipelines"
+        or producer["tool"] != _SESSION_TOOL[session_class]
+        or producer["tool_version"] != "v1"
+    ):
+        raise TqqqPromotionEvidenceError("invalid provider session identity")
     bars_payload = _exact_mapping(payload["bars"], {"schema_version", "symbols"}, "bars payload")
     symbols = _exact_mapping(bars_payload["symbols"], {"BOXX", "QQQ", "TQQQ"}, "bar symbols")
     if bars_payload["schema_version"] != _INPUT_SCHEMA:
@@ -316,7 +341,11 @@ def _validate_input(
         raise TqqqPromotionEvidenceError("input identity mismatch")
     parsed: dict[str, tuple[_Bar, ...]] = {}
     source_digests = {item["source_id"]: item["content_sha256"] for item in manifest["sources"]}
-    if set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:TQQQ"}:
+    source_revisions = {item["revision"] for item in manifest["sources"]}
+    if (
+        set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:TQQQ"}
+        or source_revisions != {provenance["provider_revision"]}
+    ):
         raise TqqqPromotionEvidenceError("invalid provider source identities")
     for symbol in ("BOXX", "QQQ", "TQQQ"):
         rows = symbols[symbol]
