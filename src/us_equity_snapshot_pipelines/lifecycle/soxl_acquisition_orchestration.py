@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -63,6 +65,33 @@ _SESSION_PROVIDER_ID = {
 }
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
+_DEPENDENCY_REPOSITORIES = {
+    "quant-platform-kit": "https://github.com/QuantStrategyLab/QuantPlatformKit.git",
+    "us-equity-strategies": "https://github.com/QuantStrategyLab/UsEquityStrategies.git",
+}
+_SNAPSHOT_FILES = frozenset(
+    {"input-manifest.json", "input.json", "package-manifest.json", "sessions.json"}
+)
+_SNAPSHOT_IDENTITY_FIELDS = frozenset(
+    {
+        "account_mode",
+        "authority_receipt_sha256",
+        "candidate_contract_sha256",
+        "candidate_id",
+        "candidate_identity_sha256",
+        "config_sha256",
+        "input_contract_id",
+        "input_manifest_sha256",
+        "mandate_digest_sha256",
+        "mandate_id",
+        "qpk_revision",
+        "runner_revision",
+        "source_contract_schema",
+        "source_contract_sha256",
+        "strategy_profile",
+        "strategy_revision",
+    }
+)
 
 
 class SoxlOrchestrationError(ValueError):
@@ -202,6 +231,29 @@ def resolve_soxl_runtime_identity() -> tuple[str, str]:
     if status.stdout or head != revision:
         raise SoxlOrchestrationError("runner implementation checkout is not immutable")
     return _require_revision(revision, "runner revision"), _require_revision(tree, "runner tree")
+
+
+def _installed_vcs_revision(distribution_name: str) -> str:
+    expected_repository = _DEPENDENCY_REPOSITORIES.get(distribution_name)
+    if expected_repository is None:
+        raise SoxlOrchestrationError("installed dependency identity is unavailable")
+    try:
+        distribution = importlib.metadata.distribution(distribution_name)
+        direct_url_text = distribution.read_text("direct_url.json")
+        direct_url = json.loads(direct_url_text) if direct_url_text else {}
+        repository = direct_url.get("url")
+        revision = direct_url.get("vcs_info", {}).get("commit_id")
+    except (
+        importlib.metadata.PackageNotFoundError,
+        AttributeError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise SoxlOrchestrationError("installed dependency identity is unavailable") from exc
+    if repository != expected_repository:
+        raise SoxlOrchestrationError("installed dependency identity mismatch")
+    return _require_revision(revision, "installed dependency revision")
 
 
 def _strict_raw_sessions(
@@ -433,6 +485,243 @@ def _config_without_authority(
     }
 
 
+def _mandate_bound_config(
+    config_without_authority: Mapping[str, Any],
+    candidate: CandidateRiskIdentity,
+    authority: SoxlOrchestrationAuthority,
+    mandate: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    factors = {symbol: 3 if symbol == "SOXL" else 1 for symbol in SOXL_PROMOTION_ASSETS}
+    caps = {symbol: 0.15 if symbol == "SOXL" else 0.50 for symbol in SOXL_PROMOTION_ASSETS}
+    mandate_provenance = {
+        "mandate_id": MANDATE_ID,
+        "mandate_version": "v1",
+        "authority_receipt_sha256": authority.authority_receipt_sha256,
+        "authority_scope": "RESEARCH_ONLY",
+        "strategy_profile": candidate.strategy_profile,
+        "account_mode": candidate.account_mode,
+        "strategy_revision": candidate.strategy_revision,
+        "runner_revision": candidate.runner_revision,
+        "config_sha256": candidate.config_sha256,
+        "input_manifest_sha256": candidate.input_manifest_sha256,
+        "candidate_identity_sha256": candidate.candidate_sha256,
+        "effective_at": mandate.issued_at,
+        "expires_at": mandate.expires_at,
+        "max_snapshot_age_seconds": 300,
+        "effective_exposure_cap": 0.50,
+        "loss_budget": 0.01,
+        "product_caps": caps,
+        "nominal_caps": caps,
+        "product_leverage_factors": factors,
+        "allowed_nonzero_assets": list(SOXL_PROMOTION_ASSETS),
+        "source_revision": QPK_REVISION,
+        "research_mandate_digest": mandate.mandate_digest,
+    }
+    config = {
+        **config_without_authority,
+        "candidate_identity": {
+            "strategy_profile": candidate.strategy_profile,
+            "account_mode": candidate.account_mode,
+            "strategy_revision": candidate.strategy_revision,
+            "runner_revision": candidate.runner_revision,
+            "config_sha256": candidate.config_sha256,
+            "input_manifest_sha256": candidate.input_manifest_sha256,
+            "authority_receipt_sha256": candidate.authority_receipt_sha256,
+        },
+        "mandate_provenance": mandate_provenance,
+    }
+    return config, mandate_provenance
+
+
+def _load_existing_soxl_snapshot(
+    snapshot_dir: str | Path,
+    *,
+    expected_snapshot_digest: str,
+    authority: SoxlOrchestrationAuthority,
+    runner_revision: str,
+    runner_tree_sha: str,
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    snapshot_digest = _require_digest(expected_snapshot_digest, "snapshot digest")
+    root = Path(snapshot_dir)
+    try:
+        if root.is_symlink() or not root.is_dir() or stat.S_IMODE(root.stat().st_mode) != 0o700:
+            raise SoxlOrchestrationError("invalid private snapshot directory")
+        entries = {path.name: path for path in root.iterdir()}
+    except OSError as exc:
+        raise SoxlOrchestrationError("private snapshot is unavailable") from exc
+    if set(entries) != _SNAPSHOT_FILES:
+        raise SoxlOrchestrationError("invalid private snapshot members")
+    for path in entries.values():
+        try:
+            if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+                raise SoxlOrchestrationError("invalid private snapshot member")
+        except OSError as exc:
+            raise SoxlOrchestrationError("private snapshot is unavailable") from exc
+
+    package_path = entries["package-manifest.json"]
+    try:
+        package_bytes = package_path.read_bytes()
+    except OSError as exc:
+        raise SoxlOrchestrationError("private snapshot is unavailable") from exc
+    if hashlib.sha256(package_bytes).hexdigest() != snapshot_digest:
+        raise SoxlOrchestrationError("snapshot digest mismatch")
+    try:
+        package = promotion_runner._strict_json(package_path)
+    except SoxlPromotionContractError as exc:
+        raise SoxlOrchestrationError("invalid snapshot package manifest") from exc
+    if set(package) != {
+        "candidate_id",
+        "contract",
+        "identity",
+        "input_contract_id",
+        "input_manifest_sha256",
+        "lifecycle_claims",
+        "members",
+        "package_type",
+        "schema_version",
+        "source_contract",
+    }:
+        raise SoxlOrchestrationError("invalid snapshot package manifest")
+    if (
+        package["schema_version"] != "soxl_core_only_9_input_package_manifest.v1"
+        or package["package_type"] != "promotion_research_input_static_only"
+        or package["candidate_id"] != CANDIDATE_ID
+        or package["input_contract_id"] != INPUT_CONTRACT_ID
+    ):
+        raise SoxlOrchestrationError("snapshot contract identity mismatch")
+    members = package["members"]
+    if not isinstance(members, list) or len(members) != 3:
+        raise SoxlOrchestrationError("invalid snapshot package members")
+    observed_member_paths: set[str] = set()
+    for member in members:
+        if not isinstance(member, Mapping) or set(member) != {
+            "media_type",
+            "path",
+            "sha256",
+            "size_bytes",
+        }:
+            raise SoxlOrchestrationError("invalid snapshot package member")
+        relative_path = member["path"]
+        if (
+            relative_path not in _SNAPSHOT_FILES - {"package-manifest.json"}
+            or relative_path in observed_member_paths
+            or member["media_type"] != "application/json"
+        ):
+            raise SoxlOrchestrationError("invalid snapshot package member")
+        observed_member_paths.add(relative_path)
+        try:
+            payload = entries[relative_path].read_bytes()
+        except OSError as exc:
+            raise SoxlOrchestrationError("private snapshot is unavailable") from exc
+        if (
+            isinstance(member["size_bytes"], bool)
+            or not isinstance(member["size_bytes"], int)
+            or member["size_bytes"] != len(payload)
+            or _require_digest(member["sha256"], "snapshot member digest")
+            != hashlib.sha256(payload).hexdigest()
+        ):
+            raise SoxlOrchestrationError("snapshot member integrity mismatch")
+    if observed_member_paths != _SNAPSHOT_FILES - {"package-manifest.json"}:
+        raise SoxlOrchestrationError("invalid snapshot package members")
+
+    input_manifest_sha256 = _require_digest(
+        package["input_manifest_sha256"], "input manifest digest"
+    )
+    try:
+        input_manifest_bytes = entries["input-manifest.json"].read_bytes()
+    except OSError as exc:
+        raise SoxlOrchestrationError("private snapshot is unavailable") from exc
+    if hashlib.sha256(input_manifest_bytes).hexdigest() != input_manifest_sha256:
+        raise SoxlOrchestrationError("input manifest identity mismatch")
+    source_contract = package["source_contract"]
+    if not isinstance(source_contract, Mapping):
+        raise SoxlOrchestrationError("source contract identity mismatch")
+    source_contract_sha256 = hashlib.sha256(canonical_json_bytes(source_contract)).hexdigest()
+    identity = package["identity"]
+    if not isinstance(identity, Mapping) or set(identity) != _SNAPSHOT_IDENTITY_FIELDS:
+        raise SoxlOrchestrationError("snapshot identity mismatch")
+    identity = dict(identity)
+    for field in (
+        "authority_receipt_sha256",
+        "candidate_contract_sha256",
+        "candidate_identity_sha256",
+        "config_sha256",
+        "input_manifest_sha256",
+        "mandate_digest_sha256",
+        "source_contract_sha256",
+    ):
+        _require_digest(identity[field], field)
+    if (
+        identity["candidate_id"] != CANDIDATE_ID
+        or identity["input_contract_id"] != INPUT_CONTRACT_ID
+        or identity["source_contract_schema"] != SOURCE_CONTRACT_SCHEMA
+        or identity["candidate_contract_sha256"] != CORE_ONLY_CONFIG_SHA256
+        or identity["strategy_profile"] != "soxl_soxx_trend_income"
+        or identity["account_mode"] != "single_strategy"
+        or identity["mandate_id"] != MANDATE_ID
+        or identity["qpk_revision"] != QPK_REVISION
+        or identity["strategy_revision"] != promotion_runner._UES_REVISION
+        or identity["input_manifest_sha256"] != input_manifest_sha256
+        or identity["source_contract_sha256"] != source_contract_sha256
+    ):
+        raise SoxlOrchestrationError("snapshot identity mismatch")
+    try:
+        old_candidate = CandidateRiskIdentity(
+            strategy_profile=identity["strategy_profile"],
+            account_mode=identity["account_mode"],
+            strategy_revision=identity["strategy_revision"],
+            runner_revision=identity["runner_revision"],
+            config_sha256=identity["config_sha256"],
+            input_manifest_sha256=identity["input_manifest_sha256"],
+            authority_receipt_sha256=identity["authority_receipt_sha256"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise SoxlOrchestrationError("snapshot candidate identity mismatch") from exc
+    if old_candidate.candidate_sha256 != identity["candidate_identity_sha256"]:
+        raise SoxlOrchestrationError("snapshot candidate identity mismatch")
+    if identity["runner_revision"] != runner_revision:
+        raise SoxlOrchestrationError("snapshot runner revision mismatch")
+    producer = source_contract.get("producer")
+    if producer != runtime_producer_source_identity(
+        commit_sha=runner_revision,
+        tree_sha=runner_tree_sha,
+    ):
+        raise SoxlOrchestrationError("snapshot runner tree mismatch")
+    if (
+        _installed_vcs_revision("quant-platform-kit") != QPK_REVISION
+        or _installed_vcs_revision("us-equity-strategies") != promotion_runner._UES_REVISION
+    ):
+        raise SoxlOrchestrationError("installed dependency revision mismatch")
+    logical_inputs = source_contract.get("logical_inputs")
+    if not isinstance(logical_inputs, list) or len(logical_inputs) != len(SOXL_PROMOTION_ASSETS):
+        raise SoxlOrchestrationError("snapshot authority identity mismatch")
+    if any(
+        not isinstance(item, Mapping)
+        or item.get("entitlement_receipt_sha256") != authority.entitlement_receipt_sha256
+        or item.get("license_or_usage_receipt_sha256") != authority.license_receipt_sha256
+        or item.get("retention_expires_at") != authority.retention_expires_at
+        for item in logical_inputs
+    ):
+        raise SoxlOrchestrationError("snapshot authority identity mismatch")
+    config_without_authority = _config_without_authority(
+        source_contract_sha256=source_contract_sha256,
+        runner_revision=runner_revision,
+        authority=authority,
+    )
+    if hashlib.sha256(canonical_json_bytes(config_without_authority)).hexdigest() != identity[
+        "config_sha256"
+    ]:
+        raise SoxlOrchestrationError("snapshot config identity mismatch")
+    try:
+        input_payload = promotion_runner._strict_json(entries["input.json"])
+        input_manifest = promotion_runner._strict_json(entries["input-manifest.json"])
+    except SoxlPromotionContractError as exc:
+        raise SoxlOrchestrationError("invalid snapshot input") from exc
+    if input_payload.get("input_manifest") != input_manifest:
+        raise SoxlOrchestrationError("snapshot input manifest mismatch")
+    return input_payload, config_without_authority, input_manifest_sha256, snapshot_digest
+
+
 def _private_run_root(output_root: Path, input_manifest_sha256: str) -> Path:
     if output_root.is_symlink():
         raise SoxlOrchestrationError("private output root is unavailable")
@@ -513,45 +802,12 @@ def orchestrate_soxl_promotion(
         input_digest=prepared.input_manifest_sha256,
         authority_id=authority.authority_receipt_sha256,
     )
-    factors = {symbol: 3 if symbol == "SOXL" else 1 for symbol in SOXL_PROMOTION_ASSETS}
-    caps = {symbol: 0.15 if symbol == "SOXL" else 0.50 for symbol in SOXL_PROMOTION_ASSETS}
-    mandate_provenance = {
-        "mandate_id": MANDATE_ID,
-        "mandate_version": "v1",
-        "authority_receipt_sha256": authority.authority_receipt_sha256,
-        "authority_scope": "RESEARCH_ONLY",
-        "strategy_profile": candidate.strategy_profile,
-        "account_mode": candidate.account_mode,
-        "strategy_revision": candidate.strategy_revision,
-        "runner_revision": candidate.runner_revision,
-        "config_sha256": candidate.config_sha256,
-        "input_manifest_sha256": candidate.input_manifest_sha256,
-        "candidate_identity_sha256": candidate.candidate_sha256,
-        "effective_at": mandate.issued_at,
-        "expires_at": mandate.expires_at,
-        "max_snapshot_age_seconds": 300,
-        "effective_exposure_cap": 0.50,
-        "loss_budget": 0.01,
-        "product_caps": caps,
-        "nominal_caps": caps,
-        "product_leverage_factors": factors,
-        "allowed_nonzero_assets": list(SOXL_PROMOTION_ASSETS),
-        "source_revision": QPK_REVISION,
-        "research_mandate_digest": mandate.mandate_digest,
-    }
-    config = {
-        **config_without_authority,
-        "candidate_identity": {
-            "strategy_profile": candidate.strategy_profile,
-            "account_mode": candidate.account_mode,
-            "strategy_revision": candidate.strategy_revision,
-            "runner_revision": candidate.runner_revision,
-            "config_sha256": candidate.config_sha256,
-            "input_manifest_sha256": candidate.input_manifest_sha256,
-            "authority_receipt_sha256": candidate.authority_receipt_sha256,
-        },
-        "mandate_provenance": mandate_provenance,
-    }
+    config, mandate_provenance = _mandate_bound_config(
+        config_without_authority,
+        candidate,
+        authority,
+        mandate,
+    )
     binding = {
         "candidate_id": CANDIDATE_ID,
         "input_contract_id": INPUT_CONTRACT_ID,
@@ -650,11 +906,151 @@ def orchestrate_soxl_promotion(
         os.umask(old_umask)
 
 
+def orchestrate_existing_soxl_snapshot(
+    snapshot_dir: str | Path,
+    *,
+    expected_snapshot_digest: str,
+    authority: SoxlOrchestrationAuthority,
+    output_root: str | Path,
+    runner_revision: str,
+    runner_tree_sha: str,
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Validate one immutable snapshot, consume one fresh mandate, and rerun once."""
+    if not isinstance(authority, SoxlOrchestrationAuthority):
+        raise SoxlOrchestrationError("invalid orchestration authority")
+    runner_revision = _require_revision(runner_revision, "runner revision")
+    runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")
+    now = (clock or (lambda: datetime.now(UTC)))()
+    observed_at = _utc_timestamp(now)
+    if _parse_utc_timestamp(authority.retention_expires_at) < now:
+        raise SoxlOrchestrationError("retention authority is expired")
+    (
+        input_payload,
+        config_without_authority,
+        input_manifest_sha256,
+        snapshot_digest,
+    ) = _load_existing_soxl_snapshot(
+        snapshot_dir,
+        expected_snapshot_digest=expected_snapshot_digest,
+        authority=authority,
+        runner_revision=runner_revision,
+        runner_tree_sha=runner_tree_sha,
+    )
+    config_digest = hashlib.sha256(canonical_json_bytes(config_without_authority)).hexdigest()
+    candidate = CandidateRiskIdentity(
+        strategy_profile="soxl_soxx_trend_income",
+        account_mode="single_strategy",
+        strategy_revision=promotion_runner._UES_REVISION,
+        runner_revision=runner_revision,
+        config_sha256=config_digest,
+        input_manifest_sha256=input_manifest_sha256,
+        authority_receipt_sha256=authority.authority_receipt_sha256,
+    )
+    old_umask = os.umask(0o077)
+    try:
+        run_root = _private_run_root(Path(output_root), input_manifest_sha256)
+        try:
+            guard = ResearchMandateAuthorityGuard(
+                run_root / "mandate-authority.sqlite3",
+                clock=lambda: now,
+            )
+            mandate = guard.issue(
+                candidate_id=candidate.candidate_sha256,
+                mandate_id=MANDATE_ID,
+                config_digest=config_digest,
+                input_digest=input_manifest_sha256,
+                authority_id=authority.authority_receipt_sha256,
+            )
+            config, mandate_provenance = _mandate_bound_config(
+                config_without_authority,
+                candidate,
+                authority,
+                mandate,
+            )
+            consumption = guard.consume(
+                mandate,
+                candidate_id=candidate.candidate_sha256,
+                mandate_id=MANDATE_ID,
+                config_digest=config_digest,
+                input_digest=input_manifest_sha256,
+                authority_id=authority.authority_receipt_sha256,
+            )
+        except Exception as exc:
+            raise SoxlOrchestrationError("snapshot-only mandate failed") from exc
+        mandate_provenance["research_mandate_consumption_receipt_sha256"] = (
+            consumption.receipt_digest
+        )
+        evidence_root = run_root / "evidence"
+        try:
+            run_result = run_soxl_promotion_research(
+                input_payload=input_payload,
+                config_payload=config,
+                output_dir=evidence_root,
+                generated_at=observed_at,
+            )
+        except Exception as exc:
+            result_path = evidence_root / "promotion-research-result.v1.json"
+            if isinstance(exc, SoxlPromotionContractError) and result_path.is_file():
+                terminal = json.loads(result_path.read_bytes())
+                if terminal.get("status") in {"FAIL", "PROXY_SENSITIVE"}:
+                    _seal_private_tree(run_root)
+                    return {
+                        "status": "IMMUTABLE_NEGATIVE_STRATEGY_EVIDENCE",
+                        "asset_count": len(SOXL_PROMOTION_ASSETS),
+                        "snapshot_digest": snapshot_digest,
+                        "evidence_digest": None,
+                        "mandate_receipt_digest": consumption.receipt_digest,
+                        "rerun_count": 1,
+                    }
+            try:
+                evidence_artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
+            except OSError:
+                evidence_artifact_count = None
+            raise SoxlOrchestrationError(
+                "promotion rerun failed",
+                stage=(
+                    "promotion_runner_pre_evidence"
+                    if evidence_artifact_count == 0
+                    else "promotion_runner"
+                ),
+                snapshot_digest=snapshot_digest,
+                mandate_digest=mandate.mandate_digest,
+                mandate_receipt_digest=consumption.receipt_digest,
+                evidence_artifact_count=evidence_artifact_count,
+            ) from exc
+        evidence_path = evidence_root / "strategy-evidence-package.v2.json"
+        evidence_bytes = evidence_path.read_bytes()
+        evidence = json.loads(evidence_bytes)
+        if (
+            not isinstance(evidence, dict)
+            or validate_evidence_package_v2(evidence, base_dir=evidence_root)
+            or hashlib.sha256(evidence_bytes).hexdigest() != run_result["evidence_sha256"]
+        ):
+            raise SoxlOrchestrationError("evidence package validation failed")
+        _seal_private_tree(run_root)
+        return {
+            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "asset_count": len(SOXL_PROMOTION_ASSETS),
+            "snapshot_digest": snapshot_digest,
+            "evidence_digest": run_result["evidence_sha256"],
+            "mandate_receipt_digest": consumption.receipt_digest,
+            "rerun_count": 1,
+        }
+    except SoxlOrchestrationError:
+        raise
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SoxlOrchestrationError("snapshot-only orchestration failed") from exc
+    finally:
+        os.umask(old_umask)
+
+
 __all__ = [
     "EXACT_DURATIONS",
     "OFFICIAL_IBAPI_PROVENANCE_SHA256",
     "SoxlOrchestrationAuthority",
     "SoxlOrchestrationError",
+    "orchestrate_existing_soxl_snapshot",
     "orchestrate_soxl_promotion",
     "resolve_soxl_runtime_identity",
 ]
