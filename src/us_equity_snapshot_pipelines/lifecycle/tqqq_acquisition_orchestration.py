@@ -69,9 +69,11 @@ _SESSION_TOOL = {
     "live-data-only": "tqqq_ibkr_live_data_only_single_acquisition",
 }
 _DIAGNOSTIC_CHANGED_PATHS = {
+    "scripts/run_existing_tqqq_snapshot_promotion.py",
     "scripts/run_existing_tqqq_snapshot_diagnostic.py",
     "src/us_equity_snapshot_pipelines/lifecycle/tqqq_acquisition_orchestration.py",
     "src/us_equity_snapshot_pipelines/lifecycle/tqqq_promotion_evidence.py",
+    "tests/test_tqqq_promotion_evidence.py",
     "tests/test_tqqq_promotion_input_acquisition.py",
 }
 _DIAGNOSTIC_FUNCTION_IDENTIFIERS = {
@@ -645,9 +647,15 @@ def _require_diagnostic_execution_compatibility(
             capture_output=True,
             text=True,
         ).stdout.strip()
+        observed_runner_tree = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", f"{runner_revision}^{{tree}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise TqqqOrchestrationError("snapshot execution identity is unavailable") from exc
-    if observed_execution_tree != execution_tree_sha:
+    if observed_execution_tree != execution_tree_sha or observed_runner_tree != runner_tree_sha:
         raise TqqqOrchestrationError("snapshot execution tree mismatch")
     if execution_revision == runner_revision:
         if execution_tree_sha != runner_tree_sha:
@@ -989,6 +997,238 @@ def orchestrate_existing_tqqq_snapshot_diagnostic(
     }
 
 
+def orchestrate_existing_tqqq_snapshot_promotion(
+    run_root: str | Path,
+    *,
+    expected_snapshot_digest: str,
+    expected_source_mandate_receipt_digest: str,
+    authority: TqqqOrchestrationAuthority,
+    output_root: str | Path,
+    execution_revision: str,
+    execution_tree_sha: str,
+    runner_revision: str,
+    runner_tree_sha: str,
+    session_class: str,
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Validate one existing snapshot, consume one fresh mandate, and replay once."""
+    if not isinstance(authority, TqqqOrchestrationAuthority):
+        raise TqqqOrchestrationError("invalid orchestration authority")
+    snapshot_digest = _require_digest(expected_snapshot_digest, "snapshot digest")
+    source_receipt_digest = _require_digest(
+        expected_source_mandate_receipt_digest, "source mandate receipt digest"
+    )
+    execution_revision = _require_revision(execution_revision, "execution revision")
+    execution_tree_sha = _require_revision(execution_tree_sha, "execution tree")
+    runner_revision = _require_revision(runner_revision, "runner revision")
+    runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")
+    if session_class not in _SESSION_PROVIDER:
+        raise TqqqOrchestrationError("invalid provider session identity")
+    now = (clock or (lambda: datetime.now(UTC)))()
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise TqqqOrchestrationError("invalid orchestration timestamp")
+    now = now.astimezone(UTC).replace(microsecond=0)
+    if _require_timestamp(authority.retention_expires_at, "retention expiry") <= now:
+        raise TqqqOrchestrationError("retention authority is expired")
+    if (
+        _installed_vcs_revision("quant-platform-kit") != QPK_REVISION
+        or _installed_vcs_revision("us-equity-strategies") != UES_REVISION
+    ):
+        raise TqqqOrchestrationError("installed dependency identity mismatch")
+    bars, manifest = _load_existing_tqqq_snapshot(
+        Path(run_root),
+        expected_snapshot_digest=snapshot_digest,
+        execution_revision=execution_revision,
+        execution_tree_sha=execution_tree_sha,
+        runner_revision=runner_revision,
+        runner_tree_sha=runner_tree_sha,
+        session_class=session_class,
+    )
+    config = _config(authority, session_class=session_class)
+    config_digest = hashlib.sha256(_canonical(config)).hexdigest()
+    source_candidate = CandidateRiskIdentity(
+        strategy_profile=_PROFILE,
+        account_mode="single_strategy_account_v1",
+        strategy_revision=UES_REVISION,
+        runner_revision=execution_revision,
+        config_sha256=config_digest,
+        input_manifest_sha256=snapshot_digest,
+        authority_receipt_sha256=authority.authority_receipt_sha256,
+    )
+    _validate_consumed_diagnostic_binding(
+        Path(run_root) / "mandate-authority.sqlite3",
+        expected_candidate_id=source_candidate.candidate_sha256,
+        expected_config_digest=config_digest,
+        expected_snapshot_digest=snapshot_digest,
+        expected_authority_id=authority.authority_receipt_sha256,
+        expected_receipt_digest=source_receipt_digest,
+    )
+    source_revisions = {source["revision"] for source in manifest["sources"]}
+    if len(source_revisions) != 1:
+        raise TqqqOrchestrationError("snapshot source identity mismatch")
+    input_payload = {
+        "provenance": {
+            "evidence_class": "provider_observed",
+            "real_producer": True,
+            "provider": _SESSION_PROVIDER[session_class],
+            "provider_revision": source_revisions.pop(),
+            "session_class": session_class,
+            "license": authority.input_license,
+            "usage_scope": authority.input_usage_scope,
+        },
+        "input_manifest": manifest,
+        "bars": bars,
+    }
+    candidate = CandidateRiskIdentity(
+        strategy_profile=_PROFILE,
+        account_mode="single_strategy_account_v1",
+        strategy_revision=UES_REVISION,
+        runner_revision=runner_revision,
+        config_sha256=config_digest,
+        input_manifest_sha256=snapshot_digest,
+        authority_receipt_sha256=authority.authority_receipt_sha256,
+    )
+    destination = Path(output_root)
+    if destination.exists() or destination.is_symlink():
+        raise TqqqOrchestrationError("fresh private output root is required")
+    old_umask = os.umask(0o077)
+    temporary: Path | None = None
+    try:
+        destination.mkdir(parents=True, mode=0o700)
+        os.chmod(destination, 0o700)
+        published_root = destination / snapshot_digest
+        if published_root.exists() or published_root.is_symlink():
+            raise TqqqOrchestrationError("content-addressed TQQQ output already exists")
+        temporary = Path(tempfile.mkdtemp(prefix=f".{snapshot_digest}.", dir=destination))
+        os.chmod(temporary, 0o700)
+        guard = ResearchMandateAuthorityGuard(
+            temporary / "mandate-authority.sqlite3",
+            clock=lambda: now,
+        )
+        mandate = guard.issue(
+            candidate_id=candidate.candidate_sha256,
+            mandate_id=_MANDATE_ID,
+            config_digest=config_digest,
+            input_digest=snapshot_digest,
+            authority_id=authority.authority_receipt_sha256,
+        )
+        consumption = guard.consume(
+            mandate,
+            candidate_id=candidate.candidate_sha256,
+            mandate_id=_MANDATE_ID,
+            config_digest=config_digest,
+            input_digest=snapshot_digest,
+            authority_id=authority.authority_receipt_sha256,
+        )
+        evidence_root = temporary / "evidence"
+        try:
+            evidence = run_tqqq_promotion_evidence(
+                input_payload=input_payload,
+                config_payload=config,
+                output_dir=evidence_root,
+                generated_at=now.isoformat().replace("+00:00", "Z"),
+                mandate_receipt_sha256=consumption.receipt_digest,
+            )
+            if (
+                not isinstance(evidence, Mapping)
+                or set(evidence)
+                != {
+                    "evidence_sha256",
+                    "promotion_result_sha256",
+                    "candidate_identity_sha256",
+                    "input_manifest_sha256",
+                }
+                or evidence["input_manifest_sha256"] != snapshot_digest
+                or any(
+                    not isinstance(evidence[field], str)
+                    or not _DIGEST.fullmatch(evidence[field])
+                    for field in evidence
+                )
+            ):
+                raise ValueError("invalid evidence identity")
+            evidence_bytes = (evidence_root / "strategy-evidence-package.v2.json").read_bytes()
+            terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
+            evidence_payload = json.loads(evidence_bytes)
+            terminal_payload = json.loads(terminal_bytes)
+            promotion_run = evidence_payload.get("backtest", {}).get("promotion_run", {})
+            fold_results = promotion_run.get("fold_results", [])
+            locked_oos_result = promotion_run.get("locked_oos_result")
+            if (
+                hashlib.sha256(evidence_bytes).hexdigest() != evidence["evidence_sha256"]
+                or hashlib.sha256(terminal_bytes).hexdigest()
+                != evidence["promotion_result_sha256"]
+                or terminal_payload.get("status") != "EVIDENCE_V2_COMPLETE"
+                or terminal_payload.get("candidate_identity_sha256")
+                != evidence["candidate_identity_sha256"]
+                or terminal_payload.get("input_manifest_sha256") != snapshot_digest
+                or not isinstance(fold_results, list)
+                or not fold_results
+                or not isinstance(locked_oos_result, Mapping)
+                or any(
+                    not isinstance(result, Mapping)
+                    or result.get("params", {}).get("mandate_receipt_sha256")
+                    != consumption.receipt_digest
+                    for result in [*fold_results, locked_oos_result]
+                )
+                or evidence_payload.get("lifecycle_claims")
+                != {
+                    "learning_only": False,
+                    "promotion_eligible": False,
+                    "live_ready": False,
+                    "size_zero_required": True,
+                    "no_order": True,
+                }
+                or any(
+                    terminal_payload.get(field) is not expected
+                    for field, expected in {
+                        "promotion_eligible": False,
+                        "live_ready": False,
+                        "size_zero_required": True,
+                        "no_order": True,
+                    }.items()
+                )
+                or validate_evidence_package_v2(evidence_payload, base_dir=evidence_root)
+            ):
+                raise ValueError("invalid evidence readback")
+        except Exception as exc:
+            try:
+                artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
+            except OSError:
+                artifact_count = 0
+            raise TqqqOrchestrationError(
+                "promotion evidence failed",
+                snapshot_digest=snapshot_digest,
+                mandate_receipt_digest=consumption.receipt_digest,
+                evidence_artifact_count=artifact_count,
+            ) from exc
+        _seal_private_tree(temporary)
+        _publish_noreplace(temporary, published_root)
+        temporary = None
+        return {
+            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "asset_count": len(TQQQ_PROMOTION_ASSETS),
+            "snapshot_digest": snapshot_digest,
+            "evidence_digest": evidence["evidence_sha256"],
+            "mandate_receipt_digest": consumption.receipt_digest,
+            "rerun_count": 1,
+        }
+    except TqqqOrchestrationError:
+        raise
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise TqqqOrchestrationError("snapshot-only TQQQ orchestration failed") from exc
+    finally:
+        if temporary is not None:
+            try:
+                if temporary.is_symlink():
+                    temporary.unlink()
+                elif temporary.exists():
+                    shutil.rmtree(temporary)
+            except OSError:
+                if temporary.exists() and not temporary.is_symlink():
+                    _seal_private_tree(temporary)
+        os.umask(old_umask)
+
+
 def orchestrate_tqqq_promotion(
     results: Mapping[str, StrictAdjustedHistoryResult],
     *,
@@ -1200,6 +1440,7 @@ __all__ = [
     "TqqqOrchestrationAuthority",
     "TqqqOrchestrationError",
     "orchestrate_existing_tqqq_snapshot_diagnostic",
+    "orchestrate_existing_tqqq_snapshot_promotion",
     "orchestrate_tqqq_promotion",
     "resolve_tqqq_runtime_identity",
 ]
