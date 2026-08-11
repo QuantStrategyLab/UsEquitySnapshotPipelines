@@ -7,7 +7,9 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -22,6 +24,10 @@ from quant_platform_kit.data.research_input import (
 from quant_platform_kit.data.research_mandate import ResearchMandateAuthorityGuard
 from quant_platform_kit.ibkr import StrictAdjustedHistoryResult
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
+from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
+    validate_evidence_package_v2,
+)
+from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
@@ -432,6 +438,8 @@ def _private_directory(path: Path) -> None:
     if path.is_symlink():
         raise TqqqOrchestrationError("private output root is unavailable")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink() or not path.is_dir():
+        raise TqqqOrchestrationError("private output root is unavailable")
     os.chmod(path, 0o700)
 
 
@@ -460,26 +468,62 @@ def _publish_input(
     root = Path(output_root)
     _private_directory(root)
     run_root = root / input_manifest_sha256
+    if run_root.exists() or run_root.is_symlink():
+        raise TqqqOrchestrationError("content-addressed TQQQ input already exists")
+    temporary: Path | None = None
     try:
-        run_root.mkdir(mode=0o700)
-        snapshot = run_root / "snapshot"
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{input_manifest_sha256}.", dir=root)
+        )
+        if temporary.is_symlink():
+            raise TqqqOrchestrationError("private output symlink is forbidden")
+        os.chmod(temporary, 0o700)
+        snapshot = temporary / "snapshot"
         snapshot.mkdir(mode=0o700)
         _write_private(snapshot / "bars.json", bars_bytes)
         _write_private(snapshot / "input-manifest.json", manifest_bytes)
-    except OSError as exc:
+        _readback_input(
+            snapshot,
+            expected_bars_sha256=hashlib.sha256(bars_bytes).hexdigest(),
+            expected_bars_size=len(bars_bytes),
+            expected_manifest_sha256=input_manifest_sha256,
+            expected_manifest_size=len(manifest_bytes),
+        )
+        _publish_noreplace(temporary, run_root)
+        temporary = None
+    except TqqqOrchestrationError:
+        raise
+    except Exception as exc:
         raise TqqqOrchestrationError(
-            "content-addressed TQQQ input already exists"
+            "content-addressed TQQQ input publication failed"
         ) from exc
-    return snapshot
+    finally:
+        if temporary is not None:
+            try:
+                if temporary.is_symlink():
+                    temporary.unlink()
+                elif temporary.exists():
+                    shutil.rmtree(temporary)
+            except OSError:
+                pass
+    return run_root / "snapshot"
 
 
 def _readback_input(
     snapshot: Path,
     *,
     expected_bars_sha256: str,
+    expected_bars_size: int,
     expected_manifest_sha256: str,
+    expected_manifest_size: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
+        if (
+            snapshot.is_symlink()
+            or not snapshot.is_dir()
+            or snapshot.stat().st_mode & 0o777 != 0o700
+        ):
+            raise TqqqOrchestrationError("immutable snapshot readback failed")
         entries = {path.name: path for path in snapshot.iterdir()}
         if set(entries) != {"bars.json", "input-manifest.json"}:
             raise TqqqOrchestrationError("immutable snapshot readback failed")
@@ -489,7 +533,9 @@ def _readback_input(
         bars_bytes = entries["bars.json"].read_bytes()
         manifest_bytes = entries["input-manifest.json"].read_bytes()
         if (
-            hashlib.sha256(bars_bytes).hexdigest() != expected_bars_sha256
+            len(bars_bytes) != expected_bars_size
+            or len(manifest_bytes) != expected_manifest_size
+            or hashlib.sha256(bars_bytes).hexdigest() != expected_bars_sha256
             or hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
         ):
             raise TqqqOrchestrationError("immutable snapshot readback failed")
@@ -512,9 +558,12 @@ def _readback_input(
 
 
 def _seal_private_tree(root: Path) -> None:
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise TqqqOrchestrationError("private output symlink is forbidden")
+    if root.is_symlink() or not root.is_dir():
+        raise TqqqOrchestrationError("private output symlink is forbidden")
+    paths = list(root.rglob("*"))
+    if any(path.is_symlink() for path in paths):
+        raise TqqqOrchestrationError("private output symlink is forbidden")
+    for path in paths:
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
     os.chmod(root, 0o700)
 
@@ -567,6 +616,7 @@ def orchestrate_tqqq_promotion(
     )
     old_umask = os.umask(0o077)
     run_root = Path(output_root) / manifest_sha256
+    published = False
     try:
         snapshot = _publish_input(
             output_root,
@@ -574,10 +624,13 @@ def orchestrate_tqqq_promotion(
             bars_bytes=bars_bytes,
             manifest_bytes=manifest_bytes,
         )
+        published = True
         readback_bars, readback_manifest = _readback_input(
             snapshot,
             expected_bars_sha256=hashlib.sha256(bars_bytes).hexdigest(),
+            expected_bars_size=len(bars_bytes),
             expected_manifest_sha256=manifest_sha256,
+            expected_manifest_size=len(manifest_bytes),
         )
         input_payload = {
             **input_payload,
@@ -610,6 +663,7 @@ def orchestrate_tqqq_promotion(
                 config_payload=config,
                 output_dir=evidence_root,
                 generated_at=observed_at,
+                mandate_receipt_sha256=consumption.receipt_digest,
             )
             if (
                 not isinstance(evidence, Mapping)
@@ -632,6 +686,9 @@ def orchestrate_tqqq_promotion(
             terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
             evidence_payload = json.loads(evidence_bytes)
             terminal_payload = json.loads(terminal_bytes)
+            promotion_run = evidence_payload.get("backtest", {}).get("promotion_run", {})
+            fold_results = promotion_run.get("fold_results", [])
+            locked_oos_result = promotion_run.get("locked_oos_result")
             if (
                 hashlib.sha256(evidence_bytes).hexdigest() != evidence["evidence_sha256"]
                 or hashlib.sha256(terminal_bytes).hexdigest()
@@ -640,6 +697,15 @@ def orchestrate_tqqq_promotion(
                 or terminal_payload.get("candidate_identity_sha256")
                 != evidence["candidate_identity_sha256"]
                 or terminal_payload.get("input_manifest_sha256") != manifest_sha256
+                or not isinstance(fold_results, list)
+                or not fold_results
+                or not isinstance(locked_oos_result, Mapping)
+                or any(
+                    not isinstance(result, Mapping)
+                    or result.get("params", {}).get("mandate_receipt_sha256")
+                    != consumption.receipt_digest
+                    for result in [*fold_results, locked_oos_result]
+                )
                 or evidence_payload.get("lifecycle_claims")
                 != {
                     "learning_only": False,
@@ -659,6 +725,10 @@ def orchestrate_tqqq_promotion(
                 )
             ):
                 raise ValueError("invalid evidence readback")
+            if validate_evidence_package_v2(
+                evidence_payload, base_dir=evidence_root
+            ):
+                raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
             try:
                 artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
@@ -680,11 +750,11 @@ def orchestrate_tqqq_promotion(
             "rerun_count": 1,
         }
     except TqqqOrchestrationError:
-        if run_root.exists():
+        if published and run_root.exists() and not run_root.is_symlink():
             _seal_private_tree(run_root)
         raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        if run_root.exists():
+        if published and run_root.exists() and not run_root.is_symlink():
             _seal_private_tree(run_root)
         raise TqqqOrchestrationError("TQQQ promotion orchestration failed") from exc
     finally:

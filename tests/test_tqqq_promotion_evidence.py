@@ -28,6 +28,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
 )
 
 RUNNER_REVISION = "1" * 40
+MANDATE_RECEIPT_SHA256 = "6" * 64
 
 
 def _canonical(value: object) -> bytes:
@@ -204,12 +205,18 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
             config_payload=_config(),
             output_dir=tmp_path,
             generated_at="2026-08-10T00:00:00Z",
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
 
     evidence_path = tmp_path / "strategy-evidence-package.v2.json"
     evidence = read_evidence_package_v2_json(evidence_path)
     assert validate_evidence_package_v2(evidence, base_dir=tmp_path) == ()
     assert evidence["backtest"]["orchestrator"] == "BacktestOrchestrator"
+    promotion_run = evidence["backtest"]["promotion_run"]
+    assert {
+        result["params"]["mandate_receipt_sha256"]
+        for result in [*promotion_run["fold_results"], promotion_run["locked_oos_result"]]
+    } == {MANDATE_RECEIPT_SHA256}
     assert evidence["backtest"]["promotion_run"]["source_revision"] == ("15df2a42df5d230cfb03a7cb655fd4b226956681")
     assert evidence["cost_stress"]["scenarios"] == [
         {"multiplier": 1, "total_cost_bps": 5.0},
@@ -252,6 +259,7 @@ def test_input_tamper_and_nonempty_output_fail_closed_before_replay(
             input_payload=tampered,
             config_payload=_config(),
             output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
     assert not any(tmp_path.iterdir())
 
@@ -261,6 +269,7 @@ def test_input_tamper_and_nonempty_output_fail_closed_before_replay(
             input_payload=_input_payload(),
             config_payload=_config(),
             output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
 
 
@@ -279,6 +288,7 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
             input_payload=payload,
             config_payload=_config(),
             output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
 
 
