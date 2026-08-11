@@ -893,6 +893,7 @@ def run_tqqq_promotion_evidence(
     input_payload: Mapping[str, Any],
     config_payload: Mapping[str, Any],
     output_dir: str | Path,
+    mandate_receipt_sha256: str,
     generated_at: str | None = None,
 ) -> dict[str, str]:
     """Execute the frozen replay once and write no provider bars to evidence."""
@@ -900,6 +901,9 @@ def run_tqqq_promotion_evidence(
     output_root = Path(output_dir)
     if output_root.exists() and any(output_root.iterdir()):
         raise TqqqPromotionEvidenceError("output directory must be empty")
+    mandate_receipt_sha256 = _digest_text(
+        mandate_receipt_sha256, 64, "mandate receipt"
+    )
     config = _validate_config(config_payload)
     provenance, bars, manifest_sha256 = _validate_input(input_payload, config)
     manifest = validate_research_input_manifest(input_payload["input_manifest"])
@@ -922,7 +926,7 @@ def run_tqqq_promotion_evidence(
         platform_execution_revision=config["platform_execution_revision"],
         config_sha256=config_sha256,
         input_manifest_sha256=manifest_sha256,
-        mandate_receipt_sha256=config["authority_receipt_sha256"],
+        mandate_receipt_sha256=mandate_receipt_sha256,
         initial_state_sha256=initial_state_sha256,
     )
     replay = _ImmutableReplayProducer(bars, config, candidate, identity)

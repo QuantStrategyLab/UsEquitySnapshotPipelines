@@ -34,6 +34,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
 RUNNER_REVISION = "a" * 40
 RUNNER_TREE_SHA = "b" * 40
 AUTHORITY_SHA256 = "c" * 64
+MANDATE_RECEIPT_SHA256 = "6" * 64
 
 
 def _authority() -> TqqqOrchestrationAuthority:
@@ -115,20 +116,30 @@ def _allow_pinned_dependency_provenance(monkeypatch: pytest.MonkeyPatch) -> None
     )
 
 
-def _fake_producer(output_dir: str | Path, **_kwargs: object) -> dict[str, str]:
+def _fake_producer(
+    output_dir: str | Path,
+    *,
+    input_manifest_sha256: str,
+    mandate_receipt_sha256: str,
+) -> dict[str, str]:
     output = Path(output_dir)
     output.mkdir()
     evidence = output / "strategy-evidence-package.v2.json"
     terminal = output / "promotion-research-result.v1.json"
     evidence.write_text(
-        '{"lifecycle_claims":{"learning_only":false,"promotion_eligible":false,'
+        '{"backtest":{"promotion_run":{"fold_results":[{"params":'
+        '{"mandate_receipt_sha256":"'
+        + mandate_receipt_sha256
+        + '"}}],"locked_oos_result":{"params":{"mandate_receipt_sha256":"'
+        + mandate_receipt_sha256
+        + '"}}}},"lifecycle_claims":{"learning_only":false,"promotion_eligible":false,'
         '"live_ready":false,"no_order":true,"size_zero_required":true}}'
     )
     terminal.write_text(
         '{"candidate_identity_sha256":"'
         + "2" * 64
         + '","input_manifest_sha256":"'
-        + _kwargs["input_manifest_sha256"]
+        + input_manifest_sha256
         + '","status":"EVIDENCE_V2_COMPLETE","promotion_eligible":false,'
         '"live_ready":false,"no_order":true,"size_zero_required":true}'
     )
@@ -136,7 +147,7 @@ def _fake_producer(output_dir: str | Path, **_kwargs: object) -> dict[str, str]:
         "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
         "promotion_result_sha256": hashlib.sha256(terminal.read_bytes()).hexdigest(),
         "candidate_identity_sha256": "2" * 64,
-        "input_manifest_sha256": _kwargs["input_manifest_sha256"],
+        "input_manifest_sha256": input_manifest_sha256,
     }
 
 
@@ -164,8 +175,18 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
             events.append("consume")
             return self._guard.consume(mandate, **kwargs)
 
-    def producer(*, input_payload, config_payload, output_dir, generated_at):
+    consumed_receipts: list[str] = []
+
+    def producer(
+        *,
+        input_payload,
+        config_payload,
+        output_dir,
+        generated_at,
+        mandate_receipt_sha256,
+    ):
         events.append("producer")
+        consumed_receipts.append(mandate_receipt_sha256)
         manifest = validate_research_input_manifest(input_payload["input_manifest"])
         assert tuple(input_payload["bars"]["symbols"]) == orchestration.TQQQ_PROMOTION_ASSETS
         assert [source["source_id"] for source in manifest["sources"]] == [
@@ -199,11 +220,20 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
         return _fake_producer(
             output_dir,
             input_manifest_sha256=research_input_manifest_sha256(manifest),
+            mandate_receipt_sha256=mandate_receipt_sha256,
         )
 
     monkeypatch.setattr(orchestration, "_publish_input", publish)
     monkeypatch.setattr(orchestration, "ResearchMandateAuthorityGuard", Guard)
     monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", producer)
+    validator_calls: list[tuple[object, Path]] = []
+    monkeypatch.setattr(
+        orchestration,
+        "validate_evidence_package_v2",
+        lambda payload, *, base_dir: validator_calls.append((payload, Path(base_dir)))
+        or (),
+        raising=False,
+    )
 
     result = orchestrate_tqqq_promotion(
         _results(),
@@ -215,6 +245,22 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
     )
 
     assert events == ["publish", "issue", "consume", "producer"]
+    assert consumed_receipts == [result["mandate_receipt_digest"]]
+    assert consumed_receipts != [AUTHORITY_SHA256]
+    assert validator_calls == [
+        (
+            json.loads(
+                (
+                    tmp_path
+                    / "runs"
+                    / result["snapshot_digest"]
+                    / "evidence"
+                    / "strategy-evidence-package.v2.json"
+                ).read_bytes()
+            ),
+            tmp_path / "runs" / result["snapshot_digest"] / "evidence",
+        )
+    ]
     assert result == {
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "asset_count": 3,
@@ -229,6 +275,125 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
     assert (run_root / "snapshot" / "input-manifest.json").is_file()
     assert run_root.stat().st_mode & 0o777 == 0o700
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in run_root.rglob("*") if path.is_file())
+
+
+def test_referenced_evidence_validation_failure_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+
+    def producer(
+        *,
+        input_payload,
+        output_dir,
+        mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
+        **_kwargs,
+    ):
+        manifest = validate_research_input_manifest(input_payload["input_manifest"])
+        return _fake_producer(
+            output_dir,
+            input_manifest_sha256=research_input_manifest_sha256(manifest),
+            mandate_receipt_sha256=mandate_receipt_sha256,
+        )
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", producer)
+    monkeypatch.setattr(
+        orchestration,
+        "validate_evidence_package_v2",
+        lambda *_args, **_kwargs: ("artifacts.backtest.sha256 mismatch",),
+        raising=False,
+    )
+
+    with pytest.raises(TqqqOrchestrationError, match="promotion evidence failed") as caught:
+        orchestrate_tqqq_promotion(
+            _results(),
+            authority=_authority(),
+            output_root=tmp_path / "runs",
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha=RUNNER_TREE_SHA,
+            clock=lambda: datetime(2026, 8, 11, 8, 0, tzinfo=UTC),
+        )
+
+    assert "backtest" not in str(caught.value)
+    assert caught.value.sanitized_failure["runner_completion_count"] == 0
+
+
+def test_publish_is_atomic_and_failed_temporary_member_never_appears_final(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "runs"
+    digest = "9" * 64
+    final = output / digest
+    real_write = orchestration._write_private
+    calls = 0
+
+    def fail_second(path: Path, payload: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        assert not final.exists()
+        if calls == 2:
+            raise OSError("simulated second member failure")
+        real_write(path, payload)
+
+    monkeypatch.setattr(orchestration, "_write_private", fail_second)
+
+    with pytest.raises(TqqqOrchestrationError, match="content-addressed"):
+        orchestration._publish_input(
+            output,
+            input_manifest_sha256=digest,
+            bars_bytes=b"{}",
+            manifest_bytes=b"{}",
+        )
+
+    assert not final.exists()
+    assert list(output.iterdir()) == []
+
+
+def test_atomic_rename_failure_preserves_existing_final_and_cleans_only_temp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "runs"
+    digest = "9" * 64
+    final = output / digest
+
+    monkeypatch.setattr(orchestration, "_readback_input", lambda *_args, **_kwargs: ({}, {}))
+
+    def lose_publish_race(_temporary: Path, destination: Path) -> None:
+        destination.mkdir()
+        (destination / "existing").write_text("winner", encoding="utf-8")
+        raise RuntimeError("simulated no-replace race")
+
+    monkeypatch.setattr(orchestration, "_publish_noreplace", lose_publish_race)
+
+    with pytest.raises(TqqqOrchestrationError, match="publication failed"):
+        orchestration._publish_input(
+            output,
+            input_manifest_sha256=digest,
+            bars_bytes=b"{}",
+            manifest_bytes=b"{}",
+        )
+
+    assert (final / "existing").read_text(encoding="utf-8") == "winner"
+    assert list(output.iterdir()) == [final]
+
+
+def test_sealing_rejects_symlink_root_without_touching_target(tmp_path: Path) -> None:
+    target = tmp_path / "outside"
+    target.mkdir(mode=0o755)
+    member = target / "member"
+    member.write_text("private", encoding="utf-8")
+    member.chmod(0o644)
+    link = tmp_path / "run-root"
+    link.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(TqqqOrchestrationError, match="symlink"):
+        orchestration._seal_private_tree(link)
+
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert member.stat().st_mode & 0o777 == 0o644
 
 
 def test_incomplete_or_provenance_mismatched_results_fail_before_publish_or_mandate(
