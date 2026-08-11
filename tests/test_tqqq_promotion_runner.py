@@ -18,7 +18,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
 )
 
 QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
-UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
+UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 RUNNER_REVISION = "1" * 40
 
 
@@ -86,12 +86,12 @@ class SyntheticReplay:
             final_state_sha256=f"{call_number:x}" * 64,
             strategy_equity=strategy,
             qqq_total_return_equity=benchmark,
-            asset_weights=(("TQQQ", 0.15), ("BOXX", 0.0)),
+            asset_weights=(("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10)),
             turnover=0.4,
             trade_count=2,
             decision_count=4,
             risk_assessment_count=4,
-            warmup_sessions=252,
+            warmup_sessions=257,
         )
 
 
@@ -172,15 +172,15 @@ def test_result_is_research_only_and_has_no_execution_reachability() -> None:
     "update,message",
     [
         ({"data_available": False}, "data unavailable"),
-        ({"asset_weights": (("QQQM", 0.1),)}, "ETF-only"),
-        ({"asset_weights": (("TQQQ", 0.1), ("BOXX", 0.1))}, "mutually exclusive"),
+        ({"asset_weights": (("QQQ", 0.1), ("QQQM", 0.0), ("BOXX", 0.0))}, "ETF-only"),
+        ({"asset_weights": (("TQQQ", 0.15), ("QQQM", 0.10), ("BOXX", 0.0))}, "effective exposure"),
         ({"income_layer_enabled": True}, "income layer"),
         ({"option_overlay_enabled": True}, "option overlay"),
         ({"order_intents": (object(),)}, "order intents"),
         ({"executable_plan": (object(),)}, "executable plan"),
         ({"risk_assessment_count": 3}, "exactly once"),
         ({"market_regime_control_sha256": ""}, "state/plugin"),
-        ({"warmup_sessions": 251}, "warmup"),
+        ({"warmup_sessions": 256}, "warmup"),
         ({"cash_reset": True}, "cash reset"),
     ],
 )

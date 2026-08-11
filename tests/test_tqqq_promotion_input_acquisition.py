@@ -566,7 +566,7 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("session_class", ("paper", "live-data-only"))
-def test_session_identity_binds_source_manifest_config_candidate_and_evidence(
+def test_current_acquisition_is_not_core_parity_input_ready(
     session_class: str,
 ) -> None:
     results = _results()
@@ -584,38 +584,10 @@ def test_session_identity_binds_source_manifest_config_candidate_and_evidence(
 
     assert payload["provenance"]["session_class"] == session_class
     assert config["session_class"] == session_class
-    validated_config = evidence._validate_config(config)
-    provenance, _bars, _digest = evidence._validate_input(payload, validated_config)
-    assert provenance["session_class"] == session_class
-
-    mismatched = dict(config)
-    mismatched["session_class"] = (
-        "live-data-only" if session_class == "paper" else "paper"
-    )
-    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="provider provenance"):
-        evidence._validate_input(payload, evidence._validate_config(mismatched))
-
-    missing = dict(config)
-    del missing["session_class"]
+    assert tuple(payload["bars"]["symbols"]) == ("QQQ", "TQQQ", "BOXX")
+    assert "QQQM" not in payload["bars"]["symbols"]
     with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
-        evidence._validate_config(missing)
-
-    unhashable = dict(config)
-    unhashable["session_class"] = []
-    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
-        evidence._validate_config(unhashable)
-
-    mismatched_manifest = {
-        **payload,
-        "input_manifest": {
-            **payload["input_manifest"],
-            "manifest_id": f"tqqq-ibkr-{session_class}-single-acquisition-{'0' * 24}",
-        },
-    }
-    with pytest.raises(
-        evidence.TqqqPromotionEvidenceError, match="input identity"
-    ):
-        evidence._validate_input(mismatched_manifest, validated_config)
+        evidence._validate_config(config)
 
 
 class _FakeRuntimeApp:
