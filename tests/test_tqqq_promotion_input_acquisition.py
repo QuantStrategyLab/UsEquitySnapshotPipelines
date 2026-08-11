@@ -565,7 +565,7 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     acquisition_source = inspect.getsource(acquisition_cli.run_exact_acquisition)
     assert acquisition_source.count("acquire_strict_adjusted_last(") == 1
     assert "while " not in acquisition_source
-    assert [call["duration"] for call in calls] == ["9 Y", "9 Y", "5 Y", "4 Y"]
+    assert [call["duration"] for call in calls] == ["9 Y", "9 Y", "6 Y", "4 Y"]
     assert all(call["app"] is app and call["stock_factory"] is factory for call in calls)
     assert calls[0]["expected_sessions"][0] == date(2018, 1, 2)
     assert calls[1]["expected_sessions"] == calls[0]["expected_sessions"]
@@ -585,6 +585,31 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     with pytest.raises(StrictAdjustedHistoryError, match="material"):
         acquisition_cli.run_exact_acquisition(object(), contract_factory=object())
     assert observed == ["QQQ", "TQQQ"]
+
+
+def test_application_call_ceiling_blocks_ninth_timeout_cancellation() -> None:
+    class App:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def reqContractDetails(self, *_args) -> None:
+            self.calls.append("qualification")
+
+        def reqHistoricalData(self, *_args) -> None:
+            self.calls.append("historical")
+
+        def cancelHistoricalData(self, *_args) -> None:
+            self.calls.append("cancellation")
+
+    app = acquisition_cli._bound_application_calls(App())
+    for index in range(4):
+        app.reqContractDetails(index, object())
+        app.reqHistoricalData(index, object())
+
+    with pytest.raises(TqqqOrchestrationError, match="application call ceiling"):
+        app.cancelHistoricalData(4)
+
+    assert app.calls == ["qualification", "historical"] * 4
 
 
 @pytest.mark.parametrize("session_class", ("paper", "live-data-only"))

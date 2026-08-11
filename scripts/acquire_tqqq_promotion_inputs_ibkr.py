@@ -97,6 +97,27 @@ def run_exact_acquisition(
     return results
 
 
+def _bound_application_calls(app: Any) -> Any:
+    application_calls = 0
+
+    def bounded(original: Callable[..., Any]) -> Callable[..., Any]:
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            nonlocal application_calls
+            if application_calls >= APPLICATION_CALL_CEILING:
+                raise TqqqOrchestrationError("IBKR application call ceiling reached")
+            application_calls += 1
+            return original(*args, **kwargs)
+
+        return invoke
+
+    for name in ("reqContractDetails", "reqHistoricalData", "cancelHistoricalData"):
+        original = getattr(app, name, None)
+        if not callable(original):
+            raise TqqqOrchestrationError("IBKR application call surface mismatch")
+        setattr(app, name, bounded(original))
+    return app
+
+
 def _runtime() -> tuple[Any, Any]:
     """Load the approved local official IBKR API runtime without fallback."""
     provenance_path = _OFFICIAL_IBAPI_ROOT / "provenance.installed.json"
@@ -127,11 +148,13 @@ def _runtime() -> tuple[Any, Any]:
     ):
         raise RuntimeError("approved local IBKR API runtime identity mismatch")
 
-    app = build_request_bound_ibkr_app(
-        client_type=EClient,
-        wrapper_type=EWrapper,
-        contract_type=Contract,
-        request_id_start=secrets.randbelow(2_000_000_000),
+    app = _bound_application_calls(
+        build_request_bound_ibkr_app(
+            client_type=EClient,
+            wrapper_type=EWrapper,
+            contract_type=Contract,
+            request_id_start=secrets.randbelow(2_000_000_000),
+        )
     )
 
     def stock_factory(symbol: str, exchange: str, currency: str) -> Any:
