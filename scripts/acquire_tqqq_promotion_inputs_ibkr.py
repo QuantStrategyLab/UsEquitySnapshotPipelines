@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exact one-transaction IBKR caller for frozen TQQQ research inputs."""
+"""Exact one-transaction IBKR caller for frozen TQQQ core-parity inputs."""
 
 from __future__ import annotations
 
@@ -33,11 +33,18 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
 )
 
 EXACT_ASSETS = TQQQ_PROMOTION_ASSETS
+APPLICATION_CALL_CEILING = len(EXACT_ASSETS) * 2
 _FIXED_CUTOFF = datetime.fromisoformat(FIXED_CUTOFF)
 _HOST = "127.0.0.1"
 _SESSION_PORT = {"paper": 4002, "live-data-only": 4001}
 _LOCAL_RESEARCH_ROOT = Path.home() / ".local/share/qsl/tqqq-promotion-evidence-v2"
 _OFFICIAL_IBAPI_ROOT = Path.home() / ".local/share/qsl/ibkr-tws-api-v1049.02"
+_SAFETY_BOUNDARY = {
+    "execution_authorized": False,
+    "no_order": True,
+    "research_only": True,
+    "size_zero_required": True,
+}
 
 
 def run_exact_acquisition(
@@ -48,7 +55,7 @@ def run_exact_acquisition(
         Callable[[str, int, StrictAdjustedHistoryError], None] | None
     ) = None,
 ) -> dict[str, Any]:
-    """Acquire QQQ, TQQQ, and BOXX sequentially with zero retry."""
+    """Acquire QQQ, TQQQ, QQQM, and BOXX sequentially with zero retry."""
     results: dict[str, Any] = {}
     frozen_sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS)
     for symbol in EXACT_ASSETS:
@@ -210,7 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     except (TypeError, ValueError):
         print(
             json.dumps(
-                {"asset_count": 0, "lifecycle": [], "status": "INVALID_ARGUMENTS"},
+                {
+                    **_SAFETY_BOUNDARY,
+                    "asset_count": 0,
+                    "lifecycle": [],
+                    "status": "INVALID_ARGUMENTS",
+                },
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -218,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     app: Any | None = None
-    status = "FAILED_MATERIAL"
+    status = "PARK_MATERIAL"
     asset_count = 0
     snapshot_digest = None
     evidence_digest = None
@@ -266,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
             runner_tree_sha=runner_tree_sha,
             session_class=session_class,
         )
+        if outcome.get("asset_count") != len(EXACT_ASSETS) or any(
+            outcome.get(field) is not expected
+            for field, expected in _SAFETY_BOUNDARY.items()
+        ):
+            raise TqqqOrchestrationError("invalid research safety boundary")
         status = outcome["status"]
         snapshot_digest = outcome["snapshot_digest"]
         evidence_digest = outcome["evidence_digest"]
@@ -285,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                 app.disconnect()
 
     terminal = {
+        **_SAFETY_BOUNDARY,
         "asset_count": asset_count,
         "evidence_digest": evidence_digest,
         "lifecycle": lifecycle,

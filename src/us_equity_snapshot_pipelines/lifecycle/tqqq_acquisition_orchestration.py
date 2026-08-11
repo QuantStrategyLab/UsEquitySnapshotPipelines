@@ -1,4 +1,4 @@
-"""One-shot TQQQ three-input acquisition-to-evidence orchestration."""
+"""One-shot TQQQ core-parity acquisition-to-evidence orchestration."""
 
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ from .tqqq_promotion_evidence import (
     run_tqqq_promotion_evidence,
 )
 
-TQQQ_PROMOTION_ASSETS = ("QQQ", "TQQQ", "BOXX")
-EXACT_DURATIONS = {"QQQ": "9 Y", "TQQQ": "9 Y", "BOXX": "4 Y"}
-FIRST_ELIGIBLE_SESSION = {"BOXX": "2022-12-28"}
+TQQQ_PROMOTION_ASSETS = ("QQQ", "TQQQ", "QQQM", "BOXX")
+EXACT_DURATIONS = {"QQQ": "9 Y", "TQQQ": "9 Y", "QQQM": "5 Y", "BOXX": "4 Y"}
+FIRST_ELIGIBLE_SESSION = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}
 FIXED_CUTOFF = "2025-07-02T03:59:59Z"
 INPUT_LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 INPUT_USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
@@ -51,9 +51,13 @@ UES_REVISION = promotion_runner._UES_REVISION
 
 _INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
-_PROFILE = "tqqq_etf_only_single_strategy_research_v1"
-_MANDATE_ID = "tqqq_etf_only_research_v1"
+_PROFILE = "tqqq_core_parity_v1"
+_MANDATE_ID = "tqqq_core_parity_v1"
 _FROZEN_CALENDAR_SHA256 = "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
+_FROZEN_CALENDAR_SOURCE_REVISION = (
+    "exchange_calendars:4.13.2:XNYS:"
+    "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _DEPENDENCY_REPOSITORIES = {
@@ -295,12 +299,12 @@ def _strict_bars(
     results: Mapping[str, StrictAdjustedHistoryResult],
 ) -> dict[str, Any]:
     if not isinstance(results, Mapping) or tuple(results) != TQQQ_PROMOTION_ASSETS:
-        raise TqqqOrchestrationError("exact three-input result is required")
+        raise TqqqOrchestrationError("exact four-input result is required")
     symbols: dict[str, list[dict[str, Any]]] = {}
     for symbol in TQQQ_PROMOTION_ASSETS:
         result = results[symbol]
         if not isinstance(result, StrictAdjustedHistoryResult):
-            raise TqqqOrchestrationError("exact three-input result is required")
+            raise TqqqOrchestrationError("exact four-input result is required")
         first = FIRST_ELIGIBLE_SESSION.get(symbol, FROZEN_XNYS_SESSIONS[0])
         expected_sessions = tuple(
             value for value in FROZEN_XNYS_SESSIONS if value >= first
@@ -349,6 +353,8 @@ def _source_identity(
     results: Mapping[str, StrictAdjustedHistoryResult],
     authority: TqqqOrchestrationAuthority,
     *,
+    runner_revision: str,
+    runner_tree_sha: str,
     observed_at: str,
     session_class: str,
 ) -> str:
@@ -372,10 +378,18 @@ def _source_identity(
             {
                 "provider": _SESSION_PROVIDER[session_class],
                 "session_class": session_class,
+                "candidate_profile": _PROFILE,
+                "qpk_revision": QPK_REVISION,
+                "ues_revision": UES_REVISION,
+                "uesp_revision": runner_revision,
+                "uesp_tree_sha": runner_tree_sha,
                 "official_ibapi_provenance_sha256": OFFICIAL_IBAPI_PROVENANCE_SHA256,
+                "authority_receipt_sha256": authority.authority_receipt_sha256,
                 "entitlement_receipt_sha256": authority.entitlement_receipt_sha256,
                 "license_receipt_sha256": authority.license_receipt_sha256,
                 "retention_expires_at": authority.retention_expires_at,
+                "input_license": INPUT_LICENSE,
+                "input_usage_scope": INPUT_USAGE_SCOPE,
                 "observed_at": observed_at,
                 "fixed_cutoff": FIXED_CUTOFF,
                 "calendar_sha256": _FROZEN_CALENDAR_SHA256,
@@ -402,6 +416,8 @@ def _input_payload(
     source_revision = _source_identity(
         results,
         authority,
+        runner_revision=runner_revision,
+        runner_tree_sha=runner_tree_sha,
         observed_at=observed_at,
         session_class=session_class,
     )
@@ -441,8 +457,8 @@ def _input_payload(
                 "calendar_id": "XNYS",
                 "timezone": "America/New_York",
                 "session_date": FROZEN_XNYS_SESSIONS[-1],
-                "source": "uesp_repo_local_xnys_holiday_rules",
-                "source_revision": _FROZEN_CALENDAR_SHA256,
+                "source": "exchange_calendars",
+                "source_revision": _FROZEN_CALENDAR_SOURCE_REVISION,
             },
             "adjustment": {
                 "policy": "total_return_adjusted",
@@ -484,9 +500,10 @@ def _config(
     return {
         "schema_version": "tqqq_etf_only_replay_config.v1",
         "strategy_profile": _PROFILE,
-        "signal_model": "qqq_sma_200_close_t_open_t_plus_1",
-        "signal_window_sessions": 200,
+        "signal_model": "ues_tqqq_growth_income_core_parity",
+        "signal_window_sessions": 257,
         "tqqq_nominal_cap": 0.15,
+        "qqqm_nominal_cap": 0.50,
         "boxx_nominal_cap": 0.50,
         "risk_mandate_id": _MANDATE_ID,
         "risk_standard_id": authority.risk_standard_id,
@@ -1409,6 +1426,10 @@ def orchestrate_tqqq_promotion(
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": len(TQQQ_PROMOTION_ASSETS),
+            "execution_authorized": False,
+            "no_order": True,
+            "research_only": True,
+            "size_zero_required": True,
             "snapshot_digest": manifest_sha256,
             "evidence_digest": evidence["evidence_sha256"],
             "mandate_receipt_digest": consumption.receipt_digest,
