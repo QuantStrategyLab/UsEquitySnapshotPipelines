@@ -920,19 +920,21 @@ def _result_artifacts(
     return {name: _relative_record(root, record) for name, record in records.items()}
 
 
-def run_tqqq_promotion_evidence(
+def _run_tqqq_promotion_replay(
     *,
     input_payload: Mapping[str, Any],
     config_payload: Mapping[str, Any],
-    output_dir: str | Path,
     mandate_receipt_sha256: str,
-    generated_at: str | None = None,
-) -> dict[str, str]:
-    """Execute the frozen replay once and write no provider bars to evidence."""
-
-    output_root = Path(output_dir)
-    if output_root.exists() and any(output_root.iterdir()):
-        raise TqqqPromotionEvidenceError("output directory must be empty")
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, tuple[_Bar, ...]],
+    dict[str, Any],
+    str,
+    CandidateRiskIdentity,
+    _ImmutableReplayProducer,
+    TqqqPromotionResearchResult,
+]:
     mandate_receipt_sha256 = _digest_text(
         mandate_receipt_sha256, 64, "mandate receipt"
     )
@@ -963,6 +965,43 @@ def run_tqqq_promotion_evidence(
     )
     replay = _ImmutableReplayProducer(bars, config, candidate, identity)
     result = run_tqqq_promotion_research(identity, _PLAN, replay)
+    return config, provenance, bars, manifest, manifest_sha256, candidate, replay, result
+
+
+def run_tqqq_promotion_diagnostic(
+    *,
+    input_payload: Mapping[str, Any],
+    config_payload: Mapping[str, Any],
+    mandate_receipt_sha256: str,
+) -> None:
+    """Execute the frozen replay without writing promotion evidence."""
+    _run_tqqq_promotion_replay(
+        input_payload=input_payload,
+        config_payload=config_payload,
+        mandate_receipt_sha256=mandate_receipt_sha256,
+    )
+
+
+def run_tqqq_promotion_evidence(
+    *,
+    input_payload: Mapping[str, Any],
+    config_payload: Mapping[str, Any],
+    output_dir: str | Path,
+    mandate_receipt_sha256: str,
+    generated_at: str | None = None,
+) -> dict[str, str]:
+    """Execute the frozen replay once and write no provider bars to evidence."""
+
+    output_root = Path(output_dir)
+    if output_root.exists() and any(output_root.iterdir()):
+        raise TqqqPromotionEvidenceError("output directory must be empty")
+    config, provenance, bars, manifest, manifest_sha256, candidate, replay, result = (
+        _run_tqqq_promotion_replay(
+            input_payload=input_payload,
+            config_payload=config_payload,
+            mandate_receipt_sha256=mandate_receipt_sha256,
+        )
+    )
     _private_directory(output_root)
     records = _result_artifacts(
         result,
@@ -1094,5 +1133,6 @@ def run_tqqq_promotion_evidence(
 
 __all__ = [
     "TqqqPromotionEvidenceError",
+    "run_tqqq_promotion_diagnostic",
     "run_tqqq_promotion_evidence",
 ]
