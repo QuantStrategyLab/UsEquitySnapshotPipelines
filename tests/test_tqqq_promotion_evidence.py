@@ -285,6 +285,10 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
     payload["input_manifest"]["members"][0].update(
         size_bytes=len(bars_bytes), sha256=hashlib.sha256(bars_bytes).hexdigest()
     )
+    payload["input_manifest"]["manifest_id"] = (
+        "tqqq-ibkr-paper-single-acquisition-"
+        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
+    )
     boxx_bytes = _canonical(payload["bars"]["symbols"]["BOXX"])
     payload["input_manifest"]["sources"][0]["content_sha256"] = hashlib.sha256(boxx_bytes).hexdigest()
 

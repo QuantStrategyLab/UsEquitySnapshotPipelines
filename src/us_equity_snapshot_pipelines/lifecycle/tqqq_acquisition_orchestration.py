@@ -602,7 +602,7 @@ def orchestrate_tqqq_promotion(
     """Publish exact input, consume one mandate, then invoke existing evidence once."""
     if not isinstance(authority, TqqqOrchestrationAuthority):
         raise TqqqOrchestrationError("invalid orchestration authority")
-    if session_class not in _SESSION_PROVIDER:
+    if not isinstance(session_class, str) or session_class not in _SESSION_PROVIDER:
         raise TqqqOrchestrationError("invalid provider session identity")
     runner_revision = _require_revision(runner_revision, "runner revision")
     runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")

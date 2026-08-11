@@ -240,6 +240,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         or not config["risk_standard_id"]
         or config["input_license"] != _LICENSE
         or config["input_usage_scope"] != _USAGE_SCOPE
+        or not isinstance(config["session_class"], str)
         or config["session_class"] not in _SESSION_PROVIDER
     ):
         raise TqqqPromotionEvidenceError("invalid frozen config")
@@ -330,6 +331,8 @@ def _validate_input(
     if bars_payload["schema_version"] != _INPUT_SCHEMA:
         raise TqqqPromotionEvidenceError("invalid bars schema")
     bars_bytes = _canonical(bars_payload)
+    if manifest_suffix != _sha256(bars_bytes)[:24]:
+        raise TqqqPromotionEvidenceError("input identity mismatch")
     members = manifest["members"]
     if (
         len(members) != 1

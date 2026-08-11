@@ -596,6 +596,23 @@ def test_session_identity_binds_source_manifest_config_candidate_and_evidence(
     with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
         evidence._validate_config(missing)
 
+    unhashable = dict(config)
+    unhashable["session_class"] = []
+    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
+        evidence._validate_config(unhashable)
+
+    mismatched_manifest = {
+        **payload,
+        "input_manifest": {
+            **payload["input_manifest"],
+            "manifest_id": f"tqqq-ibkr-{session_class}-single-acquisition-{'0' * 24}",
+        },
+    }
+    with pytest.raises(
+        evidence.TqqqPromotionEvidenceError, match="input identity"
+    ):
+        evidence._validate_input(mismatched_manifest, validated_config)
+
 
 class _FakeRuntimeApp:
     def __init__(self) -> None:
