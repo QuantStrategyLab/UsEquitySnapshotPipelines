@@ -21,13 +21,15 @@ from quant_platform_kit.ibkr.market_data import (
     StrictAdjustedHistoryProvenance,
 )
 
-from scripts import acquire_tqqq_promotion_inputs_ibkr as acquisition_cli
 import us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition as acquisition
 import us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration as orchestration
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
+from scripts import acquire_tqqq_promotion_inputs_ibkr as acquisition_cli
+from scripts import run_existing_tqqq_snapshot_diagnostic as diagnostic_cli
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     TqqqOrchestrationAuthority,
     TqqqOrchestrationError,
+    orchestrate_existing_tqqq_snapshot_diagnostic,
     orchestrate_tqqq_promotion,
 )
 
@@ -776,5 +778,245 @@ def test_committed_caller_has_historical_data_only_api_surface() -> None:
         "reqGlobalCancel",
         "reqCompletedOrders",
         "exerciseOptions",
+    ):
+        assert forbidden not in combined
+
+
+def _consumed_diagnostic_run(
+    tmp_path: Path,
+) -> tuple[Path, str, str, str]:
+    authority = _authority()
+    bars = orchestration._strict_bars(_results())
+    _payload, bars_bytes, manifest_bytes, snapshot_digest = orchestration._input_payload(
+        bars,
+        _results(),
+        authority,
+        runner_revision=RUNNER_REVISION,
+        runner_tree_sha=RUNNER_TREE_SHA,
+        observed_at="2026-08-11T08:00:00Z",
+        session_class="live-data-only",
+    )
+    snapshot = orchestration._publish_input(
+        tmp_path / "runs",
+        input_manifest_sha256=snapshot_digest,
+        bars_bytes=bars_bytes,
+        manifest_bytes=manifest_bytes,
+    )
+    config_digest = hashlib.sha256(
+        orchestration._canonical(
+            orchestration._config(authority, session_class="live-data-only")
+        )
+    ).hexdigest()
+    candidate = orchestration.CandidateRiskIdentity(
+        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision=orchestration.UES_REVISION,
+        runner_revision=RUNNER_REVISION,
+        config_sha256=config_digest,
+        input_manifest_sha256=snapshot_digest,
+        authority_receipt_sha256=authority.authority_receipt_sha256,
+    )
+    guard = ResearchMandateAuthorityGuard(
+        snapshot.parent / "mandate-authority.sqlite3",
+        clock=lambda: datetime(2026, 8, 11, 8, 0, tzinfo=UTC),
+    )
+    mandate = guard.issue(
+        candidate_id=candidate.candidate_sha256,
+        mandate_id="tqqq_etf_only_research_v1",
+        config_digest=config_digest,
+        input_digest=snapshot_digest,
+        authority_id=authority.authority_receipt_sha256,
+    )
+    receipt = guard.consume(
+        mandate,
+        candidate_id=candidate.candidate_sha256,
+        mandate_id="tqqq_etf_only_research_v1",
+        config_digest=config_digest,
+        input_digest=snapshot_digest,
+        authority_id=authority.authority_receipt_sha256,
+    )
+    orchestration._seal_private_tree(snapshot.parent)
+    return snapshot.parent, snapshot_digest, config_digest, receipt.receipt_digest
+
+
+def test_existing_snapshot_diagnostic_uses_consumed_identity_once_and_sanitizes_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    run_root, snapshot_digest, config_digest, mandate_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    monkeypatch.setattr(
+        orchestration, "_require_diagnostic_execution_compatibility", lambda *_args: None
+    )
+    calls = 0
+
+    def fail(**_kwargs) -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("private bars, dates, prices, volumes, and traceback")
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_diagnostic", fail)
+    result = orchestrate_existing_tqqq_snapshot_diagnostic(
+        run_root,
+        expected_snapshot_digest=snapshot_digest,
+        expected_mandate_receipt_digest=mandate_receipt_digest,
+        authority=_authority(),
+        execution_revision=RUNNER_REVISION,
+        execution_tree_sha=RUNNER_TREE_SHA,
+        runner_revision=RUNNER_REVISION,
+        runner_tree_sha=RUNNER_TREE_SHA,
+        session_class="live-data-only",
+        clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+    )
+
+    assert calls == 1
+    assert result == {
+        "config_digest": config_digest,
+        "exception_class": "RuntimeError",
+        "function_identifiers": [
+            "us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration:orchestrate_existing_tqqq_snapshot_diagnostic"
+        ],
+        "mandate_receipt_digest": mandate_receipt_digest,
+        "runner_completion_count": 0,
+        "runner_invocation_count": 1,
+        "snapshot_digest": snapshot_digest,
+        "stage": "promotion_replay_exception",
+    }
+    serialized = json.dumps(result, sort_keys=True).lower()
+    for forbidden in ("private bars", "dates", "prices", "volumes", "traceback", str(run_root).lower()):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize("mismatch", ("snapshot", "config", "provenance"))
+def test_existing_snapshot_diagnostic_mismatch_fails_before_invocation(
+    mismatch: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    run_root, snapshot_digest, _config_digest, mandate_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    authority = _authority()
+    execution_tree_sha = RUNNER_TREE_SHA
+    if mismatch == "snapshot":
+        (run_root / "snapshot" / "bars.json").write_bytes(b"{}")
+    elif mismatch == "config":
+        authority = replace(authority, risk_standard_sha256="7" * 64)
+    else:
+        execution_tree_sha = "8" * 40
+    if mismatch != "provenance":
+        monkeypatch.setattr(
+            orchestration,
+            "_require_diagnostic_execution_compatibility",
+            lambda *_args: None,
+        )
+    calls = 0
+
+    def forbidden(**_kwargs) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_diagnostic", forbidden)
+    with pytest.raises(TqqqOrchestrationError):
+        orchestrate_existing_tqqq_snapshot_diagnostic(
+            run_root,
+            expected_snapshot_digest=snapshot_digest,
+            expected_mandate_receipt_digest=mandate_receipt_digest,
+            authority=authority,
+            execution_revision=RUNNER_REVISION,
+            execution_tree_sha=execution_tree_sha,
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha=RUNNER_TREE_SHA,
+            session_class="live-data-only",
+            clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+        )
+    assert calls == 0
+
+
+def test_existing_snapshot_diagnostic_cli_writes_only_mode_0600_sanitized_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "diagnostic.json"
+    outcome = {
+        "config_digest": "1" * 64,
+        "exception_class": "TypeError",
+        "function_identifiers": [
+            "quant_platform_kit.strategy_lifecycle.backtest_orchestrator:run_promotion"
+        ],
+        "mandate_receipt_digest": "2" * 64,
+        "runner_completion_count": 0,
+        "runner_invocation_count": 1,
+        "snapshot_digest": "3" * 64,
+        "stage": "promotion_replay_exception",
+    }
+    monkeypatch.setattr(diagnostic_cli, "_require_filevault", lambda: None)
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "_load_execution_binding",
+        lambda *_args, **_kwargs: (
+            tmp_path / "run",
+            _authority(),
+            "3" * 64,
+            "2" * 64,
+            RUNNER_REVISION,
+            RUNNER_TREE_SHA,
+            "live-data-only",
+        ),
+    )
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: (RUNNER_REVISION, RUNNER_TREE_SHA),
+    )
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "orchestrate_existing_tqqq_snapshot_diagnostic",
+        lambda *_args, **_kwargs: outcome,
+    )
+
+    assert diagnostic_cli.main(
+        [
+            "--execution-terminal",
+            str(tmp_path / "execution.json"),
+            "--execution-terminal-sha256",
+            "4" * 64,
+            "--risk-standard-id",
+            _authority().risk_standard_id,
+            "--risk-standard-sha256",
+            _authority().risk_standard_sha256,
+            "--platform-execution-revision",
+            _authority().platform_execution_revision,
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert json.loads(output.read_bytes()) == outcome
+    assert json.loads(capsys.readouterr().out) == outcome
+
+
+def test_existing_snapshot_diagnostic_committed_surface_has_no_provider_or_order_calls() -> None:
+    combined = "\n".join(
+        (
+            inspect.getsource(diagnostic_cli),
+            inspect.getsource(orchestrate_existing_tqqq_snapshot_diagnostic),
+        )
+    ).lower()
+    for forbidden in (
+        "ibapi",
+        ".connect(",
+        "run_exact_acquisition",
+        "reqhistoricaldata",
+        "reqaccount",
+        "reqpositions",
+        "reqopenorders",
+        "placeorder",
+        "cancelorder",
+        "reqexecutions",
     ):
         assert forbidden not in combined

@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shutil
+import sqlite3
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
@@ -16,6 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from quant_platform_kit.data import research_mandate as research_mandate_store
 from quant_platform_kit.data.research_input import (
     canonical_research_input_manifest_bytes,
     research_input_manifest_sha256,
@@ -32,7 +35,10 @@ from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
 from .soxl_pit_input_packager import _xnys_holidays
-from .tqqq_promotion_evidence import run_tqqq_promotion_evidence
+from .tqqq_promotion_evidence import (
+    run_tqqq_promotion_diagnostic,
+    run_tqqq_promotion_evidence,
+)
 
 TQQQ_PROMOTION_ASSETS = ("QQQ", "TQQQ", "BOXX")
 EXACT_DURATIONS = {"QQQ": "9 Y", "TQQQ": "9 Y", "BOXX": "4 Y"}
@@ -61,6 +67,42 @@ _SESSION_PROVIDER = {
 _SESSION_TOOL = {
     "paper": "tqqq_ibkr_paper_single_acquisition",
     "live-data-only": "tqqq_ibkr_live_data_only_single_acquisition",
+}
+_DIAGNOSTIC_CHANGED_PATHS = {
+    "scripts/run_existing_tqqq_snapshot_diagnostic.py",
+    "src/us_equity_snapshot_pipelines/lifecycle/tqqq_acquisition_orchestration.py",
+    "src/us_equity_snapshot_pipelines/lifecycle/tqqq_promotion_evidence.py",
+    "tests/test_tqqq_promotion_input_acquisition.py",
+}
+_DIAGNOSTIC_FUNCTION_IDENTIFIERS = {
+    "quant_platform_kit.risk.engine:RiskEngine.assess",
+    "quant_platform_kit.risk.engine:assess",
+    "quant_platform_kit.risk.engine:evaluate",
+    "quant_platform_kit.risk.engine:resolve",
+    "quant_platform_kit.risk.gate:_assess_with_evidence_static",
+    "quant_platform_kit.risk.gate:_candidate_binding_errors",
+    "quant_platform_kit.risk.gate:_exact_tqqq_mandate_errors",
+    "quant_platform_kit.risk.gate:assess_with_evidence",
+    "quant_platform_kit.strategy_lifecycle.backtest_orchestrator:_validate_promotion_result",
+    "quant_platform_kit.strategy_lifecycle.backtest_orchestrator:run_promotion",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration:orchestrate_existing_tqqq_snapshot_diagnostic",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_assessment",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_parse_bar",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_run_tqqq_promotion_replay",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_trade_to_target",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_validate_config",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:_validate_input",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:__call__",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence:run_tqqq_promotion_diagnostic",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:_relative_metrics",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:_run_window",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:_validate_replay",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:run_locked_oos",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:run_purged_fold",
+    "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner:run_tqqq_promotion_research",
+    "us_equity_strategies.production_parity.tqqq_contract:_decision_errors",
+    "us_equity_strategies.production_parity.tqqq_contract:_evidence_errors",
+    "us_equity_strategies.production_parity.tqqq_contract:evaluate_tqqq_research_contract",
 }
 
 
@@ -514,7 +556,7 @@ def _publish_input(
         temporary = None
     except TqqqOrchestrationError:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - the diagnostic must capture any root exception
         raise TqqqOrchestrationError(
             "content-addressed TQQQ input publication failed"
         ) from exc
@@ -587,6 +629,364 @@ def _seal_private_tree(root: Path) -> None:
     for path in paths:
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
     os.chmod(root, 0o700)
+
+
+def _require_diagnostic_execution_compatibility(
+    execution_revision: str,
+    execution_tree_sha: str,
+    runner_revision: str,
+    runner_tree_sha: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[3]
+    try:
+        observed_execution_tree = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", f"{execution_revision}^{{tree}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise TqqqOrchestrationError("snapshot execution identity is unavailable") from exc
+    if observed_execution_tree != execution_tree_sha:
+        raise TqqqOrchestrationError("snapshot execution tree mismatch")
+    if execution_revision == runner_revision:
+        if execution_tree_sha != runner_tree_sha:
+            raise TqqqOrchestrationError("current runner tree mismatch")
+        return
+    try:
+        ancestry = subprocess.run(
+            ["git", "-C", str(repository), "merge-base", "--is-ancestor", execution_revision, runner_revision],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        changed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "diff",
+                "--name-only",
+                execution_revision,
+                runner_revision,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise TqqqOrchestrationError("diagnostic revision compatibility is unavailable") from exc
+    changed_paths = set(changed.stdout.splitlines())
+    if (
+        ancestry.returncode != 0
+        or not changed_paths
+        or not changed_paths <= _DIAGNOSTIC_CHANGED_PATHS
+    ):
+        raise TqqqOrchestrationError("diagnostic revision compatibility mismatch")
+
+
+def _load_existing_tqqq_snapshot(
+    run_root: Path,
+    *,
+    expected_snapshot_digest: str,
+    execution_revision: str,
+    execution_tree_sha: str,
+    runner_revision: str,
+    runner_tree_sha: str,
+    session_class: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        if (
+            run_root.is_symlink()
+            or not run_root.is_dir()
+            or stat.S_IMODE(run_root.stat().st_mode) != 0o700
+        ):
+            raise TqqqOrchestrationError("invalid private diagnostic run root")
+        entries = {path.name: path for path in run_root.iterdir()}
+    except OSError as exc:
+        raise TqqqOrchestrationError("private diagnostic run root is unavailable") from exc
+    if set(entries) != {"mandate-authority.sqlite3", "snapshot"}:
+        raise TqqqOrchestrationError("invalid private diagnostic run members")
+    snapshot = entries["snapshot"]
+    try:
+        if (
+            snapshot.is_symlink()
+            or not snapshot.is_dir()
+            or stat.S_IMODE(snapshot.stat().st_mode) != 0o700
+        ):
+            raise TqqqOrchestrationError("invalid private snapshot directory")
+        snapshot_entries = {path.name: path for path in snapshot.iterdir()}
+    except OSError as exc:
+        raise TqqqOrchestrationError("private snapshot is unavailable") from exc
+    if set(snapshot_entries) != {"bars.json", "input-manifest.json"}:
+        raise TqqqOrchestrationError("invalid private snapshot members")
+    for path in snapshot_entries.values():
+        try:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or stat.S_IMODE(path.stat().st_mode) != 0o600
+            ):
+                raise TqqqOrchestrationError("invalid private snapshot member")
+        except OSError as exc:
+            raise TqqqOrchestrationError("private snapshot is unavailable") from exc
+    try:
+        bars_bytes = snapshot_entries["bars.json"].read_bytes()
+        manifest_bytes = snapshot_entries["input-manifest.json"].read_bytes()
+        manifest = validate_research_input_manifest(json.loads(manifest_bytes))
+    except Exception as exc:
+        raise TqqqOrchestrationError("immutable snapshot readback failed") from exc
+    if (
+        hashlib.sha256(manifest_bytes).hexdigest() != expected_snapshot_digest
+        or canonical_research_input_manifest_bytes(manifest) != manifest_bytes
+        or research_input_manifest_sha256(manifest) != expected_snapshot_digest
+    ):
+        raise TqqqOrchestrationError("snapshot digest mismatch")
+    members = manifest["members"]
+    if (
+        len(members) != 1
+        or members[0]["path"] != "bars.json"
+        or members[0]["media_type"] != "application/json"
+        or members[0]["size_bytes"] != len(bars_bytes)
+        or members[0]["sha256"] != hashlib.sha256(bars_bytes).hexdigest()
+    ):
+        raise TqqqOrchestrationError("snapshot member integrity mismatch")
+    bars, readback_manifest = _readback_input(
+        snapshot,
+        expected_bars_sha256=members[0]["sha256"],
+        expected_bars_size=members[0]["size_bytes"],
+        expected_manifest_sha256=expected_snapshot_digest,
+        expected_manifest_size=len(manifest_bytes),
+    )
+    producer = readback_manifest["producer"]
+    if producer != {
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit_sha": execution_revision,
+        "tree_sha": execution_tree_sha,
+        "tool": _SESSION_TOOL[session_class],
+        "tool_version": "v1",
+    }:
+        raise TqqqOrchestrationError("snapshot producer identity mismatch")
+    _require_diagnostic_execution_compatibility(
+        execution_revision,
+        execution_tree_sha,
+        runner_revision,
+        runner_tree_sha,
+    )
+    return bars, readback_manifest
+
+
+def _validate_consumed_diagnostic_binding(
+    database: Path,
+    *,
+    expected_candidate_id: str,
+    expected_config_digest: str,
+    expected_snapshot_digest: str,
+    expected_authority_id: str,
+    expected_receipt_digest: str,
+) -> None:
+    try:
+        if (
+            database.is_symlink()
+            or not database.is_file()
+            or stat.S_IMODE(database.stat().st_mode) != 0o600
+        ):
+            raise TqqqOrchestrationError("invalid consumed mandate store")
+        before = hashlib.sha256(database.read_bytes()).hexdigest()
+        connection = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            metadata = connection.execute(
+                "SELECT key, value FROM metadata ORDER BY key"
+            ).fetchall()
+            columns = tuple(
+                row[1] for row in connection.execute("PRAGMA table_info(mandates)")
+            )
+            selected = connection.execute(
+                f"SELECT {','.join(research_mandate_store._ROW_FIELDS)} FROM mandates"
+            ).fetchall()
+        finally:
+            connection.close()
+        if (
+            tables != {"metadata", "mandates"}
+            or metadata
+            != [
+                ("schema_digest", research_mandate_store._SCHEMA_DIGEST),
+                ("schema_version", "1"),
+            ]
+            or columns != research_mandate_store._ROW_FIELDS
+            or len(selected) != 1
+        ):
+            raise TqqqOrchestrationError("invalid consumed mandate store")
+        row = dict(zip(research_mandate_store._ROW_FIELDS, selected[0], strict=True))
+        research_mandate_store._validate_row(row)
+        if (
+            row["status"] != "CONSUMED"
+            or row["candidate_id"] != expected_candidate_id
+            or row["mandate_id"] != _MANDATE_ID
+            or row["config_digest"] != expected_config_digest
+            or row["input_digest"] != expected_snapshot_digest
+            or row["authority_id"] != expected_authority_id
+            or row["receipt_digest"] != expected_receipt_digest
+            or hashlib.sha256(database.read_bytes()).hexdigest() != before
+        ):
+            raise TqqqOrchestrationError("consumed mandate identity mismatch")
+    except TqqqOrchestrationError:
+        raise
+    except Exception as exc:
+        raise TqqqOrchestrationError("consumed mandate validation failed") from exc
+
+
+def _root_exception(error: BaseException) -> BaseException:
+    observed: set[int] = set()
+    current = error
+    while id(current) not in observed:
+        observed.add(id(current))
+        next_error = current.__cause__
+        if next_error is None and not current.__suppress_context__:
+            next_error = current.__context__
+        if next_error is None:
+            break
+        current = next_error
+    return current
+
+
+def _diagnostic_function_identifiers(error: BaseException) -> list[str]:
+    identifiers: list[str] = []
+    current: BaseException | None = error
+    observed: set[int] = set()
+    while current is not None and id(current) not in observed:
+        observed.add(id(current))
+        traceback = current.__traceback__
+        while traceback is not None:
+            module = traceback.tb_frame.f_globals.get("__name__")
+            function = traceback.tb_frame.f_code.co_name
+            identifier = f"{module}:{function}"
+            if identifier in _DIAGNOSTIC_FUNCTION_IDENTIFIERS and identifier not in identifiers:
+                identifiers.append(identifier)
+            traceback = traceback.tb_next
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return identifiers[-3:]
+
+
+def orchestrate_existing_tqqq_snapshot_diagnostic(
+    run_root: str | Path,
+    *,
+    expected_snapshot_digest: str,
+    expected_mandate_receipt_digest: str,
+    authority: TqqqOrchestrationAuthority,
+    execution_revision: str,
+    execution_tree_sha: str,
+    runner_revision: str,
+    runner_tree_sha: str,
+    session_class: str,
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Validate a consumed immutable snapshot and replay it once without persistence."""
+    if not isinstance(authority, TqqqOrchestrationAuthority):
+        raise TqqqOrchestrationError("invalid orchestration authority")
+    snapshot_digest = _require_digest(expected_snapshot_digest, "snapshot digest")
+    mandate_receipt_digest = _require_digest(
+        expected_mandate_receipt_digest, "mandate receipt digest"
+    )
+    execution_revision = _require_revision(execution_revision, "execution revision")
+    execution_tree_sha = _require_revision(execution_tree_sha, "execution tree")
+    runner_revision = _require_revision(runner_revision, "runner revision")
+    runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")
+    if session_class not in _SESSION_PROVIDER:
+        raise TqqqOrchestrationError("invalid provider session identity")
+    now = (clock or (lambda: datetime.now(UTC)))()
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise TqqqOrchestrationError("invalid diagnostic timestamp")
+    now = now.astimezone(UTC).replace(microsecond=0)
+    if _require_timestamp(authority.retention_expires_at, "retention expiry") <= now:
+        raise TqqqOrchestrationError("retention authority is expired")
+    if (
+        _installed_vcs_revision("quant-platform-kit") != QPK_REVISION
+        or _installed_vcs_revision("us-equity-strategies") != UES_REVISION
+    ):
+        raise TqqqOrchestrationError("installed dependency identity mismatch")
+    root = Path(run_root)
+    bars, manifest = _load_existing_tqqq_snapshot(
+        root,
+        expected_snapshot_digest=snapshot_digest,
+        execution_revision=execution_revision,
+        execution_tree_sha=execution_tree_sha,
+        runner_revision=runner_revision,
+        runner_tree_sha=runner_tree_sha,
+        session_class=session_class,
+    )
+    config = _config(authority, session_class=session_class)
+    config_digest = hashlib.sha256(_canonical(config)).hexdigest()
+    candidate = CandidateRiskIdentity(
+        strategy_profile=_PROFILE,
+        account_mode="single_strategy_account_v1",
+        strategy_revision=UES_REVISION,
+        runner_revision=execution_revision,
+        config_sha256=config_digest,
+        input_manifest_sha256=snapshot_digest,
+        authority_receipt_sha256=authority.authority_receipt_sha256,
+    )
+    _validate_consumed_diagnostic_binding(
+        root / "mandate-authority.sqlite3",
+        expected_candidate_id=candidate.candidate_sha256,
+        expected_config_digest=config_digest,
+        expected_snapshot_digest=snapshot_digest,
+        expected_authority_id=authority.authority_receipt_sha256,
+        expected_receipt_digest=mandate_receipt_digest,
+    )
+    source_revisions = {source["revision"] for source in manifest["sources"]}
+    if len(source_revisions) != 1:
+        raise TqqqOrchestrationError("snapshot source identity mismatch")
+    input_payload = {
+        "provenance": {
+            "evidence_class": "provider_observed",
+            "real_producer": True,
+            "provider": _SESSION_PROVIDER[session_class],
+            "provider_revision": source_revisions.pop(),
+            "session_class": session_class,
+            "license": authority.input_license,
+            "usage_scope": authority.input_usage_scope,
+        },
+        "input_manifest": manifest,
+        "bars": bars,
+    }
+    try:
+        run_tqqq_promotion_diagnostic(
+            input_payload=input_payload,
+            config_payload=config,
+            mandate_receipt_sha256=mandate_receipt_digest,
+        )
+    except Exception as exc:
+        root_error = _root_exception(exc)
+        return {
+            "config_digest": config_digest,
+            "exception_class": type(root_error).__name__,
+            "function_identifiers": _diagnostic_function_identifiers(exc),
+            "mandate_receipt_digest": mandate_receipt_digest,
+            "runner_completion_count": 0,
+            "runner_invocation_count": 1,
+            "snapshot_digest": snapshot_digest,
+            "stage": "promotion_replay_exception",
+        }
+    return {
+        "config_digest": config_digest,
+        "exception_class": None,
+        "function_identifiers": [],
+        "mandate_receipt_digest": mandate_receipt_digest,
+        "runner_completion_count": 1,
+        "runner_invocation_count": 1,
+        "snapshot_digest": snapshot_digest,
+        "stage": "promotion_replay_completed",
+    }
 
 
 def orchestrate_tqqq_promotion(
@@ -796,9 +1196,10 @@ __all__ = [
     "OFFICIAL_IBAPI_PROVENANCE_SHA256",
     "QPK_REVISION",
     "TQQQ_PROMOTION_ASSETS",
+    "UES_REVISION",
     "TqqqOrchestrationAuthority",
     "TqqqOrchestrationError",
-    "UES_REVISION",
+    "orchestrate_existing_tqqq_snapshot_diagnostic",
     "orchestrate_tqqq_promotion",
     "resolve_tqqq_runtime_identity",
 ]
