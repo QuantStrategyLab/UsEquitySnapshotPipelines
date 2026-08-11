@@ -156,7 +156,7 @@ def _fake_producer(
     }
 
 
-def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_producer_once(
+def test_exact_four_results_publish_then_consume_one_mandate_and_run_existing_producer_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -197,8 +197,20 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
         assert [source["source_id"] for source in manifest["sources"]] == [
             "ibkr:BOXX",
             "ibkr:QQQ",
+            "ibkr:QQQM",
             "ibkr:TQQQ",
         ]
+        assert manifest["profile"] == "tqqq_core_parity_v1"
+        assert manifest["calendar"] == {
+            "calendar_id": "XNYS",
+            "timezone": "America/New_York",
+            "session_date": "2025-07-01",
+            "source": "exchange_calendars",
+            "source_revision": (
+                "exchange_calendars:4.13.2:XNYS:"
+                "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
+            ),
+        }
         assert manifest["producer"] == {
             "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
             "commit_sha": RUNNER_REVISION,
@@ -209,12 +221,13 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
         assert input_payload["provenance"]["session_class"] == "paper"
         assert config_payload == {
             "schema_version": "tqqq_etf_only_replay_config.v1",
-            "strategy_profile": "tqqq_etf_only_single_strategy_research_v1",
-            "signal_model": "qqq_sma_200_close_t_open_t_plus_1",
-            "signal_window_sessions": 200,
+            "strategy_profile": "tqqq_core_parity_v1",
+            "signal_model": "ues_tqqq_growth_income_core_parity",
+            "signal_window_sessions": 257,
             "tqqq_nominal_cap": 0.15,
+            "qqqm_nominal_cap": 0.50,
             "boxx_nominal_cap": 0.50,
-            "risk_mandate_id": "tqqq_etf_only_research_v1",
+            "risk_mandate_id": "tqqq_core_parity_v1",
             "risk_standard_id": _authority().risk_standard_id,
             "risk_standard_sha256": _authority().risk_standard_sha256,
             "authority_receipt_sha256": AUTHORITY_SHA256,
@@ -270,7 +283,11 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
     ]
     assert result == {
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
-        "asset_count": 3,
+        "asset_count": 4,
+        "execution_authorized": False,
+        "no_order": True,
+        "research_only": True,
+        "size_zero_required": True,
         "snapshot_digest": result["snapshot_digest"],
         "evidence_digest": result["evidence_digest"],
         "mandate_receipt_digest": result["mandate_receipt_digest"],
@@ -409,8 +426,8 @@ def test_incomplete_or_provenance_mismatched_results_fail_before_publish_or_mand
 ) -> None:
     _allow_pinned_dependency_provenance(monkeypatch)
     incomplete = _results()
-    del incomplete["BOXX"]
-    with pytest.raises(TqqqOrchestrationError, match="exact three-input result"):
+    del incomplete["QQQM"]
+    with pytest.raises(TqqqOrchestrationError, match="exact four-input result"):
         orchestrate_tqqq_promotion(
             incomplete,
             authority=_authority(),
@@ -532,6 +549,30 @@ def test_producer_failure_retains_only_sanitized_committed_state(
     assert "raw provider bars" not in str(caught.value)
 
 
+def test_unified_duration_covers_every_required_session_at_latest_authority_expiry() -> None:
+    latest_request_session = datetime.fromisoformat(
+        _authority().retention_expires_at
+    ).date()
+    required_start_session = date.fromisoformat(
+        orchestration.FROZEN_XNYS_SESSIONS[0]
+    )
+
+    assert orchestration.EXACT_DURATIONS == {
+        symbol: "9 Y" for symbol in orchestration.TQQQ_PROMOTION_ASSETS
+    }
+    for symbol in orchestration.TQQQ_PROMOTION_ASSETS:
+        first_eligible_session = date.fromisoformat(
+            orchestration.FIRST_ELIGIBLE_SESSION.get(
+                symbol, required_start_session.isoformat()
+            )
+        )
+        duration_years = int(orchestration.EXACT_DURATIONS[symbol].split()[0])
+        earliest_covered_session = latest_request_session.replace(
+            year=latest_request_session.year - duration_years
+        )
+        assert earliest_covered_session < first_eligible_session
+
+
 def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -543,12 +584,17 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     app = object()
     factory = object()
     results = acquisition_cli.run_exact_acquisition(app, contract_factory=factory)
-    assert tuple(results) == acquisition_cli.EXACT_ASSETS == ("QQQ", "TQQQ", "BOXX")
-    assert [call["duration"] for call in calls] == ["9 Y", "9 Y", "4 Y"]
+    assert tuple(results) == acquisition_cli.EXACT_ASSETS == ("QQQ", "TQQQ", "QQQM", "BOXX")
+    assert acquisition_cli.APPLICATION_CALL_CEILING == 8
+    acquisition_source = inspect.getsource(acquisition_cli.run_exact_acquisition)
+    assert acquisition_source.count("acquire_strict_adjusted_last(") == 1
+    assert "while " not in acquisition_source
+    assert [call["duration"] for call in calls] == ["9 Y"] * 4
     assert all(call["app"] is app and call["stock_factory"] is factory for call in calls)
     assert calls[0]["expected_sessions"][0] == date(2018, 1, 2)
     assert calls[1]["expected_sessions"] == calls[0]["expected_sessions"]
-    assert calls[2]["expected_sessions"][0] == date(2022, 12, 28)
+    assert calls[2]["expected_sessions"][0] == date(2020, 10, 13)
+    assert calls[3]["expected_sessions"][0] == date(2022, 12, 28)
     assert all(call["expected_sessions"][-1] == date(2025, 7, 1) for call in calls)
 
     observed: list[str] = []
@@ -565,8 +611,33 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     assert observed == ["QQQ", "TQQQ"]
 
 
+def test_application_call_ceiling_blocks_ninth_timeout_cancellation() -> None:
+    class App:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def reqContractDetails(self, *_args) -> None:
+            self.calls.append("qualification")
+
+        def reqHistoricalData(self, *_args) -> None:
+            self.calls.append("historical")
+
+        def cancelHistoricalData(self, *_args) -> None:
+            self.calls.append("cancellation")
+
+    app = acquisition_cli._bound_application_calls(App())
+    for index in range(4):
+        app.reqContractDetails(index, object())
+        app.reqHistoricalData(index, object())
+
+    with pytest.raises(TqqqOrchestrationError, match="application call ceiling"):
+        app.cancelHistoricalData(4)
+
+    assert app.calls == ["qualification", "historical"] * 4
+
+
 @pytest.mark.parametrize("session_class", ("paper", "live-data-only"))
-def test_current_acquisition_is_not_core_parity_input_ready(
+def test_current_acquisition_constructs_exact_core_parity_input(
     session_class: str,
 ) -> None:
     results = _results()
@@ -584,10 +655,64 @@ def test_current_acquisition_is_not_core_parity_input_ready(
 
     assert payload["provenance"]["session_class"] == session_class
     assert config["session_class"] == session_class
-    assert tuple(payload["bars"]["symbols"]) == ("QQQ", "TQQQ", "BOXX")
-    assert "QQQM" not in payload["bars"]["symbols"]
-    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
-        evidence._validate_config(config)
+    assert tuple(payload["bars"]["symbols"]) == ("QQQ", "TQQQ", "QQQM", "BOXX")
+    expected_source_revision = hashlib.sha256(
+        orchestration._canonical(
+            {
+                "authority_receipt_sha256": _authority().authority_receipt_sha256,
+                "calendar_sha256": (
+                    "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
+                ),
+                "candidate_profile": "tqqq_core_parity_v1",
+                "entitlement_receipt_sha256": _authority().entitlement_receipt_sha256,
+                "fallback": False,
+                "fixed_cutoff": orchestration.FIXED_CUTOFF,
+                "input_license": orchestration.INPUT_LICENSE,
+                "input_usage_scope": orchestration.INPUT_USAGE_SCOPE,
+                "license_receipt_sha256": _authority().license_receipt_sha256,
+                "observed_at": "2026-08-11T08:00:00Z",
+                "official_ibapi_provenance_sha256": (
+                    orchestration.OFFICIAL_IBAPI_PROVENANCE_SHA256
+                ),
+                "provider": orchestration._SESSION_PROVIDER[session_class],
+                "qpk_revision": orchestration.QPK_REVISION,
+                "requests": [
+                    {
+                        "bar_size": "1 day",
+                        "duration": orchestration.EXACT_DURATIONS[symbol],
+                        "end_datetime": "",
+                        "format_date": 1,
+                        "keep_up_to_date": False,
+                        "security": "STK/SMART/USD",
+                        "session_class": session_class,
+                        "symbol": symbol,
+                        "use_rth": True,
+                        "what_to_show": "ADJUSTED_LAST",
+                    }
+                    for symbol in orchestration.TQQQ_PROMOTION_ASSETS
+                ],
+                "retention_expires_at": _authority().retention_expires_at,
+                "retry_count": 0,
+                "session_class": session_class,
+                "substitution": False,
+                "ues_revision": orchestration.UES_REVISION,
+                "uesp_revision": RUNNER_REVISION,
+                "uesp_tree_sha": RUNNER_TREE_SHA,
+            }
+        )
+    ).hexdigest()
+    assert {source["revision"] for source in payload["input_manifest"]["sources"]} == {
+        expected_source_revision
+    }
+    validated_config = evidence._validate_config(config)
+    provenance, parsed, manifest_sha256 = evidence._validate_input(
+        payload, validated_config
+    )
+    assert tuple(parsed) == ("BOXX", "QQQ", "QQQM", "TQQQ")
+    assert provenance["provider_revision"] == payload["provenance"]["provider_revision"]
+    assert manifest_sha256 == research_input_manifest_sha256(
+        payload["input_manifest"]
+    )
 
 
 class _FakeRuntimeApp:
@@ -679,7 +804,11 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         assert kwargs["session_class"] == expected_session_class
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
-            "asset_count": 3,
+            "asset_count": 4,
+            "execution_authorized": False,
+            "no_order": True,
+            "research_only": True,
+            "size_zero_required": True,
             "snapshot_digest": "6" * 64,
             "evidence_digest": "7" * 64,
             "mandate_receipt_digest": "8" * 64,
@@ -690,12 +819,16 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
     assert acquisition_cli.main([*_valid_cli_args(), *extra_args]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
-        "asset_count": 3,
+        "asset_count": 4,
         "evidence_digest": "7" * 64,
+        "execution_authorized": False,
         "lifecycle": [{"phase": "history", "status": "SUCCESS"}],
         "mandate_receipt_digest": "8" * 64,
+        "no_order": True,
+        "research_only": True,
         "rerun_count": 1,
         "snapshot_digest": "6" * 64,
+        "size_zero_required": True,
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
     assert len(app.connect_calls) == 1
@@ -724,12 +857,35 @@ def test_cli_filevault_failure_stops_before_runtime_or_provider(
     assert json.loads(capsys.readouterr().out) == {
         "asset_count": 0,
         "evidence_digest": None,
+        "execution_authorized": False,
         "lifecycle": [],
         "mandate_receipt_digest": None,
+        "no_order": True,
+        "research_only": True,
         "rerun_count": 0,
         "snapshot_digest": None,
-        "status": "FAILED_MATERIAL",
+        "size_zero_required": True,
+        "status": "PARK_MATERIAL",
     }
+
+
+def test_cli_expired_authority_stops_before_filevault_runtime_or_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+    args = _valid_cli_args()
+    args[args.index("--retention-expires-at") + 1] = "2000-01-01T00:00:00Z"
+    monkeypatch.setattr(
+        acquisition_cli,
+        "_require_filevault_local_root",
+        lambda: calls.append("filevault"),
+    )
+    monkeypatch.setattr(acquisition_cli, "_runtime", lambda: calls.append("runtime"))
+
+    assert acquisition_cli.main(args) == 1
+    assert calls == []
+    assert json.loads(capsys.readouterr().out)["status"] == "PARK_MATERIAL"
 
 
 def test_committed_caller_has_historical_data_only_api_surface() -> None:
@@ -782,7 +938,7 @@ def _consumed_diagnostic_run(
         )
     ).hexdigest()
     candidate = orchestration.CandidateRiskIdentity(
-        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        strategy_profile="tqqq_core_parity_v1",
         account_mode="single_strategy_account_v1",
         strategy_revision=orchestration.UES_REVISION,
         runner_revision=RUNNER_REVISION,
@@ -796,7 +952,7 @@ def _consumed_diagnostic_run(
     )
     mandate = guard.issue(
         candidate_id=candidate.candidate_sha256,
-        mandate_id="tqqq_etf_only_research_v1",
+        mandate_id="tqqq_core_parity_v1",
         config_digest=config_digest,
         input_digest=snapshot_digest,
         authority_id=authority.authority_receipt_sha256,
@@ -804,7 +960,7 @@ def _consumed_diagnostic_run(
     receipt = guard.consume(
         mandate,
         candidate_id=candidate.candidate_sha256,
-        mandate_id="tqqq_etf_only_research_v1",
+        mandate_id="tqqq_core_parity_v1",
         config_digest=config_digest,
         input_digest=snapshot_digest,
         authority_id=authority.authority_receipt_sha256,
@@ -895,14 +1051,14 @@ def test_existing_snapshot_promotion_consumes_fresh_mandate_and_validates_eviden
     assert events == ["issue", "consume", "producer"]
     assert result == {
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
-        "asset_count": 3,
+        "asset_count": 4,
         "snapshot_digest": snapshot_digest,
         "evidence_digest": result["evidence_digest"],
         "mandate_receipt_digest": result["mandate_receipt_digest"],
         "rerun_count": 1,
     }
     expected_candidate = orchestration.CandidateRiskIdentity(
-        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        strategy_profile="tqqq_core_parity_v1",
         account_mode="single_strategy_account_v1",
         strategy_revision=orchestration.UES_REVISION,
         runner_revision=current_revision,
@@ -913,7 +1069,7 @@ def test_existing_snapshot_promotion_consumes_fresh_mandate_and_validates_eviden
     assert issued == [
         {
             "candidate_id": expected_candidate.candidate_sha256,
-            "mandate_id": "tqqq_etf_only_research_v1",
+            "mandate_id": "tqqq_core_parity_v1",
             "config_digest": config_digest,
             "input_digest": snapshot_digest,
             "authority_id": AUTHORITY_SHA256,
@@ -1025,7 +1181,7 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
         assert kwargs["output_root"] == tmp_path / "output" / AUTHORITY_SHA256
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
-            "asset_count": 3,
+            "asset_count": 4,
             "snapshot_digest": "3" * 64,
             "evidence_digest": "4" * 64,
             "mandate_receipt_digest": "5" * 64,
@@ -1052,7 +1208,7 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
     assert events == ["filevault", "identity", "orchestrate"]
     assert json.loads(capsys.readouterr().out) == {
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
-        "asset_count": 3,
+        "asset_count": 4,
         "snapshot_digest": "3" * 64,
         "evidence_digest": "4" * 64,
         "mandate_receipt_digest": "5" * 64,
