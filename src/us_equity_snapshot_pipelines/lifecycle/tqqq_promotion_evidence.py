@@ -8,10 +8,11 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from quant_platform_kit.common.models import PortfolioSnapshot, Position
 from quant_platform_kit.data.research_input import (
@@ -20,17 +21,15 @@ from quant_platform_kit.data.research_input import (
     research_input_manifest_sha256,
     validate_research_input_manifest,
 )
-from quant_platform_kit.position_sizing import risk_budgeted_target_weight
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyDecision
+from quant_platform_kit.strategy_contracts import StrategyContext
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
     validate_evidence_package_v2,
 )
-from us_equity_strategies.production_parity.tqqq_contract import (
-    TqqqProductionParityEvidence,
-    evaluate_tqqq_research_contract,
+from us_equity_strategies.entrypoints import (
+    evaluate_tqqq_growth_income_promotion_research,
 )
 
 from .tqqq_promotion_runner import (
@@ -44,12 +43,12 @@ from .tqqq_promotion_runner import (
     run_tqqq_promotion_research,
 )
 
-_PROFILE = "tqqq_etf_only_single_strategy_research_v1"
+_PROFILE = "tqqq_core_parity_v1"
 _DOMAIN = "us_equity"
 _INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
 _CONFIG_SCHEMA = "tqqq_etf_only_replay_config.v1"
-_MANDATE_ID = "tqqq_etf_only_research_v1"
+_MANDATE_ID = "tqqq_core_parity_v1"
 _LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 _USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
 _SESSION_PROVIDER = {
@@ -62,6 +61,19 @@ _SESSION_TOOL = {
 }
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
 _COST_SCENARIOS = (5, 10, 15)
+_ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
+_ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
+_RUNTIME_OVERRIDES = {
+    "benchmark_symbol": "QQQ",
+    "managed_symbols": _ORDERABLE_ASSETS,
+    "signal_effective_after_trading_days": 1,
+    "dual_drive_unlevered_symbol": "QQQM",
+    "income_layer_enabled": False,
+    "option_overlay_enabled": False,
+    "option_growth_overlay_enabled": False,
+    "option_income_overlay_enabled": False,
+    "ai_extensions": {"enabled": False},
+}
 _CORE_FIELDS = (
     "schema_version",
     "evidence_package_id",
@@ -120,13 +132,15 @@ class _Bar:
 @dataclass
 class _ReplayState:
     cash: float = 100_000.0
-    symbol: str | None = None
-    quantity: float = 0.0
-    entry_price: float | None = None
-    stop_price: float | None = None
-    entry_identity_sha256: str | None = None
-    pending_symbol: str | None = None
-    pending_weight: float = 0.0
+    quantities: dict[str, float] = field(
+        default_factory=lambda: {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+    )
+    tqqq_entry_price: float | None = None
+    tqqq_stop_price: float | None = None
+    tqqq_entry_identity_sha256: str | None = None
+    pending_weights: dict[str, float] = field(
+        default_factory=lambda: {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+    )
     high_water_equity: float = 100_000.0
     last_equity: float = 100_000.0
     consecutive_losing_exits: int = 0
@@ -134,7 +148,17 @@ class _ReplayState:
     last_session: date | None = None
     turnover: float = 0.0
     trade_count: int = 0
+    decision_count: int = 0
     assessment_count: int = 0
+    market_regime_control_sha256: str = field(
+        default_factory=lambda: _digest({"state": "ABSENT"})
+    )
+    volatility_hysteresis_state_sha256: str = field(
+        default_factory=lambda: _digest({"state": "UNINITIALIZED"})
+    )
+    retention_state_sha256: str = field(
+        default_factory=lambda: _digest({"state": "UNINITIALIZED"})
+    )
 
 
 def _canonical(value: Any) -> bytes:
@@ -217,6 +241,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         "signal_model",
         "signal_window_sessions",
         "tqqq_nominal_cap",
+        "qqqm_nominal_cap",
         "boxx_nominal_cap",
         "risk_mandate_id",
         "risk_standard_id",
@@ -231,9 +256,10 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if (
         config["schema_version"] != _CONFIG_SCHEMA
         or config["strategy_profile"] != _PROFILE
-        or config["signal_model"] != "qqq_sma_200_close_t_open_t_plus_1"
-        or config["signal_window_sessions"] != 200
+        or config["signal_model"] != "ues_tqqq_growth_income_core_parity"
+        or config["signal_window_sessions"] != 257
         or _finite(config["tqqq_nominal_cap"], "TQQQ cap") != 0.15
+        or _finite(config["qqqm_nominal_cap"], "QQQM cap") != 0.50
         or _finite(config["boxx_nominal_cap"], "BOXX cap") != 0.50
         or config["risk_mandate_id"] != _MANDATE_ID
         or not isinstance(config["risk_standard_id"], str)
@@ -309,6 +335,8 @@ def _validate_input(
         or manifest["artifact_type"] != "immutable_adjusted_ohlcv_etf_only"
         or manifest["calendar"]["calendar_id"] != "XNYS"
         or manifest["calendar"]["timezone"] != "America/New_York"
+        or manifest["calendar"]["source"] != "exchange_calendars"
+        or not manifest["calendar"]["source_revision"]
         or manifest["adjustment"]["policy"] != "total_return_adjusted"
         or manifest["adjustment"]["source"] != "IBKR_ADJUSTED_LAST"
     ):
@@ -327,7 +355,9 @@ def _validate_input(
     ):
         raise TqqqPromotionEvidenceError("invalid provider session identity")
     bars_payload = _exact_mapping(payload["bars"], {"schema_version", "symbols"}, "bars payload")
-    symbols = _exact_mapping(bars_payload["symbols"], {"BOXX", "QQQ", "TQQQ"}, "bar symbols")
+    symbols = _exact_mapping(
+        bars_payload["symbols"], {"BOXX", "QQQ", "QQQM", "TQQQ"}, "bar symbols"
+    )
     if bars_payload["schema_version"] != _INPUT_SCHEMA:
         raise TqqqPromotionEvidenceError("invalid bars schema")
     bars_bytes = _canonical(bars_payload)
@@ -346,11 +376,11 @@ def _validate_input(
     source_digests = {item["source_id"]: item["content_sha256"] for item in manifest["sources"]}
     source_revisions = {item["revision"] for item in manifest["sources"]}
     if (
-        set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:TQQQ"}
+        set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:QQQM", "ibkr:TQQQ"}
         or source_revisions != {provenance["provider_revision"]}
     ):
         raise TqqqPromotionEvidenceError("invalid provider source identities")
-    for symbol in ("BOXX", "QQQ", "TQQQ"):
+    for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
         rows = symbols[symbol]
         if not isinstance(rows, list) or not rows:
             raise TqqqPromotionEvidenceError("missing immutable bars")
@@ -363,20 +393,28 @@ def _validate_input(
         parsed[symbol] = values
     qqq_sessions = tuple(row.session for row in parsed["QQQ"])
     tqqq_sessions = tuple(row.session for row in parsed["TQQQ"])
+    qqqm_sessions = tuple(row.session for row in parsed["QQQM"])
     boxx_sessions = tuple(row.session for row in parsed["BOXX"])
     if qqq_sessions != tqqq_sessions:
         raise TqqqPromotionEvidenceError("QQQ/TQQQ session mismatch")
     if (
+        qqqm_sessions
+        != tuple(session for session in qqq_sessions if session >= qqqm_sessions[0])
+        or not set(qqqm_sessions) <= set(qqq_sessions)
+    ):
+        raise TqqqPromotionEvidenceError("QQQM eligibility violation")
+    if (
         boxx_sessions[0] != _BOXX_FIRST_ELIGIBLE_SESSION
         or any(session < _BOXX_FIRST_ELIGIBLE_SESSION for session in boxx_sessions)
-        or not set(boxx_sessions) <= set(qqq_sessions)
+        or boxx_sessions
+        != tuple(session for session in qqq_sessions if session >= _BOXX_FIRST_ELIGIBLE_SESSION)
     ):
         raise TqqqPromotionEvidenceError("BOXX eligibility violation")
     if (
         qqq_sessions[0] > _PLAN.folds[0].train_start
         or qqq_sessions[-1] != _PLAN.locked_oos_end
         or manifest["calendar"]["session_date"] != qqq_sessions[-1].isoformat()
-        or sum(session < _PLAN.folds[0].test_start for session in qqq_sessions) < 252
+        or sum(session < _PLAN.folds[0].test_start for session in qqq_sessions) < 257
     ):
         raise TqqqPromotionEvidenceError("immutable input coverage mismatch")
     return provenance, parsed, research_input_manifest_sha256(manifest)
@@ -385,36 +423,38 @@ def _validate_input(
 def _initial_state_projection() -> dict[str, Any]:
     return {
         "cash": 100_000.0,
-        "symbol": None,
-        "quantity": 0.0,
-        "entry_price": None,
-        "stop_price": None,
-        "entry_identity_sha256": None,
-        "pending_symbol": None,
-        "pending_weight": 0.0,
+        "quantities": {symbol: 0.0 for symbol in _ORDERABLE_ASSETS},
+        "tqqq_entry_price": None,
+        "tqqq_stop_price": None,
+        "tqqq_entry_identity_sha256": None,
+        "pending_weights": {symbol: 0.0 for symbol in _ORDERABLE_ASSETS},
         "high_water_equity": 100_000.0,
         "last_equity": 100_000.0,
         "consecutive_losing_exits": 0,
         "parked": False,
         "last_session": None,
+        "market_regime_control_sha256": _digest({"state": "ABSENT"}),
+        "volatility_hysteresis_state_sha256": _digest({"state": "UNINITIALIZED"}),
+        "retention_state_sha256": _digest({"state": "UNINITIALIZED"}),
     }
 
 
 def _state_projection(state: _ReplayState) -> dict[str, Any]:
     return {
         "cash": state.cash,
-        "symbol": state.symbol,
-        "quantity": state.quantity,
-        "entry_price": state.entry_price,
-        "stop_price": state.stop_price,
-        "entry_identity_sha256": state.entry_identity_sha256,
-        "pending_symbol": state.pending_symbol,
-        "pending_weight": state.pending_weight,
+        "quantities": state.quantities,
+        "tqqq_entry_price": state.tqqq_entry_price,
+        "tqqq_stop_price": state.tqqq_stop_price,
+        "tqqq_entry_identity_sha256": state.tqqq_entry_identity_sha256,
+        "pending_weights": state.pending_weights,
         "high_water_equity": state.high_water_equity,
         "last_equity": state.last_equity,
         "consecutive_losing_exits": state.consecutive_losing_exits,
         "parked": state.parked,
         "last_session": state.last_session,
+        "market_regime_control_sha256": state.market_regime_control_sha256,
+        "volatility_hysteresis_state_sha256": state.volatility_hysteresis_state_sha256,
+        "retention_state_sha256": state.retention_state_sha256,
     }
 
 
@@ -430,8 +470,10 @@ class _ImmutableReplayProducer:
         self.candidate = candidate
         self.identity = identity
         self.qqq = bars["QQQ"]
-        self.tqqq = {row.session: row for row in bars["TQQQ"]}
-        self.boxx = {row.session: row for row in bars["BOXX"]}
+        self.prices = {
+            symbol: {row.session: row for row in bars[symbol]}
+            for symbol in _ORDERABLE_ASSETS
+        }
         self._index = {row.session: index for index, row in enumerate(self.qqq)}
         self._scenario: int | None = None
         self._cursor = -1
@@ -455,164 +497,138 @@ class _ImmutableReplayProducer:
         self._scenario_counts[scenario] = {"decisions": 0, "assessments": 0}
 
     def _price(self, symbol: str, session: date) -> _Bar:
-        source = self.tqqq if symbol == "TQQQ" else self.boxx
         try:
-            return source[session]
+            return self.prices[symbol][session]
         except KeyError as exc:
             raise TqqqPromotionEvidenceError("eligible asset data unavailable") from exc
 
     def _equity(self, session: date, field: str) -> float:
-        if self._state.symbol is None:
-            return self._state.cash
-        price = getattr(self._price(self._state.symbol, session), field)
-        return self._state.cash + self._state.quantity * price
+        return self._state.cash + math.fsum(
+            quantity * getattr(self._price(symbol, session), field)
+            for symbol, quantity in self._state.quantities.items()
+            if quantity > 0.0
+        )
 
     def _record_completed_exit(self, fill: float) -> None:
         state = self._state
-        losing = state.entry_price is not None and fill < state.entry_price
+        losing = state.tqqq_entry_price is not None and fill < state.tqqq_entry_price
         state.consecutive_losing_exits = state.consecutive_losing_exits + 1 if losing else 0
         if state.consecutive_losing_exits >= 5:
             state.parked = True
 
     def _trade_to_target(self, session: date, cost_bps: int) -> None:
         state = self._state
-        target_symbol = state.pending_symbol
-        target_weight = state.pending_weight
         rate = cost_bps / 10_000.0
         opening_equity = self._equity(session, "open")
-        if state.symbol == target_symbol and target_symbol is not None:
-            bar = self._price(target_symbol, session)
-            current_value = state.quantity * bar.open
-            target_value = opening_equity * target_weight
-            value_delta = target_value - current_value
-            if abs(value_delta) <= opening_equity * 1e-12:
-                return
-            if value_delta > 0.0:
-                fill = bar.open * (1.0 + rate)
-                added_quantity = value_delta / fill
-                prior_quantity = state.quantity
-                state.cash -= added_quantity * fill
-                state.quantity += added_quantity
-                if target_symbol == "TQQQ":
-                    state.entry_price = (
-                        (state.entry_price or bar.open) * prior_quantity + fill * added_quantity
-                    ) / state.quantity
-                    state.stop_price = state.entry_price * 0.95
-                    state.entry_identity_sha256 = _digest(
-                        {
-                            "candidate": self.candidate.candidate_sha256,
-                            "session": session,
-                            "symbol": target_symbol,
-                            "fill": fill,
-                            "quantity": state.quantity,
-                        }
-                    )
-            else:
-                sold_quantity = min(state.quantity, -value_delta / bar.open)
-                state.cash += sold_quantity * bar.open * (1.0 - rate)
-                state.quantity -= sold_quantity
-            state.turnover += abs(value_delta) / opening_equity
-            state.trade_count += 1
-            return
-        if state.symbol == target_symbol:
-            return
-        if state.symbol is not None and state.quantity > 0.0:
-            bar = self._price(state.symbol, session)
-            fill = bar.open * (1.0 - rate)
-            state.cash += state.quantity * fill
-            state.turnover += state.quantity * bar.open / opening_equity
-            state.trade_count += 1
-            self._record_completed_exit(fill)
-            state.symbol = None
-            state.quantity = 0.0
-            state.entry_price = None
-            state.stop_price = None
-            state.entry_identity_sha256 = None
-        if target_symbol is not None and target_weight > 0.0 and not state.parked:
-            bar = self._price(target_symbol, session)
-            fill = bar.open * (1.0 + rate)
-            quantity = opening_equity * target_weight / fill
-            state.cash -= quantity * fill
-            state.symbol = target_symbol
-            state.quantity = quantity
-            state.entry_price = fill
-            state.stop_price = fill * 0.95 if target_symbol == "TQQQ" else None
-            state.entry_identity_sha256 = _digest(
-                {
-                    "candidate": self.candidate.candidate_sha256,
-                    "session": session,
-                    "symbol": target_symbol,
-                    "fill": fill,
-                }
+        target_weights = {
+            symbol: (
+                0.0
+                if state.parked or session not in self.prices[symbol]
+                else state.pending_weights[symbol]
             )
-            state.turnover += quantity * bar.open / opening_equity
+            for symbol in _ORDERABLE_ASSETS
+        }
+        deltas = {
+            symbol: opening_equity * target_weights[symbol]
+            - state.quantities[symbol] * self._price(symbol, session).open
+            for symbol in _ORDERABLE_ASSETS
+            if session in self.prices[symbol]
+        }
+        tolerance = opening_equity * 1e-12
+        for symbol in _ORDERABLE_ASSETS:
+            value_delta = deltas.get(symbol, 0.0)
+            if value_delta >= -tolerance:
+                continue
+            bar = self._price(symbol, session)
+            prior_quantity = state.quantities[symbol]
+            sold_quantity = min(prior_quantity, -value_delta / bar.open)
+            fill = bar.open * (1.0 - rate)
+            state.cash += sold_quantity * fill
+            state.quantities[symbol] = max(0.0, prior_quantity - sold_quantity)
+            state.turnover += sold_quantity * bar.open / opening_equity
             state.trade_count += 1
+            if symbol == "TQQQ" and state.quantities[symbol] <= 1e-12:
+                self._record_completed_exit(fill)
+                state.quantities[symbol] = 0.0
+                state.tqqq_entry_price = None
+                state.tqqq_stop_price = None
+                state.tqqq_entry_identity_sha256 = None
+        for symbol in _ORDERABLE_ASSETS:
+            value_delta = deltas.get(symbol, 0.0)
+            if value_delta <= tolerance:
+                continue
+            bar = self._price(symbol, session)
+            fill = bar.open * (1.0 + rate)
+            added_quantity = value_delta / fill
+            if added_quantity * fill > state.cash + tolerance:
+                raise TqqqPromotionEvidenceError("target portfolio exceeds available cash")
+            prior_quantity = state.quantities[symbol]
+            state.cash -= added_quantity * fill
+            state.quantities[symbol] += added_quantity
+            state.turnover += value_delta / opening_equity
+            state.trade_count += 1
+            if symbol == "TQQQ":
+                state.tqqq_entry_price = (
+                    (state.tqqq_entry_price or bar.open) * prior_quantity
+                    + fill * added_quantity
+                ) / state.quantities[symbol]
+                state.tqqq_stop_price = state.tqqq_entry_price * 0.95
+                state.tqqq_entry_identity_sha256 = _digest(
+                    {
+                        "candidate": self.candidate.candidate_sha256,
+                        "session": session,
+                        "symbol": symbol,
+                        "fill": fill,
+                        "quantity": state.quantities[symbol],
+                    }
+                )
 
     def _apply_stop(self, session: date, cost_bps: int) -> None:
         state = self._state
-        if state.symbol != "TQQQ" or state.stop_price is None:
+        quantity = state.quantities["TQQQ"]
+        if quantity <= 0.0 or state.tqqq_stop_price is None:
             return
         bar = self._price("TQQQ", session)
-        if bar.low > state.stop_price:
+        if bar.low > state.tqqq_stop_price:
             return
-        exit_reference = min(bar.open, state.stop_price)
+        exit_reference = min(bar.open, state.tqqq_stop_price)
         fill = exit_reference * (1.0 - cost_bps / 10_000.0)
         opening_equity = max(self._equity(session, "open"), 1e-12)
-        state.cash += state.quantity * fill
-        state.turnover += state.quantity * exit_reference / opening_equity
+        state.cash += quantity * fill
+        state.turnover += quantity * exit_reference / opening_equity
         state.trade_count += 1
         self._record_completed_exit(fill)
-        state.symbol = None
-        state.quantity = 0.0
-        state.entry_price = None
-        state.stop_price = None
-        state.entry_identity_sha256 = None
+        state.quantities["TQQQ"] = 0.0
+        state.tqqq_entry_price = None
+        state.tqqq_stop_price = None
+        state.tqqq_entry_identity_sha256 = None
 
-    def _current_weight(self, equity: float) -> float:
-        if self._state.symbol is None or equity <= 0.0:
-            return 0.0
-        return max(0.0, min(1.0, (equity - self._state.cash) / equity))
+    def _current_weights(self, session: date, equity: float) -> dict[str, float]:
+        if equity <= 0.0:
+            return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+        return {
+            symbol: state_quantity * self._price(symbol, session).close / equity
+            if state_quantity > 0.0
+            else 0.0
+            for symbol, state_quantity in self._state.quantities.items()
+        }
 
-    def _assessment(self, signal_index: int, execution_session: date, equity: float) -> tuple[str | None, float]:
+    def _assessment(
+        self, signal_index: int, execution_session: date, equity: float
+    ) -> dict[str, float]:
         state = self._state
         signal_session = self.qqq[signal_index].session
+        if signal_index + 1 < 257:
+            raise TqqqPromotionEvidenceError("insufficient core-parity warmup")
         drawdown = max(0.0, 1.0 - equity / state.high_water_equity)
         scalar = 1.0 if drawdown <= 0.05 else 0.5 if drawdown <= 0.10 else 0.0
-        if drawdown > 0.10:
+        if drawdown > 0.10 or state.consecutive_losing_exits >= 5:
             state.parked = True
-        closes = tuple(row.close for row in self.qqq[: signal_index + 1])
-        risk_on = len(closes) >= 200 and closes[-1] >= math.fsum(closes[-200:]) / 200
-        raw_symbol = "TQQQ" if risk_on else "BOXX"
-        if raw_symbol == "BOXX" and execution_session not in self.boxx:
-            raw_symbol = None
-        leverage = 3 if raw_symbol == "TQQQ" else 1
-        weight = (
-            risk_budgeted_target_weight(
-                risk_mandate_id=_MANDATE_ID,
-                product_symbol=raw_symbol,
-                account_equity=equity,
-                risk_fraction=0.01,
-                stop_loss_distance=0.05,
-                drawdown_scalar=scalar,
-                available_account_exposure=0.50,
-                product_leverage_factor=leverage,
-                inputs_fresh=True,
-            )
-            if raw_symbol is not None and not state.parked
-            else 0.0
-        )
-        decision = StrategyDecision(
-            positions=(PositionTarget(symbol=raw_symbol, target_weight=weight),)
-            if raw_symbol is not None and weight > 0.0
-            else ()
-        )
-        observed_weight = self._current_weight(equity)
-        observed_factor = 3 if state.symbol == "TQQQ" else 1
         now = datetime.now(UTC)
         effective_at = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
         expires_at = (now + timedelta(days=30)).isoformat().replace("+00:00", "Z")
         evaluated_at = now.isoformat().replace("+00:00", "Z")
-        entry_identity = state.entry_identity_sha256 or _digest(
+        entry_identity = state.tqqq_entry_identity_sha256 or _digest(
             {
                 "candidate": self.candidate.candidate_sha256,
                 "signal_session": signal_session,
@@ -638,12 +654,12 @@ class _ImmutableReplayProducer:
             "effective_exposure_cap": 0.50,
             "loss_budget": 0.01,
             "loss_budget_equity_reference": "completed_session_equity",
-            "product_caps": {"TQQQ": 0.15, "BOXX": 0.50},
-            "nominal_caps": {"TQQQ": 0.15, "BOXX": 0.50},
-            "product_effective_caps": {"TQQQ": 0.45, "BOXX": 0.50},
-            "product_leverage_factors": {"TQQQ": 3, "BOXX": 1},
-            "allowed_nonzero_assets": ["TQQQ", "BOXX"],
-            "max_nonzero_assets": 1,
+            "product_caps": {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50},
+            "nominal_caps": {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50},
+            "product_effective_caps": {"TQQQ": 0.45, "QQQM": 0.50, "BOXX": 0.50},
+            "product_leverage_factors": _ASSET_FACTORS,
+            "allowed_nonzero_assets": list(_ORDERABLE_ASSETS),
+            "max_nonzero_assets": 3,
             "broker_margin_factor": 1,
             "margin_stacking": False,
             "borrowing": False,
@@ -666,79 +682,112 @@ class _ImmutableReplayProducer:
             "account_drawdown_fraction": drawdown,
             "drawdown_scalar": scalar,
         }
-        production_evidence = TqqqProductionParityEvidence(
-            contract_version="qsl.tqqq_production_parity.v1",
-            config_sha256=self.candidate.config_sha256,
-            input_manifest_sha256=self.candidate.input_manifest_sha256,
-            candidate_identity_sha256=self.candidate.candidate_sha256,
-            prior_state_sha256=self._state_sha256,
-            signal_state_sha256=_digest({"model": self.config["signal_model"], "risk_on": risk_on}),
-            risk_active_state_sha256=_digest({"symbol": state.symbol, "weight": observed_weight}),
-            volatility_hysteresis_state_sha256=_digest({"state": "DISABLED_BY_FROZEN_ETF_ONLY_CONFIG"}),
-            retention_state_sha256=_digest(
-                {
-                    "pending_symbol": state.pending_symbol,
-                    "pending_weight": state.pending_weight,
-                }
-            ),
-            market_regime_control_sha256=_digest({"state": "DISABLED_BY_FROZEN_ETF_ONLY_CONFIG"}),
-            signal_session=signal_session,
-            execution_session=execution_session,
-            signal_effective_after_trading_days=1,
-            warmup_sessions=signal_index + 1,
-            state_continuity="continuous",
-            cash_reset=False,
-            income_layer_enabled=False,
-            option_overlay_enabled=False,
-            option_growth_overlay_enabled=False,
-            option_income_overlay_enabled=False,
-            option_order_intents=(),
-        )
-        positions = (
-            (
-                Position(
-                    symbol=state.symbol,
-                    quantity=state.quantity,
-                    market_value=max(0.0, equity - state.cash),
-                    average_cost=state.entry_price,
-                ),
+        positions = tuple(
+            Position(
+                symbol=symbol,
+                quantity=quantity,
+                market_value=quantity * self._price(symbol, signal_session).close,
+                average_cost=(state.tqqq_entry_price if symbol == "TQQQ" else None),
             )
-            if state.symbol is not None
-            else ()
+            for symbol, quantity in state.quantities.items()
+            if quantity > 0.0
         )
-        result = evaluate_tqqq_research_contract(
-            decision,
-            PortfolioSnapshot(
+        observed_weights = self._current_weights(signal_session, equity)
+        portfolio = PortfolioSnapshot(
                 as_of=now,
                 total_equity=equity,
+                buying_power=state.cash,
                 cash_balance=state.cash,
                 positions=positions,
-                metadata={"observed_effective_exposure": observed_weight * observed_factor},
+                metadata={
+                    "observed_effective_exposure": math.fsum(
+                        observed_weights[symbol] * _ASSET_FACTORS[symbol]
+                        for symbol in _ORDERABLE_ASSETS
+                    )
+                },
+            )
+        completed_session = datetime.combine(
+            signal_session,
+            time(16, 0),
+            tzinfo=ZoneInfo("America/New_York"),
+        )
+        benchmark_history = tuple(
+            {
+                "date": row.session.isoformat(),
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+            for row in self.qqq[: signal_index + 1]
+        )
+        result = evaluate_tqqq_growth_income_promotion_research(
+            StrategyContext(
+                as_of=completed_session,
+                portfolio=portfolio,
+                market_data={
+                    "benchmark_history": benchmark_history,
+                    "signal_session": signal_session.isoformat(),
+                    "next_execution_session": execution_session.isoformat(),
+                },
+                runtime_config=_RUNTIME_OVERRIDES,
             ),
             mandate_provenance=mandate,
             candidate_identity=self.candidate,
+            stop_loss_distances={symbol: 0.05 for symbol in _ORDERABLE_ASSETS},
+            drawdown_scalar=scalar if not state.parked else 0.0,
+            inputs_fresh=not state.parked,
             risk_control_state=risk_state,
-            production_parity_evidence=production_evidence,
-            market_data={"signal_session": signal_session.isoformat()},
         )
+        state.decision_count += 1
         state.assessment_count += 1
-        self._scenario_counts[self._scenario]["assessments"] += 1
-        if result.outcome != "APPROVE":
-            if result.outcome == "REJECT" and result.reason_codes and set(result.reason_codes) <= {
-                "strategy_breaker_triggered",
-                "account_breaker_triggered",
-            }:
-                state.parked = True
-                return None, 0.0
-            raise TqqqPromotionEvidenceError(
-                "RiskEngine rejected immutable replay decision:" + ",".join(result.reason_codes)
-            )
         self._scenario_counts[self._scenario]["decisions"] += 1
-        positions = result.research_decision.positions
-        if not positions:
-            return None, 0.0
-        target = positions[0]
-        return target.symbol, float(target.target_weight or 0.0)
+        self._scenario_counts[self._scenario]["assessments"] += 1
+        assessment = result.assessment
+        if assessment.execution_authorized is not False:
+            raise TqqqPromotionEvidenceError("execution authority is forbidden")
+        if assessment.outcome != "APPROVE":
+            if state.parked:
+                return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+            raise TqqqPromotionEvidenceError(
+                "RiskEngine rejected immutable replay decision:"
+                + ",".join(assessment.reason_codes)
+            )
+        targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+        for target in result.decision.positions:
+            if target.symbol not in targets or target.target_weight is None:
+                raise TqqqPromotionEvidenceError("invalid UES core-parity target")
+            targets[target.symbol] = _finite(target.target_weight, "target weight")
+        diagnostics = result.decision.diagnostics
+        state.market_regime_control_sha256 = _digest(
+            {
+                "enabled": diagnostics.get("market_regime_control_enabled"),
+                "found": diagnostics.get("market_regime_control_found"),
+                "route": diagnostics.get("market_regime_control_route"),
+                "active": diagnostics.get("market_regime_control_active"),
+            }
+        )
+        state.volatility_hysteresis_state_sha256 = _digest(
+            {
+                "triggered": diagnostics.get("dual_drive_volatility_delever_triggered"),
+                "entry_triggered": diagnostics.get(
+                    "dual_drive_volatility_delever_entry_triggered"
+                ),
+                "hysteresis_triggered": diagnostics.get(
+                    "dual_drive_volatility_delever_hysteresis_triggered"
+                ),
+            }
+        )
+        state.retention_state_sha256 = _digest(
+            {
+                "mode": diagnostics.get("dual_drive_volatility_delever_retention_mode"),
+                "policy": diagnostics.get("dual_drive_volatility_delever_retention_policy"),
+                "ratio": diagnostics.get("dual_drive_volatility_delever_retention_ratio"),
+                "source": diagnostics.get("dual_drive_volatility_delever_retention_source"),
+            }
+        )
+        return targets
 
     def __call__(
         self,
@@ -761,7 +810,8 @@ class _ImmutableReplayProducer:
         state = self._state
         window_strategy: list[float] = []
         window_benchmark: list[float] = []
-        window_decisions_before = state.assessment_count
+        window_decisions_before = state.decision_count
+        window_assessments_before = state.assessment_count
         turnover_before = state.turnover
         trades_before = state.trade_count
         benchmark_origin = self.qqq[start_index].open
@@ -784,16 +834,17 @@ class _ImmutableReplayProducer:
                     window_benchmark.append(100.0)
                 window_strategy.append(equity / strategy_origin * 100.0)
                 window_benchmark.append(qqq.close / benchmark_origin * 100.0)
-            if index + 1 < len(self.qqq) and index + 1 >= 252:
+            if index + 1 < len(self.qqq) and index + 1 >= 257:
                 next_session = self.qqq[index + 1].session
-                state.pending_symbol, state.pending_weight = self._assessment(index, next_session, equity)
+                state.pending_weights = self._assessment(index, next_session, equity)
             self._state_sha256 = _digest(_state_projection(state))
         self._cursor = end_index
         if len(window_strategy) < 2:
             raise TqqqPromotionEvidenceError("insufficient replay observations")
-        final_weight = self._current_weight(state.last_equity)
-        weights = tuple((symbol, final_weight if state.symbol == symbol else 0.0) for symbol in ("TQQQ", "BOXX"))
-        window_assessments = state.assessment_count - window_decisions_before
+        final_weights = self._current_weights(self.qqq[end_index].session, state.last_equity)
+        weights = tuple((symbol, final_weights[symbol]) for symbol in _ORDERABLE_ASSETS)
+        window_decisions = state.decision_count - window_decisions_before
+        window_assessments = state.assessment_count - window_assessments_before
         return TqqqWindowReplay(
             start_date=start_date,
             end_date=end_date,
@@ -804,13 +855,13 @@ class _ImmutableReplayProducer:
             asset_weights=weights,
             turnover=state.turnover - turnover_before,
             trade_count=state.trade_count - trades_before,
-            decision_count=window_assessments,
+            decision_count=window_decisions,
             risk_assessment_count=window_assessments,
             warmup_sessions=start_index,
-            market_regime_control_sha256=_digest({"state": "DISABLED_BY_FROZEN_ETF_ONLY_CONFIG"}),
-            risk_active_state_sha256=_digest({"symbol": state.symbol, "weight": final_weight}),
-            volatility_hysteresis_state_sha256=_digest({"state": "DISABLED_BY_FROZEN_ETF_ONLY_CONFIG"}),
-            retention_state_sha256=_digest({"pending_symbol": state.pending_symbol, "weight": state.pending_weight}),
+            market_regime_control_sha256=state.market_regime_control_sha256,
+            risk_active_state_sha256=_digest({"weights": final_weights}),
+            volatility_hysteresis_state_sha256=state.volatility_hysteresis_state_sha256,
+            retention_state_sha256=state.retention_state_sha256,
         )
 
 

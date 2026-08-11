@@ -26,10 +26,13 @@ from quant_platform_kit.strategy_lifecycle.contracts import (
 )
 
 _QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
-_UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
-_PROFILE = "tqqq_etf_only_single_strategy_research_v1"
+_UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
+_PROFILE = "tqqq_core_parity_v1"
 _DOMAIN = "us_equity"
-_ALLOWED_ASSETS = frozenset({"TQQQ", "BOXX"})
+_ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
+_ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
+_ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
+_EFFECTIVE_EXPOSURE_CAP = 0.50
 _COST_SCENARIOS_BPS = (5, 10, 15)
 
 
@@ -361,8 +364,8 @@ def _validate_replay(
         raise TqqqPromotionContractError("signal timing must be next eligible session")
     if replay.state_continuity != "continuous" or replay.cash_reset is not False:
         raise TqqqPromotionContractError("cash reset is forbidden; state must be continuous")
-    if type(replay.warmup_sessions) is not int or replay.warmup_sessions < 252:
-        raise TqqqPromotionContractError("warmup must include at least 252 sessions")
+    if type(replay.warmup_sessions) is not int or replay.warmup_sessions < 257:
+        raise TqqqPromotionContractError("warmup must include 252 dynamic-volatility observations")
     if replay.income_layer_enabled is not False:
         raise TqqqPromotionContractError("income layer must remain disabled")
     if (
@@ -380,7 +383,7 @@ def _validate_replay(
     if type(replay.asset_weights) is not tuple:
         raise TqqqPromotionContractError("invalid ETF-only weights")
     seen: set[str] = set()
-    nonzero = 0
+    effective_exposure = 0.0
     for item in replay.asset_weights:
         if type(item) is not tuple or len(item) != 2 or type(item[0]) is not str:
             raise TqqqPromotionContractError("invalid ETF-only weights")
@@ -391,9 +394,13 @@ def _validate_replay(
             raise TqqqPromotionContractError("duplicate ETF weight")
         seen.add(symbol)
         weight = _finite(raw_weight, "ETF weight", nonnegative=True)
-        nonzero += int(weight > 0.0)
-    if nonzero > 1:
-        raise TqqqPromotionContractError("TQQQ and BOXX must be mutually exclusive")
+        if weight > _ASSET_CAPS[symbol]:
+            raise TqqqPromotionContractError("ETF nominal cap exceeded")
+        effective_exposure += weight * _ASSET_FACTORS[symbol]
+    if seen != _ALLOWED_ASSETS:
+        raise TqqqPromotionContractError("ETF-only universe is incomplete")
+    if effective_exposure > _EFFECTIVE_EXPOSURE_CAP + 1e-12:
+        raise TqqqPromotionContractError("effective exposure cap exceeded")
     if (
         type(replay.decision_count) is not int
         or replay.decision_count <= 0
