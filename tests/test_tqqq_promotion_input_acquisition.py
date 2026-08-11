@@ -26,10 +26,12 @@ import us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration as 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 from scripts import acquire_tqqq_promotion_inputs_ibkr as acquisition_cli
 from scripts import run_existing_tqqq_snapshot_diagnostic as diagnostic_cli
+from scripts import run_existing_tqqq_snapshot_promotion as snapshot_cli
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     TqqqOrchestrationAuthority,
     TqqqOrchestrationError,
     orchestrate_existing_tqqq_snapshot_diagnostic,
+    orchestrate_existing_tqqq_snapshot_promotion,
     orchestrate_tqqq_promotion,
 )
 
@@ -837,6 +839,272 @@ def _consumed_diagnostic_run(
     )
     orchestration._seal_private_tree(snapshot.parent)
     return snapshot.parent, snapshot_digest, config_digest, receipt.receipt_digest
+
+
+def test_existing_snapshot_promotion_consumes_fresh_mandate_and_validates_evidence_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    source_root, snapshot_digest, config_digest, source_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    source_hashes = {
+        path.relative_to(source_root): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setattr(
+        orchestration, "_require_diagnostic_execution_compatibility", lambda *_args: None
+    )
+    events: list[str] = []
+    issued: list[dict[str, str]] = []
+
+    class Guard:
+        def __init__(self, database, *, clock):
+            self._guard = ResearchMandateAuthorityGuard(database, clock=clock)
+
+        def issue(self, **kwargs):
+            events.append("issue")
+            issued.append(kwargs)
+            return self._guard.issue(**kwargs)
+
+        def consume(self, mandate, **kwargs):
+            events.append("consume")
+            return self._guard.consume(mandate, **kwargs)
+
+    current_revision = "9" * 40
+    current_tree = "8" * 40
+
+    def producer(
+        *,
+        input_payload,
+        config_payload,
+        output_dir,
+        generated_at,
+        mandate_receipt_sha256,
+    ):
+        events.append("producer")
+        assert input_payload["input_manifest"]["producer"]["commit_sha"] == RUNNER_REVISION
+        assert config_payload == orchestration._config(
+            _authority(), session_class="live-data-only"
+        )
+        assert generated_at == "2026-08-11T09:00:00Z"
+        return _fake_producer(
+            output_dir,
+            input_manifest_sha256=snapshot_digest,
+            mandate_receipt_sha256=mandate_receipt_sha256,
+        )
+
+    monkeypatch.setattr(orchestration, "ResearchMandateAuthorityGuard", Guard)
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", producer)
+    validator_calls: list[Path] = []
+    monkeypatch.setattr(
+        orchestration,
+        "validate_evidence_package_v2",
+        lambda _payload, *, base_dir: validator_calls.append(Path(base_dir)) or (),
+    )
+
+    output_root = tmp_path / "fresh-output"
+    result = orchestrate_existing_tqqq_snapshot_promotion(
+        source_root,
+        expected_snapshot_digest=snapshot_digest,
+        expected_source_mandate_receipt_digest=source_receipt_digest,
+        authority=_authority(),
+        output_root=output_root,
+        execution_revision=RUNNER_REVISION,
+        execution_tree_sha=RUNNER_TREE_SHA,
+        runner_revision=current_revision,
+        runner_tree_sha=current_tree,
+        session_class="live-data-only",
+        clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+    )
+
+    assert events == ["issue", "consume", "producer"]
+    assert result == {
+        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "asset_count": 3,
+        "snapshot_digest": snapshot_digest,
+        "evidence_digest": result["evidence_digest"],
+        "mandate_receipt_digest": result["mandate_receipt_digest"],
+        "rerun_count": 1,
+    }
+    expected_candidate = orchestration.CandidateRiskIdentity(
+        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision=orchestration.UES_REVISION,
+        runner_revision=current_revision,
+        config_sha256=config_digest,
+        input_manifest_sha256=snapshot_digest,
+        authority_receipt_sha256=AUTHORITY_SHA256,
+    )
+    assert issued == [
+        {
+            "candidate_id": expected_candidate.candidate_sha256,
+            "mandate_id": "tqqq_etf_only_research_v1",
+            "config_digest": config_digest,
+            "input_digest": snapshot_digest,
+            "authority_id": AUTHORITY_SHA256,
+        }
+    ]
+    run_root = output_root / snapshot_digest
+    assert len(validator_calls) == 1
+    assert validator_calls[0].name == "evidence"
+    assert validator_calls[0].parent.parent == output_root
+    assert {path.name for path in run_root.iterdir()} == {
+        "evidence",
+        "mandate-authority.sqlite3",
+    }
+    assert all(
+        path.stat().st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+        for path in (output_root, run_root, *run_root.rglob("*"))
+    )
+    assert source_hashes == {
+        path.relative_to(source_root): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in source_root.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("failure", ("snapshot", "source_config", "output_exists"))
+def test_existing_snapshot_promotion_preflight_failure_issues_no_mandate_or_replay(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    source_root, snapshot_digest, _config_digest, source_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    monkeypatch.setattr(
+        orchestration, "_require_diagnostic_execution_compatibility", lambda *_args: None
+    )
+    authority = _authority()
+    output_root = tmp_path / "fresh-output"
+    if failure == "snapshot":
+        (source_root / "snapshot" / "bars.json").write_bytes(b"{}")
+    elif failure == "source_config":
+        authority = replace(authority, risk_standard_sha256="7" * 64)
+    else:
+        output_root.mkdir()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        orchestration,
+        "ResearchMandateAuthorityGuard",
+        lambda *_args, **_kwargs: calls.append("mandate"),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "run_tqqq_promotion_evidence",
+        lambda **_kwargs: calls.append("replay"),
+    )
+
+    with pytest.raises(TqqqOrchestrationError):
+        orchestrate_existing_tqqq_snapshot_promotion(
+            source_root,
+            expected_snapshot_digest=snapshot_digest,
+            expected_source_mandate_receipt_digest=source_receipt_digest,
+            authority=authority,
+            output_root=output_root,
+            execution_revision=RUNNER_REVISION,
+            execution_tree_sha=RUNNER_TREE_SHA,
+            runner_revision="9" * 40,
+            runner_tree_sha="8" * 40,
+            session_class="live-data-only",
+            clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+        )
+    assert calls == []
+    if failure != "output_exists":
+        assert not output_root.exists()
+
+
+def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    source_root = tmp_path / "source"
+    monkeypatch.setattr(snapshot_cli, "_LOCAL_RESEARCH_ROOT", tmp_path / "output")
+    monkeypatch.setattr(snapshot_cli, "_require_filevault", lambda: events.append("filevault"))
+    monkeypatch.setattr(
+        snapshot_cli,
+        "_load_execution_binding",
+        lambda *_args, **_kwargs: (
+            source_root,
+            _authority(),
+            "3" * 64,
+            "2" * 64,
+            RUNNER_REVISION,
+            RUNNER_TREE_SHA,
+            "live-data-only",
+        ),
+    )
+    monkeypatch.setattr(
+        snapshot_cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: events.append("identity") or ("9" * 40, "8" * 40),
+    )
+
+    def orchestrate(run_root, **kwargs):
+        events.append("orchestrate")
+        assert run_root == source_root
+        assert kwargs["expected_source_mandate_receipt_digest"] == "2" * 64
+        assert kwargs["output_root"] == tmp_path / "output" / AUTHORITY_SHA256
+        return {
+            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "asset_count": 3,
+            "snapshot_digest": "3" * 64,
+            "evidence_digest": "4" * 64,
+            "mandate_receipt_digest": "5" * 64,
+            "rerun_count": 1,
+        }
+
+    monkeypatch.setattr(
+        snapshot_cli, "orchestrate_existing_tqqq_snapshot_promotion", orchestrate
+    )
+    assert snapshot_cli.main(
+        [
+            "--execution-terminal",
+            str(tmp_path / "execution.json"),
+            "--execution-terminal-sha256",
+            "6" * 64,
+            "--risk-standard-id",
+            _authority().risk_standard_id,
+            "--risk-standard-sha256",
+            _authority().risk_standard_sha256,
+            "--platform-execution-revision",
+            _authority().platform_execution_revision,
+        ]
+    ) == 0
+    assert events == ["filevault", "identity", "orchestrate"]
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "asset_count": 3,
+        "snapshot_digest": "3" * 64,
+        "evidence_digest": "4" * 64,
+        "mandate_receipt_digest": "5" * 64,
+        "rerun_count": 1,
+    }
+    combined = "\n".join(
+        (
+            inspect.getsource(snapshot_cli),
+            inspect.getsource(orchestrate_existing_tqqq_snapshot_promotion),
+        )
+    ).lower()
+    for forbidden in (
+        "ibapi",
+        ".connect(",
+        "run_exact_acquisition",
+        "reqhistoricaldata",
+        "reqaccount",
+        "reqpositions",
+        "reqopenorders",
+        "placeorder",
+        "cancelorder",
+        "reqexecutions",
+    ):
+        assert forbidden not in combined
 
 
 def test_existing_snapshot_diagnostic_uses_consumed_identity_once_and_sanitizes_exception(
