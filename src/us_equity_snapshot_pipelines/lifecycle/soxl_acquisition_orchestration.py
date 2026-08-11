@@ -72,6 +72,11 @@ _DEPENDENCY_REPOSITORIES = {
 _SNAPSHOT_FILES = frozenset(
     {"input-manifest.json", "input.json", "package-manifest.json", "sessions.json"}
 )
+_SNAPSHOT_EXECUTION_CONTRACT_PATHS = (
+    "src/us_equity_snapshot_pipelines/lifecycle/soxl_pit_input_packager.py",
+    "src/us_equity_snapshot_pipelines/lifecycle/soxl_pit_regime_component_producer.py",
+    "src/us_equity_snapshot_pipelines/lifecycle/soxl_promotion_runner.py",
+)
 _SNAPSHOT_IDENTITY_FIELDS = frozenset(
     {
         "account_mode",
@@ -254,6 +259,55 @@ def _installed_vcs_revision(distribution_name: str) -> str:
     if repository != expected_repository:
         raise SoxlOrchestrationError("installed dependency identity mismatch")
     return _require_revision(revision, "installed dependency revision")
+
+
+def _require_snapshot_execution_compatibility(
+    snapshot_revision: str,
+    snapshot_tree_sha: str,
+    runner_revision: str,
+    runner_tree_sha: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[3]
+
+    def git_output(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    try:
+        if git_output("rev-parse", f"{snapshot_revision}^{{tree}}") != snapshot_tree_sha:
+            raise SoxlOrchestrationError("snapshot runner tree mismatch")
+        if git_output("rev-parse", f"{runner_revision}^{{tree}}") != runner_tree_sha:
+            raise SoxlOrchestrationError("current runner tree mismatch")
+        ancestry = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "merge-base",
+                "--is-ancestor",
+                snapshot_revision,
+                runner_revision,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if ancestry.returncode != 0:
+            raise SoxlOrchestrationError("snapshot runner is not a current ancestor")
+        for path in _SNAPSHOT_EXECUTION_CONTRACT_PATHS:
+            if git_output("rev-parse", f"{snapshot_revision}:{path}") != git_output(
+                "rev-parse", f"{runner_revision}:{path}"
+            ):
+                raise SoxlOrchestrationError("snapshot execution source mismatch")
+    except SoxlOrchestrationError:
+        raise
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SoxlOrchestrationError("snapshot execution identity is unavailable") from exc
 
 
 def _strict_raw_sessions(
@@ -679,14 +733,26 @@ def _load_existing_soxl_snapshot(
         raise SoxlOrchestrationError("snapshot candidate identity mismatch") from exc
     if old_candidate.candidate_sha256 != identity["candidate_identity_sha256"]:
         raise SoxlOrchestrationError("snapshot candidate identity mismatch")
-    if identity["runner_revision"] != runner_revision:
-        raise SoxlOrchestrationError("snapshot runner revision mismatch")
+    snapshot_revision = _require_revision(identity["runner_revision"], "snapshot revision")
     producer = source_contract.get("producer")
+    if not isinstance(producer, Mapping):
+        raise SoxlOrchestrationError("snapshot runner tree mismatch")
+    snapshot_tree_sha = _require_revision(producer.get("tree_sha"), "snapshot tree")
     if producer != runtime_producer_source_identity(
-        commit_sha=runner_revision,
-        tree_sha=runner_tree_sha,
+        commit_sha=snapshot_revision,
+        tree_sha=snapshot_tree_sha,
     ):
         raise SoxlOrchestrationError("snapshot runner tree mismatch")
+    if snapshot_revision == runner_revision:
+        if snapshot_tree_sha != runner_tree_sha:
+            raise SoxlOrchestrationError("current runner tree mismatch")
+    else:
+        _require_snapshot_execution_compatibility(
+            snapshot_revision,
+            snapshot_tree_sha,
+            runner_revision,
+            runner_tree_sha,
+        )
     if (
         _installed_vcs_revision("quant-platform-kit") != QPK_REVISION
         or _installed_vcs_revision("us-equity-strategies") != promotion_runner._UES_REVISION
@@ -703,15 +769,28 @@ def _load_existing_soxl_snapshot(
         for item in logical_inputs
     ):
         raise SoxlOrchestrationError("snapshot authority identity mismatch")
+    snapshot_config = _config_without_authority(
+        source_contract_sha256=source_contract_sha256,
+        runner_revision=snapshot_revision,
+        authority=authority,
+    )
+    if hashlib.sha256(canonical_json_bytes(snapshot_config)).hexdigest() != identity[
+        "config_sha256"
+    ]:
+        raise SoxlOrchestrationError("snapshot config identity mismatch")
     config_without_authority = _config_without_authority(
         source_contract_sha256=source_contract_sha256,
         runner_revision=runner_revision,
         authority=authority,
     )
-    if hashlib.sha256(canonical_json_bytes(config_without_authority)).hexdigest() != identity[
-        "config_sha256"
-    ]:
-        raise SoxlOrchestrationError("snapshot config identity mismatch")
+    snapshot_contract = {
+        key: value for key, value in snapshot_config.items() if key != "runner_revision"
+    }
+    current_contract = {
+        key: value for key, value in config_without_authority.items() if key != "runner_revision"
+    }
+    if current_contract != snapshot_contract:
+        raise SoxlOrchestrationError("snapshot execution contract mismatch")
     try:
         input_payload = promotion_runner._strict_json(entries["input.json"])
         input_manifest = promotion_runner._strict_json(entries["input-manifest.json"])
