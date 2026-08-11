@@ -24,6 +24,7 @@ from quant_platform_kit.ibkr.market_data import (
 from scripts import acquire_tqqq_promotion_inputs_ibkr as acquisition_cli
 import us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition as acquisition
 import us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration as orchestration
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     TqqqOrchestrationAuthority,
     TqqqOrchestrationError,
@@ -201,6 +202,7 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
             "tool": "tqqq_ibkr_paper_single_acquisition",
             "tool_version": "v1",
         }
+        assert input_payload["provenance"]["session_class"] == "paper"
         assert config_payload == {
             "schema_version": "tqqq_etf_only_replay_config.v1",
             "strategy_profile": "tqqq_etf_only_single_strategy_research_v1",
@@ -215,6 +217,7 @@ def test_exact_three_results_publish_then_consume_one_mandate_and_run_existing_p
             "platform_execution_revision": _authority().platform_execution_revision,
             "input_license": orchestration.INPUT_LICENSE,
             "input_usage_scope": orchestration.INPUT_USAGE_SCOPE,
+            "session_class": "paper",
         }
         assert generated_at == "2026-08-11T08:00:00Z"
         return _fake_producer(
@@ -558,6 +561,59 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     assert observed == ["QQQ", "TQQQ"]
 
 
+@pytest.mark.parametrize("session_class", ("paper", "live-data-only"))
+def test_session_identity_binds_source_manifest_config_candidate_and_evidence(
+    session_class: str,
+) -> None:
+    results = _results()
+    bars = orchestration._strict_bars(results)
+    payload, _bars_bytes, _manifest_bytes, _manifest_sha256 = orchestration._input_payload(
+        bars,
+        results,
+        _authority(),
+        runner_revision=RUNNER_REVISION,
+        runner_tree_sha=RUNNER_TREE_SHA,
+        observed_at="2026-08-11T08:00:00Z",
+        session_class=session_class,
+    )
+    config = orchestration._config(_authority(), session_class=session_class)
+
+    assert payload["provenance"]["session_class"] == session_class
+    assert config["session_class"] == session_class
+    validated_config = evidence._validate_config(config)
+    provenance, _bars, _digest = evidence._validate_input(payload, validated_config)
+    assert provenance["session_class"] == session_class
+
+    mismatched = dict(config)
+    mismatched["session_class"] = (
+        "live-data-only" if session_class == "paper" else "paper"
+    )
+    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="provider provenance"):
+        evidence._validate_input(payload, evidence._validate_config(mismatched))
+
+    missing = dict(config)
+    del missing["session_class"]
+    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
+        evidence._validate_config(missing)
+
+    unhashable = dict(config)
+    unhashable["session_class"] = []
+    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="config"):
+        evidence._validate_config(unhashable)
+
+    mismatched_manifest = {
+        **payload,
+        "input_manifest": {
+            **payload["input_manifest"],
+            "manifest_id": f"tqqq-ibkr-{session_class}-single-acquisition-{'0' * 24}",
+        },
+    }
+    with pytest.raises(
+        evidence.TqqqPromotionEvidenceError, match="input identity"
+    ):
+        evidence._validate_input(mismatched_manifest, validated_config)
+
+
 class _FakeRuntimeApp:
     def __init__(self) -> None:
         self.connect_calls: list[tuple[str, int, int]] = []
@@ -609,10 +665,17 @@ def _valid_cli_args() -> list[str]:
     ]
 
 
+@pytest.mark.parametrize(
+    ("extra_args", "expected_port", "expected_session_class"),
+    (([], 4002, "paper"), (["--session-mode", "live-data-only"], 4001, "live-data-only")),
+)
 def test_cli_connects_once_and_emits_only_sanitized_terminal(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
+    extra_args: list[str],
+    expected_port: int,
+    expected_session_class: str,
 ) -> None:
     app = _FakeRuntimeApp()
     events: list[str] = []
@@ -637,6 +700,7 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         events.append("orchestrate")
         assert tuple(results) == acquisition_cli.EXACT_ASSETS
         assert kwargs["output_root"] == tmp_path / "runs"
+        assert kwargs["session_class"] == expected_session_class
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 3,
@@ -647,7 +711,7 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         }
 
     monkeypatch.setattr(acquisition_cli, "orchestrate_tqqq_promotion", orchestrate)
-    assert acquisition_cli.main(_valid_cli_args()) == 0
+    assert acquisition_cli.main([*_valid_cli_args(), *extra_args]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "asset_count": 3,
@@ -659,7 +723,7 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
     assert len(app.connect_calls) == 1
-    assert app.connect_calls[0][0:2] == ("127.0.0.1", 4002)
+    assert app.connect_calls[0][0:2] == ("127.0.0.1", expected_port)
     assert app.disconnect_calls == 1
     assert app.events == ["connect", "start_reader", "handshake", "disconnect"]
     assert events == ["filevault", "identity", "orchestrate"]

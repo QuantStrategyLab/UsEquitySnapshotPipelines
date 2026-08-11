@@ -105,14 +105,17 @@ def _input_payload() -> dict[str, object]:
         sources.append(
             {
                 "source_id": f"ibkr:{symbol}",
-                "revision": "server-version-176-adjusted-last",
+                "revision": "server-version-176",
                 "observed_at": observed_at,
                 "content_sha256": hashlib.sha256(symbol_bytes).hexdigest(),
             }
         )
     manifest = {
         "schema_version": "research_input_manifest.v1",
-        "manifest_id": "tqqq-ibkr-paper-single-acquisition",
+        "manifest_id": (
+            "tqqq-ibkr-paper-single-acquisition-"
+            f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
+        ),
         "research_input_contract_id": "tqqq_etf_only_ibkr_adjusted_last.v1",
         "domain": "us_equity",
         "profile": "tqqq_etf_only_single_strategy_research_v1",
@@ -155,6 +158,7 @@ def _input_payload() -> dict[str, object]:
             "real_producer": True,
             "provider": "IBKR Paper Gateway TWS API",
             "provider_revision": "server-version-176",
+            "session_class": "paper",
             "license": "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04",
             "usage_scope": "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION",
         },
@@ -178,6 +182,7 @@ def _config() -> dict[str, object]:
         "platform_execution_revision": "4" * 40,
         "input_license": "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04",
         "input_usage_scope": "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION",
+        "session_class": "paper",
     }
 
 
@@ -279,6 +284,10 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
     bars_bytes = _canonical(payload["bars"])
     payload["input_manifest"]["members"][0].update(
         size_bytes=len(bars_bytes), sha256=hashlib.sha256(bars_bytes).hexdigest()
+    )
+    payload["input_manifest"]["manifest_id"] = (
+        "tqqq-ibkr-paper-single-acquisition-"
+        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
     )
     boxx_bytes = _canonical(payload["bars"]["symbols"]["BOXX"])
     payload["input_manifest"]["sources"][0]["content_sha256"] = hashlib.sha256(boxx_bytes).hexdigest()
