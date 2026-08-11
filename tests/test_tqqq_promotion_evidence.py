@@ -12,6 +12,7 @@ import pytest
 from quant_platform_kit.data.research_input import (
     canonical_research_input_manifest_bytes,
 )
+from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     read_evidence_package_v2_json,
     validate_evidence_package_v2,
@@ -25,6 +26,8 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     _Bar,
     _ImmutableReplayProducer,
     _ReplayState,
+    _digest,
+    _state_projection,
     run_tqqq_promotion_evidence,
 )
 
@@ -325,6 +328,184 @@ def test_same_asset_drawdown_target_is_reduced_without_round_trip() -> None:
     assert producer._state.cash == pytest.approx(89_997.5)
     assert producer._state.turnover == pytest.approx(0.05)
     assert producer._state.trade_count == 1
+
+
+@pytest.mark.parametrize("exit_open", [100.0, 101.0])
+def test_completed_non_losing_normal_full_exit_resets_streak(exit_open: float) -> None:
+    session = date(2025, 1, 2)
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.tqqq = {
+        session: _Bar(session, exit_open, exit_open, exit_open, exit_open, 1_000_000.0)
+    }
+    producer.boxx = {}
+    producer._state = _ReplayState(
+        cash=90_000.0,
+        symbol="TQQQ",
+        quantity=100.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        consecutive_losing_exits=3,
+    )
+
+    producer._trade_to_target(session, 0)
+
+    assert producer._state.symbol is None
+    assert producer._state.consecutive_losing_exits == 0
+
+
+def test_completed_losing_normal_full_exit_increments_streak() -> None:
+    session = date(2025, 1, 2)
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.tqqq = {
+        session: _Bar(session, 99.0, 99.0, 99.0, 99.0, 1_000_000.0)
+    }
+    producer.boxx = {}
+    producer._state = _ReplayState(
+        cash=90_000.0,
+        symbol="TQQQ",
+        quantity=100.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        consecutive_losing_exits=2,
+    )
+
+    producer._trade_to_target(session, 0)
+
+    assert producer._state.symbol is None
+    assert producer._state.consecutive_losing_exits == 3
+
+
+def test_partial_same_symbol_rebalance_does_not_change_completed_exit_streak() -> None:
+    session = date(2025, 1, 2)
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.tqqq = {
+        session: _Bar(session, 100.0, 101.0, 99.0, 100.0, 1_000_000.0)
+    }
+    producer.boxx = {}
+    producer._state = _ReplayState(
+        cash=85_000.0,
+        symbol="TQQQ",
+        quantity=150.0,
+        entry_price=100.0,
+        stop_price=95.0,
+        pending_symbol="TQQQ",
+        pending_weight=0.10,
+        consecutive_losing_exits=2,
+    )
+
+    producer._trade_to_target(session, 5)
+
+    assert producer._state.quantity == pytest.approx(100.0)
+    assert producer._state.consecutive_losing_exits == 2
+
+
+@pytest.mark.parametrize(
+    ("entry_price", "expected_streak", "expected_parked"),
+    [(100.0, 5, True), (90.0, 0, False)],
+)
+def test_hard_stop_retains_completed_exit_streak_semantics(
+    entry_price: float,
+    expected_streak: int,
+    expected_parked: bool,
+) -> None:
+    session = date(2025, 1, 2)
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.tqqq = {
+        session: _Bar(session, 95.0, 96.0, 94.0, 95.0, 1_000_000.0)
+    }
+    producer._state = _ReplayState(
+        cash=90_000.0,
+        symbol="TQQQ",
+        quantity=100.0,
+        entry_price=entry_price,
+        stop_price=95.0,
+        consecutive_losing_exits=4,
+    )
+
+    producer._apply_stop(session, 0)
+
+    assert producer._state.symbol is None
+    assert producer._state.consecutive_losing_exits == expected_streak
+    assert producer._state.parked is expected_parked
+
+
+def test_completed_exit_state_projection_digest_is_deterministic() -> None:
+    session = date(2025, 1, 2)
+    digests = []
+    for _ in range(2):
+        producer = object.__new__(_ImmutableReplayProducer)
+        producer.tqqq = {
+            session: _Bar(session, 101.0, 101.0, 101.0, 101.0, 1_000_000.0)
+        }
+        producer.boxx = {}
+        producer._state = _ReplayState(
+            cash=90_000.0,
+            symbol="TQQQ",
+            quantity=100.0,
+            entry_price=100.0,
+            stop_price=95.0,
+            consecutive_losing_exits=4,
+        )
+        producer._trade_to_target(session, 0)
+        digests.append(_digest(_state_projection(producer._state)))
+
+    assert digests[0] == digests[1]
+    assert producer._state.consecutive_losing_exits == 0
+
+
+def test_five_consecutive_completed_losing_exits_cash_park_through_risk_engine() -> None:
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.config = {"signal_model": "qqq_sma_200_close_t_open_t_plus_1"}
+    producer.candidate = CandidateRiskIdentity(
+        authority_receipt_sha256="1" * 64,
+        strategy_profile="tqqq_etf_only_single_strategy_research_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision="2" * 40,
+        runner_revision="3" * 40,
+        config_sha256="4" * 64,
+        input_manifest_sha256="5" * 64,
+    )
+    producer.qqq = tuple(
+        _Bar(
+            date(2024, 1, 1) + timedelta(days=index),
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+            1_000_000.0,
+        )
+        for index in range(260)
+    )
+    exit_sessions = [date(2025, 1, 2) + timedelta(days=index) for index in range(5)]
+    producer.tqqq = {
+        session: _Bar(session, 99.0, 99.0, 99.0, 99.0, 1_000_000.0)
+        for session in exit_sessions
+    }
+    producer.boxx = {
+        exit_sessions[-1]: _Bar(
+            exit_sessions[-1], 100.0, 100.0, 100.0, 100.0, 1_000_000.0
+        )
+    }
+    producer._state = _ReplayState()
+    producer._state_sha256 = "7" * 64
+    producer._scenario = 5
+    producer._scenario_counts = {5: {"assessments": 0, "decisions": 0}}
+
+    for session in exit_sessions:
+        producer._state.cash = 90_000.0
+        producer._state.symbol = "TQQQ"
+        producer._state.quantity = 100.0
+        producer._state.entry_price = 100.0
+        producer._state.stop_price = 95.0
+        producer._state.pending_symbol = "BOXX" if session == exit_sessions[-1] else None
+        producer._state.pending_weight = 0.50 if session == exit_sessions[-1] else 0.0
+        producer._trade_to_target(session, 0)
+
+    assert producer._state.consecutive_losing_exits == 5
+    assert producer._state.parked is True
+    assert producer._state.symbol is None
+    assert producer._assessment(259, date(2025, 1, 7), producer._state.cash) == (None, 0.0)
+    assert producer._scenario_counts[5] == {"assessments": 1, "decisions": 0}
 
 
 @pytest.mark.parametrize(

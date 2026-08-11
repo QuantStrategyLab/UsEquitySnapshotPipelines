@@ -467,6 +467,13 @@ class _ImmutableReplayProducer:
         price = getattr(self._price(self._state.symbol, session), field)
         return self._state.cash + self._state.quantity * price
 
+    def _record_completed_exit(self, fill: float) -> None:
+        state = self._state
+        losing = state.entry_price is not None and fill < state.entry_price
+        state.consecutive_losing_exits = state.consecutive_losing_exits + 1 if losing else 0
+        if state.consecutive_losing_exits >= 5:
+            state.parked = True
+
     def _trade_to_target(self, session: date, cost_bps: int) -> None:
         state = self._state
         target_symbol = state.pending_symbol
@@ -515,12 +522,13 @@ class _ImmutableReplayProducer:
             state.cash += state.quantity * fill
             state.turnover += state.quantity * bar.open / opening_equity
             state.trade_count += 1
+            self._record_completed_exit(fill)
             state.symbol = None
             state.quantity = 0.0
             state.entry_price = None
             state.stop_price = None
             state.entry_identity_sha256 = None
-        if target_symbol is not None and target_weight > 0.0:
+        if target_symbol is not None and target_weight > 0.0 and not state.parked:
             bar = self._price(target_symbol, session)
             fill = bar.open * (1.0 + rate)
             quantity = opening_equity * target_weight / fill
@@ -553,15 +561,12 @@ class _ImmutableReplayProducer:
         state.cash += state.quantity * fill
         state.turnover += state.quantity * exit_reference / opening_equity
         state.trade_count += 1
-        losing = state.entry_price is not None and fill < state.entry_price
-        state.consecutive_losing_exits = state.consecutive_losing_exits + 1 if losing else 0
+        self._record_completed_exit(fill)
         state.symbol = None
         state.quantity = 0.0
         state.entry_price = None
         state.stop_price = None
         state.entry_identity_sha256 = None
-        if state.consecutive_losing_exits >= 5:
-            state.parked = True
 
     def _current_weight(self, equity: float) -> float:
         if self._state.symbol is None or equity <= 0.0:
