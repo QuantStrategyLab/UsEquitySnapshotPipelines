@@ -33,6 +33,7 @@ from us_equity_strategies.entrypoints import (
 )
 
 from .tqqq_promotion_runner import (
+    _COOLDOWN_TRIGGER_REASON,
     _EXACT_COMMON_ELIGIBILITY,
     _FROZEN_CALENDAR_SOURCE_REVISION,
     _LOCKED_OOS_END,
@@ -1004,6 +1005,14 @@ class _ImmutableReplayProducer:
                 raise TqqqPromotionEvidenceError("protective cooldown sizing failed closed")
             signal_state = "protective_cooldown"
             regimes[signal_state] = "DEFENSIVE"
+        risk_reason_codes = tuple(assessment.reason_codes)
+        if protective_cooldown:
+            risk_reason_codes = (
+                (_COOLDOWN_TRIGGER_REASON,)
+                if not self._switching_traces
+                or self._switching_traces[-1].signal_state != "protective_cooldown"
+                else ()
+            )
         intended = {**targets, "cash": 1.0 - math.fsum(targets.values())}
         if intended["cash"] < -1e-12:
             raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
@@ -1017,7 +1026,7 @@ class _ImmutableReplayProducer:
                 signal_regime=regimes[signal_state],
                 intended_allocation=intended_allocation,
                 risk_disposition=assessment.outcome,
-                risk_reason_codes=tuple(assessment.reason_codes),
+                risk_reason_codes=risk_reason_codes,
                 replay_target_allocation=intended_allocation,
                 executed_allocation=(),
             )

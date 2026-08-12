@@ -37,6 +37,7 @@ _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
 _EFFECTIVE_EXPOSURE_CAP = 0.50
 _COST_SCENARIOS_BPS = (5, 10, 15)
+_COOLDOWN_TRIGGER_REASON = "FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT"
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 7, 2)
 _LOCKED_OOS_END = date(2026, 7, 31)
@@ -977,8 +978,11 @@ def _validate_switching_traces(
         elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
         if trace.signal_state == "protective_cooldown":
+            expected_reason_codes = (
+                (_COOLDOWN_TRIGGER_REASON,) if cooldown_count == 0 else ()
+            )
             if (
-                trace.risk_reason_codes
+                trace.risk_reason_codes != expected_reason_codes
                 or intended["TQQQ"] > 1e-12
                 or intended["QQQM"] > 1e-12
                 or executed["TQQQ"] > 1e-12

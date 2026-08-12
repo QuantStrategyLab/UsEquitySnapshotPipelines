@@ -707,7 +707,10 @@ def test_cooldown_is_exactly_20_execution_sessions_before_fresh_base_signal() ->
     sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
     producer = _episode_producer(sessions)
     producer._reset(5, producer.identity.initial_state_sha256)
-    producer._state.cooldown_remaining_execution_sessions = 20
+    producer._state.tqqq_entry_price = 100.0
+    producer._state.consecutive_losing_exits = 4
+    producer._record_completed_exit(95.0, sessions[257])
+    assert producer._state.cooldown_remaining_execution_sessions == 20
     contexts = []
 
     def evaluate(ctx, **_kwargs):
@@ -735,6 +738,10 @@ def test_cooldown_is_exactly_20_execution_sessions_before_fresh_base_signal() ->
     assert [trace.signal_state for trace in producer.switching_traces[:20]] == [
         "protective_cooldown"
     ] * 20
+    assert producer.switching_traces[0].risk_reason_codes == (
+        "FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT",
+    )
+    assert all(not trace.risk_reason_codes for trace in producer.switching_traces[1:20])
     assert producer.switching_traces[19].execution_session == sessions[277]
     assert producer.switching_traces[20].signal_state == "entry"
     assert producer.switching_traces[20].execution_session == sessions[278]

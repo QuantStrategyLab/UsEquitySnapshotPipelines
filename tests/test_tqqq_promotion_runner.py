@@ -903,11 +903,15 @@ def _with_valid_locked_cooldown(result):
                     signal_regime="DEFENSIVE",
                     intended_allocation=defensive,
                     risk_disposition="APPROVE",
-                    risk_reason_codes=(),
+                    risk_reason_codes=(
+                        ("FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT",)
+                        if index == 0
+                        else ()
+                    ),
                     replay_target_allocation=defensive,
                     executed_allocation=defensive,
                 )
-                for trace in locked.switching_traces[-21:-1]
+                for index, trace in enumerate(locked.switching_traces[-21:-1])
             ),
             locked.switching_traces[-1],
         )
@@ -938,6 +942,10 @@ def _mutate_locked_cooldown(result, mutation: str):
         cooldown_start = len(traces) - 21
         if mutation == "missing":
             del traces[cooldown_start + 9]
+        elif mutation == "missing_fifth_loss_transition":
+            traces[cooldown_start] = replace(
+                traces[cooldown_start], risk_reason_codes=()
+            )
         elif mutation == "out_of_order":
             traces[cooldown_start + 9] = replace(
                 traces[cooldown_start + 9], signal_state="idle"
@@ -995,14 +1003,18 @@ def _with_park_interrupted_fold_cooldown(result):
         fold = scenario.windows[0]
         traces = list(fold.switching_traces)
         cooldown_start = len(traces) - 22
-        for index in range(cooldown_start, len(traces) - 1):
+        for offset, index in enumerate(range(cooldown_start, len(traces) - 1)):
             traces[index] = replace(
                 traces[index],
                 signal_state="protective_cooldown",
                 signal_regime="DEFENSIVE",
                 intended_allocation=defensive,
                 risk_disposition="APPROVE",
-                risk_reason_codes=(),
+                risk_reason_codes=(
+                    ("FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT",)
+                    if offset == 0
+                    else ()
+                ),
                 replay_target_allocation=defensive,
                 executed_allocation=defensive,
             )
@@ -1067,6 +1079,7 @@ def test_protective_cooldown_is_exactly_20_then_fresh_base_signal() -> None:
     "mutation",
     (
         "missing",
+        "missing_fifth_loss_transition",
         "out_of_order",
         "nineteen_sessions",
         "twenty_one_sessions",
