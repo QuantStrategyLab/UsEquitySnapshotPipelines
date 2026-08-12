@@ -582,6 +582,33 @@ class _ImmutableReplayProducer:
             executed_allocation=self._allocation(session, "open"),
         )
 
+    def _record_parked_allocation(self, session: date) -> None:
+        state = self._state
+        if (
+            not state.parked
+            or state.last_session is None
+            or state.last_session >= session
+            or state.breaker_reason
+            not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+        ):
+            raise TqqqPromotionEvidenceError("invalid parked session state")
+        cash = tuple(
+            sorted({**{symbol: 0.0 for symbol in _ORDERABLE_ASSETS}, "cash": 1.0}.items())
+        )
+        self._switching_traces.append(
+            TqqqSwitchingTrace(
+                signal_session=state.last_session,
+                execution_session=session,
+                signal_state="parked",
+                signal_regime="DEFENSIVE",
+                intended_allocation=cash,
+                risk_disposition="PARK",
+                risk_reason_codes=(state.breaker_reason,),
+                replay_target_allocation=cash,
+                executed_allocation=self._allocation(session, "open"),
+            )
+        )
+
     def _park(self, reason: str, session: date) -> None:
         state = self._state
         if state.parked:
@@ -605,6 +632,7 @@ class _ImmutableReplayProducer:
 
     def _trade_to_target(self, session: date, cost_bps: int) -> None:
         state = self._state
+        was_parked = state.parked
         rate = cost_bps / 10_000.0
         opening_equity = self._equity(session, "open")
         target_weights = {
@@ -636,7 +664,10 @@ class _ImmutableReplayProducer:
                 state.tqqq_stop_price = None
                 state.tqqq_entry_identity_sha256 = None
         if state.parked:
-            self._record_executed_allocation(session)
+            if was_parked:
+                self._record_parked_allocation(session)
+            else:
+                self._record_executed_allocation(session)
             return
         for symbol in _ORDERABLE_ASSETS:
             value_delta = deltas.get(symbol, 0.0)

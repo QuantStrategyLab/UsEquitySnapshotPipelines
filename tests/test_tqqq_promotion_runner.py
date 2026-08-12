@@ -803,6 +803,165 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
     )
 
 
+def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    locked = passing.scenarios[-1].windows[-1]
+    trace = locked.switching_traces[0]
+    drift = replace(
+        trace,
+        executed_allocation=(
+            ("TQQQ", 0.0),
+            ("QQQM", 0.000001),
+            ("BOXX", 0.0),
+            ("cash", 0.999999),
+        ),
+    )
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                passing.scenarios[-1],
+                windows=(
+                    *passing.scenarios[-1].windows[:-1],
+                    replace(
+                        locked,
+                        switching_traces=(drift, *locked.switching_traces[1:]),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+    within_cost_tolerance = replace(
+        trace,
+        executed_allocation=(
+            ("TQQQ", 0.04993),
+            ("QQQM", 0.19970),
+            ("BOXX", 0.09985),
+            ("cash", 0.65052),
+        ),
+    )
+    accepted = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                passing.scenarios[-1],
+                windows=(
+                    *passing.scenarios[-1].windows[:-1],
+                    replace(
+                        locked,
+                        switching_traces=(
+                            within_cost_tolerance,
+                            *locked.switching_traces[1:],
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert (
+        evaluate_tqqq_pre_result_acceptance(accepted, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_PASS
+    )
+
+
+def test_parked_trace_reaches_frozen_reject_terminal() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        parked = replace(
+            locked.switching_traces[-1],
+            signal_state="parked",
+            signal_regime="DEFENSIVE",
+            intended_allocation=cash,
+            risk_disposition="PARK",
+            risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+            replay_target_allocation=cash,
+            executed_allocation=cash,
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        decision_count=locked.decision_count - 1,
+                        risk_assessment_count=locked.risk_assessment_count - 1,
+                        switching_traces=(*locked.switching_traces[:-1], parked),
+                        episode_summary=replace(
+                            locked.episode_summary,
+                            parked_session_count=1,
+                            breaker_reason="ACCOUNT_DRAWDOWN",
+                            first_park_session=locked.end_date,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_REJECT
+    )
+
+
+def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> None:
+    result = _acceptance_result(candidate_returns=(0.013, 0.012, 0.011))
+    defensive = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.50), ("cash", 0.50))
+    scenarios = []
+    for scenario in result.scenarios:
+        locked = scenario.windows[-1]
+        metrics = replace(
+            locked.relative_metrics,
+            qqq_total_return=0.02,
+            boxx_total_return=0.08,
+            strategy_max_drawdown=-0.01,
+            qqq_max_drawdown=-0.02,
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        relative_metrics=metrics,
+                        switching_traces=tuple(
+                            replace(
+                                trace,
+                                signal_state="idle",
+                                signal_regime="DEFENSIVE",
+                                intended_allocation=defensive,
+                                replay_target_allocation=defensive,
+                                executed_allocation=defensive,
+                            )
+                            for trace in locked.switching_traces
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(result, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_REJECT
+    )
+
+
 @pytest.mark.parametrize(
     "update,message",
     [

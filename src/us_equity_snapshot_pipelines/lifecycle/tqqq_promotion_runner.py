@@ -701,13 +701,20 @@ def _validated_switching_allocation(
 def _validate_switching_traces(
     traces: tuple[TqqqSwitchingTrace, ...],
     *,
-    start_date: date,
-    end_date: date,
+    sessions: tuple[date, ...],
     decision_count: int,
+    total_cost_bps: int,
 ) -> None:
-    if type(traces) is not tuple or len(traces) != decision_count:
+    if (
+        type(traces) is not tuple
+        or len(traces) != len(sessions)
+        or total_cost_bps not in _COST_SCENARIOS_BPS
+    ):
         raise TqqqPromotionContractError("complete switching traces are required")
     execution_sessions: list[date] = []
+    approved_count = 0
+    cost_rate = total_cost_bps / 10_000.0
+    allocation_tolerance = cost_rate / (1.0 - cost_rate) + 1e-9
     states = {
         "entry": "RISK_ON",
         "hold": "RISK_ON",
@@ -716,6 +723,7 @@ def _validate_switching_traces(
         "idle": "DEFENSIVE",
         "macro_risk_defense": "DEFENSIVE",
         "crisis_defense": "DEFENSIVE",
+        "parked": "DEFENSIVE",
     }
     for trace in traces:
         if (
@@ -723,9 +731,8 @@ def _validate_switching_traces(
             or type(trace.signal_session) is not date
             or type(trace.execution_session) is not date
             or not trace.signal_session < trace.execution_session
-            or not start_date <= trace.execution_session <= end_date
+            or trace.execution_session not in sessions
             or states.get(trace.signal_state) != trace.signal_regime
-            or trace.risk_disposition != "APPROVE"
             or type(trace.risk_reason_codes) is not tuple
             or any(type(code) is not str or not code for code in trace.risk_reason_codes)
         ):
@@ -735,6 +742,28 @@ def _validate_switching_traces(
         executed = _validated_switching_allocation(trace.executed_allocation)
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
+        if any(
+            abs(executed[symbol] - target[symbol]) > allocation_tolerance
+            for symbol in _PARITY_ASSETS
+        ):
+            raise TqqqPromotionContractError("cost-adjusted execution allocation drift")
+        if trace.risk_disposition == "PARK":
+            if (
+                trace.signal_state != "parked"
+                or trace.risk_reason_codes
+                not in {
+                    ("ACCOUNT_DRAWDOWN",),
+                    ("CONSECUTIVE_TQQQ_LOSING_EXITS",),
+                }
+                or any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
+                or not _same_number(target["cash"], 1.0)
+            ):
+                raise TqqqPromotionContractError("invalid parked switching trace")
+            execution_sessions.append(trace.execution_session)
+            continue
+        if trace.risk_disposition != "APPROVE":
+            raise TqqqPromotionContractError("invalid switching risk disposition")
+        approved_count += 1
         intended_risk = intended["TQQQ"] + intended["QQQM"]
         executed_risk = executed["TQQQ"] + executed["QQQM"]
         if trace.signal_regime == "RISK_ON":
@@ -743,7 +772,10 @@ def _validate_switching_traces(
         elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
         execution_sessions.append(trace.execution_session)
-    if execution_sessions != sorted(set(execution_sessions)):
+    if (
+        tuple(execution_sessions) != sessions
+        or approved_count != decision_count
+    ):
         raise TqqqPromotionContractError("invalid switching trace order")
 
 
@@ -786,6 +818,7 @@ def evaluate_tqqq_pre_result_acceptance(
 
     locked_metrics: dict[int, TqqqQqqRelativeMetrics] = {}
     locked_summaries: dict[int, TqqqEpisodeSummary] = {}
+    locked_defensive_only: dict[int, bool] = {}
     try:
         for cost in _COST_SCENARIOS_BPS:
             scenario = scenarios[cost]
@@ -853,21 +886,20 @@ def evaluate_tqqq_pre_result_acceptance(
                     [session.isoformat() for session in locked.sessions]
                 )
                 != _LOCKED_OOS_SESSIONS_SHA256
-                or locked.decision_count != len(locked.sessions)
+                or not 0 < locked.decision_count <= len(locked.sessions)
                 or locked.decision_count != locked.risk_assessment_count
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             _validate_switching_traces(
                 locked.switching_traces,
-                start_date=locked.start_date,
-                end_date=locked.end_date,
+                sessions=locked.sessions,
                 decision_count=locked.decision_count,
+                total_cost_bps=cost,
             )
-            if (
-                tuple(trace.execution_session for trace in locked.switching_traces)
-                != locked.sessions
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            locked_defensive_only[cost] = all(
+                trace.signal_regime == "DEFENSIVE"
+                for trace in locked.switching_traces
+            )
             metrics = locked.relative_metrics
             summary = locked.episode_summary
             if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
@@ -963,6 +995,10 @@ def evaluate_tqqq_pre_result_acceptance(
             and candidate_return >= 0.50 * qqq_return
             and candidate_mdd <= qqq_mdd + 1e-12
             and candidate_mdd <= 0.10 + 1e-12
+            and (
+                not locked_defensive_only[15]
+                or candidate_return >= boxx_return - 0.02
+            )
         )
     return TQQQ_ACCEPTANCE_PASS if passed else TQQQ_ACCEPTANCE_REJECT
 
@@ -1128,6 +1164,7 @@ def _validate_replay(
     start_date: date,
     end_date: date,
     prior_state_sha256: str,
+    total_cost_bps: int,
 ) -> None:
     if type(replay) is not TqqqWindowReplay:
         raise TqqqPromotionContractError("invalid replay material")
@@ -1248,21 +1285,16 @@ def _validate_replay(
     ):
         raise TqqqPromotionContractError("locked OOS session identity mismatch")
     if (
-        replay.decision_count != len(replay.sessions)
+        not 0 < replay.decision_count <= len(replay.sessions)
         or summary.episode_session_count != len(replay.sessions)
     ):
         raise TqqqPromotionContractError("episode session count mismatch")
     _validate_switching_traces(
         replay.switching_traces,
-        start_date=start_date,
-        end_date=end_date,
+        sessions=replay.sessions,
         decision_count=replay.decision_count,
+        total_cost_bps=total_cost_bps,
     )
-    if (
-        tuple(trace.execution_session for trace in replay.switching_traces)
-        != replay.sessions
-    ):
-        raise TqqqPromotionContractError("switching trace session identity mismatch")
     _finite(replay.turnover, "turnover", nonnegative=True)
     if (
         type(replay.strategy_equity) is not tuple
@@ -1466,6 +1498,7 @@ class TqqqPromotionRunner:
             start_date=start_date,
             end_date=end_date,
             prior_state_sha256=self.identity.initial_state_sha256,
+            total_cost_bps=self.total_cost_bps,
         )
         metrics = _relative_metrics(replay)
         self._windows.append(

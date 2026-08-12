@@ -34,6 +34,9 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     _state_projection,
     run_tqqq_promotion_evidence,
 )
+from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
+    TqqqSwitchingTrace,
+)
 
 RUNNER_REVISION = "1" * 40
 MANDATE_RECEIPT_SHA256 = "6" * 64
@@ -683,6 +686,51 @@ def test_episode_breaker_reason_is_sticky() -> None:
     assert producer._state.parked is True
     assert producer._state.breaker_reason == "CONSECUTIVE_TQQQ_LOSING_EXITS"
     assert producer._state.first_park_session == session
+
+
+def test_parked_episode_liquidates_and_reports_without_reusing_stale_trace() -> None:
+    previous_session = date(2025, 1, 2)
+    session = date(2025, 1, 3)
+    producer = _episode_producer((previous_session, session))
+    producer._reset(5, producer.identity.initial_state_sha256)
+    risk_on = (("BOXX", 0.0), ("QQQM", 0.0), ("TQQQ", 0.10), ("cash", 0.90))
+    producer._switching_traces.append(
+        TqqqSwitchingTrace(
+            signal_session=previous_session - timedelta(days=1),
+            execution_session=previous_session,
+            signal_state="entry",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=risk_on,
+        )
+    )
+    producer._state = _ReplayState(
+        cash=90_000.0,
+        quantities={"TQQQ": 100.0, "QQQM": 0.0, "BOXX": 0.0},
+        tqqq_entry_price=100.0,
+        tqqq_stop_price=95.0,
+        parked=True,
+        breaker_reason="ACCOUNT_DRAWDOWN",
+        first_park_session=previous_session,
+        last_session=previous_session,
+    )
+
+    producer._trade_to_target(session, 5)
+
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+    assert producer._state.parked is True
+    parked = producer.switching_traces[-1]
+    assert parked.execution_session == session
+    assert parked.signal_state == "parked"
+    assert parked.signal_regime == "DEFENSIVE"
+    assert parked.risk_disposition == "PARK"
+    assert parked.risk_reason_codes == ("ACCOUNT_DRAWDOWN",)
+    assert dict(parked.executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
 
 
 def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
