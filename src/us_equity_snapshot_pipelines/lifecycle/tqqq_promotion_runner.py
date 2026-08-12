@@ -34,6 +34,7 @@ _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
 _EFFECTIVE_EXPOSURE_CAP = 0.50
 _COST_SCENARIOS_BPS = (5, 10, 15)
+_EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 
 
 class TqqqPromotionContractError(ValueError):
@@ -62,6 +63,18 @@ class TqqqPromotionPlan:
 
 
 @dataclass(frozen=True)
+class TqqqEpisodeSummary:
+    episode_session_count: int
+    tqqq_exposure_session_count: int
+    qqqm_exposure_session_count: int
+    boxx_exposure_session_count: int
+    cash_only_session_count: int
+    parked_session_count: int
+    breaker_reason: str | None
+    first_park_session: date | None
+
+
+@dataclass(frozen=True)
 class TqqqWindowReplay:
     start_date: date
     end_date: date
@@ -75,6 +88,7 @@ class TqqqWindowReplay:
     decision_count: int
     risk_assessment_count: int
     warmup_sessions: int
+    episode_summary: TqqqEpisodeSummary
     market_regime_control_sha256: str = "a" * 64
     risk_active_state_sha256: str = "b" * 64
     volatility_hysteresis_state_sha256: str = "c" * 64
@@ -133,6 +147,9 @@ class TqqqWindowEvidence:
     prior_state_sha256: str
     final_state_sha256: str
     relative_metrics: TqqqQqqRelativeMetrics
+    episode_summary: TqqqEpisodeSummary
+    decision_count: int
+    risk_assessment_count: int
 
 
 @dataclass(frozen=True)
@@ -225,6 +242,10 @@ def _validate_plan(plan: TqqqPromotionPlan) -> None:
         or plan.embargo_days <= 0
     ):
         raise TqqqPromotionContractError("purge and embargo must be positive integers")
+    if any(fold.test_start < _EXACT_COMMON_ELIGIBILITY for fold in plan.folds):
+        raise TqqqPromotionContractError("replay window precedes exact common eligibility")
+    if plan.locked_oos_start < _EXACT_COMMON_ELIGIBILITY:
+        raise TqqqPromotionContractError("replay window precedes exact common eligibility")
 
 
 def _timing_sha256(plan: TqqqPromotionPlan) -> str:
@@ -351,7 +372,7 @@ def _validate_replay(
     if replay.data_available is not True:
         raise TqqqPromotionContractError("data unavailable")
     if replay.prior_state_sha256 != prior_state_sha256 or not _is_hex(replay.final_state_sha256, 64):
-        raise TqqqPromotionContractError("continuous state identity mismatch")
+        raise TqqqPromotionContractError("episode initial state identity mismatch")
     for value in (
         replay.market_regime_control_sha256,
         replay.risk_active_state_sha256,
@@ -363,7 +384,7 @@ def _validate_replay(
     if replay.signal_effective_after_trading_days != 1:
         raise TqqqPromotionContractError("signal timing must be next eligible session")
     if replay.state_continuity != "continuous" or replay.cash_reset is not False:
-        raise TqqqPromotionContractError("cash reset is forbidden; state must be continuous")
+        raise TqqqPromotionContractError("in-episode cash reset is forbidden; state must be continuous")
     if type(replay.warmup_sessions) is not int or replay.warmup_sessions < 257:
         raise TqqqPromotionContractError("warmup must include 252 dynamic-volatility observations")
     if replay.income_layer_enabled is not False:
@@ -380,6 +401,31 @@ def _validate_replay(
         raise TqqqPromotionContractError("executable plan is forbidden")
     if replay.execution_authorized is not False:
         raise TqqqPromotionContractError("execution authority is forbidden")
+    summary = replay.episode_summary
+    if type(summary) is not TqqqEpisodeSummary:
+        raise TqqqPromotionContractError("invalid episode summary")
+    counts = (
+        summary.episode_session_count,
+        summary.tqqq_exposure_session_count,
+        summary.qqqm_exposure_session_count,
+        summary.boxx_exposure_session_count,
+        summary.cash_only_session_count,
+        summary.parked_session_count,
+    )
+    if any(type(value) is not int or value < 0 for value in counts):
+        raise TqqqPromotionContractError("invalid episode summary")
+    if any(value > summary.episode_session_count for value in counts[1:]):
+        raise TqqqPromotionContractError("invalid episode summary")
+    if summary.cash_only_session_count + summary.parked_session_count > summary.episode_session_count:
+        raise TqqqPromotionContractError("invalid episode summary")
+    allowed_breakers = {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+    if summary.parked_session_count:
+        if summary.breaker_reason not in allowed_breakers or type(summary.first_park_session) is not date:
+            raise TqqqPromotionContractError("invalid episode breaker summary")
+        if not start_date <= summary.first_park_session <= end_date:
+            raise TqqqPromotionContractError("invalid episode breaker summary")
+    elif summary.breaker_reason is not None or summary.first_park_session is not None:
+        raise TqqqPromotionContractError("invalid episode breaker summary")
     if type(replay.asset_weights) is not tuple:
         raise TqqqPromotionContractError("invalid ETF-only weights")
     seen: set[str] = set()
@@ -421,6 +467,8 @@ def _validate_replay(
     for series in (replay.strategy_equity, replay.qqq_total_return_equity):
         if any(_finite(value, "equity") <= 0.0 for value in series):
             raise TqqqPromotionContractError("equity must be positive")
+    if summary.episode_session_count != len(replay.strategy_equity) - 1:
+        raise TqqqPromotionContractError("episode session count mismatch")
 
 
 def _relative_metrics(replay: TqqqWindowReplay) -> TqqqQqqRelativeMetrics:
@@ -528,7 +576,6 @@ class TqqqPromotionRunner:
         self.plan = plan
         self.replay_window = replay_window
         self.total_cost_bps = total_cost_bps
-        self._state_sha256 = identity.initial_state_sha256
         self._windows: list[TqqqWindowEvidence] = []
 
     @property
@@ -596,16 +643,15 @@ class TqqqPromotionRunner:
             start_date,
             end_date,
             self.total_cost_bps,
-            self._state_sha256,
+            self.identity.initial_state_sha256,
         )
         _validate_replay(
             replay,
             start_date=start_date,
             end_date=end_date,
-            prior_state_sha256=self._state_sha256,
+            prior_state_sha256=self.identity.initial_state_sha256,
         )
         metrics = _relative_metrics(replay)
-        self._state_sha256 = replay.final_state_sha256
         self._windows.append(
             TqqqWindowEvidence(
                 start_date=start_date,
@@ -613,6 +659,9 @@ class TqqqPromotionRunner:
                 prior_state_sha256=replay.prior_state_sha256,
                 final_state_sha256=replay.final_state_sha256,
                 relative_metrics=metrics,
+                episode_summary=replay.episode_summary,
+                decision_count=replay.decision_count,
+                risk_assessment_count=replay.risk_assessment_count,
             )
         )
         return BacktestResult(
