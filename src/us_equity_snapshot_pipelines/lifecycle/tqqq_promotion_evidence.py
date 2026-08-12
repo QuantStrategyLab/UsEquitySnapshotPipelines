@@ -33,23 +33,23 @@ from us_equity_strategies.entrypoints import (
 )
 
 from .tqqq_promotion_runner import (
-    _QPK_REVISION,
-    _UES_REVISION,
     _EXACT_COMMON_ELIGIBILITY,
     _FROZEN_CALENDAR_SOURCE_REVISION,
     _LOCKED_OOS_END,
     _LOCKED_OOS_SESSION_COUNT,
     _LOCKED_OOS_SESSIONS_SHA256,
     _LOCKED_OOS_START,
+    _QPK_REVISION,
+    _UES_REVISION,
     TqqqEpisodeSummary,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
     TqqqPromotionResearchResult,
     TqqqSwitchingTrace,
     TqqqWindowReplay,
+    _resolve_runner_revision,
     build_tqqq_development_robustness_plan,
     build_tqqq_switching_characterization_contract,
-    _resolve_runner_revision,
     run_tqqq_promotion_research,
 )
 
@@ -58,6 +58,7 @@ _DOMAIN = "us_equity"
 _INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
 _CONFIG_SCHEMA = "tqqq_etf_only_replay_config.v1"
+_SIGNAL_MODEL = "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
 _MANDATE_ID = "tqqq_core_parity_v1"
 _LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 _USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
@@ -71,6 +72,7 @@ _SESSION_TOOL = {
 }
 _BOXX_FIRST_ELIGIBLE_SESSION = _EXACT_COMMON_ELIGIBILITY
 _COST_SCENARIOS = (5, 10, 15)
+_COOLDOWN_EXECUTION_SESSIONS = 20
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _RUNTIME_OVERRIDES = {
@@ -154,6 +156,7 @@ class _ReplayState:
     high_water_equity: float = 100_000.0
     last_equity: float = 100_000.0
     consecutive_losing_exits: int = 0
+    cooldown_remaining_execution_sessions: int = 0
     parked: bool = False
     breaker_reason: str | None = None
     first_park_session: date | None = None
@@ -273,7 +276,8 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if (
         config["schema_version"] != _CONFIG_SCHEMA
         or config["strategy_profile"] != _PROFILE
-        or config["signal_model"] != "ues_tqqq_growth_income_core_parity"
+        or config["signal_model"]
+        not in {_SIGNAL_MODEL, "ues_tqqq_growth_income_core_parity"}
         or config["signal_window_sessions"] != 257
         or _finite(config["tqqq_nominal_cap"], "TQQQ cap") != 0.15
         or _finite(config["qqqm_nominal_cap"], "QQQM cap") != 0.50
@@ -290,6 +294,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     _digest_text(config["risk_standard_sha256"], 64, "risk standard digest")
     _digest_text(config["authority_receipt_sha256"], 64, "authority digest")
     _digest_text(config["platform_execution_revision"], 40, "platform revision")
+    config["signal_model"] = _SIGNAL_MODEL
     return config
 
 
@@ -458,6 +463,7 @@ def _initial_state_projection() -> dict[str, Any]:
         "high_water_equity": 100_000.0,
         "last_equity": 100_000.0,
         "consecutive_losing_exits": 0,
+        "cooldown_remaining_execution_sessions": 0,
         "parked": False,
         "breaker_reason": None,
         "first_park_session": None,
@@ -484,6 +490,9 @@ def _state_projection(state: _ReplayState) -> dict[str, Any]:
         "high_water_equity": state.high_water_equity,
         "last_equity": state.last_equity,
         "consecutive_losing_exits": state.consecutive_losing_exits,
+        "cooldown_remaining_execution_sessions": (
+            state.cooldown_remaining_execution_sessions
+        ),
         "parked": state.parked,
         "breaker_reason": state.breaker_reason,
         "first_park_session": state.first_park_session,
@@ -584,17 +593,28 @@ class _ImmutableReplayProducer:
 
     def _record_parked_allocation(self, session: date) -> None:
         state = self._state
+        cash = tuple(
+            sorted({**{symbol: 0.0 for symbol in _ORDERABLE_ASSETS}, "cash": 1.0}.items())
+        )
+        if (
+            self._switching_traces
+            and self._switching_traces[-1].execution_session == session
+            and self._switching_traces[-1].risk_disposition == "PARK"
+            and not self._switching_traces[-1].executed_allocation
+        ):
+            self._switching_traces[-1] = replace(
+                self._switching_traces[-1],
+                executed_allocation=self._allocation(session, "open"),
+            )
+            return
         if (
             not state.parked
             or state.last_session is None
             or state.last_session >= session
             or state.breaker_reason
-            not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+            not in {"ACCOUNT_DRAWDOWN", "RISK_ENGINE_NON_APPROVE"}
         ):
             raise TqqqPromotionEvidenceError("invalid parked session state")
-        cash = tuple(
-            sorted({**{symbol: 0.0 for symbol in _ORDERABLE_ASSETS}, "cash": 1.0}.items())
-        )
         self._switching_traces.append(
             TqqqSwitchingTrace(
                 signal_session=state.last_session,
@@ -616,14 +636,32 @@ class _ImmutableReplayProducer:
         state.parked = True
         state.breaker_reason = reason
         state.first_park_session = session
+        state.cooldown_remaining_execution_sessions = 0
         state.pending_weights = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
 
     def _record_completed_exit(self, fill: float, session: date) -> None:
         state = self._state
         losing = state.tqqq_entry_price is not None and fill < state.tqqq_entry_price
         state.consecutive_losing_exits = state.consecutive_losing_exits + 1 if losing else 0
-        if state.consecutive_losing_exits >= 5:
-            self._park("CONSECUTIVE_TQQQ_LOSING_EXITS", session)
+        if state.consecutive_losing_exits >= 5 and not state.parked:
+            state.consecutive_losing_exits = 0
+            state.cooldown_remaining_execution_sessions = _COOLDOWN_EXECUTION_SESSIONS
+
+    def _complete_cooldown_execution_session(self, session: date) -> None:
+        state = self._state
+        if (
+            state.parked
+            or state.cooldown_remaining_execution_sessions <= 0
+            or not self._switching_traces
+        ):
+            return
+        trace = self._switching_traces[-1]
+        if (
+            trace.execution_session == session
+            and trace.signal_state == "protective_cooldown"
+            and trace.risk_disposition == "APPROVE"
+        ):
+            state.cooldown_remaining_execution_sessions -= 1
 
     def _apply_drawdown_breaker(self, session: date, equity: float) -> None:
         drawdown = max(0.0, 1.0 - equity / self._state.high_water_equity)
@@ -758,28 +796,6 @@ class _ImmutableReplayProducer:
         state.tqqq_entry_price = None
         state.tqqq_stop_price = None
         state.tqqq_entry_identity_sha256 = None
-        if state.parked:
-            rate = cost_bps / 10_000.0
-            for symbol in ("QQQM", "BOXX"):
-                remaining = state.quantities[symbol]
-                if remaining <= 1e-12:
-                    continue
-                bar = self._price(symbol, session)
-                state.cash += remaining * bar.open * (1.0 - rate)
-                state.turnover += remaining * bar.open / opening_equity
-                state.trade_count += 1
-                state.quantities[symbol] = 0.0
-            if (
-                self._switching_traces
-                and self._switching_traces[-1].execution_session == session
-            ):
-                self._switching_traces[-1] = replace(
-                    self._switching_traces[-1],
-                    risk_disposition="PARK",
-                    risk_reason_codes=(state.breaker_reason,),
-                    executed_allocation=self._allocation(session, "open"),
-                )
-
     def _current_weights(self, session: date, equity: float) -> dict[str, float]:
         if equity <= 0.0:
             return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
@@ -795,6 +811,7 @@ class _ImmutableReplayProducer:
     ) -> dict[str, float]:
         state = self._state
         signal_session = self.qqq[signal_index].session
+        protective_cooldown = state.cooldown_remaining_execution_sessions > 0
         if state.parked:
             raise TqqqPromotionEvidenceError("parked episode cannot create a decision")
         if signal_index + 1 < 257:
@@ -911,7 +928,16 @@ class _ImmutableReplayProducer:
                     "signal_session": signal_session.isoformat(),
                     "next_execution_session": execution_session.isoformat(),
                 },
-                runtime_config=_RUNTIME_OVERRIDES,
+                runtime_config=(
+                    {
+                        **_RUNTIME_OVERRIDES,
+                        # The frozen UES revision parses these values through float().
+                        "dual_drive_qqq_weight": "0.0",
+                        "dual_drive_tqqq_weight": "0.0",
+                    }
+                    if protective_cooldown
+                    else _RUNTIME_OVERRIDES
+                ),
             ),
             mandate_provenance=mandate,
             candidate_identity=self.candidate,
@@ -928,12 +954,29 @@ class _ImmutableReplayProducer:
         if assessment.execution_authorized is not False:
             raise TqqqPromotionEvidenceError("execution authority is forbidden")
         if assessment.outcome != "APPROVE":
-            if state.parked:
-                return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
-            raise TqqqPromotionEvidenceError(
-                "RiskEngine rejected immutable replay decision:"
-                + ",".join(assessment.reason_codes)
+            self._park("RISK_ENGINE_NON_APPROVE", execution_session)
+            cash = tuple(
+                sorted(
+                    {
+                        **{symbol: 0.0 for symbol in _ORDERABLE_ASSETS},
+                        "cash": 1.0,
+                    }.items()
+                )
             )
+            self._switching_traces.append(
+                TqqqSwitchingTrace(
+                    signal_session=signal_session,
+                    execution_session=execution_session,
+                    signal_state="risk_engine_non_approve",
+                    signal_regime="DEFENSIVE",
+                    intended_allocation=cash,
+                    risk_disposition="PARK",
+                    risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+                    replay_target_allocation=cash,
+                    executed_allocation=(),
+                )
+            )
+            return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
         targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
         for target in result.decision.positions:
             if target.symbol not in targets or target.target_weight is None:
@@ -954,6 +997,15 @@ class _ImmutableReplayProducer:
         }
         if signal_state not in regimes:
             raise TqqqPromotionEvidenceError("invalid TQQQ switching signal")
+        if protective_cooldown:
+            if (
+                targets["TQQQ"] > 1e-12
+                or targets["QQQM"] > 1e-12
+                or targets["BOXX"] <= 0.0
+            ):
+                raise TqqqPromotionEvidenceError("protective cooldown sizing failed closed")
+            signal_state = "protective_cooldown"
+            regimes[signal_state] = "DEFENSIVE"
         intended = {**targets, "cash": 1.0 - math.fsum(targets.values())}
         if intended["cash"] < -1e-12:
             raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
@@ -1047,6 +1099,7 @@ class _ImmutableReplayProducer:
             state.high_water_equity = max(state.high_water_equity, equity)
             state.last_session = qqq.session
             self._apply_drawdown_breaker(qqq.session, equity)
+            self._complete_cooldown_execution_session(qqq.session)
             if not state.parked and index < end_index:
                 next_session = self.qqq[index + 1].session
                 state.pending_weights = self._assessment(index, next_session, equity)
@@ -1197,7 +1250,10 @@ def _result_artifacts(
                     "scenario_counts": replay.scenario_counts,
                     "hard_stop_distance": 0.05,
                     "account_drawdown_breaker": 0.10,
-                    "strategy_losing_exit_breaker": 5,
+                    "strategy_losing_exit_cooldown_threshold": 5,
+                    "protective_cooldown_execution_sessions": (
+                        _COOLDOWN_EXECUTION_SESSIONS
+                    ),
                     "authority_scope": "RESEARCH_ONLY",
                     "no_order": True,
                     "size_zero_required": True,
@@ -1403,7 +1459,7 @@ def run_tqqq_promotion_evidence(
         },
         "human_acceptance": None,
         "lifecycle_claims": {
-            "learning_only": False,
+            "learning_only": True,
             "promotion_eligible": False,
             "live_ready": False,
             "size_zero_required": True,
@@ -1428,6 +1484,7 @@ def run_tqqq_promotion_evidence(
                 "evidence_sha256": evidence_record["sha256"],
                 "human_acceptance": None,
                 "authority_scope": "RESEARCH_ONLY",
+                "learning_only": True,
                 "promotion_eligible": False,
                 "live_ready": False,
                 "size_zero_required": True,
