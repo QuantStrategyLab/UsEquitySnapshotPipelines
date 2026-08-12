@@ -812,6 +812,19 @@ def _validate_switching_traces(
         intended = _validated_switching_allocation(trace.intended_allocation)
         target = _validated_switching_allocation(trace.replay_target_allocation)
         executed = _validated_switching_allocation(trace.executed_allocation)
+        for allocation in (intended, target):
+            if (
+                any(
+                    allocation[symbol] > _ASSET_CAPS[symbol] + 1e-12
+                    for symbol in _ALLOWED_ASSETS
+                )
+                or math.fsum(
+                    allocation[symbol] * _ASSET_FACTORS[symbol]
+                    for symbol in _ALLOWED_ASSETS
+                )
+                > _EFFECTIVE_EXPOSURE_CAP + 1e-12
+            ):
+                raise TqqqPromotionContractError("switching target exposure cap exceeded")
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
         if any(
@@ -978,6 +991,14 @@ def evaluate_tqqq_pre_result_acceptance(
             if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             if (
+                sum(
+                    trace.risk_disposition == "PARK"
+                    for trace in locked.switching_traces
+                )
+                != summary.parked_session_count
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            if (
                 not _locked_metrics_match_backtest(metrics, promotion_run.locked_oos_result)
                 or promotion_run.locked_oos_result.observation_count
                 != len(locked.sessions) + 1
@@ -1036,7 +1057,7 @@ def evaluate_tqqq_pre_result_acceptance(
             locked_metrics[cost] = metrics
             locked_backtests[cost] = promotion_run.locked_oos_result
             locked_summaries[cost] = summary
-    except (AttributeError, KeyError, TypeError, TqqqPromotionContractError):
+    except (AttributeError, KeyError, TypeError, ValueError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
     if (
@@ -1379,6 +1400,11 @@ def _validate_replay(
         decision_count=replay.decision_count,
         total_cost_bps=total_cost_bps,
     )
+    if (
+        sum(trace.risk_disposition == "PARK" for trace in replay.switching_traces)
+        != summary.parked_session_count
+    ):
+        raise TqqqPromotionContractError("parked trace/summary mismatch")
     _finite(replay.turnover, "turnover", nonnegative=True)
     if (
         type(replay.strategy_equity) is not tuple

@@ -165,7 +165,23 @@ class SyntheticReplay:
             breaker_reason=None,
             first_park_session=None,
         )
+        decision_count = len(sessions)
         if self.park_first_window and call_number == 1:
+            cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+            switching_traces = (
+                *switching_traces[:-1],
+                replace(
+                    switching_traces[-1],
+                    signal_state="parked",
+                    signal_regime="DEFENSIVE",
+                    intended_allocation=cash,
+                    risk_disposition="PARK",
+                    risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+                    replay_target_allocation=cash,
+                    executed_allocation=cash,
+                ),
+            )
+            decision_count -= 1
             summary = replace(
                 summary,
                 parked_session_count=1,
@@ -183,8 +199,8 @@ class SyntheticReplay:
             asset_weights=(("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10)),
             turnover=0.4,
             trade_count=2,
-            decision_count=len(sessions),
-            risk_assessment_count=len(sessions),
+            decision_count=decision_count,
+            risk_assessment_count=decision_count,
             warmup_sessions=257,
             episode_summary=summary,
             sessions=sessions,
@@ -950,6 +966,110 @@ def test_acceptance_requires_adjacent_frozen_xnys_switching_sessions() -> None:
                             stale_signal,
                             *locked.switching_traces[2:],
                         ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_fails_closed_on_malformed_locked_result_params() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    malformed = replace(
+        scenario.promotion_run.locked_oos_result,
+        params=["invalid"],  # type: ignore[arg-type]
+    )
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=malformed,
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_enforces_caps_on_every_switching_target() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    locked = scenario.windows[-1]
+    trace = locked.switching_traces[0]
+    over_cap = (("TQQQ", 1.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 0.0))
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        switching_traces=(
+                            replace(
+                                trace,
+                                intended_allocation=over_cap,
+                                replay_target_allocation=over_cap,
+                                executed_allocation=over_cap,
+                            ),
+                            *locked.switching_traces[1:],
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_requires_park_trace_and_summary_to_agree() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    locked = scenario.windows[-1]
+    cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+    parked = replace(
+        locked.switching_traces[-1],
+        signal_state="parked",
+        signal_regime="DEFENSIVE",
+        intended_allocation=cash,
+        risk_disposition="PARK",
+        risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+        replay_target_allocation=cash,
+        executed_allocation=cash,
+    )
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        decision_count=locked.decision_count - 1,
+                        risk_assessment_count=locked.risk_assessment_count - 1,
+                        switching_traces=(*locked.switching_traces[:-1], parked),
                     ),
                 ),
             ),
