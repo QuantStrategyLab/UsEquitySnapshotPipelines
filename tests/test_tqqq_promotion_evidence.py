@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import us_equity_strategies.entrypoints as entrypoints
 from quant_platform_kit.data.research_input import (
     canonical_research_input_manifest_bytes,
 )
@@ -20,16 +19,18 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     read_evidence_package_v2_json,
     validate_evidence_package_v2,
 )
+from us_equity_strategies import entrypoints
+
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     TqqqPromotionEvidenceError,
     _Bar,
+    _digest,
     _ImmutableReplayProducer,
     _ReplayState,
-    _digest,
     _state_projection,
     run_tqqq_promotion_evidence,
 )
-import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
 
 RUNNER_REVISION = "1" * 40
 MANDATE_RECEIPT_SHA256 = "6" * 64
@@ -66,6 +67,12 @@ def _sessions() -> list[date]:
         date(2022, 5, 2),
         date(2022, 12, 27),
         date(2022, 12, 28),
+        date(2023, 1, 31),
+        date(2023, 5, 22),
+        date(2023, 5, 31),
+        date(2023, 6, 30),
+        date(2023, 7, 3),
+        date(2023, 11, 30),
         date(2023, 12, 1),
         date(2023, 12, 4),
         date(2024, 5, 31),
@@ -275,6 +282,24 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     }
     assert result["evidence_sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
     risk = json.loads((tmp_path / "artifacts" / "risk.json").read_bytes())
+    backtest = json.loads((tmp_path / "artifacts" / "backtest.json").read_bytes())
+    for scenario in backtest["scenarios"].values():
+        cost = str(int(scenario["promotion_run"]["cost_model"]["slippage_bps"]))
+        assert sum(window["decision_count"] for window in scenario["windows"]) == (
+            risk["scenario_counts"][cost]["decisions"]
+        )
+        for window in scenario["windows"]:
+            assert window["decision_count"] == window["risk_assessment_count"] > 0
+            assert set(window["episode_summary"]) == {
+                "episode_session_count",
+                "tqqq_exposure_session_count",
+                "qqqm_exposure_session_count",
+                "boxx_exposure_session_count",
+                "cash_only_session_count",
+                "parked_session_count",
+                "breaker_reason",
+                "first_park_session",
+            }
     assessment_count = sum(
         counts["assessments"] for counts in risk["scenario_counts"].values()
     )
@@ -351,6 +376,170 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
             output_dir=tmp_path,
             mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
+
+
+def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
+    producer = object.__new__(_ImmutableReplayProducer)
+    producer.candidate = CandidateRiskIdentity(
+        authority_receipt_sha256="1" * 64,
+        strategy_profile="tqqq_core_parity_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision="2" * 40,
+        runner_revision="3" * 40,
+        config_sha256="4" * 64,
+        input_manifest_sha256="5" * 64,
+    )
+    producer.identity = SimpleNamespace(initial_state_sha256="6" * 64)
+    producer.qqq = tuple(
+        _Bar(session, 100.0, 101.0, 99.0, 100.0, 1_000_000.0)
+        for session in sessions
+    )
+    producer.prices = {
+        symbol: {
+            session: _Bar(session, 100.0, 101.0, 99.0, 100.0, 1_000_000.0)
+            for session in sessions
+        }
+        for symbol in evidence_module._ORDERABLE_ASSETS
+    }
+    producer._index = {session: index for index, session in enumerate(sessions)}
+    producer._scenario = None
+    producer._state = _ReplayState()
+    producer._state_sha256 = producer.identity.initial_state_sha256
+    producer._scenario_counts = {}
+    return producer
+
+
+def test_episode_executes_and_counts_only_in_window_sessions() -> None:
+    first = date(2022, 4, 14)
+    sessions = tuple(first + timedelta(days=index) for index in range(262))
+    producer = _episode_producer(sessions)
+    start, end = sessions[258], sessions[260]
+    traded: list[date] = []
+    assessed_for_execution: list[date] = []
+
+    def assess(_signal_index: int, execution_session: date, _equity: float):
+        assessed_for_execution.append(execution_session)
+        producer._state.decision_count += 1
+        producer._state.assessment_count += 1
+        producer._scenario_counts[5]["decisions"] += 1
+        producer._scenario_counts[5]["assessments"] += 1
+        return {symbol: 0.0 for symbol in evidence_module._ORDERABLE_ASSETS}
+
+    with (
+        patch.object(producer, "_assessment", side_effect=assess),
+        patch.object(producer, "_trade_to_target", side_effect=lambda session, _cost: traded.append(session)),
+        patch.object(producer, "_apply_stop"),
+        patch.object(producer, "_equity", return_value=100_000.0),
+        patch.object(
+            producer,
+            "_current_weights",
+            return_value={symbol: 0.0 for symbol in evidence_module._ORDERABLE_ASSETS},
+        ),
+    ):
+        replay = producer(start, end, 5, producer.identity.initial_state_sha256)
+
+    assert traded == list(sessions[258:261])
+    assert assessed_for_execution == list(sessions[258:261])
+    assert replay.trade_count == 0
+    assert replay.decision_count == replay.risk_assessment_count == 3
+    assert replay.episode_summary.episode_session_count == 3
+
+
+def test_pre_common_eligibility_episode_fails_closed() -> None:
+    first = date(2022, 4, 13)
+    sessions = tuple(first + timedelta(days=index) for index in range(260))
+    producer = _episode_producer(sessions)
+    start = date(2022, 12, 27)
+    assert sessions[258] == start
+    producer.prices["BOXX"].pop(start)
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="exact common eligibility"):
+        producer(start, sessions[259], 5, producer.identity.initial_state_sha256)
+
+
+def test_missing_orderable_asset_inside_eligible_episode_fails_closed() -> None:
+    first = date(2022, 4, 14)
+    sessions = tuple(first + timedelta(days=index) for index in range(261))
+    producer = _episode_producer(sessions)
+    producer.prices["BOXX"].pop(sessions[260])
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="eligible asset data unavailable"):
+        producer(sessions[258], sessions[260], 5, producer.identity.initial_state_sha256)
+
+
+def test_episode_reports_boxx_cash_and_park_separately() -> None:
+    first = date(2023, 1, 2)
+    sessions = tuple(first + timedelta(days=index) for index in range(262))
+    producer = _episode_producer(sessions)
+    start, cash_session, park_session, after_park_session = sessions[258:262]
+
+    def trade(session: date, _cost: int) -> None:
+        producer._state.quantities["BOXX"] = 100.0 if session == start else 0.0
+
+    def apply_stop(session: date, _cost: int) -> None:
+        if session == park_session:
+            producer._park("CONSECUTIVE_TQQQ_LOSING_EXITS", session)
+        elif session == after_park_session:
+            producer._park("ACCOUNT_DRAWDOWN", session)
+
+    def assess(_signal_index: int, _execution_session: date, _equity: float):
+        producer._state.decision_count += 1
+        producer._state.assessment_count += 1
+        producer._scenario_counts[5]["decisions"] += 1
+        producer._scenario_counts[5]["assessments"] += 1
+        return {symbol: 0.0 for symbol in evidence_module._ORDERABLE_ASSETS}
+
+    with (
+        patch.object(producer, "_assessment", side_effect=assess),
+        patch.object(producer, "_trade_to_target", side_effect=trade),
+        patch.object(producer, "_apply_stop", side_effect=apply_stop),
+        patch.object(producer, "_equity", return_value=100_000.0),
+        patch.object(
+            producer,
+            "_current_weights",
+            return_value={symbol: 0.0 for symbol in evidence_module._ORDERABLE_ASSETS},
+        ),
+    ):
+        replay = producer(start, after_park_session, 5, producer.identity.initial_state_sha256)
+
+    summary = replay.episode_summary
+    assert summary.episode_session_count == 4
+    assert summary.tqqq_exposure_session_count == 0
+    assert summary.qqqm_exposure_session_count == 0
+    assert summary.boxx_exposure_session_count == 1
+    assert summary.cash_only_session_count == 1
+    assert summary.parked_session_count == 2
+    assert summary.breaker_reason == "CONSECUTIVE_TQQQ_LOSING_EXITS"
+    assert summary.first_park_session == park_session
+    assert replay.decision_count == replay.risk_assessment_count == 3
+    assert cash_session < park_session
+
+
+def test_episode_breaker_reason_is_sticky() -> None:
+    session = date(2025, 1, 2)
+    producer = _unit_producer(session)
+
+    producer._park("CONSECUTIVE_TQQQ_LOSING_EXITS", session)
+    producer._park("ACCOUNT_DRAWDOWN", session + timedelta(days=1))
+
+    assert producer._state.parked is True
+    assert producer._state.breaker_reason == "CONSECUTIVE_TQQQ_LOSING_EXITS"
+    assert producer._state.first_park_session == session
+
+
+def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
+    session = date(2025, 1, 2)
+    producer = _unit_producer(session)
+    producer._state.high_water_equity = 100_000.0
+    producer._state.decision_count = 7
+    producer._state.assessment_count = 7
+
+    producer._apply_drawdown_breaker(session, 89_000.0)
+
+    assert producer._state.parked is True
+    assert producer._state.breaker_reason == "ACCOUNT_DRAWDOWN"
+    assert producer._state.first_park_session == session
+    assert producer._state.decision_count == producer._state.assessment_count == 7
 
 
 

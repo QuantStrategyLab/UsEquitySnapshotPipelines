@@ -9,6 +9,7 @@ from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import Backtest
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
+    TqqqEpisodeSummary,
     TqqqPromotionContractError,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
@@ -40,18 +41,18 @@ def _plan() -> TqqqPromotionPlan:
         folds=(
             PurgedWalkForwardFold(
                 train_start=date(2018, 1, 2),
-                train_end=date(2019, 6, 28),
-                test_start=date(2019, 7, 30),
-                test_end=date(2020, 1, 31),
+                train_end=date(2022, 11, 25),
+                test_start=date(2022, 12, 28),
+                test_end=date(2023, 1, 31),
             ),
             PurgedWalkForwardFold(
-                train_start=date(2020, 3, 2),
-                train_end=date(2021, 8, 31),
-                test_start=date(2021, 10, 1),
-                test_end=date(2022, 3, 31),
+                train_start=date(2023, 2, 21),
+                train_end=date(2023, 4, 28),
+                test_start=date(2023, 5, 22),
+                test_end=date(2023, 6, 30),
             ),
             PurgedWalkForwardFold(
-                train_start=date(2022, 5, 2),
+                train_start=date(2023, 7, 24),
                 train_end=date(2023, 10, 31),
                 test_start=date(2023, 12, 1),
                 test_end=date(2024, 5, 31),
@@ -65,8 +66,9 @@ def _plan() -> TqqqPromotionPlan:
 
 
 class SyntheticReplay:
-    def __init__(self) -> None:
+    def __init__(self, *, park_first_window: bool = False) -> None:
         self.calls: list[tuple[date, date, int, str]] = []
+        self.park_first_window = park_first_window
 
     def __call__(
         self,
@@ -79,6 +81,23 @@ class SyntheticReplay:
         call_number = (len(self.calls) - 1) % 4 + 1
         strategy = (100.0, 102.0, 99.0, 105.0)
         benchmark = (100.0, 101.0, 100.0, 103.0)
+        summary = TqqqEpisodeSummary(
+            episode_session_count=3,
+            tqqq_exposure_session_count=3,
+            qqqm_exposure_session_count=3,
+            boxx_exposure_session_count=3,
+            cash_only_session_count=0,
+            parked_session_count=0,
+            breaker_reason=None,
+            first_park_session=None,
+        )
+        if self.park_first_window and call_number == 1:
+            summary = replace(
+                summary,
+                parked_session_count=1,
+                breaker_reason="ACCOUNT_DRAWDOWN",
+                first_park_session=start_date,
+            )
         return TqqqWindowReplay(
             start_date=start_date,
             end_date=end_date,
@@ -92,6 +111,7 @@ class SyntheticReplay:
             decision_count=4,
             risk_assessment_count=4,
             warmup_sessions=257,
+            episode_summary=summary,
         )
 
 
@@ -125,13 +145,12 @@ def test_delegates_exact_three_cost_scenarios_to_qpk_promotion_orchestrator() ->
     )
 
 
-def test_explicit_entrypoints_preserve_continuous_state_and_qqq_relative_metrics() -> None:
+def test_each_fold_and_locked_oos_starts_from_fresh_episode_state() -> None:
     result, replay = _run()
 
     for offset in (0, 4, 8):
         calls = replay.calls[offset : offset + 4]
-        assert calls[0][3] == _identity().initial_state_sha256
-        assert [call[3] for call in calls[1:]] == ["1" * 64, "2" * 64, "3" * 64]
+        assert [call[3] for call in calls] == [_identity().initial_state_sha256] * 4
 
     locked = result.scenarios[0].windows[-1]
     metrics = locked.relative_metrics
@@ -154,6 +173,18 @@ def test_explicit_entrypoints_preserve_continuous_state_and_qqq_relative_metrics
     assert metrics.var_95 <= metrics.cvar_95 + abs(metrics.var_95)
     assert metrics.turnover == pytest.approx(0.4)
     assert metrics.trade_count == 2
+
+
+def test_replay_contract_requires_sanitized_episode_summary() -> None:
+    assert "episode_summary" in TqqqWindowReplay.__dataclass_fields__
+
+
+def test_prior_fold_park_does_not_enter_the_next_episode() -> None:
+    _, replay = _run(SyntheticReplay(park_first_window=True))
+
+    for offset in (0, 4, 8):
+        assert replay.calls[offset][3] == _identity().initial_state_sha256
+        assert replay.calls[offset + 1][3] == _identity().initial_state_sha256
 
 
 def test_result_is_research_only_and_has_no_execution_reachability() -> None:
@@ -212,5 +243,16 @@ def test_identity_and_timing_are_immutable_and_fail_closed_before_replay() -> No
         return_value=RUNNER_REVISION,
     ), pytest.raises(TqqqPromotionContractError, match="QPK revision"):
         run_tqqq_promotion_research(identity, _plan(), replay)
+
+    assert replay.calls == []
+
+
+def test_pre_common_eligibility_plan_fails_closed_before_replay() -> None:
+    replay = SyntheticReplay()
+    first = replace(_plan().folds[0], test_start=date(2022, 12, 27))
+    plan = replace(_plan(), folds=(first, *_plan().folds[1:]))
+
+    with pytest.raises(TqqqPromotionContractError, match="exact common eligibility"):
+        run_tqqq_promotion_research(_identity(), plan, replay)
 
     assert replay.calls == []
