@@ -783,6 +783,20 @@ def test_installer_runtime_identity_must_match_fixed_commit(
     assert installer._runtime_commit(Path("/fixed/runtime/bin/python")) == "f" * 40
 
 
+def test_installer_runtime_module_must_resolve_inside_selected_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="/outside/checkout/us_equity_snapshot_pipelines/__init__.py\n", stderr=""
+        ),
+    )
+    with pytest.raises(ValueError, match="runtime identity"):
+        installer._runtime_module(Path("/fixed/runtime/bin/python"))
+
+
 def test_installer_filesystem_failure_returns_parked_without_launchctl(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

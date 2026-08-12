@@ -45,6 +45,29 @@ def _runtime_commit(runtime_python: Path) -> str:
     return identity
 
 
+def _runtime_module(runtime_python: Path) -> Path:
+    module = subprocess.run(
+        [
+            str(runtime_python),
+            "-I",
+            "-c",
+            (
+                "from pathlib import Path; import us_equity_snapshot_pipelines as p; "
+                "print(Path(p.__file__).resolve())"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    resolved = Path(module.stdout.strip())
+    if not resolved.is_absolute() or not resolved.is_relative_to(runtime_python.parent.parent):
+        raise ValueError("collector runtime identity invalid")
+    return resolved
+
+
 def build_launch_agent_plist(
     *,
     runtime_python: Path,
@@ -133,6 +156,7 @@ def _activation_gate(
         if not localtime.as_posix().endswith("/Asia/Shanghai"):
             return False
         _require_filevault(output_root)
+        _runtime_module(runtime_python)
         if _runtime_commit(runtime_python) != runtime_commit:
             return False
         domain = f"gui/{os.getuid()}"
