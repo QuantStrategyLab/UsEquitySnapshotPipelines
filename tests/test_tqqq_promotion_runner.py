@@ -884,8 +884,7 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
     )
 
 
-def test_protective_cooldown_is_defensive_approve_and_not_park() -> None:
-    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+def _with_valid_locked_cooldown(result):
     defensive = (
         ("TQQQ", 0.0),
         ("QQQM", 0.0),
@@ -893,10 +892,10 @@ def test_protective_cooldown_is_defensive_approve_and_not_park() -> None:
         ("cash", 0.80),
     )
     scenarios = []
-    for scenario in passing.scenarios:
+    for scenario in result.scenarios:
         locked = scenario.windows[-1]
         traces = (
-            *locked.switching_traces[:-20],
+            *locked.switching_traces[:-21],
             *tuple(
                 replace(
                     trace,
@@ -908,8 +907,9 @@ def test_protective_cooldown_is_defensive_approve_and_not_park() -> None:
                     replay_target_allocation=defensive,
                     executed_allocation=defensive,
                 )
-                for trace in locked.switching_traces[-20:]
+                for trace in locked.switching_traces[-21:-1]
             ),
+            locked.switching_traces[-1],
         )
         updated_locked = replace(locked, switching_traces=traces)
         scenarios.append(
@@ -927,15 +927,105 @@ def test_protective_cooldown_is_defensive_approve_and_not_park() -> None:
                 windows=(*scenario.windows[:-1], updated_locked),
             )
         )
+    return replace(result, scenarios=tuple(scenarios))
 
-    result = replace(passing, scenarios=tuple(scenarios))
+
+def _mutate_locked_cooldown(result, mutation: str):
+    scenarios = []
+    for scenario in result.scenarios:
+        locked = scenario.windows[-1]
+        traces = list(locked.switching_traces)
+        cooldown_start = len(traces) - 21
+        if mutation == "missing":
+            del traces[cooldown_start + 9]
+        elif mutation == "out_of_order":
+            traces[cooldown_start + 9] = replace(
+                traces[cooldown_start + 9], signal_state="idle"
+            )
+        elif mutation == "nineteen_sessions":
+            traces[cooldown_start] = replace(
+                traces[cooldown_start], signal_state="idle"
+            )
+        elif mutation == "twenty_one_sessions":
+            template = traces[cooldown_start]
+            traces[cooldown_start - 1] = replace(
+                traces[cooldown_start - 1],
+                signal_state="protective_cooldown",
+                signal_regime="DEFENSIVE",
+                intended_allocation=template.intended_allocation,
+                risk_disposition="APPROVE",
+                risk_reason_codes=(),
+                replay_target_allocation=template.replay_target_allocation,
+                executed_allocation=template.executed_allocation,
+            )
+        elif mutation == "stale_base_signal":
+            traces[-1] = replace(
+                traces[-1], signal_session=traces[-2].signal_session
+            )
+        else:  # pragma: no cover - test helper guard
+            raise AssertionError(f"unsupported mutation: {mutation}")
+        updated_locked = replace(locked, switching_traces=tuple(traces))
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
+                    ),
+                ),
+                windows=(*scenario.windows[:-1], updated_locked),
+            )
+        )
+    return replace(result, scenarios=tuple(scenarios))
+
+
+def test_protective_cooldown_is_exactly_20_then_fresh_base_signal() -> None:
+    result = _with_valid_locked_cooldown(
+        _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    )
 
     assert all(
         scenario.windows[-1].episode_summary.parked_session_count == 0
         for scenario in result.scenarios
     )
+    for scenario in result.scenarios:
+        traces = scenario.windows[-1].switching_traces
+        assert [trace.signal_state for trace in traces[-21:-1]] == [
+            "protective_cooldown"
+        ] * 20
+        assert traces[-1].signal_state != "protective_cooldown"
+        assert traces[-1].signal_session == traces[-2].execution_session
     assert evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE") == (
         TQQQ_ACCEPTANCE_PASS
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing",
+        "out_of_order",
+        "nineteen_sessions",
+        "twenty_one_sessions",
+        "stale_base_signal",
+    ),
+)
+def test_acceptance_rejects_malformed_protective_cooldown_sequence(
+    mutation: str,
+) -> None:
+    valid = _with_valid_locked_cooldown(
+        _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            _mutate_locked_cooldown(valid, mutation), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
 
 

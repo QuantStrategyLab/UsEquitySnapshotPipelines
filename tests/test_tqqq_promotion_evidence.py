@@ -21,6 +21,7 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
 )
 from us_equity_strategies import entrypoints
 
+import us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration as acquisition_module
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     FROZEN_XNYS_SESSIONS,
@@ -227,6 +228,50 @@ def _config() -> dict[str, object]:
         "input_usage_scope": "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION",
         "session_class": "paper",
     }
+
+
+def test_acquisition_freezes_distinct_signal_model_before_authorization() -> None:
+    authority = SimpleNamespace(
+        risk_standard_id="qpk.strategy_promotion_risk_standard.zh-CN.v2",
+        risk_standard_sha256="2" * 64,
+        authority_receipt_sha256="3" * 64,
+        platform_execution_revision="4" * 40,
+    )
+
+    config = acquisition_module._config(authority, session_class="paper")
+
+    assert config["signal_model"] == (
+        "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
+    )
+    assert evidence_module._validate_config(config) == config
+
+
+def test_evidence_rejects_legacy_signal_model_instead_of_rewriting_identity() -> None:
+    legacy = _config()
+    legacy["signal_model"] = "ues_tqqq_growth_income_core_parity"
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="invalid frozen config"):
+        evidence_module._validate_config(legacy)
+
+
+def test_acquisition_readback_requires_learning_only_lifecycle_claims() -> None:
+    claims = {
+        "learning_only": True,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+
+    assert acquisition_module._is_learning_only_evidence_readback(
+        {"lifecycle_claims": claims}, claims
+    )
+    assert not acquisition_module._is_learning_only_evidence_readback(
+        {"lifecycle_claims": {**claims, "learning_only": False}}, claims
+    )
+    assert not acquisition_module._is_learning_only_evidence_readback(
+        {"lifecycle_claims": claims}, {**claims, "promotion_eligible": True}
+    )
 
 
 def test_consumer_contract_requires_direct_ues_core_parity_seam() -> None:
@@ -790,6 +835,41 @@ def test_episode_reports_boxx_cash_and_park_separately() -> None:
     assert summary.first_park_session == park_session
     assert replay.decision_count == replay.risk_assessment_count == 3
     assert cash_session < park_session
+
+
+def test_mid_window_risk_non_approve_counts_park_from_execution_session() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
+    producer = _episode_producer(sessions)
+    start, park_session, end = sessions[258:261]
+    calls = 0
+
+    def evaluate(_ctx, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _approved_result({"BOXX": 0.20}, signal_state="idle")
+        return SimpleNamespace(
+            assessment=SimpleNamespace(
+                outcome="REJECT",
+                reason_codes=("MATERIAL_RISK_REJECTION",),
+                execution_authorized=False,
+            ),
+            decision=SimpleNamespace(positions=(), diagnostics={}),
+        )
+
+    with patch.object(
+        evidence_module,
+        "evaluate_tqqq_growth_income_promotion_research",
+        side_effect=evaluate,
+    ):
+        replay = producer(start, end, 5, producer.identity.initial_state_sha256)
+
+    assert calls == replay.decision_count == replay.risk_assessment_count == 2
+    assert replay.episode_summary.first_park_session == park_session
+    assert replay.episode_summary.parked_session_count == 2
+    assert sum(
+        trace.risk_disposition == "PARK" for trace in replay.switching_traces
+    ) == 2
 
 
 def test_episode_breaker_reason_is_sticky() -> None:

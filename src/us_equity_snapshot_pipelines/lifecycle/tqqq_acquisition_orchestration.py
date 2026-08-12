@@ -30,11 +30,13 @@ from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     validate_evidence_package_v2,
 )
+
 from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
 from .tqqq_promotion_evidence import (
+    _SIGNAL_MODEL,
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
 )
@@ -480,7 +482,7 @@ def _config(
     return {
         "schema_version": "tqqq_etf_only_replay_config.v1",
         "strategy_profile": _PROFILE,
-        "signal_model": "ues_tqqq_growth_income_core_parity",
+        "signal_model": _SIGNAL_MODEL,
         "signal_window_sessions": 257,
         "tqqq_nominal_cap": 0.15,
         "qqqm_nominal_cap": 0.50,
@@ -494,6 +496,21 @@ def _config(
         "input_usage_scope": INPUT_USAGE_SCOPE,
         "session_class": session_class,
     }
+
+
+def _is_learning_only_evidence_readback(
+    evidence_payload: Mapping[str, Any], terminal_payload: Mapping[str, Any]
+) -> bool:
+    expected = {
+        "learning_only": True,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+    return evidence_payload.get("lifecycle_claims") == expected and all(
+        terminal_payload.get(field) is value for field, value in expected.items()
+    )
 
 
 def _private_directory(path: Path) -> None:
@@ -555,7 +572,7 @@ def _publish_input(
         temporary = None
     except TqqqOrchestrationError:
         raise
-    except Exception as exc:  # noqa: BLE001 - the diagnostic must capture any root exception
+    except Exception as exc:
         raise TqqqOrchestrationError(
             "content-addressed TQQQ input publication failed"
         ) from exc
@@ -970,7 +987,7 @@ def orchestrate_existing_tqqq_snapshot_diagnostic(
             config_payload=config,
             mandate_receipt_sha256=mandate_receipt_digest,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - diagnostic must capture the root exception
         root_error = _root_exception(exc)
         return {
             "config_digest": config_digest,
@@ -1167,22 +1184,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                     != consumption.receipt_digest
                     for result in [*fold_results, locked_oos_result]
                 )
-                or evidence_payload.get("lifecycle_claims")
-                != {
-                    "learning_only": False,
-                    "promotion_eligible": False,
-                    "live_ready": False,
-                    "size_zero_required": True,
-                    "no_order": True,
-                }
-                or any(
-                    terminal_payload.get(field) is not expected
-                    for field, expected in {
-                        "promotion_eligible": False,
-                        "live_ready": False,
-                        "size_zero_required": True,
-                        "no_order": True,
-                    }.items()
+                or not _is_learning_only_evidence_readback(
+                    evidence_payload, terminal_payload
                 )
                 or validate_evidence_package_v2(evidence_payload, base_dir=evidence_root)
             ):
@@ -1368,22 +1371,8 @@ def orchestrate_tqqq_promotion(
                     != consumption.receipt_digest
                     for result in [*fold_results, locked_oos_result]
                 )
-                or evidence_payload.get("lifecycle_claims")
-                != {
-                    "learning_only": False,
-                    "promotion_eligible": False,
-                    "live_ready": False,
-                    "size_zero_required": True,
-                    "no_order": True,
-                }
-                or any(
-                    terminal_payload.get(field) is not expected
-                    for field, expected in {
-                        "promotion_eligible": False,
-                        "live_ready": False,
-                        "size_zero_required": True,
-                        "no_order": True,
-                    }.items()
+                or not _is_learning_only_evidence_readback(
+                    evidence_payload, terminal_payload
                 )
             ):
                 raise ValueError("invalid evidence readback")

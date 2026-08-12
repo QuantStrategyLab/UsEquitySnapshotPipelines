@@ -862,6 +862,8 @@ def _validate_switching_traces(
         raise TqqqPromotionContractError("complete switching traces are required")
     execution_sessions: list[date] = []
     approved_count = 0
+    cooldown_count = 0
+    cooldown_last_execution: date | None = None
     cost_rate = total_cost_bps / 10_000.0
     allocation_tolerance = cost_rate / (1.0 - cost_rate) + 1e-9
     states = {
@@ -895,6 +897,16 @@ def _validate_switching_traces(
         intended = _validated_switching_allocation(trace.intended_allocation)
         target = _validated_switching_allocation(trace.replay_target_allocation)
         executed = _validated_switching_allocation(trace.executed_allocation)
+        if cooldown_count and trace.signal_state != "protective_cooldown":
+            if (
+                cooldown_count != 20
+                or trace.signal_session != cooldown_last_execution
+                or trace.risk_disposition != "APPROVE"
+                or trace.signal_state in {"parked", "risk_engine_non_approve"}
+            ):
+                raise TqqqPromotionContractError("invalid protective cooldown sequence")
+            cooldown_count = 0
+            cooldown_last_execution = None
         for allocation in (intended, target):
             if (
                 any(
@@ -959,10 +971,28 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("risk-on switching execution drift")
         elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
+        if trace.signal_state == "protective_cooldown":
+            if (
+                trace.risk_reason_codes
+                or intended["TQQQ"] > 1e-12
+                or intended["QQQM"] > 1e-12
+                or executed["TQQQ"] > 1e-12
+                or executed["QQQM"] > 1e-12
+                or not any(
+                    _same_number(intended["BOXX"], expected)
+                    for expected in (0.10, 0.20)
+                )
+            ):
+                raise TqqqPromotionContractError("invalid protective cooldown allocation")
+            cooldown_count += 1
+            cooldown_last_execution = trace.execution_session
+            if cooldown_count > 20:
+                raise TqqqPromotionContractError("invalid protective cooldown sequence")
         execution_sessions.append(trace.execution_session)
     if (
         tuple(execution_sessions) != sessions
         or approved_count != decision_count
+        or cooldown_count
     ):
         raise TqqqPromotionContractError("invalid switching trace order")
 
