@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -31,6 +32,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_forward_observation import (
     APPLICATION_CALL_CEILING,
+    COLLECTOR_RUNTIME_FILES,
     ORDERED_SYMBOLS,
     PLAN_SHA256,
     CollectionResult,
@@ -46,6 +48,28 @@ _HOST = "127.0.0.1"
 _PORT = 4001
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _ATTEMPT = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(started|completed)\.json$")
+_RUNTIME_MODULES = {
+    "collector": "us_equity_snapshot_pipelines.lifecycle.tqqq_forward_observation",
+    "collector_cli": "us_equity_snapshot_pipelines.tqqq_forward_observation_cli",
+    "request_bound_ibkr": (
+        "us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition"
+    ),
+    "runtime_identity": (
+        "us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration"
+    ),
+    "atomic_publisher": "us_equity_snapshot_pipelines.tqqq_r1_snapshot",
+}
+if set(_RUNTIME_MODULES) != set(COLLECTOR_RUNTIME_FILES):
+    raise RuntimeError("collector runtime file contract mismatch")
+
+
+def _runtime_files_sha256() -> dict[str, str]:
+    files: dict[str, str] = {}
+    for name, module_name in _RUNTIME_MODULES.items():
+        module = importlib.import_module(module_name)
+        path = Path(module.__file__).resolve()
+        files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
 
 
 def validate_local_adapter_authority(receipt: Mapping[str, Any]) -> None:
@@ -595,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             validate_local_adapter_authority(authority)
             _require_filevault(args.output_root)
+            if _runtime_files_sha256() != authority["collector_runtime_files_sha256"]:
+                raise ForwardObservationError("collector runtime identity mismatch")
             runtime_revision, _runtime_tree = resolve_tqqq_runtime_identity()
             if runtime_revision != args.runtime_commit:
                 raise ForwardObservationError("collector runtime identity mismatch")

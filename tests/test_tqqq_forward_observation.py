@@ -25,6 +25,10 @@ from us_equity_snapshot_pipelines.lifecycle import tqqq_forward_observation as f
 
 RUNTIME_COMMIT = "a" * 40
 EMPTY_SESSIONS_SHA256 = hashlib.sha256(b"[]").hexdigest()
+RUNTIME_FILES_SHA256 = {
+    name: hashlib.sha256(name.encode()).hexdigest()
+    for name in forward.COLLECTOR_RUNTIME_FILES
+}
 
 
 def _private_json(path: Path, payload: object) -> str:
@@ -64,6 +68,7 @@ def _authority(tmp_path: Path, *, runtime_commit: str = RUNTIME_COMMIT) -> tuple
             "authority_scope": "RESEARCH_ONLY",
             "candidate_contract_sha256": forward.CANDIDATE_CONTRACT_SHA256,
             "collector_commit": runtime_commit,
+            "collector_runtime_files_sha256": RUNTIME_FILES_SHA256,
             "entitlement_receipt": {
                 "path": str(entitlement),
                 "sha256": entitlement_sha,
@@ -567,6 +572,7 @@ def test_cli_terminal_is_sanitized_and_bounds_ninth_application_call(
         "resolve_tqqq_runtime_identity",
         lambda: (RUNTIME_COMMIT, "b" * 40),
     )
+    monkeypatch.setattr(cli, "_runtime_files_sha256", lambda: RUNTIME_FILES_SHA256)
     monkeypatch.setattr(cli, "_runtime", lambda _root: (SimpleNamespace(), object()))
 
     def collect_once(**kwargs):
@@ -632,6 +638,7 @@ def test_cli_reports_failed_provider_calls_and_sanitizes_teardown(
         "resolve_tqqq_runtime_identity",
         lambda: (RUNTIME_COMMIT, "b" * 40),
     )
+    monkeypatch.setattr(cli, "_runtime_files_sha256", lambda: RUNTIME_FILES_SHA256)
     monkeypatch.setattr(cli, "_runtime", lambda _root: (app, object()))
     monkeypatch.setattr(
         cli,
@@ -677,6 +684,7 @@ def test_cli_actual_runtime_revision_mismatch_fails_before_provider_runtime(
         "resolve_tqqq_runtime_identity",
         lambda: ("f" * 40, "b" * 40),
     )
+    monkeypatch.setattr(cli, "_runtime_files_sha256", lambda: RUNTIME_FILES_SHA256)
     monkeypatch.setattr(cli, "_runtime", lambda _root: runtime_calls.append("runtime"))
 
     assert cli.main(
@@ -816,6 +824,47 @@ def test_installer_runtime_module_must_resolve_inside_selected_interpreter(
     )
     with pytest.raises(ValueError, match="runtime identity"):
         installer._runtime_module(Path("/fixed/runtime/bin/python"))
+
+
+def test_installer_runtime_files_must_match_commit_and_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        installer,
+        "_runtime_files_sha256",
+        lambda _python: RUNTIME_FILES_SHA256,
+    )
+    monkeypatch.setattr(
+        installer,
+        "_git_runtime_files_sha256",
+        lambda _commit: {**RUNTIME_FILES_SHA256, "collector": "0" * 64},
+    )
+    with pytest.raises(ValueError, match="runtime identity"):
+        installer._validate_runtime_files(
+            Path("/fixed/runtime/bin/python"),
+            RUNTIME_COMMIT,
+            RUNTIME_FILES_SHA256,
+        )
+
+
+def test_installer_isolated_ibapi_probe_must_resolve_inside_approved_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            [], 0, stdout="/outside/ibapi/__init__.py\n", stderr=""
+        )
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    with pytest.raises(ValueError, match="IBAPI"):
+        installer._validate_ibapi_runtime(
+            Path("/fixed/runtime/bin/python"),
+            Path("/approved/ibapi-root"),
+        )
+    assert commands[0][1] == "-I"
 
 
 def test_installer_filesystem_failure_returns_parked_without_launchctl(
