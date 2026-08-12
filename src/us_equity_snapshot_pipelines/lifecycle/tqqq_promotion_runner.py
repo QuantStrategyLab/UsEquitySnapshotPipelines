@@ -827,25 +827,38 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("switching target exposure cap exceeded")
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
+        if trace.risk_disposition == "PARK":
+            if (
+                trace.risk_reason_codes
+                not in {
+                    ("ACCOUNT_DRAWDOWN",),
+                    ("CONSECUTIVE_TQQQ_LOSING_EXITS",),
+                }
+                or any(executed[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
+                or not _same_number(executed["cash"], 1.0)
+            ):
+                raise TqqqPromotionContractError("invalid parked switching trace")
+            if trace.signal_state == "parked":
+                if (
+                    any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
+                    or not _same_number(target["cash"], 1.0)
+                ):
+                    raise TqqqPromotionContractError("invalid parked switching trace")
+            else:
+                approved_count += 1
+                intended_risk = intended["TQQQ"] + intended["QQQM"]
+                if trace.signal_regime == "RISK_ON":
+                    if intended_risk <= 0.0:
+                        raise TqqqPromotionContractError("invalid parked switching trace")
+                elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0:
+                    raise TqqqPromotionContractError("invalid parked switching trace")
+            execution_sessions.append(trace.execution_session)
+            continue
         if any(
             abs(executed[symbol] - target[symbol]) > allocation_tolerance
             for symbol in _PARITY_ASSETS
         ):
             raise TqqqPromotionContractError("cost-adjusted execution allocation drift")
-        if trace.risk_disposition == "PARK":
-            if (
-                trace.signal_state != "parked"
-                or trace.risk_reason_codes
-                not in {
-                    ("ACCOUNT_DRAWDOWN",),
-                    ("CONSECUTIVE_TQQQ_LOSING_EXITS",),
-                }
-                or any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
-                or not _same_number(target["cash"], 1.0)
-            ):
-                raise TqqqPromotionContractError("invalid parked switching trace")
-            execution_sessions.append(trace.execution_session)
-            continue
         if trace.risk_disposition != "APPROVE":
             raise TqqqPromotionContractError("invalid switching risk disposition")
         approved_count += 1

@@ -1127,6 +1127,45 @@ def test_parked_trace_reaches_frozen_reject_terminal() -> None:
     )
 
 
+def test_post_approval_breaker_trace_reaches_frozen_reject_terminal() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        parked = replace(
+            locked.switching_traces[-1],
+            risk_disposition="PARK",
+            risk_reason_codes=("CONSECUTIVE_TQQQ_LOSING_EXITS",),
+            executed_allocation=cash,
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        switching_traces=(*locked.switching_traces[:-1], parked),
+                        episode_summary=replace(
+                            locked.episode_summary,
+                            parked_session_count=1,
+                            breaker_reason="CONSECUTIVE_TQQQ_LOSING_EXITS",
+                            first_park_session=locked.end_date,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_REJECT
+    )
+
+
 def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> None:
     result = _acceptance_result(candidate_returns=(0.013, 0.012, 0.011))
     defensive = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.50), ("cash", 0.50))

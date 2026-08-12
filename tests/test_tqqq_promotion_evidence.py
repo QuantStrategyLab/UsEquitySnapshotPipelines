@@ -733,6 +733,49 @@ def test_parked_episode_liquidates_and_reports_without_reusing_stale_trace() -> 
     )
 
 
+def test_target_exit_breaker_liquidates_remaining_assets_and_reports_park() -> None:
+    previous_session = date(2025, 1, 2)
+    session = date(2025, 1, 3)
+    producer = _episode_producer((previous_session, session))
+    producer._reset(5, producer.identity.initial_state_sha256)
+    risk_on = (("BOXX", 0.50), ("QQQM", 0.10), ("TQQQ", 0.0), ("cash", 0.40))
+    producer._switching_traces.append(
+        TqqqSwitchingTrace(
+            signal_session=previous_session,
+            execution_session=session,
+            signal_state="macro_delever",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=(),
+        )
+    )
+    producer._state = _ReplayState(
+        cash=80_000.0,
+        quantities={"TQQQ": 100.0, "QQQM": 100.0, "BOXX": 0.0},
+        tqqq_entry_price=110.0,
+        tqqq_stop_price=104.50,
+        pending_weights={"TQQQ": 0.0, "QQQM": 0.10, "BOXX": 0.50},
+        consecutive_losing_exits=4,
+        last_session=previous_session,
+    )
+
+    producer._trade_to_target(session, 5)
+
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+    assert producer._state.parked is True
+    parked = producer.switching_traces[-1]
+    assert parked.signal_state == "macro_delever"
+    assert parked.risk_disposition == "PARK"
+    assert parked.risk_reason_codes == ("CONSECUTIVE_TQQQ_LOSING_EXITS",)
+    assert parked.intended_allocation == parked.replay_target_allocation == risk_on
+    assert dict(parked.executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
+
+
 def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session)
