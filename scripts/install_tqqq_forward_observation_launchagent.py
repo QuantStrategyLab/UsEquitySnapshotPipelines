@@ -28,6 +28,7 @@ def _runtime_commit(runtime_python: Path) -> str:
     identity = subprocess.run(
         [
             str(runtime_python),
+            "-I",
             "-c",
             (
                 "from us_equity_snapshot_pipelines.lifecycle."
@@ -63,7 +64,9 @@ def _runtime_module(runtime_python: Path) -> Path:
         env={"PATH": os.environ.get("PATH", "")},
     )
     resolved = Path(module.stdout.strip())
-    if not resolved.is_absolute() or not resolved.is_relative_to(runtime_python.parent.parent):
+    if not resolved.is_absolute() or not resolved.is_relative_to(
+        runtime_python.parent.parent.resolve()
+    ):
         raise ValueError("collector runtime identity invalid")
     return resolved
 
@@ -98,6 +101,7 @@ def build_launch_agent_plist(
             "Label": LAUNCH_AGENT_LABEL,
             "ProgramArguments": [
                 str(runtime_python),
+                "-I",
                 "-m",
                 "us_equity_snapshot_pipelines.tqqq_forward_observation_cli",
                 "--authority-receipt",

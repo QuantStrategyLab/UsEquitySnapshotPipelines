@@ -743,6 +743,7 @@ def test_launchagent_contract_is_fixed_private_and_never_run_at_load(tmp_path: P
     assert "KeepAlive" not in plist
     assert plist["ProgramArguments"] == [
         "/fixed/runtime/bin/python",
+        "-I",
         "-m",
         "us_equity_snapshot_pipelines.tqqq_forward_observation_cli",
         "--authority-receipt",
@@ -773,14 +774,34 @@ def test_activation_deadline_precedes_first_non_run_at_load_trigger() -> None:
 def test_installer_runtime_identity_must_match_fixed_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess([], 0, stdout=("f" * 40) + "\n", stderr="")
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+    assert installer._runtime_commit(Path("/fixed/runtime/bin/python")) == "f" * 40
+    assert commands[0][1] == "-I"
+
+
+def test_installer_runtime_module_resolves_symlinked_runtime_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    canonical = tmp_path / "canonical" / "venv"
+    canonical.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path / "canonical", target_is_directory=True)
+    runtime_python = alias / "venv" / "bin" / "python"
+    module = canonical / "venv" / "us_equity_snapshot_pipelines" / "__init__.py"
     monkeypatch.setattr(
         installer.subprocess,
         "run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, stdout=("f" * 40) + "\n", stderr=""
+            [], 0, stdout=str(module) + "\n", stderr=""
         ),
     )
-    assert installer._runtime_commit(Path("/fixed/runtime/bin/python")) == "f" * 40
+    assert installer._runtime_module(runtime_python) == module
 
 
 def test_installer_runtime_module_must_resolve_inside_selected_interpreter(
