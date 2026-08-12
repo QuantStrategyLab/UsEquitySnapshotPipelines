@@ -35,7 +35,6 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
     orchestrate_tqqq_promotion,
 )
 
-
 RUNNER_REVISION = "a" * 40
 RUNNER_TREE_SHA = "b" * 40
 AUTHORITY_SHA256 = "c" * 64
@@ -137,7 +136,7 @@ def _fake_producer(
         + mandate_receipt_sha256
         + '"}}],"locked_oos_result":{"params":{"mandate_receipt_sha256":"'
         + mandate_receipt_sha256
-        + '"}}}},"lifecycle_claims":{"learning_only":false,"promotion_eligible":false,'
+        + '"}}}},"lifecycle_claims":{"learning_only":true,"promotion_eligible":false,'
         '"live_ready":false,"no_order":true,"size_zero_required":true}}'
     )
     terminal.write_text(
@@ -146,7 +145,8 @@ def _fake_producer(
         + '","input_manifest_sha256":"'
         + input_manifest_sha256
         + '","status":"EVIDENCE_V2_COMPLETE","promotion_eligible":false,'
-        '"live_ready":false,"no_order":true,"size_zero_required":true}'
+        '"learning_only":true,"live_ready":false,"no_order":true,'
+        '"size_zero_required":true}'
     )
     return {
         "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
@@ -222,7 +222,9 @@ def test_exact_four_results_publish_then_consume_one_mandate_and_run_existing_pr
         assert config_payload == {
             "schema_version": "tqqq_etf_only_replay_config.v1",
             "strategy_profile": "tqqq_core_parity_v1",
-            "signal_model": "ues_tqqq_growth_income_core_parity",
+            "signal_model": (
+                "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
+            ),
             "signal_window_sessions": 257,
             "tqqq_nominal_cap": 0.15,
             "qqqm_nominal_cap": 0.50,
@@ -909,7 +911,7 @@ def test_committed_caller_has_historical_data_only_api_surface() -> None:
     assert acquisition_source.count("self.reqContractDetails(") == 1
     assert acquisition_source.count("self.reqHistoricalData(") == 1
     assert acquisition_source.count("self.cancelHistoricalData(") == 1
-    combined = "\n".join((cli_source, acquisition_source))
+    combined = f"{cli_source}\n{acquisition_source}"
     for forbidden in (
         "reqAccount",
         "reqPositions",

@@ -37,6 +37,7 @@ _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
 _EFFECTIVE_EXPOSURE_CAP = 0.50
 _COST_SCENARIOS_BPS = (5, 10, 15)
+_COOLDOWN_TRIGGER_REASON = "FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT"
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 7, 2)
 _LOCKED_OOS_END = date(2026, 7, 31)
@@ -862,6 +863,8 @@ def _validate_switching_traces(
         raise TqqqPromotionContractError("complete switching traces are required")
     execution_sessions: list[date] = []
     approved_count = 0
+    cooldown_count = 0
+    cooldown_last_execution: date | None = None
     cost_rate = total_cost_bps / 10_000.0
     allocation_tolerance = cost_rate / (1.0 - cost_rate) + 1e-9
     states = {
@@ -895,6 +898,14 @@ def _validate_switching_traces(
         intended = _validated_switching_allocation(trace.intended_allocation)
         target = _validated_switching_allocation(trace.replay_target_allocation)
         executed = _validated_switching_allocation(trace.executed_allocation)
+        if cooldown_count and trace.signal_state != "protective_cooldown":
+            if (
+                cooldown_count != 20
+                or trace.signal_session != cooldown_last_execution
+            ):
+                raise TqqqPromotionContractError("invalid protective cooldown sequence")
+            cooldown_count = 0
+            cooldown_last_execution = None
         for allocation in (intended, target):
             if (
                 any(
@@ -910,6 +921,11 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("switching target exposure cap exceeded")
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
+        if (
+            trace.signal_state == "protective_cooldown"
+            and trace.risk_disposition != "APPROVE"
+        ):
+            raise TqqqPromotionContractError("invalid protective cooldown sequence")
         if trace.risk_disposition == "PARK":
             execution_is_cash = all(
                 executed[symbol] <= 1e-12 for symbol in _ALLOWED_ASSETS
@@ -959,10 +975,31 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("risk-on switching execution drift")
         elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
+        if trace.signal_state == "protective_cooldown":
+            expected_reason_codes = (
+                (_COOLDOWN_TRIGGER_REASON,) if cooldown_count == 0 else ()
+            )
+            if (
+                trace.risk_reason_codes != expected_reason_codes
+                or intended["TQQQ"] > 1e-12
+                or intended["QQQM"] > 1e-12
+                or executed["TQQQ"] > 1e-12
+                or executed["QQQM"] > 1e-12
+                or not any(
+                    _same_number(intended["BOXX"], expected)
+                    for expected in (0.10, 0.20)
+                )
+            ):
+                raise TqqqPromotionContractError("invalid protective cooldown allocation")
+            cooldown_count += 1
+            cooldown_last_execution = trace.execution_session
+            if cooldown_count > 20:
+                raise TqqqPromotionContractError("invalid protective cooldown sequence")
         execution_sessions.append(trace.execution_session)
     if (
         tuple(execution_sessions) != sessions
         or approved_count != decision_count
+        or cooldown_count
     ):
         raise TqqqPromotionContractError("invalid switching trace order")
 

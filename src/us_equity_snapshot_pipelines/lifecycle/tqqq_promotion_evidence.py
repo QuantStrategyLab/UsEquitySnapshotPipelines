@@ -33,6 +33,7 @@ from us_equity_strategies.entrypoints import (
 )
 
 from .tqqq_promotion_runner import (
+    _COOLDOWN_TRIGGER_REASON,
     _EXACT_COMMON_ELIGIBILITY,
     _FROZEN_CALENDAR_SOURCE_REVISION,
     _LOCKED_OOS_END,
@@ -276,8 +277,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if (
         config["schema_version"] != _CONFIG_SCHEMA
         or config["strategy_profile"] != _PROFILE
-        or config["signal_model"]
-        not in {_SIGNAL_MODEL, "ues_tqqq_growth_income_core_parity"}
+        or config["signal_model"] != _SIGNAL_MODEL
         or config["signal_window_sessions"] != 257
         or _finite(config["tqqq_nominal_cap"], "TQQQ cap") != 0.15
         or _finite(config["qqqm_nominal_cap"], "QQQM cap") != 0.50
@@ -294,7 +294,6 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     _digest_text(config["risk_standard_sha256"], 64, "risk standard digest")
     _digest_text(config["authority_receipt_sha256"], 64, "authority digest")
     _digest_text(config["platform_execution_revision"], 40, "platform revision")
-    config["signal_model"] = _SIGNAL_MODEL
     return config
 
 
@@ -1006,6 +1005,14 @@ class _ImmutableReplayProducer:
                 raise TqqqPromotionEvidenceError("protective cooldown sizing failed closed")
             signal_state = "protective_cooldown"
             regimes[signal_state] = "DEFENSIVE"
+        risk_reason_codes = tuple(assessment.reason_codes)
+        if protective_cooldown:
+            risk_reason_codes = (
+                (_COOLDOWN_TRIGGER_REASON,)
+                if not self._switching_traces
+                or self._switching_traces[-1].signal_state != "protective_cooldown"
+                else ()
+            )
         intended = {**targets, "cash": 1.0 - math.fsum(targets.values())}
         if intended["cash"] < -1e-12:
             raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
@@ -1019,7 +1026,7 @@ class _ImmutableReplayProducer:
                 signal_regime=regimes[signal_state],
                 intended_allocation=intended_allocation,
                 risk_disposition=assessment.outcome,
-                risk_reason_codes=tuple(assessment.reason_codes),
+                risk_reason_codes=risk_reason_codes,
                 replay_target_allocation=intended_allocation,
                 executed_allocation=(),
             )
@@ -1115,7 +1122,11 @@ class _ImmutableReplayProducer:
                 if state.quantities[symbol] > 1e-12:
                     exposure_counts[symbol] += 1
                     has_exposure = True
-            if state.parked:
+            if (
+                state.parked
+                and state.first_park_session is not None
+                and qqq.session >= state.first_park_session
+            ):
                 parked_session_count += 1
             elif not has_exposure:
                 cash_only_session_count += 1
