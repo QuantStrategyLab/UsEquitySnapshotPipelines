@@ -213,10 +213,12 @@ def _observation_payload(
     runtime_commit: str,
     authority_receipt_sha256: str,
     provider_identity: Mapping[str, Any],
+    request_end: datetime,
 ) -> bytes:
     if tuple(results) != ORDERED_SYMBOLS:
         raise ForwardObservationError("strict daily observation invalid")
     observations: list[dict[str, Any]] = []
+    expected_end_datetime = request_end.isoformat().replace("+00:00", "Z")
     for symbol in ORDERED_SYMBOLS:
         result = results[symbol]
         if not isinstance(result, StrictAdjustedHistoryResult) or len(result.candles) != 1:
@@ -229,6 +231,7 @@ def _observation_payload(
             or provenance.symbol != symbol
             or provenance.exchange != "SMART"
             or provenance.currency != "USD"
+            or provenance.end_datetime != expected_end_datetime
             or provenance.duration != "1 D"
             or provenance.bar_size != "1 day"
             or provenance.what_to_show != "ADJUSTED_LAST"
@@ -332,8 +335,9 @@ def collect_once(
         return CollectionResult("FROZEN_PLAN_COMPLETE", 0, None)
     session = _FROZEN_SESSIONS[len(completed)]
     close = _session_close(session)
+    request_end = close + timedelta(minutes=1)
     deadline = _next_session_open(session)
-    if observed_now < close:
+    if observed_now < request_end:
         return CollectionResult("NO_FROZEN_SESSION_READY", 0, None)
     if observed_now >= deadline:
         _invalidate(ledger, "FROZEN_SESSION_MISSED")
@@ -345,7 +349,6 @@ def collect_once(
 
     results: dict[str, StrictAdjustedHistoryResult] = {}
     try:
-        request_end = close + timedelta(minutes=1)
         for symbol in ORDERED_SYMBOLS:
             results[symbol] = acquire_symbol(symbol, session, request_end)
         payload = _observation_payload(
@@ -354,9 +357,10 @@ def collect_once(
             runtime_commit=runtime_commit,
             authority_receipt_sha256=authority_receipt_sha256,
             provider_identity=authority_receipt["provider_identity"],
+            request_end=request_end,
         )
         digest = ledger.publish_observation(payload)
-        if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+        if digest != hashlib.sha256(payload).hexdigest():
             raise ForwardObservationError("strict daily observation invalid")
         ledger.complete_session(session, digest)
     except Exception:  # noqa: BLE001 - injected provider failures must invalidate
