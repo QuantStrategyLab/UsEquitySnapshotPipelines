@@ -902,8 +902,6 @@ def _validate_switching_traces(
             if (
                 cooldown_count != 20
                 or trace.signal_session != cooldown_last_execution
-                or trace.risk_disposition != "APPROVE"
-                or trace.signal_state in {"parked", "risk_engine_non_approve"}
             ):
                 raise TqqqPromotionContractError("invalid protective cooldown sequence")
             cooldown_count = 0

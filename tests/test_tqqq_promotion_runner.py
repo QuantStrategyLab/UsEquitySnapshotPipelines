@@ -23,6 +23,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     TqqqPromotionRunner,
     TqqqSwitchingTrace,
     TqqqWindowReplay,
+    _validate_switching_traces,
     _window_acceptance_source,
     build_tqqq_development_robustness_plan,
     build_tqqq_switching_characterization_contract,
@@ -1109,6 +1110,32 @@ def test_acceptance_rejects_park_interrupted_protective_cooldown() -> None:
     assert evaluate_tqqq_pre_result_acceptance(
         _with_park_interrupted_fold_cooldown(valid), "NOT_COMPARABLE"
     ) == TQQQ_ACCEPTANCE_INCONCLUSIVE
+
+
+def test_completed_cooldown_allows_fresh_risk_engine_park() -> None:
+    valid = _with_valid_locked_cooldown(
+        _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    )
+    scenario = valid.scenarios[0]
+    locked = scenario.windows[-1]
+    cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+    parked = replace(
+        locked.switching_traces[-1],
+        signal_state="risk_engine_non_approve",
+        signal_regime="DEFENSIVE",
+        intended_allocation=cash,
+        risk_disposition="PARK",
+        risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+        replay_target_allocation=cash,
+        executed_allocation=cash,
+    )
+
+    _validate_switching_traces(
+        (*locked.switching_traces[:-1], parked),
+        sessions=locked.sessions,
+        decision_count=locked.decision_count,
+        total_cost_bps=scenario.total_cost_bps,
+    )
 
 
 def test_acceptance_binds_locked_switching_allocations_to_backtest_result() -> None:
