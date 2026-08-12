@@ -40,6 +40,13 @@ SOURCE_CONTRACT_SHA256 = "382efce9a88a45d3ed9667516d8fe14f7eaa5eec539c02d5c72556
 RETENTION_EXPIRES_AT = "2028-02-16T00:00:00Z"
 ORDERED_SYMBOLS = ("QQQ", "TQQQ", "QQQM", "BOXX")
 APPLICATION_CALL_CEILING = len(ORDERED_SYMBOLS) * 2
+COLLECTOR_RUNTIME_FILES = (
+    "collector",
+    "collector_cli",
+    "request_bound_ibkr",
+    "runtime_identity",
+    "atomic_publisher",
+)
 
 _START_SESSION = date(2026, 8, 13)
 _END_SESSION_EXCLUSIVE = date(2027, 8, 16)
@@ -154,6 +161,7 @@ def validate_authority_contract(
         raise ForwardObservationError("plan receipt binding invalid")
     receipt = authority_receipt
     provider_identity = receipt.get("provider_identity")
+    runtime_files = receipt.get("collector_runtime_files_sha256")
     scheduling = receipt.get("scheduling")
     entitlement = receipt.get("entitlement_receipt")
     license_terms = receipt.get("license_source_terms_receipt")
@@ -161,6 +169,12 @@ def validate_authority_contract(
         receipt.get("authority_scope") != "RESEARCH_ONLY"
         or receipt.get("candidate_contract_sha256") != CANDIDATE_CONTRACT_SHA256
         or receipt.get("collector_commit") != runtime_commit
+        or not isinstance(runtime_files, Mapping)
+        or set(runtime_files) != set(COLLECTOR_RUNTIME_FILES)
+        or any(
+            not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+            for digest in runtime_files.values()
+        )
         or receipt.get("live_ready") is not False
         or receipt.get("no_order") is not True
         or receipt.get("plan_id") != PLAN_ID

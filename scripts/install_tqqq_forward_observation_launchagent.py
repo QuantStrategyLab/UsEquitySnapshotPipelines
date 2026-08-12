@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_forward_observation import PLAN_SHA256
 from us_equity_snapshot_pipelines.tqqq_forward_observation_cli import (
+    _RUNTIME_MODULES,
     _require_filevault,
     load_authority_receipts,
     validate_local_adapter_authority,
@@ -69,6 +71,75 @@ def _runtime_module(runtime_python: Path) -> Path:
     ):
         raise ValueError("collector runtime identity invalid")
     return resolved
+
+
+def _runtime_files_sha256(runtime_python: Path) -> dict[str, str]:
+    installed = subprocess.run(
+        [
+            str(runtime_python),
+            "-I",
+            "-c",
+            (
+                "import json; from us_equity_snapshot_pipelines."
+                "tqqq_forward_observation_cli import _runtime_files_sha256; "
+                "print(json.dumps(_runtime_files_sha256(), sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={"PATH": os.environ.get("PATH", "")},
+    ).stdout
+    parsed = json.loads(installed)
+    if not isinstance(parsed, dict):
+        raise ValueError("collector runtime identity invalid")
+    return parsed
+
+
+def _git_runtime_files_sha256(runtime_commit: str) -> dict[str, str]:
+    repository = Path(__file__).resolve().parents[1]
+    identities: dict[str, str] = {}
+    for name, module_name in _RUNTIME_MODULES.items():
+        relative = "src/" + module_name.replace(".", "/") + ".py"
+        payload = subprocess.run(
+            ["git", "-C", str(repository), "show", f"{runtime_commit}:{relative}"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        identities[name] = hashlib.sha256(payload).hexdigest()
+    return identities
+
+
+def _validate_runtime_files(
+    runtime_python: Path,
+    runtime_commit: str,
+    authority_files: object,
+) -> None:
+    installed = _runtime_files_sha256(runtime_python)
+    committed = _git_runtime_files_sha256(runtime_commit)
+    if installed != committed or installed != authority_files:
+        raise ValueError("collector runtime identity mismatch")
+
+
+def _validate_ibapi_runtime(runtime_python: Path, ibapi_root: Path) -> None:
+    imported = subprocess.run(
+        [
+            str(runtime_python),
+            "-I",
+            "-c",
+            "from pathlib import Path; import ibapi; print(Path(ibapi.__file__).resolve())",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={"PATH": os.environ.get("PATH", "")},
+    ).stdout.strip()
+    module = Path(imported)
+    if not module.is_absolute() or not module.is_relative_to(ibapi_root.resolve()):
+        raise ValueError("approved IBAPI runtime identity mismatch")
 
 
 def build_launch_agent_plist(
@@ -181,6 +252,12 @@ def _activation_gate(
             now=now,
         )
         validate_local_adapter_authority(authority)
+        _validate_runtime_files(
+            runtime_python,
+            runtime_commit,
+            authority.get("collector_runtime_files_sha256"),
+        )
+        _validate_ibapi_runtime(runtime_python, ibapi_root)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
         return False
     return True
