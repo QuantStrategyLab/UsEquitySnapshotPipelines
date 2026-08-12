@@ -763,6 +763,7 @@ def classify_tqqq_legacy_parity(
             if not change_set & {
                 "CLOSE_T_TO_OPEN_T_PLUS_1",
                 "COST_NORMALIZATION_5_10_15_BPS",
+                "RISK_ENGINE_AND_APPROVED_SIZING",
             }:
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
