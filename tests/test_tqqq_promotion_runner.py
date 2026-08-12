@@ -40,6 +40,21 @@ def _sha256(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _acceptance_source(metrics, traces: tuple[TqqqSwitchingTrace, ...]) -> str:
+    return "tqqq_promotion_runner:" + _sha256(
+        {
+            "qqq_total_return": metrics.qqq_total_return,
+            "boxx_total_return": metrics.boxx_total_return,
+            "signal_regimes": [trace.signal_regime for trace in traces],
+        }
+    )
+
+
+def _locked_cagr(total_return: float) -> float:
+    years = (_plan().locked_oos_end - _plan().locked_oos_start).days / 365.25
+    return (1.0 + total_return) ** (1.0 / years) - 1.0
+
+
 def _identity() -> TqqqPromotionIdentity:
     return TqqqPromotionIdentity(
         qpk_revision=QPK_REVISION,
@@ -112,11 +127,7 @@ class SyntheticReplay:
                 for value in FROZEN_XNYS_SESSIONS
                 if start_date.isoformat() <= value <= end_date.isoformat()
             )
-            sessions = (
-                window_sessions[0],
-                window_sessions[len(window_sessions) // 2],
-                window_sessions[-1],
-            )
+            sessions = window_sessions
         frozen_sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS)
         previous_session = {
             session: frozen_sessions[index - 1]
@@ -462,6 +473,20 @@ def test_legacy_parity_contract_is_session_first_and_fail_closed() -> None:
         )
         == "UNEXPLAINED_CORE_STRATEGY_DRIFT"
     )
+    sized = _parity_session(
+        target_allocation={"TQQQ": 0.10, "QQQM": 0.30, "BOXX": 0.0, "cash": 0.60},
+        gross_return=0.008,
+        net_return=0.007,
+    )
+    assert (
+        classify_tqqq_legacy_parity(
+            _legacy_identity(),
+            legacy,
+            (sized,),
+            explicit_architecture_changes=("RISK_ENGINE_AND_APPROVED_SIZING",),
+        )
+        == "EXPECTED_DIFFERENCE_DUE_TO_EXPLICIT_ARCHITECTURE_CHANGE"
+    )
     assert (
         classify_tqqq_legacy_parity(
             _legacy_identity(),
@@ -526,8 +551,6 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
         metrics = replace(
             locked.relative_metrics,
             strategy_total_return=candidate_return,
-            qqq_total_return=0.10,
-            boxx_total_return=0.03,
             strategy_max_drawdown=-0.05,
             qqq_max_drawdown=-0.08,
         )
@@ -542,6 +565,7 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
                         max_drawdown=-0.05,
                         benchmark_max_drawdown=-0.08,
                         oos_max_drawdown=-0.05,
+                        source_script=_acceptance_source(metrics, locked.switching_traces),
                     ),
                 ),
                 windows=(*scenario.windows[:-1], replace(locked, relative_metrics=metrics)),
@@ -561,32 +585,40 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
         ("BOXX", 0.50),
         ("cash", 0.50),
     )
-    defensive = replace(
-        passing,
-        scenarios=tuple(
+    defensive_scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        traces = tuple(
+            replace(
+                trace,
+                signal_state="idle",
+                signal_regime="DEFENSIVE",
+                intended_allocation=defensive_allocation,
+                replay_target_allocation=defensive_allocation,
+                executed_allocation=defensive_allocation,
+            )
+            for trace in locked.switching_traces
+        )
+        defensive_scenarios.append(
             replace(
                 scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_acceptance_source(locked.relative_metrics, traces),
+                    ),
+                ),
                 windows=(
                     *scenario.windows[:-1],
                     replace(
-                        scenario.windows[-1],
-                        switching_traces=tuple(
-                            replace(
-                                trace,
-                                signal_state="idle",
-                                signal_regime="DEFENSIVE",
-                                intended_allocation=defensive_allocation,
-                                replay_target_allocation=defensive_allocation,
-                                executed_allocation=defensive_allocation,
-                            )
-                            for trace in scenario.windows[-1].switching_traces
-                        ),
+                        locked,
+                        switching_traces=traces,
                     ),
                 ),
             )
-            for scenario in passing.scenarios
-        ),
-    )
+        )
+    defensive = replace(passing, scenarios=tuple(defensive_scenarios))
     assert evaluate_tqqq_pre_result_acceptance(defensive, "NOT_COMPARABLE") == (
         TQQQ_ACCEPTANCE_PASS
     )
@@ -942,6 +974,104 @@ def test_acceptance_requires_window_metrics_to_match_locked_backtest_result() ->
     )
 
 
+def test_acceptance_binds_threshold_benchmark_returns_to_locked_result() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        metrics = replace(
+            locked.relative_metrics,
+            qqq_total_return=0.01,
+            boxx_total_return=-0.10,
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(locked, relative_metrics=metrics),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_binds_defensive_only_classification_to_locked_result() -> None:
+    passing = _acceptance_result(candidate_returns=(0.013, 0.012, 0.011))
+    defensive = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.50), ("cash", 0.50))
+    risk_on = (("TQQQ", 0.0), ("QQQM", 0.50), ("BOXX", 0.0), ("cash", 0.50))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        metrics = replace(
+            locked.relative_metrics,
+            qqq_total_return=0.02,
+            boxx_total_return=0.08,
+            qqq_cagr=_locked_cagr(0.02),
+            strategy_max_drawdown=-0.01,
+            qqq_max_drawdown=-0.02,
+        )
+        defensive_traces = tuple(
+            replace(
+                trace,
+                signal_state="idle",
+                signal_regime="DEFENSIVE",
+                intended_allocation=defensive,
+                replay_target_allocation=defensive,
+                executed_allocation=defensive,
+            )
+            for trace in locked.switching_traces
+        )
+        relabeled = tuple(
+            replace(
+                trace,
+                signal_state="hold",
+                signal_regime="RISK_ON",
+                intended_allocation=risk_on,
+                replay_target_allocation=risk_on,
+                executed_allocation=risk_on,
+            )
+            for trace in defensive_traces
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        max_drawdown=-0.01,
+                        benchmark_cagr=_locked_cagr(0.02),
+                        benchmark_max_drawdown=-0.02,
+                        oos_max_drawdown=-0.01,
+                        source_script=_acceptance_source(metrics, defensive_traces),
+                    ),
+                ),
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        relative_metrics=metrics,
+                        switching_traces=relabeled,
+                    ),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
 def test_acceptance_requires_adjacent_frozen_xnys_switching_sessions() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     scenario = passing.scenarios[-1]
@@ -1098,16 +1228,24 @@ def test_parked_trace_reaches_frozen_reject_terminal() -> None:
             replay_target_allocation=cash,
             executed_allocation=cash,
         )
+        traces = (*locked.switching_traces[:-1], parked)
         scenarios.append(
             replace(
                 scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_acceptance_source(locked.relative_metrics, traces),
+                    ),
+                ),
                 windows=(
                     *scenario.windows[:-1],
                     replace(
                         locked,
                         decision_count=locked.decision_count - 1,
                         risk_assessment_count=locked.risk_assessment_count - 1,
-                        switching_traces=(*locked.switching_traces[:-1], parked),
+                        switching_traces=traces,
                         episode_summary=replace(
                             locked.episode_summary,
                             parked_session_count=1,
@@ -1176,6 +1314,7 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
             locked.relative_metrics,
             qqq_total_return=0.02,
             boxx_total_return=0.08,
+            qqq_cagr=_locked_cagr(0.02),
             strategy_max_drawdown=-0.01,
             qqq_max_drawdown=-0.02,
         )
@@ -1187,8 +1326,23 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
                     locked_oos_result=replace(
                         scenario.promotion_run.locked_oos_result,
                         max_drawdown=-0.01,
+                        benchmark_cagr=_locked_cagr(0.02),
                         benchmark_max_drawdown=-0.02,
                         oos_max_drawdown=-0.01,
+                        source_script=_acceptance_source(
+                            metrics,
+                            tuple(
+                                replace(
+                                    trace,
+                                    signal_state="idle",
+                                    signal_regime="DEFENSIVE",
+                                    intended_allocation=defensive,
+                                    replay_target_allocation=defensive,
+                                    executed_allocation=defensive,
+                                )
+                                for trace in locked.switching_traces
+                            ),
+                        ),
                     ),
                 ),
                 windows=(
@@ -1255,6 +1409,41 @@ def test_noncanonical_or_unavailable_replay_fails_closed(
         run_tqqq_promotion_research(_identity(), _plan(), invalid)
 
 
+def test_sparse_purged_fold_calendar_fails_closed() -> None:
+    replay = SyntheticReplay()
+
+    def sparse(start_date, end_date, total_cost_bps, prior_state_sha256):
+        window = replay(start_date, end_date, total_cost_bps, prior_state_sha256)
+        if start_date != _plan().folds[0].test_start:
+            return window
+        return replace(
+            window,
+            strategy_equity=window.strategy_equity[:3],
+            qqq_total_return_equity=window.qqq_total_return_equity[:3],
+            boxx_total_return_equity=window.boxx_total_return_equity[:3],
+            decision_count=2,
+            risk_assessment_count=2,
+            episode_summary=replace(
+                window.episode_summary,
+                episode_session_count=2,
+                tqqq_exposure_session_count=2,
+                qqqm_exposure_session_count=2,
+                boxx_exposure_session_count=2,
+            ),
+            sessions=(window.sessions[0], window.sessions[-1]),
+            switching_traces=(window.switching_traces[0], window.switching_traces[-1]),
+        )
+
+    with (
+        patch(
+            "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner._resolve_runner_revision",
+            return_value=RUNNER_REVISION,
+        ),
+        pytest.raises(TqqqPromotionContractError, match="session identity"),
+    ):
+        run_tqqq_promotion_research(_identity(), _plan(), sparse)
+
+
 def test_identity_and_timing_are_immutable_and_fail_closed_before_replay() -> None:
     replay = SyntheticReplay()
     identity = replace(_identity(), qpk_revision="7" * 40)
@@ -1318,6 +1507,6 @@ def test_locked_oos_replay_requires_every_frozen_session() -> None:
             "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner._resolve_runner_revision",
             return_value=RUNNER_REVISION,
         ),
-        pytest.raises(TqqqPromotionContractError, match="locked OOS session identity"),
+        pytest.raises(TqqqPromotionContractError, match="replay session identity"),
     ):
         run_tqqq_promotion_research(_identity(), _plan(), sparse)

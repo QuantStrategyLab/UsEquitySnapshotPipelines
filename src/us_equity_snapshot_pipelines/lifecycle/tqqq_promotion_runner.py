@@ -626,9 +626,21 @@ def _same_number(left: object, right: object) -> bool:
 
 def _locked_metrics_match_backtest(
     metrics: TqqqQqqRelativeMetrics,
+    traces: tuple[TqqqSwitchingTrace, ...],
     result: BacktestResult,
 ) -> bool:
-    if type(result) is not BacktestResult or metrics.benchmark_symbol != result.benchmark_symbol:
+    if (
+        type(result) is not BacktestResult
+        or metrics.benchmark_symbol != result.benchmark_symbol
+        or result.start_date is None
+        or result.end_date is None
+        or metrics.qqq_total_return <= -1.0
+        or not _same_number(
+            metrics.qqq_cagr,
+            _cagr(1.0, 1.0 + metrics.qqq_total_return, result.start_date, result.end_date),
+        )
+        or result.source_script != _locked_acceptance_source(metrics, traces)
+    ):
         return False
     fields = (
         ("strategy_total_return", "total_return"),
@@ -653,6 +665,20 @@ def _locked_metrics_match_backtest(
         )
         for metric_field, result_field in fields
     )
+
+
+def _locked_acceptance_source(
+    metrics: TqqqQqqRelativeMetrics,
+    traces: tuple[TqqqSwitchingTrace, ...],
+) -> str:
+    digest = _canonical_sha256(
+        {
+            "qqq_total_return": metrics.qqq_total_return,
+            "boxx_total_return": metrics.boxx_total_return,
+            "signal_regimes": [trace.signal_regime for trace in traces],
+        }
+    )
+    return f"tqqq_promotion_runner:{digest}"
 
 
 def classify_tqqq_legacy_parity(
@@ -712,7 +738,9 @@ def classify_tqqq_legacy_parity(
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
         if not _same_number(old["gross_return"], new["gross_return"]):
-            if not change_set & timing_or_state_changes:
+            if not change_set & (
+                timing_or_state_changes | {"RISK_ENGINE_AND_APPROVED_SIZING"}
+            ):
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
         if old["trade_count"] != new["trade_count"]:
@@ -828,23 +856,31 @@ def _validate_switching_traces(
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
         if trace.risk_disposition == "PARK":
+            execution_is_cash = all(
+                executed[symbol] <= 1e-12 for symbol in _ALLOWED_ASSETS
+            ) and _same_number(executed["cash"], 1.0)
+            execution_matches_target = all(
+                abs(executed[symbol] - target[symbol]) <= allocation_tolerance
+                for symbol in _PARITY_ASSETS
+            )
             if (
                 trace.risk_reason_codes
                 not in {
                     ("ACCOUNT_DRAWDOWN",),
                     ("CONSECUTIVE_TQQQ_LOSING_EXITS",),
                 }
-                or any(executed[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
-                or not _same_number(executed["cash"], 1.0)
             ):
                 raise TqqqPromotionContractError("invalid parked switching trace")
             if trace.signal_state == "parked":
                 if (
                     any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
                     or not _same_number(target["cash"], 1.0)
+                    or not execution_is_cash
                 ):
                     raise TqqqPromotionContractError("invalid parked switching trace")
             else:
+                if not (execution_is_cash or execution_matches_target):
+                    raise TqqqPromotionContractError("invalid parked switching trace")
                 approved_count += 1
                 intended_risk = intended["TQQQ"] + intended["QQQM"]
                 if trace.signal_regime == "RISK_ON":
@@ -962,6 +998,18 @@ def evaluate_tqqq_pre_result_acceptance(
                 )
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            window_results = (*promotion_run.fold_results, promotion_run.locked_oos_result)
+            for window, backtest in zip(scenario.windows, window_results, strict=True):
+                expected_sessions = tuple(
+                    session
+                    for session in _FROZEN_XNYS_SESSIONS
+                    if window.start_date <= session <= window.end_date
+                )
+                if (
+                    window.sessions != expected_sessions
+                    or backtest.observation_count != len(expected_sessions) + 1
+                ):
+                    return TQQQ_ACCEPTANCE_INCONCLUSIVE
             cost_model = scenario.promotion_run.cost_model
             if (
                 type(cost_model) is not PromotionCostModel
@@ -1012,7 +1060,11 @@ def evaluate_tqqq_pre_result_acceptance(
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             if (
-                not _locked_metrics_match_backtest(metrics, promotion_run.locked_oos_result)
+                not _locked_metrics_match_backtest(
+                    metrics,
+                    locked.switching_traces,
+                    promotion_run.locked_oos_result,
+                )
                 or promotion_run.locked_oos_result.observation_count
                 != len(locked.sessions) + 1
             ):
@@ -1396,12 +1448,13 @@ def _validate_replay(
         or replay.sessions[-1] != end_date
     ):
         raise TqqqPromotionContractError("replay session identity mismatch")
-    if start_date == _LOCKED_OOS_START and end_date == _LOCKED_OOS_END and (
-        len(replay.sessions) != _LOCKED_OOS_SESSION_COUNT
-        or _canonical_sha256([session.isoformat() for session in replay.sessions])
-        != _LOCKED_OOS_SESSIONS_SHA256
-    ):
-        raise TqqqPromotionContractError("locked OOS session identity mismatch")
+    expected_sessions = tuple(
+        session
+        for session in _FROZEN_XNYS_SESSIONS
+        if start_date <= session <= end_date
+    )
+    if replay.sessions != expected_sessions:
+        raise TqqqPromotionContractError("replay session identity mismatch")
     if (
         not 0 < replay.decision_count <= len(replay.sessions)
         or summary.episode_session_count != len(replay.sessions)
@@ -1663,7 +1716,7 @@ class TqqqPromotionRunner:
             oos_max_drawdown=metrics.strategy_max_drawdown,
             walk_forward_stability=1.0,
             run_duration_seconds=0.0,
-            source_script="tqqq_promotion_runner",
+            source_script=_locked_acceptance_source(metrics, replay.switching_traces),
         )
 
 

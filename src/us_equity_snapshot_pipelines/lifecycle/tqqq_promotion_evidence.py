@@ -628,7 +628,19 @@ class _ImmutableReplayProducer:
     def _apply_drawdown_breaker(self, session: date, equity: float) -> None:
         drawdown = max(0.0, 1.0 - equity / self._state.high_water_equity)
         if drawdown > 0.10:
+            was_parked = self._state.parked
             self._park("ACCOUNT_DRAWDOWN", session)
+            if (
+                not was_parked
+                and self._switching_traces
+                and self._switching_traces[-1].execution_session == session
+                and self._switching_traces[-1].risk_disposition == "APPROVE"
+            ):
+                self._switching_traces[-1] = replace(
+                    self._switching_traces[-1],
+                    risk_disposition="PARK",
+                    risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+                )
 
     def _trade_to_target(self, session: date, cost_bps: int) -> None:
         state = self._state

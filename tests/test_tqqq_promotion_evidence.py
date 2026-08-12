@@ -779,6 +779,20 @@ def test_target_exit_breaker_liquidates_remaining_assets_and_reports_park() -> N
 def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session)
+    risk_on = (("BOXX", 0.0), ("QQQM", 0.0), ("TQQQ", 0.10), ("cash", 0.90))
+    producer._switching_traces = [
+        TqqqSwitchingTrace(
+            signal_session=session - timedelta(days=1),
+            execution_session=session,
+            signal_state="entry",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=risk_on,
+        )
+    ]
     producer._state.high_water_equity = 100_000.0
     producer._state.decision_count = 7
     producer._state.assessment_count = 7
@@ -789,6 +803,8 @@ def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> No
     assert producer._state.breaker_reason == "ACCOUNT_DRAWDOWN"
     assert producer._state.first_park_session == session
     assert producer._state.decision_count == producer._state.assessment_count == 7
+    assert producer.switching_traces[-1].risk_disposition == "PARK"
+    assert producer.switching_traces[-1].risk_reason_codes == ("ACCOUNT_DRAWDOWN",)
 
 
 
