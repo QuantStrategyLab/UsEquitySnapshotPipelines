@@ -12,10 +12,10 @@ from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFol
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     LEGACY_PARITY_CLASSIFICATIONS,
-    TQQQ_SWITCHING_CHARACTERIZATION_SHA256,
     TQQQ_ACCEPTANCE_INCONCLUSIVE,
     TQQQ_ACCEPTANCE_PASS,
     TQQQ_ACCEPTANCE_REJECT,
+    TQQQ_SWITCHING_CHARACTERIZATION_SHA256,
     TqqqEpisodeSummary,
     TqqqPromotionContractError,
     TqqqPromotionIdentity,
@@ -23,12 +23,12 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     TqqqPromotionRunner,
     TqqqSwitchingTrace,
     TqqqWindowReplay,
+    _window_acceptance_source,
     build_tqqq_development_robustness_plan,
     build_tqqq_switching_characterization_contract,
     classify_tqqq_legacy_parity,
     evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
-    _window_acceptance_source,
 )
 
 QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
@@ -357,11 +357,16 @@ def test_switching_characterization_contract_has_frozen_semantic_identity() -> N
     contract = build_tqqq_switching_characterization_contract()
 
     assert contract["sha256"] == TQQQ_SWITCHING_CHARACTERIZATION_SHA256
+    assert contract["candidate_variant"] == (
+        "tqqq_core_parity_5loss_20xnys_defensive_cooldown_v1"
+    )
     assert contract["timing"] == "completed_close_t_to_open_t_plus_1"
     assert contract["cases"] == (
         "RISK_ON_TQQQ_OR_QQQM",
         "DEFENSIVE_BOXX",
         "RISK_ON_TO_DEFENSIVE_TRANSITION",
+        "FIFTH_LOSS_TO_20_XNYS_PROTECTIVE_COOLDOWN",
+        "FRESH_BASE_SIGNAL_AFTER_COOLDOWN",
         "INVALID_OR_PRELISTING_INPUT_FAILS_CLOSED",
         "FRESH_EPISODE_WITHOUT_INHERITED_PARK",
     )
@@ -629,6 +634,8 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
         )
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
+
+
     locked = passing.scenarios[0].windows[-1]
     trace = locked.switching_traces[0]
     semantic_drift = replace(
@@ -874,6 +881,61 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
             "MATCH",
         )
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_protective_cooldown_is_defensive_approve_and_not_park() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    defensive = (
+        ("TQQQ", 0.0),
+        ("QQQM", 0.0),
+        ("BOXX", 0.20),
+        ("cash", 0.80),
+    )
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        traces = (
+            *locked.switching_traces[:-20],
+            *tuple(
+                replace(
+                    trace,
+                    signal_state="protective_cooldown",
+                    signal_regime="DEFENSIVE",
+                    intended_allocation=defensive,
+                    risk_disposition="APPROVE",
+                    risk_reason_codes=(),
+                    replay_target_allocation=defensive,
+                    executed_allocation=defensive,
+                )
+                for trace in locked.switching_traces[-20:]
+            ),
+        )
+        updated_locked = replace(locked, switching_traces=traces)
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
+                    ),
+                ),
+                windows=(*scenario.windows[:-1], updated_locked),
+            )
+        )
+
+    result = replace(passing, scenarios=tuple(scenarios))
+
+    assert all(
+        scenario.windows[-1].episode_summary.parked_session_count == 0
+        for scenario in result.scenarios
+    )
+    assert evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE") == (
+        TQQQ_ACCEPTANCE_PASS
     )
 
 
@@ -1433,7 +1495,7 @@ def test_parked_trace_reaches_frozen_reject_terminal() -> None:
     )
 
 
-def test_post_approval_breaker_trace_reaches_frozen_reject_terminal() -> None:
+def test_legacy_five_loss_park_is_not_valid_for_distinct_candidate() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
     scenarios = []
@@ -1478,7 +1540,73 @@ def test_post_approval_breaker_trace_reaches_frozen_reject_terminal() -> None:
         evaluate_tqqq_pre_result_acceptance(
             replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
         )
-        == TQQQ_ACCEPTANCE_REJECT
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_risk_engine_non_approve_park_is_inconclusive_not_economic_reject() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        non_approve = replace(
+            locked.switching_traces[-2],
+            signal_state="risk_engine_non_approve",
+            signal_regime="DEFENSIVE",
+            intended_allocation=cash,
+            risk_disposition="PARK",
+            risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+            replay_target_allocation=cash,
+            executed_allocation=cash,
+        )
+        carried_park = replace(
+            locked.switching_traces[-1],
+            signal_state="parked",
+            signal_regime="DEFENSIVE",
+            intended_allocation=cash,
+            risk_disposition="PARK",
+            risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+            replay_target_allocation=cash,
+            executed_allocation=cash,
+        )
+        updated_locked = replace(
+            locked,
+            decision_count=locked.decision_count - 1,
+            risk_assessment_count=locked.risk_assessment_count - 1,
+            switching_traces=(
+                *locked.switching_traces[:-2],
+                non_approve,
+                carried_park,
+            ),
+            episode_summary=replace(
+                locked.episode_summary,
+                parked_session_count=2,
+                breaker_reason="RISK_ENGINE_NON_APPROVE",
+                first_park_session=locked.sessions[-2],
+            ),
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
+                    ),
+                ),
+                windows=(*scenario.windows[:-1], updated_locked),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
 
 

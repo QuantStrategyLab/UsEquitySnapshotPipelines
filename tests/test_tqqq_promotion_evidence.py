@@ -211,7 +211,9 @@ def _config() -> dict[str, object]:
     return {
         "schema_version": "tqqq_etf_only_replay_config.v1",
         "strategy_profile": "tqqq_core_parity_v1",
-        "signal_model": "ues_tqqq_growth_income_core_parity",
+        "signal_model": (
+            "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
+        ),
         "signal_window_sessions": 257,
         "tqqq_nominal_cap": 0.15,
         "qqqm_nominal_cap": 0.50,
@@ -297,7 +299,7 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
         {"multiplier": 3, "total_cost_bps": 15.0},
     ]
     assert evidence["lifecycle_claims"] == {
-        "learning_only": False,
+        "learning_only": True,
         "promotion_eligible": False,
         "live_ready": False,
         "size_zero_required": True,
@@ -305,6 +307,9 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     }
     assert result["evidence_sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
     risk = json.loads((tmp_path / "artifacts" / "risk.json").read_bytes())
+    assert risk["strategy_losing_exit_cooldown_threshold"] == 5
+    assert risk["protective_cooldown_execution_sessions"] == 20
+    assert "strategy_losing_exit_breaker" not in risk
     backtest = json.loads((tmp_path / "artifacts" / "backtest.json").read_bytes())
     assert backtest["development_robustness_plan"]["aggregate_plan_sha256"] == (
         "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
@@ -490,6 +495,28 @@ def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
     return producer
 
 
+def _approved_result(
+    weights: dict[str, float], *, signal_state: str = "entry"
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        assessment=SimpleNamespace(
+            outcome="APPROVE",
+            reason_codes=(),
+            execution_authorized=False,
+        ),
+        decision=SimpleNamespace(
+            positions=tuple(
+                SimpleNamespace(symbol=symbol, target_weight=weight)
+                for symbol, weight in weights.items()
+                if weight > 0.0
+            ),
+            diagnostics={
+                "notification_context": {"signal": {"state": signal_state}}
+            },
+        ),
+    )
+
+
 def test_episode_executes_and_counts_only_in_window_sessions() -> None:
     first = date(2022, 4, 14)
     sessions = tuple(first + timedelta(days=index) for index in range(262))
@@ -581,6 +608,95 @@ def test_deterministic_switching_characterization_matches_direct_ues_seam() -> N
     assert executed_defensive["BOXX"] > 0.0
 
 
+def test_cooldown_uses_direct_ues_seam_and_mandate_sizing_once_per_session() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-520:])
+    producer = _episode_producer(sessions)
+    qqq_values = [100.0 + index * 0.5 for index in range(len(sessions))]
+    producer.qqq = tuple(
+        _Bar(session, value, value * 1.001, value * 0.999, value, 1_000_000.0)
+        for session, value in zip(sessions, qqq_values)
+    )
+    producer._index = {session: index for index, session in enumerate(sessions)}
+    producer._reset(5, producer.identity.initial_state_sha256)
+    producer._state.cooldown_remaining_execution_sessions = 20
+    engine = build_risk_engine()
+    contexts = []
+
+    def evaluate(ctx, **kwargs):
+        contexts.append(ctx)
+        return entrypoints.evaluate_tqqq_growth_income_promotion_research(ctx, **kwargs)
+
+    with (
+        patch.object(
+            evidence_module,
+            "evaluate_tqqq_growth_income_promotion_research",
+            side_effect=evaluate,
+        ) as direct_seam,
+        patch("quant_platform_kit.risk.gate.build_risk_engine", return_value=engine),
+        patch.object(engine, "assess", wraps=engine.assess) as assess,
+    ):
+        normal_drawdown = producer._assessment(299, sessions[300], 100_000.0)
+        producer._state.high_water_equity = 100_000.0
+        reduced_drawdown = producer._assessment(300, sessions[301], 94_000.0)
+
+    assert normal_drawdown == pytest.approx({"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.20})
+    assert reduced_drawdown == pytest.approx({"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.10})
+    assert direct_seam.call_count == assess.call_count == 2
+    assert producer._state.decision_count == producer._state.assessment_count == 2
+    assert all(
+        float(ctx.runtime_config["dual_drive_tqqq_weight"])
+        == float(ctx.runtime_config["dual_drive_qqq_weight"])
+        == 0.0
+        for ctx in contexts
+    )
+    assert all(
+        trace.signal_state == "protective_cooldown"
+        and trace.signal_regime == "DEFENSIVE"
+        and trace.risk_disposition == "APPROVE"
+        for trace in producer.switching_traces
+    )
+    assert producer._state.parked is False
+
+
+def test_cooldown_is_exactly_20_execution_sessions_before_fresh_base_signal() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
+    producer = _episode_producer(sessions)
+    producer._reset(5, producer.identity.initial_state_sha256)
+    producer._state.cooldown_remaining_execution_sessions = 20
+    contexts = []
+
+    def evaluate(ctx, **_kwargs):
+        contexts.append(ctx)
+        cooldown = "dual_drive_tqqq_weight" in ctx.runtime_config
+        return _approved_result(
+            {"BOXX": 0.20} if cooldown else {"QQQM": 0.10},
+            signal_state="entry",
+        )
+
+    with patch.object(
+        evidence_module,
+        "evaluate_tqqq_growth_income_promotion_research",
+        side_effect=evaluate,
+    ):
+        for offset in range(20):
+            execution_session = sessions[258 + offset]
+            targets = producer._assessment(257 + offset, execution_session, 100_000.0)
+            assert targets == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.20}
+            producer._complete_cooldown_execution_session(execution_session)
+            assert producer._state.cooldown_remaining_execution_sessions == 19 - offset
+        reentry = producer._assessment(277, sessions[278], 100_000.0)
+
+    assert len(contexts) == 21
+    assert [trace.signal_state for trace in producer.switching_traces[:20]] == [
+        "protective_cooldown"
+    ] * 20
+    assert producer.switching_traces[19].execution_session == sessions[277]
+    assert producer.switching_traces[20].signal_state == "entry"
+    assert producer.switching_traces[20].execution_session == sessions[278]
+    assert reentry == {"TQQQ": 0.0, "QQQM": 0.10, "BOXX": 0.0}
+    assert producer._state.decision_count == producer._state.assessment_count == 21
+
+
 def test_switching_characterization_invalid_input_fails_closed_without_decision() -> None:
     sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
     producer = _episode_producer(sessions)
@@ -639,9 +755,9 @@ def test_episode_reports_boxx_cash_and_park_separately() -> None:
 
     def apply_stop(session: date, _cost: int) -> None:
         if session == park_session:
-            producer._park("CONSECUTIVE_TQQQ_LOSING_EXITS", session)
-        elif session == after_park_session:
             producer._park("ACCOUNT_DRAWDOWN", session)
+        elif session == after_park_session:
+            producer._park("RISK_ENGINE_NON_APPROVE", session)
 
     def assess(_signal_index: int, _execution_session: date, _equity: float):
         producer._state.decision_count += 1
@@ -670,7 +786,7 @@ def test_episode_reports_boxx_cash_and_park_separately() -> None:
     assert summary.boxx_exposure_session_count == 1
     assert summary.cash_only_session_count == 1
     assert summary.parked_session_count == 2
-    assert summary.breaker_reason == "CONSECUTIVE_TQQQ_LOSING_EXITS"
+    assert summary.breaker_reason == "ACCOUNT_DRAWDOWN"
     assert summary.first_park_session == park_session
     assert replay.decision_count == replay.risk_assessment_count == 3
     assert cash_session < park_session
@@ -680,11 +796,11 @@ def test_episode_breaker_reason_is_sticky() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session)
 
-    producer._park("CONSECUTIVE_TQQQ_LOSING_EXITS", session)
-    producer._park("ACCOUNT_DRAWDOWN", session + timedelta(days=1))
+    producer._park("ACCOUNT_DRAWDOWN", session)
+    producer._park("RISK_ENGINE_NON_APPROVE", session + timedelta(days=1))
 
     assert producer._state.parked is True
-    assert producer._state.breaker_reason == "CONSECUTIVE_TQQQ_LOSING_EXITS"
+    assert producer._state.breaker_reason == "ACCOUNT_DRAWDOWN"
     assert producer._state.first_park_session == session
 
 
@@ -733,7 +849,7 @@ def test_parked_episode_liquidates_and_reports_without_reusing_stale_trace() -> 
     )
 
 
-def test_target_exit_breaker_liquidates_remaining_assets_and_reports_park() -> None:
+def test_fifth_losing_target_exit_enters_cooldown_without_liquidating_other_assets() -> None:
     previous_session = date(2025, 1, 2)
     session = date(2025, 1, 3)
     producer = _episode_producer((previous_session, session))
@@ -764,16 +880,17 @@ def test_target_exit_breaker_liquidates_remaining_assets_and_reports_park() -> N
 
     producer._trade_to_target(session, 5)
 
-    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
-    assert producer._state.parked is True
-    parked = producer.switching_traces[-1]
-    assert parked.signal_state == "macro_delever"
-    assert parked.risk_disposition == "PARK"
-    assert parked.risk_reason_codes == ("CONSECUTIVE_TQQQ_LOSING_EXITS",)
-    assert parked.intended_allocation == parked.replay_target_allocation == risk_on
-    assert dict(parked.executed_allocation) == pytest.approx(
-        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    assert producer._state.quantities == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 100.0, "BOXX": 500.0 / 1.0005}
     )
+    assert producer._state.consecutive_losing_exits == 0
+    assert producer._state.cooldown_remaining_execution_sessions == 20
+    assert producer._state.parked is False
+    trace = producer.switching_traces[-1]
+    assert trace.signal_state == "macro_delever"
+    assert trace.risk_disposition == "APPROVE"
+    assert trace.risk_reason_codes == ()
+    assert trace.intended_allocation == trace.replay_target_allocation == risk_on
 
 
 def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
@@ -859,7 +976,7 @@ def test_multi_asset_target_rebalances_without_completed_exit_round_trip() -> No
     assert producer._state.trade_count == 3
 
 
-def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> None:
+def test_fifth_losing_hard_stop_starts_cooldown_and_keeps_other_assets() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session, tqqq_open=95.0, tqqq_low=94.0)
     target = (("BOXX", 0.0), ("QQQM", 0.10), ("TQQQ", 0.10), ("cash", 0.80))
@@ -886,18 +1003,63 @@ def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> N
 
     producer._apply_stop(session, 0)
 
-    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
-    assert producer._state.consecutive_losing_exits == 5
-    assert producer._state.parked is True
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 100.0, "BOXX": 0.0}
+    assert producer._state.consecutive_losing_exits == 0
+    assert producer._state.cooldown_remaining_execution_sessions == 20
+    assert producer._state.parked is False
     assert producer._state.tqqq_entry_price is None
     assert producer._state.tqqq_stop_price is None
-    assert producer.switching_traces[-1].risk_disposition == "PARK"
-    assert producer.switching_traces[-1].risk_reason_codes == (
-        "CONSECUTIVE_TQQQ_LOSING_EXITS",
+    assert producer.switching_traces[-1].risk_disposition == "APPROVE"
+    assert producer.switching_traces[-1].risk_reason_codes == ()
+
+
+def test_terminal_park_liquidation_cannot_start_protective_cooldown() -> None:
+    session = date(2025, 1, 2)
+    producer = _unit_producer(session, tqqq_open=95.0, tqqq_low=94.0)
+    cash = (("BOXX", 0.0), ("QQQM", 0.0), ("TQQQ", 0.0), ("cash", 1.0))
+    producer._switching_traces = [
+        TqqqSwitchingTrace(
+            signal_session=session - timedelta(days=1),
+            execution_session=session,
+            signal_state="risk_engine_non_approve",
+            signal_regime="DEFENSIVE",
+            intended_allocation=cash,
+            risk_disposition="PARK",
+            risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+            replay_target_allocation=cash,
+            executed_allocation=(),
+        )
+    ]
+    producer._state = _ReplayState(
+        cash=90_500.0,
+        quantities={"TQQQ": 100.0, "QQQM": 0.0, "BOXX": 0.0},
+        tqqq_entry_price=100.0,
+        tqqq_stop_price=95.0,
+        consecutive_losing_exits=4,
+        parked=True,
+        breaker_reason="RISK_ENGINE_NON_APPROVE",
+        first_park_session=session,
     )
-    assert dict(producer.switching_traces[-1].executed_allocation) == pytest.approx(
-        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
-    )
+
+    producer._trade_to_target(session, 0)
+
+    assert producer._state.parked is True
+    assert producer._state.cooldown_remaining_execution_sessions == 0
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+
+
+@pytest.mark.parametrize("fill", [100.0, 101.0])
+def test_winning_or_breakeven_full_exit_resets_streak(fill: float) -> None:
+    session = date(2025, 1, 2)
+    producer = _unit_producer(session)
+    producer._state.tqqq_entry_price = 100.0
+    producer._state.consecutive_losing_exits = 4
+
+    producer._record_completed_exit(fill, session)
+
+    assert producer._state.consecutive_losing_exits == 0
+    assert producer._state.cooldown_remaining_execution_sessions == 0
+    assert producer._state.parked is False
 
 
 def test_multi_asset_state_projection_digest_is_deterministic() -> None:
@@ -911,7 +1073,7 @@ def test_multi_asset_state_projection_digest_is_deterministic() -> None:
     assert _digest(_state_projection(state)) == _digest(_state_projection(copy.deepcopy(state)))
 
 
-def test_non_approve_direct_seam_fails_closed_after_exactly_one_assessment() -> None:
+def test_non_approve_direct_seam_enters_terminal_park_after_one_assessment() -> None:
     producer = object.__new__(_ImmutableReplayProducer)
     producer.candidate = CandidateRiskIdentity(
         authority_receipt_sha256="1" * 64,
@@ -932,6 +1094,7 @@ def test_non_approve_direct_seam_fails_closed_after_exactly_one_assessment() -> 
     producer._state_sha256 = "7" * 64
     producer._scenario = 5
     producer._scenario_counts = {5: {"assessments": 0, "decisions": 0}}
+    producer._switching_traces = []
     rejected = SimpleNamespace(
         assessment=SimpleNamespace(
             outcome="REJECT",
@@ -945,8 +1108,19 @@ def test_non_approve_direct_seam_fails_closed_after_exactly_one_assessment() -> 
         evidence_module,
         "evaluate_tqqq_growth_income_promotion_research",
         return_value=rejected,
-    ) as direct_seam, pytest.raises(TqqqPromotionEvidenceError, match="RiskEngine rejected"):
-        producer._assessment(256, start + timedelta(days=257), 100_000.0)
+    ) as direct_seam:
+        targets = producer._assessment(
+            256, start + timedelta(days=257), 100_000.0
+        )
 
     direct_seam.assert_called_once()
     assert producer._scenario_counts[5] == {"assessments": 1, "decisions": 1}
+    assert targets == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+    assert producer._state.parked is True
+    assert producer._state.breaker_reason == "RISK_ENGINE_NON_APPROVE"
+    assert producer._state.first_park_session == start + timedelta(days=257)
+    assert producer.switching_traces[-1].risk_disposition == "PARK"
+    assert producer.switching_traces[-1].signal_state == "risk_engine_non_approve"
+    assert producer.switching_traces[-1].risk_reason_codes == (
+        "RISK_ENGINE_NON_APPROVE",
+    )

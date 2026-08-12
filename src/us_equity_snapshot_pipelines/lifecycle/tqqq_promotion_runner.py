@@ -30,6 +30,7 @@ from .soxl_pit_input_packager import _xnys_holidays
 _QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 _UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 _PROFILE = "tqqq_core_parity_v1"
+_CANDIDATE_VARIANT = "tqqq_core_parity_5loss_20xnys_defensive_cooldown_v1"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -61,7 +62,7 @@ _FROZEN_TIMING_SHA256 = (
     "72973ff51aa0b99524e67352c67f4b98cb3c6ca5d62f9585c4d26c82221d17f1"
 )
 TQQQ_SWITCHING_CHARACTERIZATION_SHA256 = (
-    "e76974408f2d101ac157c60efab1a3584dd908ee777705d050d6a0183e2ce70f"
+    "1d92933226e8481698b242f5f073224e34ee4a739e27daea477d0e7c8e577c41"
 )
 
 LEGACY_PARITY_CLASSIFICATIONS = frozenset(
@@ -276,6 +277,7 @@ class TqqqPromotionResearchResult:
     scenarios: tuple[TqqqCostScenarioResult, ...]
     switching_characterization_sha256: str = TQQQ_SWITCHING_CHARACTERIZATION_SHA256
     authority_scope: str = "RESEARCH_ONLY"
+    learning_only: bool = True
     no_order: bool = True
     size_zero_required: bool = True
     promotion_eligible: bool = False
@@ -361,11 +363,14 @@ def build_tqqq_switching_characterization_contract() -> dict[str, object]:
     material: dict[str, object] = {
         "schema_version": "tqqq_switching_characterization.v1",
         "candidate_profile": _PROFILE,
+        "candidate_variant": _CANDIDATE_VARIANT,
         "timing": "completed_close_t_to_open_t_plus_1",
         "cases": (
             "RISK_ON_TQQQ_OR_QQQM",
             "DEFENSIVE_BOXX",
             "RISK_ON_TO_DEFENSIVE_TRANSITION",
+            "FIFTH_LOSS_TO_20_XNYS_PROTECTIVE_COOLDOWN",
+            "FRESH_BASE_SIGNAL_AFTER_COOLDOWN",
             "INVALID_OR_PRELISTING_INPUT_FAILS_CLOSED",
             "FRESH_EPISODE_WITHOUT_INHERITED_PARK",
         ),
@@ -867,6 +872,8 @@ def _validate_switching_traces(
         "idle": "DEFENSIVE",
         "macro_risk_defense": "DEFENSIVE",
         "crisis_defense": "DEFENSIVE",
+        "protective_cooldown": "DEFENSIVE",
+        "risk_engine_non_approve": "DEFENSIVE",
         "parked": "DEFENSIVE",
     }
     for trace in traces:
@@ -911,21 +918,20 @@ def _validate_switching_traces(
                 abs(executed[symbol] - target[symbol]) <= allocation_tolerance
                 for symbol in _PARITY_ASSETS
             )
-            if (
-                trace.risk_reason_codes
-                not in {
-                    ("ACCOUNT_DRAWDOWN",),
-                    ("CONSECUTIVE_TQQQ_LOSING_EXITS",),
-                }
-            ):
+            if trace.risk_reason_codes not in {
+                ("ACCOUNT_DRAWDOWN",),
+                ("RISK_ENGINE_NON_APPROVE",),
+            }:
                 raise TqqqPromotionContractError("invalid parked switching trace")
-            if trace.signal_state == "parked":
+            if trace.signal_state in {"parked", "risk_engine_non_approve"}:
                 if (
                     any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
                     or not _same_number(target["cash"], 1.0)
                     or not execution_is_cash
                 ):
                     raise TqqqPromotionContractError("invalid parked switching trace")
+                if trace.signal_state == "risk_engine_non_approve":
+                    approved_count += 1
             else:
                 if not (execution_is_cash or execution_matches_target):
                     raise TqqqPromotionContractError("invalid parked switching trace")
@@ -1045,7 +1051,7 @@ def _validated_window_evidence(
             summary.parked_session_count > 0
             and (
                 summary.breaker_reason
-                not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+                not in {"ACCOUNT_DRAWDOWN", "RISK_ENGINE_NON_APPROVE"}
                 or type(summary.first_park_session) is not date
                 or not window.start_date
                 <= summary.first_park_session
@@ -1101,6 +1107,7 @@ def evaluate_tqqq_pre_result_acceptance(
         result.switching_characterization_sha256
         != TQQQ_SWITCHING_CHARACTERIZATION_SHA256
         or result.authority_scope != "RESEARCH_ONLY"
+        or result.learning_only is not True
         or result.no_order is not True
         or result.size_zero_required is not True
         or result.promotion_eligible is not False
@@ -1234,6 +1241,12 @@ def evaluate_tqqq_pre_result_acceptance(
         not _same_number(getattr(locked_metrics[cost], field), getattr(locked_metrics[15], field))
         for cost in (5, 10)
         for field in ("qqq_total_return", "boxx_total_return", "qqq_max_drawdown")
+    ):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if any(
+        summary.parked_session_count
+        and summary.breaker_reason != "ACCOUNT_DRAWDOWN"
+        for summary in locked_summaries.values()
     ):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(summary.parked_session_count for summary in locked_summaries.values()):
@@ -1499,7 +1512,7 @@ def _validate_replay(
         or summary.tqqq_unprotected_holding_session_count != 0
     ):
         raise TqqqPromotionContractError("TQQQ stop coverage is incomplete")
-    allowed_breakers = {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+    allowed_breakers = {"ACCOUNT_DRAWDOWN", "RISK_ENGINE_NON_APPROVE"}
     if summary.parked_session_count:
         if summary.breaker_reason not in allowed_breakers or type(summary.first_park_session) is not date:
             raise TqqqPromotionContractError("invalid episode breaker summary")
@@ -1820,6 +1833,7 @@ class TqqqPromotionRunner:
 def _params(identity: TqqqPromotionIdentity, timing_sha256: str) -> dict[str, object]:
     return {
         "authority_scope": "RESEARCH_ONLY",
+        "candidate_variant": _CANDIDATE_VARIANT,
         "config_sha256": identity.config_sha256,
         "input_manifest_sha256": identity.input_manifest_sha256,
         "mandate_receipt_sha256": identity.mandate_receipt_sha256,
