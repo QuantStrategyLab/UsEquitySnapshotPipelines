@@ -5,6 +5,7 @@ import inspect
 import json
 import plistlib
 import stat
+import subprocess
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,6 +184,18 @@ def test_frozen_calendar_and_no_session_skip_make_zero_provider_calls(
         provider_application_calls=0,
         observation_sha256=None,
     )
+    assert calls == []
+
+    result_at_close = cli._collect_local_once(
+        output_root=tmp_path / "output",
+        authority_receipt=authority,
+        authority_receipt_sha256=authority_sha,
+        **_plan_args(authority),
+        runtime_commit=RUNTIME_COMMIT,
+        acquire_symbol=lambda *_args: calls.append("provider"),
+        now=datetime(2026, 8, 13, 20, 0, 30, tzinfo=UTC),
+    )
+    assert result_at_close.status == "NO_FROZEN_SESSION_READY"
     assert calls == []
 
 
@@ -450,6 +463,97 @@ def test_atomic_publication_failure_invalidates_without_visible_observation(
     assert (output / "PLAN_INVALID.json").is_file()
 
 
+def test_core_rejects_ledger_digest_that_does_not_bind_published_payload(
+    tmp_path: Path,
+) -> None:
+    authority, authority_sha = _authority(tmp_path)
+    reasons: list[str] = []
+
+    def invalidate(reason: str):
+        reasons.append(reason)
+        raise forward.ForwardObservationError("plan invalid")
+
+    ledger = SimpleNamespace(
+        completed_sessions=lambda: (),
+        start_session=lambda _session: None,
+        publish_observation=lambda _payload: "0" * 64,
+        complete_session=lambda *_args: pytest.fail("must not complete"),
+        invalidate=invalidate,
+    )
+    plan_path = Path(_plan_args(authority)["plan_receipt"])
+    with pytest.raises(forward.ForwardObservationError, match="plan invalid"):
+        forward.collect_once(
+            ledger=ledger,
+            authority_receipt=json.loads(authority.read_bytes()),
+            authority_receipt_sha256=authority_sha,
+            plan_receipt=json.loads(plan_path.read_bytes()),
+            plan_receipt_sha256=str(_plan_args(authority)["plan_receipt_sha256"]),
+            runtime_commit=RUNTIME_COMMIT,
+            acquire_symbol=lambda symbol, session, end: _result(symbol, session, end),
+            now=datetime(2026, 8, 13, 22, 15, tzinfo=UTC),
+        )
+    assert reasons == ["MATERIAL_COLLECTION_FAILURE"]
+
+
+def test_swapped_completed_observations_invalidate_before_provider(tmp_path: Path) -> None:
+    authority, authority_sha = _authority(tmp_path)
+    output = tmp_path / "output"
+    for now in (
+        datetime(2026, 8, 13, 22, 15, tzinfo=UTC),
+        datetime(2026, 8, 14, 22, 15, tzinfo=UTC),
+    ):
+        cli._collect_local_once(
+            output_root=output,
+            authority_receipt=authority,
+            authority_receipt_sha256=authority_sha,
+            **_plan_args(authority),
+            runtime_commit=RUNTIME_COMMIT,
+            acquire_symbol=lambda symbol, session, end: _result(symbol, session, end),
+            now=now,
+        )
+    first, second = forward.frozen_sessions()[:2]
+    first_path = output / "attempt-ledger" / f"{first.isoformat()}.completed.json"
+    second_path = output / "attempt-ledger" / f"{second.isoformat()}.completed.json"
+    first_payload = json.loads(first_path.read_bytes())
+    second_payload = json.loads(second_path.read_bytes())
+    first_payload["observation_sha256"], second_payload["observation_sha256"] = (
+        second_payload["observation_sha256"],
+        first_payload["observation_sha256"],
+    )
+    _private_json(first_path, first_payload)
+    _private_json(second_path, second_payload)
+    calls: list[str] = []
+
+    with pytest.raises(forward.ForwardObservationError, match="plan invalid"):
+        cli._collect_local_once(
+            output_root=output,
+            authority_receipt=authority,
+            authority_receipt_sha256=authority_sha,
+            **_plan_args(authority),
+            runtime_commit=RUNTIME_COMMIT,
+            acquire_symbol=lambda *_args: calls.append("provider"),
+            now=datetime(2026, 8, 17, 22, 15, tzinfo=UTC),
+        )
+    assert calls == []
+
+
+def test_wrong_provenance_cutoff_invalidates_plan(tmp_path: Path) -> None:
+    authority, authority_sha = _authority(tmp_path)
+
+    with pytest.raises(forward.ForwardObservationError, match="plan invalid"):
+        cli._collect_local_once(
+            output_root=tmp_path / "output",
+            authority_receipt=authority,
+            authority_receipt_sha256=authority_sha,
+            **_plan_args(authority),
+            runtime_commit=RUNTIME_COMMIT,
+            acquire_symbol=lambda symbol, session, end: _result(
+                symbol, session, end.replace(minute=2)
+            ),
+            now=datetime(2026, 8, 13, 22, 15, tzinfo=UTC),
+        )
+
+
 def test_cli_terminal_is_sanitized_and_bounds_ninth_application_call(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -457,7 +561,12 @@ def test_cli_terminal_is_sanitized_and_bounds_ninth_application_call(
 ) -> None:
     authority, authority_sha = _authority(tmp_path)
     seen: dict[str, object] = {}
-    monkeypatch.setattr(cli, "_require_filevault", lambda: None)
+    monkeypatch.setattr(cli, "_require_filevault", lambda _root: None)
+    monkeypatch.setattr(
+        cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: (RUNTIME_COMMIT, "b" * 40),
+    )
     monkeypatch.setattr(cli, "_runtime", lambda _root: (SimpleNamespace(), object()))
 
     def collect_once(**kwargs):
@@ -509,6 +618,109 @@ def test_cli_terminal_is_sanitized_and_bounds_ninth_application_call(
         bounded.cancelHistoricalData()
 
 
+def test_cli_reports_failed_provider_calls_and_sanitizes_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    authority, authority_sha = _authority(tmp_path)
+    app = SimpleNamespace(provider_application_calls=3)
+    app.isConnected = lambda: (_ for _ in ()).throw(RuntimeError("private socket state"))
+    monkeypatch.setattr(cli, "_require_filevault", lambda _root: None)
+    monkeypatch.setattr(
+        cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: (RUNTIME_COMMIT, "b" * 40),
+    )
+    monkeypatch.setattr(cli, "_runtime", lambda _root: (app, object()))
+    monkeypatch.setattr(
+        cli,
+        "collect_once",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private provider payload")),
+    )
+
+    assert cli.main(
+        [
+            "--authority-receipt",
+            str(authority),
+            "--authority-receipt-sha256",
+            authority_sha,
+            "--ibapi-root",
+            str(tmp_path / "ibapi"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--plan-receipt",
+            str(_plan_args(authority)["plan_receipt"]),
+            "--plan-receipt-sha256",
+            str(_plan_args(authority)["plan_receipt_sha256"]),
+            "--plan-sha256",
+            forward.PLAN_SHA256,
+            "--runtime-commit",
+            RUNTIME_COMMIT,
+        ]
+    ) == 1
+    terminal = json.loads(capsys.readouterr().out)
+    assert terminal["status"] == "PARK_MATERIAL"
+    assert terminal["provider_application_calls"] == 3
+
+
+def test_cli_actual_runtime_revision_mismatch_fails_before_provider_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    authority, authority_sha = _authority(tmp_path)
+    runtime_calls: list[str] = []
+    monkeypatch.setattr(cli, "_require_filevault", lambda _root: None)
+    monkeypatch.setattr(
+        cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: ("f" * 40, "b" * 40),
+    )
+    monkeypatch.setattr(cli, "_runtime", lambda _root: runtime_calls.append("runtime"))
+
+    assert cli.main(
+        [
+            "--authority-receipt",
+            str(authority),
+            "--authority-receipt-sha256",
+            authority_sha,
+            "--ibapi-root",
+            str(tmp_path / "ibapi"),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--plan-receipt",
+            str(_plan_args(authority)["plan_receipt"]),
+            "--plan-receipt-sha256",
+            str(_plan_args(authority)["plan_receipt_sha256"]),
+            "--plan-sha256",
+            forward.PLAN_SHA256,
+            "--runtime-commit",
+            RUNTIME_COMMIT,
+        ]
+    ) == 1
+    assert runtime_calls == []
+    assert json.loads(capsys.readouterr().out)["status"] == "PARK_MATERIAL"
+
+
+def test_selected_output_volume_must_be_filevault_encrypted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def run(command, **_kwargs):
+        if command[:2] == ["/usr/bin/fdesetup", "status"]:
+            return subprocess.CompletedProcess(command, 0, stdout="FileVault is On.\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=plistlib.dumps({"Encryption": False, "FileVault": False}),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    with pytest.raises(forward.ForwardObservationError, match="FileVault"):
+        cli._require_filevault(tmp_path / "output")
+
+
 def test_launchagent_contract_is_fixed_private_and_never_run_at_load(tmp_path: Path) -> None:
     authority, authority_sha = _authority(tmp_path)
     payload = installer.build_launch_agent_plist(
@@ -550,6 +762,56 @@ def test_launchagent_contract_is_fixed_private_and_never_run_at_load(tmp_path: P
         "--runtime-commit",
         RUNTIME_COMMIT,
     ]
+
+
+def test_activation_deadline_precedes_first_non_run_at_load_trigger() -> None:
+    assert installer._FIRST_COLLECTION_DEADLINE == datetime(
+        2026, 8, 13, 22, 0, tzinfo=UTC
+    )
+
+
+def test_installer_runtime_identity_must_match_fixed_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=("f" * 40) + "\n", stderr=""
+        ),
+    )
+    assert installer._runtime_commit(Path("/fixed/runtime/bin/python")) == "f" * 40
+
+
+def test_installer_filesystem_failure_returns_parked_without_launchctl(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    launch_calls: list[object] = []
+    monkeypatch.setattr(installer, "_activation_gate", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        installer.os,
+        "chmod",
+        lambda *_args: (_ for _ in ()).throw(OSError("private filesystem detail")),
+    )
+    monkeypatch.setattr(
+        installer.subprocess,
+        "run",
+        lambda *args, **kwargs: launch_calls.append((args, kwargs)),
+    )
+
+    assert installer.install_launch_agent(
+        destination=tmp_path / "LaunchAgents" / "collector.plist",
+        runtime_python=tmp_path / "runtime" / "python",
+        ibapi_root=tmp_path / "runtime" / "ibapi",
+        authority_receipt=tmp_path / "authority.json",
+        authority_receipt_sha256="0" * 64,
+        plan_receipt=tmp_path / "plan.json",
+        plan_receipt_sha256="0" * 64,
+        output_root=tmp_path / "output",
+        runtime_commit=RUNTIME_COMMIT,
+        now=datetime(2026, 8, 13, 0, 0, tzinfo=UTC),
+    ) is False
+    assert launch_calls == []
 
 
 def test_activation_fails_closed_before_plist_or_launchctl_on_missing_gate(

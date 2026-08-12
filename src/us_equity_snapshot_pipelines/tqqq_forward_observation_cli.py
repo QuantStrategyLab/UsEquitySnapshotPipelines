@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -26,9 +27,11 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition impor
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     OFFICIAL_IBAPI_PROVENANCE_SHA256,
+    resolve_tqqq_runtime_identity,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_forward_observation import (
     APPLICATION_CALL_CEILING,
+    ORDERED_SYMBOLS,
     PLAN_SHA256,
     CollectionResult,
     ForwardObservationError,
@@ -234,8 +237,14 @@ class LocalForwardObservationLedger:
                 try:
                     observation_stat = observation.lstat()
                     observation_bytes = observation.read_bytes()
-                except OSError:
+                    observation_payload = json.loads(observation_bytes)
+                except (OSError, TypeError, json.JSONDecodeError):
                     self.invalidate("ATTEMPT_LEDGER_INVALID")
+                daily_observations = (
+                    observation_payload.get("observations")
+                    if isinstance(observation_payload, dict)
+                    else None
+                )
                 if (
                     set(payload)
                     != {
@@ -253,6 +262,16 @@ class LocalForwardObservationLedger:
                     or not stat.S_ISREG(observation_stat.st_mode)
                     or stat.S_IMODE(observation_stat.st_mode) != 0o600
                     or hashlib.sha256(observation_bytes).hexdigest() != observation_sha256
+                    or canonical_json(observation_payload) != observation_bytes
+                    or observation_payload.get("plan_sha256") != PLAN_SHA256
+                    or not isinstance(daily_observations, list)
+                    or any(
+                        not isinstance(item, dict)
+                        or item.get("session") != session.isoformat()
+                        for item in daily_observations
+                    )
+                    or [item.get("symbol") for item in daily_observations]
+                    != list(ORDERED_SYMBOLS)
                 ):
                     self.invalidate("ATTEMPT_LEDGER_INVALID")
                 observation_digests.append(observation_sha256)
@@ -358,7 +377,18 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _require_filevault() -> None:
+def _require_filevault(output_root: Path) -> None:
+    if not output_root.is_absolute():
+        raise ForwardObservationError("FileVault output root invalid")
+    existing = output_root
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    current = existing
+    while current != current.parent and not os.path.ismount(current):
+        if current.is_symlink():
+            raise ForwardObservationError("FileVault output root invalid")
+        current = current.parent
+    mountpoint = current
     try:
         status = subprocess.run(
             ["/usr/bin/fdesetup", "status"],
@@ -367,21 +397,32 @@ def _require_filevault() -> None:
             text=True,
             timeout=5,
         )
+        volume = subprocess.run(
+            ["/usr/sbin/diskutil", "info", "-plist", str(mountpoint)],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise ForwardObservationError("FileVault status unavailable") from exc
     if status.stdout.strip() != "FileVault is On.":
         raise ForwardObservationError("FileVault required")
+    try:
+        volume_info = plistlib.loads(volume.stdout)
+    except plistlib.InvalidFileException as exc:
+        raise ForwardObservationError("FileVault status unavailable") from exc
+    if volume_info.get("FileVault") is not True or volume_info.get("Encryption") is not True:
+        raise ForwardObservationError("FileVault encrypted output volume required")
 
 
 def _bound_application_calls(app: Any) -> Any:
-    application_calls = 0
+    app.provider_application_calls = 0
 
     def bounded(original: Callable[..., Any]) -> Callable[..., Any]:
         def invoke(*args: Any, **kwargs: Any) -> Any:
-            nonlocal application_calls
-            if application_calls >= APPLICATION_CALL_CEILING:
+            if app.provider_application_calls >= APPLICATION_CALL_CEILING:
                 raise ForwardObservationError("provider application call ceiling reached")
-            application_calls += 1
+            app.provider_application_calls += 1
             return original(*args, **kwargs)
 
         return invoke
@@ -527,6 +568,14 @@ def _terminal(result: CollectionResult) -> dict[str, Any]:
     }
 
 
+def _provider_call_count(app: Any | None) -> int:
+    try:
+        count = getattr(app, "provider_application_calls", 0)
+    except Exception:  # noqa: BLE001 - public terminal must stay sanitized
+        return 0
+    return count if isinstance(count, int) and 0 <= count <= APPLICATION_CALL_CEILING else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     result = CollectionResult("PARK_MATERIAL", 0, None)
     app: Any | None = None
@@ -545,7 +594,10 @@ def main(argv: list[str] | None = None) -> int:
                 now=observed_now,
             )
             validate_local_adapter_authority(authority)
-            _require_filevault()
+            _require_filevault(args.output_root)
+            runtime_revision, _runtime_tree = resolve_tqqq_runtime_identity()
+            if runtime_revision != args.runtime_commit:
+                raise ForwardObservationError("collector runtime identity mismatch")
             app, contract_factory = _runtime(args.ibapi_root)
             result = collect_once(
                 ledger=LocalForwardObservationLedger(args.output_root),
@@ -557,15 +609,18 @@ def main(argv: list[str] | None = None) -> int:
                 acquire_symbol=_provider_adapter(app, contract_factory),
                 now=observed_now,
             )
-        except Exception:  # noqa: BLE001, S110 - public terminal must stay sanitized
-            pass
+        except Exception:  # noqa: BLE001 - public terminal must stay sanitized
+            result = CollectionResult("PARK_MATERIAL", _provider_call_count(app), None)
         finally:
-            if (
-                app is not None
-                and callable(getattr(app, "isConnected", None))
-                and app.isConnected()
-            ):
-                app.disconnect()
+            try:
+                if (
+                    app is not None
+                    and callable(getattr(app, "isConnected", None))
+                    and app.isConnected()
+                ):
+                    app.disconnect()
+            except Exception:  # noqa: BLE001, S110 - teardown is also sanitized
+                pass
     print(json.dumps(_terminal(result), sort_keys=True, separators=(",", ":")))
     return 0 if result.status in {"COLLECTED", "NO_FROZEN_SESSION_READY", "FROZEN_PLAN_COMPLETE"} else 1
 

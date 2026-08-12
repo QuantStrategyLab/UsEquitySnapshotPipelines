@@ -15,12 +15,34 @@ from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_forward_observation import PLAN_SHA256
 from us_equity_snapshot_pipelines.tqqq_forward_observation_cli import (
+    _require_filevault,
     load_authority_receipts,
     validate_local_adapter_authority,
 )
 
 LAUNCH_AGENT_LABEL = "com.quantstrategylab.tqqq-forward-observation"
-_FIRST_COLLECTION_DEADLINE = datetime(2026, 8, 14, 13, 30, tzinfo=UTC)
+_FIRST_COLLECTION_DEADLINE = datetime(2026, 8, 13, 22, 0, tzinfo=UTC)
+
+
+def _runtime_commit(runtime_python: Path) -> str:
+    identity = subprocess.run(
+        [
+            str(runtime_python),
+            "-c",
+            (
+                "from us_equity_snapshot_pipelines.lifecycle."
+                "tqqq_acquisition_orchestration import resolve_tqqq_runtime_identity; "
+                "print(resolve_tqqq_runtime_identity()[0])"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+    if len(identity) != 40 or any(character not in "0123456789abcdef" for character in identity):
+        raise ValueError("collector runtime identity invalid")
+    return identity
 
 
 def build_launch_agent_plist(
@@ -110,30 +132,8 @@ def _activation_gate(
         localtime = Path("/etc/localtime").resolve()
         if not localtime.as_posix().endswith("/Asia/Shanghai"):
             return False
-        filevault = subprocess.run(
-            ["/usr/bin/fdesetup", "status"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if filevault.stdout.strip() != "FileVault is On.":
-            return False
-        module = subprocess.run(
-            [
-                str(runtime_python),
-                "-c",
-                (
-                    "from pathlib import Path; import us_equity_snapshot_pipelines as p; "
-                    "print(Path(p.__file__).resolve())"
-                ),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if not Path(module.stdout.strip()).is_relative_to(runtime_python.parent.parent):
+        _require_filevault(output_root)
+        if _runtime_commit(runtime_python) != runtime_commit:
             return False
         domain = f"gui/{os.getuid()}"
         collision = subprocess.run(
@@ -187,24 +187,29 @@ def install_launch_agent(
         return False
     if not destination.is_absolute() or destination.exists() or destination.is_symlink():
         return False
-    log_root = output_root / "scheduler-logs"
-    log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(log_root, 0o700)
-    payload = build_launch_agent_plist(
-        runtime_python=runtime_python,
-        ibapi_root=ibapi_root,
-        authority_receipt=authority_receipt,
-        authority_receipt_sha256=authority_receipt_sha256,
-        plan_receipt=plan_receipt,
-        plan_receipt_sha256=plan_receipt_sha256,
-        output_root=output_root,
-        runtime_commit=runtime_commit,
-        stdout_path=log_root / "stdout.log",
-        stderr_path=log_root / "stderr.log",
-    )
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(destination.parent, 0o700)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".tqqq-forward.", dir=destination.parent)
+    try:
+        log_root = output_root / "scheduler-logs"
+        log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(log_root, 0o700)
+        payload = build_launch_agent_plist(
+            runtime_python=runtime_python,
+            ibapi_root=ibapi_root,
+            authority_receipt=authority_receipt,
+            authority_receipt_sha256=authority_receipt_sha256,
+            plan_receipt=plan_receipt,
+            plan_receipt_sha256=plan_receipt_sha256,
+            output_root=output_root,
+            runtime_commit=runtime_commit,
+            stdout_path=log_root / "stdout.log",
+            stderr_path=log_root / "stderr.log",
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(destination.parent, 0o700)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".tqqq-forward.", dir=destination.parent
+        )
+    except (OSError, ValueError):
+        return False
     temporary = Path(temporary_name)
     bootstrapped = False
     try:
