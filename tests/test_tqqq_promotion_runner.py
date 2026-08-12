@@ -548,9 +548,12 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
     scenarios = []
     for scenario, candidate_return in zip(result.scenarios, candidate_returns):
         locked = scenario.windows[-1]
+        strategy_cagr = _locked_cagr(candidate_return)
         metrics = replace(
             locked.relative_metrics,
             strategy_total_return=candidate_return,
+            strategy_cagr=strategy_cagr,
+            excess_cagr=strategy_cagr - locked.relative_metrics.qqq_cagr,
             strategy_max_drawdown=-0.05,
             qqq_max_drawdown=-0.08,
         )
@@ -562,6 +565,8 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
                     locked_oos_result=replace(
                         scenario.promotion_run.locked_oos_result,
                         total_return=candidate_return,
+                        cagr=strategy_cagr,
+                        excess_cagr=strategy_cagr - locked.relative_metrics.qqq_cagr,
                         max_drawdown=-0.05,
                         benchmark_max_drawdown=-0.08,
                         oos_max_drawdown=-0.05,
@@ -963,6 +968,67 @@ def test_acceptance_requires_window_metrics_to_match_locked_backtest_result() ->
                 promotion_run=replace(
                     scenario.promotion_run,
                     locked_oos_result=inconsistent,
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_requires_strategy_total_return_cagr_consistency() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        metrics = replace(locked.relative_metrics, strategy_total_return=0.50)
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        total_return=0.50,
+                    ),
+                ),
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(locked, relative_metrics=metrics),
+                ),
+            )
+        )
+    result = replace(passing, scenarios=tuple(scenarios))
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_rejects_breaker_metadata_without_park_sessions() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    locked = scenario.windows[-1]
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        episode_summary=replace(
+                            locked.episode_summary,
+                            breaker_reason="ACCOUNT_DRAWDOWN",
+                            first_park_session=locked.end_date,
+                        ),
+                    ),
                 ),
             ),
         ),

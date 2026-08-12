@@ -634,7 +634,17 @@ def _locked_metrics_match_backtest(
         or metrics.benchmark_symbol != result.benchmark_symbol
         or result.start_date is None
         or result.end_date is None
+        or metrics.strategy_total_return <= -1.0
         or metrics.qqq_total_return <= -1.0
+        or not _same_number(
+            metrics.strategy_cagr,
+            _cagr(
+                1.0,
+                1.0 + metrics.strategy_total_return,
+                result.start_date,
+                result.end_date,
+            ),
+        )
         or not _same_number(
             metrics.qqq_cagr,
             _cagr(1.0, 1.0 + metrics.qqq_total_return, result.start_date, result.end_date),
@@ -1095,6 +1105,24 @@ def evaluate_tqqq_pre_result_acceptance(
                 or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
                 or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
                 or summary.tqqq_unprotected_holding_session_count != 0
+                or (
+                    summary.parked_session_count > 0
+                    and (
+                        summary.breaker_reason
+                        not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+                        or type(summary.first_park_session) is not date
+                        or not locked.start_date
+                        <= summary.first_park_session
+                        <= locked.end_date
+                    )
+                )
+                or (
+                    summary.parked_session_count == 0
+                    and (
+                        summary.breaker_reason is not None
+                        or summary.first_park_session is not None
+                    )
+                )
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             if metrics.benchmark_symbol != "QQQ":
