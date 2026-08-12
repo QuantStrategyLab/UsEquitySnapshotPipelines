@@ -758,6 +758,27 @@ class _ImmutableReplayProducer:
         state.tqqq_entry_price = None
         state.tqqq_stop_price = None
         state.tqqq_entry_identity_sha256 = None
+        if state.parked:
+            rate = cost_bps / 10_000.0
+            for symbol in ("QQQM", "BOXX"):
+                remaining = state.quantities[symbol]
+                if remaining <= 1e-12:
+                    continue
+                bar = self._price(symbol, session)
+                state.cash += remaining * bar.open * (1.0 - rate)
+                state.turnover += remaining * bar.open / opening_equity
+                state.trade_count += 1
+                state.quantities[symbol] = 0.0
+            if (
+                self._switching_traces
+                and self._switching_traces[-1].execution_session == session
+            ):
+                self._switching_traces[-1] = replace(
+                    self._switching_traces[-1],
+                    risk_disposition="PARK",
+                    risk_reason_codes=(state.breaker_reason,),
+                    executed_allocation=self._allocation(session, "open"),
+                )
 
     def _current_weights(self, session: date, equity: float) -> dict[str, float]:
         if equity <= 0.0:

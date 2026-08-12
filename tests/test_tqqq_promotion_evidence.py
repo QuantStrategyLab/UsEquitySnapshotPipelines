@@ -862,6 +862,20 @@ def test_multi_asset_target_rebalances_without_completed_exit_round_trip() -> No
 def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session, tqqq_open=95.0, tqqq_low=94.0)
+    target = (("BOXX", 0.0), ("QQQM", 0.10), ("TQQQ", 0.10), ("cash", 0.80))
+    producer._switching_traces = [
+        TqqqSwitchingTrace(
+            signal_session=session - timedelta(days=1),
+            execution_session=session,
+            signal_state="hold",
+            signal_regime="RISK_ON",
+            intended_allocation=target,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=target,
+            executed_allocation=target,
+        )
+    ]
     producer._state = _ReplayState(
         cash=80_000.0,
         quantities={"TQQQ": 100.0, "QQQM": 100.0, "BOXX": 0.0},
@@ -872,11 +886,18 @@ def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> N
 
     producer._apply_stop(session, 0)
 
-    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 100.0, "BOXX": 0.0}
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
     assert producer._state.consecutive_losing_exits == 5
     assert producer._state.parked is True
     assert producer._state.tqqq_entry_price is None
     assert producer._state.tqqq_stop_price is None
+    assert producer.switching_traces[-1].risk_disposition == "PARK"
+    assert producer.switching_traces[-1].risk_reason_codes == (
+        "CONSECUTIVE_TQQQ_LOSING_EXITS",
+    )
+    assert dict(producer.switching_traces[-1].executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
 
 
 def test_multi_asset_state_projection_digest_is_deterministic() -> None:

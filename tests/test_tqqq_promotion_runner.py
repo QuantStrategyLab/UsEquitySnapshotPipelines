@@ -476,6 +476,7 @@ def test_legacy_parity_contract_is_session_first_and_fail_closed() -> None:
     sized = _parity_session(
         target_allocation={"TQQQ": 0.10, "QQQM": 0.30, "BOXX": 0.0, "cash": 0.60},
         gross_return=0.008,
+        trade_count=2,
         cost=0.0008,
         net_return=0.007,
     )

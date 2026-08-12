@@ -755,7 +755,11 @@ def classify_tqqq_legacy_parity(
             expected_difference = True
         if old["trade_count"] != new["trade_count"]:
             if not change_set & (
-                timing_or_state_changes | {"EXECUTION_SESSION_COUNTER_ATTRIBUTION"}
+                timing_or_state_changes
+                | {
+                    "EXECUTION_SESSION_COUNTER_ATTRIBUTION",
+                    "RISK_ENGINE_AND_APPROVED_SIZING",
+                }
             ):
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
