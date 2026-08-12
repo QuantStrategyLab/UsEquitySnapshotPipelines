@@ -28,6 +28,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     classify_tqqq_legacy_parity,
     evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
+    _window_acceptance_source,
 )
 
 QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
@@ -38,16 +39,6 @@ RUNNER_REVISION = "1" * 40
 def _sha256(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _acceptance_source(metrics, traces: tuple[TqqqSwitchingTrace, ...]) -> str:
-    return "tqqq_promotion_runner:" + _sha256(
-        {
-            "qqq_total_return": metrics.qqq_total_return,
-            "boxx_total_return": metrics.boxx_total_return,
-            "signal_regimes": [trace.signal_regime for trace in traces],
-        }
-    )
 
 
 def _locked_cagr(total_return: float) -> float:
@@ -559,6 +550,7 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
             strategy_max_drawdown=-0.05,
             qqq_max_drawdown=-0.08,
         )
+        updated_locked = replace(locked, relative_metrics=metrics)
         scenarios.append(
             replace(
                 scenario,
@@ -572,10 +564,12 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
                         max_drawdown=-0.05,
                         benchmark_max_drawdown=-0.08,
                         oos_max_drawdown=-0.05,
-                        source_script=_acceptance_source(metrics, locked.switching_traces),
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
                     ),
                 ),
-                windows=(*scenario.windows[:-1], replace(locked, relative_metrics=metrics)),
+                windows=(*scenario.windows[:-1], updated_locked),
             )
         )
     return replace(result, scenarios=tuple(scenarios))
@@ -606,6 +600,7 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
             )
             for trace in locked.switching_traces
         )
+        updated_locked = replace(locked, switching_traces=traces)
         defensive_scenarios.append(
             replace(
                 scenario,
@@ -613,15 +608,14 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
                     scenario.promotion_run,
                     locked_oos_result=replace(
                         scenario.promotion_run.locked_oos_result,
-                        source_script=_acceptance_source(locked.relative_metrics, traces),
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
                     ),
                 ),
                 windows=(
                     *scenario.windows[:-1],
-                    replace(
-                        locked,
-                        switching_traces=traces,
-                    ),
+                    updated_locked,
                 ),
             )
         )
@@ -883,6 +877,91 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
     )
 
 
+def test_acceptance_binds_locked_switching_allocations_to_backtest_result() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    alternate = (
+        ("TQQQ", 0.10),
+        ("QQQM", 0.10),
+        ("BOXX", 0.10),
+        ("cash", 0.70),
+    )
+    scenarios = []
+    for scenario in passing.scenarios:
+        locked = scenario.windows[-1]
+        traces = tuple(
+            replace(
+                trace,
+                intended_allocation=alternate,
+                replay_target_allocation=alternate,
+                executed_allocation=alternate,
+            )
+            for trace in locked.switching_traces
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(locked, switching_traces=traces),
+                ),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_fully_validates_every_purged_fold() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[0]
+    malformed_fold = replace(scenario.windows[0], switching_traces=())
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(
+                        scenario,
+                        windows=(malformed_fold, *scenario.windows[1:]),
+                    ),
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "NOT_COMPARABLE",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_binds_backtest_and_window_to_exact_cost_scenario() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    source = passing.scenarios[0]
+    scenarios = [source]
+    for scenario in passing.scenarios[1:]:
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=source.promotion_run.locked_oos_result,
+                ),
+                windows=(*scenario.windows[:-1], source.windows[-1]),
+            )
+        )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, scenarios=tuple(scenarios)), "NOT_COMPARABLE"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
 def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     locked = passing.scenarios[-1].windows[-1]
@@ -927,21 +1006,32 @@ def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() 
             ("cash", 0.65052),
         ),
     )
+    updated_locked = replace(
+        locked,
+        switching_traces=(
+            within_cost_tolerance,
+            *locked.switching_traces[1:],
+        ),
+    )
+    scenario = passing.scenarios[-1]
     accepted = replace(
         passing,
         scenarios=(
             *passing.scenarios[:-1],
             replace(
-                passing.scenarios[-1],
-                windows=(
-                    *passing.scenarios[-1].windows[:-1],
-                    replace(
-                        locked,
-                        switching_traces=(
-                            within_cost_tolerance,
-                            *locked.switching_traces[1:],
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
                         ),
                     ),
+                ),
+                windows=(
+                    *scenario.windows[:-1],
+                    updated_locked,
                 ),
             ),
         ),
@@ -1107,6 +1197,11 @@ def test_acceptance_binds_defensive_only_classification_to_locked_result() -> No
             )
             for trace in defensive_traces
         )
+        defensive_window = replace(
+            locked,
+            relative_metrics=metrics,
+            switching_traces=defensive_traces,
+        )
         scenarios.append(
             replace(
                 scenario,
@@ -1118,7 +1213,9 @@ def test_acceptance_binds_defensive_only_classification_to_locked_result() -> No
                         benchmark_cagr=_locked_cagr(0.02),
                         benchmark_max_drawdown=-0.02,
                         oos_max_drawdown=-0.01,
-                        source_script=_acceptance_source(metrics, defensive_traces),
+                        source_script=_window_acceptance_source(
+                            defensive_window, scenario.total_cost_bps
+                        ),
                     ),
                 ),
                 windows=(
@@ -1297,6 +1394,18 @@ def test_parked_trace_reaches_frozen_reject_terminal() -> None:
             executed_allocation=cash,
         )
         traces = (*locked.switching_traces[:-1], parked)
+        updated_locked = replace(
+            locked,
+            decision_count=locked.decision_count - 1,
+            risk_assessment_count=locked.risk_assessment_count - 1,
+            switching_traces=traces,
+            episode_summary=replace(
+                locked.episode_summary,
+                parked_session_count=1,
+                breaker_reason="ACCOUNT_DRAWDOWN",
+                first_park_session=locked.end_date,
+            ),
+        )
         scenarios.append(
             replace(
                 scenario,
@@ -1304,23 +1413,14 @@ def test_parked_trace_reaches_frozen_reject_terminal() -> None:
                     scenario.promotion_run,
                     locked_oos_result=replace(
                         scenario.promotion_run.locked_oos_result,
-                        source_script=_acceptance_source(locked.relative_metrics, traces),
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
+                        ),
                     ),
                 ),
                 windows=(
                     *scenario.windows[:-1],
-                    replace(
-                        locked,
-                        decision_count=locked.decision_count - 1,
-                        risk_assessment_count=locked.risk_assessment_count - 1,
-                        switching_traces=traces,
-                        episode_summary=replace(
-                            locked.episode_summary,
-                            parked_session_count=1,
-                            breaker_reason="ACCOUNT_DRAWDOWN",
-                            first_park_session=locked.end_date,
-                        ),
-                    ),
+                    updated_locked,
                 ),
             )
         )
@@ -1345,21 +1445,31 @@ def test_post_approval_breaker_trace_reaches_frozen_reject_terminal() -> None:
             risk_reason_codes=("CONSECUTIVE_TQQQ_LOSING_EXITS",),
             executed_allocation=cash,
         )
+        updated_locked = replace(
+            locked,
+            switching_traces=(*locked.switching_traces[:-1], parked),
+            episode_summary=replace(
+                locked.episode_summary,
+                parked_session_count=1,
+                breaker_reason="CONSECUTIVE_TQQQ_LOSING_EXITS",
+                first_park_session=locked.end_date,
+            ),
+        )
         scenarios.append(
             replace(
                 scenario,
-                windows=(
-                    *scenario.windows[:-1],
-                    replace(
-                        locked,
-                        switching_traces=(*locked.switching_traces[:-1], parked),
-                        episode_summary=replace(
-                            locked.episode_summary,
-                            parked_session_count=1,
-                            breaker_reason="CONSECUTIVE_TQQQ_LOSING_EXITS",
-                            first_park_session=locked.end_date,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
                         ),
                     ),
+                ),
+                windows=(
+                    *scenario.windows[:-1],
+                    updated_locked,
                 ),
             )
         )
@@ -1386,6 +1496,22 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
             strategy_max_drawdown=-0.01,
             qqq_max_drawdown=-0.02,
         )
+        traces = tuple(
+            replace(
+                trace,
+                signal_state="idle",
+                signal_regime="DEFENSIVE",
+                intended_allocation=defensive,
+                replay_target_allocation=defensive,
+                executed_allocation=defensive,
+            )
+            for trace in locked.switching_traces
+        )
+        updated_locked = replace(
+            locked,
+            relative_metrics=metrics,
+            switching_traces=traces,
+        )
         scenarios.append(
             replace(
                 scenario,
@@ -1397,39 +1523,14 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
                         benchmark_cagr=_locked_cagr(0.02),
                         benchmark_max_drawdown=-0.02,
                         oos_max_drawdown=-0.01,
-                        source_script=_acceptance_source(
-                            metrics,
-                            tuple(
-                                replace(
-                                    trace,
-                                    signal_state="idle",
-                                    signal_regime="DEFENSIVE",
-                                    intended_allocation=defensive,
-                                    replay_target_allocation=defensive,
-                                    executed_allocation=defensive,
-                                )
-                                for trace in locked.switching_traces
-                            ),
+                        source_script=_window_acceptance_source(
+                            updated_locked, scenario.total_cost_bps
                         ),
                     ),
                 ),
                 windows=(
                     *scenario.windows[:-1],
-                    replace(
-                        locked,
-                        relative_metrics=metrics,
-                        switching_traces=tuple(
-                            replace(
-                                trace,
-                                signal_state="idle",
-                                signal_regime="DEFENSIVE",
-                                intended_allocation=defensive,
-                                replay_target_allocation=defensive,
-                                executed_allocation=defensive,
-                            )
-                            for trace in locked.switching_traces
-                        ),
-                    ),
+                    updated_locked,
                 ),
             )
         )
