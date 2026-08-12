@@ -107,7 +107,22 @@ class SyntheticReplay:
                 if start_date.isoformat() <= value <= end_date.isoformat()
             )
         else:
-            sessions = (start_date, start_date + (end_date - start_date) / 2, end_date)
+            window_sessions = tuple(
+                date.fromisoformat(value)
+                for value in FROZEN_XNYS_SESSIONS
+                if start_date.isoformat() <= value <= end_date.isoformat()
+            )
+            sessions = (
+                window_sessions[0],
+                window_sessions[len(window_sessions) // 2],
+                window_sessions[-1],
+            )
+        frozen_sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS)
+        previous_session = {
+            session: frozen_sessions[index - 1]
+            for index, session in enumerate(frozen_sessions)
+            if index
+        }
         strategy = (100.0, 102.0, 99.0) + tuple(
             99.0 + (105.0 - 99.0) * index / (len(sessions) - 2)
             for index in range(1, len(sessions) - 1)
@@ -123,7 +138,7 @@ class SyntheticReplay:
         intended = (("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10), ("cash", 0.65))
         switching_traces = tuple(
             TqqqSwitchingTrace(
-                signal_session=execution_session - (date.resolution),
+                signal_session=previous_session[execution_session],
                 execution_session=execution_session,
                 signal_state="entry" if index == 0 else "hold",
                 signal_regime="RISK_ON",
@@ -503,6 +518,16 @@ def _acceptance_result(*, candidate_returns: tuple[float, float, float]):
         scenarios.append(
             replace(
                 scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        total_return=candidate_return,
+                        max_drawdown=-0.05,
+                        benchmark_max_drawdown=-0.08,
+                        oos_max_drawdown=-0.05,
+                    ),
+                ),
                 windows=(*scenario.windows[:-1], replace(locked, relative_metrics=metrics)),
             )
         )
@@ -872,6 +897,71 @@ def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() 
     )
 
 
+def test_acceptance_requires_window_metrics_to_match_locked_backtest_result() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    inconsistent = replace(
+        scenario.promotion_run.locked_oos_result,
+        total_return=-0.20,
+        max_drawdown=-0.20,
+        oos_max_drawdown=-0.20,
+    )
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=inconsistent,
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
+def test_acceptance_requires_adjacent_frozen_xnys_switching_sessions() -> None:
+    passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    scenario = passing.scenarios[-1]
+    locked = scenario.windows[-1]
+    trace = locked.switching_traces[1]
+    stale_signal = replace(
+        trace,
+        signal_session=locked.sessions[0] - date.resolution,
+    )
+    result = replace(
+        passing,
+        scenarios=(
+            *passing.scenarios[:-1],
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        locked,
+                        switching_traces=(
+                            locked.switching_traces[0],
+                            stale_signal,
+                            *locked.switching_traces[2:],
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+
+
 def test_parked_trace_reaches_frozen_reject_terminal() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     cash = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.0), ("cash", 1.0))
@@ -933,6 +1023,15 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
         scenarios.append(
             replace(
                 scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    locked_oos_result=replace(
+                        scenario.promotion_run.locked_oos_result,
+                        max_drawdown=-0.01,
+                        benchmark_max_drawdown=-0.02,
+                        oos_max_drawdown=-0.01,
+                    ),
+                ),
                 windows=(
                     *scenario.windows[:-1],
                     replace(

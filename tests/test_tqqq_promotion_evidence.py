@@ -91,7 +91,7 @@ def _sessions() -> list[date]:
     development_sessions = {
         date.fromisoformat(value)
         for value in FROZEN_XNYS_SESSIONS
-        if "2023-01-01" <= value <= "2025-06-30"
+        if "2022-12-27" <= value <= "2025-06-30"
     }
     locked_sessions = {
         date.fromisoformat(value)

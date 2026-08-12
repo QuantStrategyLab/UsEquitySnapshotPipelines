@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,6 @@ from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
-from .soxl_pit_input_packager import _xnys_holidays
 from .tqqq_promotion_evidence import (
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
@@ -119,38 +118,9 @@ def _canonical(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _frozen_xnys_sessions() -> tuple[str, ...]:
-    start = date(2018, 1, 2)
-    end = promotion_runner._LOCKED_OOS_END
-    holidays = set().union(
-        *(_xnys_holidays(year) for year in range(start.year, end.year + 1))
-    )
-    sessions: list[str] = []
-    current = start
-    while current <= end:
-        if current.weekday() < 5 and current not in holidays:
-            sessions.append(current.isoformat())
-        current += timedelta(days=1)
-    result = tuple(sessions)
-    if hashlib.sha256(_canonical(list(result))).hexdigest() != _FROZEN_CALENDAR_SHA256:
-        raise RuntimeError("frozen TQQQ XNYS calendar contract is inconsistent")
-    locked = tuple(
-        value
-        for value in result
-        if promotion_runner._LOCKED_OOS_START.isoformat()
-        <= value
-        <= promotion_runner._LOCKED_OOS_END.isoformat()
-    )
-    if (
-        len(locked) != promotion_runner._LOCKED_OOS_SESSION_COUNT
-        or hashlib.sha256(_canonical(list(locked))).hexdigest()
-        != promotion_runner._LOCKED_OOS_SESSIONS_SHA256
-    ):
-        raise RuntimeError("frozen TQQQ locked OOS calendar identity is inconsistent")
-    return result
-
-
-FROZEN_XNYS_SESSIONS = _frozen_xnys_sessions()
+FROZEN_XNYS_SESSIONS = tuple(
+    session.isoformat() for session in promotion_runner._FROZEN_XNYS_SESSIONS
+)
 
 
 class TqqqOrchestrationError(ValueError):

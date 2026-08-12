@@ -14,7 +14,7 @@ import statistics
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestOrchestrator
@@ -24,6 +24,8 @@ from quant_platform_kit.strategy_lifecycle.contracts import (
     PromotionCostModel,
     PurgedWalkForwardFold,
 )
+
+from .soxl_pit_input_packager import _xnys_holidays
 
 _QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 _UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
@@ -318,6 +320,41 @@ def _canonical_sha256(material: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _frozen_xnys_sessions() -> tuple[date, ...]:
+    start = date(2018, 1, 2)
+    holidays = set().union(
+        *(_xnys_holidays(year) for year in range(start.year, _LOCKED_OOS_END.year + 1))
+    )
+    sessions: list[date] = []
+    current = start
+    while current <= _LOCKED_OOS_END:
+        if current.weekday() < 5 and current not in holidays:
+            sessions.append(current)
+        current += timedelta(days=1)
+    result = tuple(sessions)
+    if (
+        _canonical_sha256([session.isoformat() for session in result])
+        != _FROZEN_CALENDAR_SHA256
+    ):
+        raise RuntimeError("frozen TQQQ XNYS calendar contract is inconsistent")
+    locked = tuple(
+        session for session in result if _LOCKED_OOS_START <= session <= _LOCKED_OOS_END
+    )
+    if (
+        len(locked) != _LOCKED_OOS_SESSION_COUNT
+        or _canonical_sha256([session.isoformat() for session in locked])
+        != _LOCKED_OOS_SESSIONS_SHA256
+    ):
+        raise RuntimeError("frozen TQQQ locked OOS calendar identity is inconsistent")
+    return result
+
+
+_FROZEN_XNYS_SESSIONS = _frozen_xnys_sessions()
+_FROZEN_XNYS_SESSION_INDEX = {
+    session: index for index, session in enumerate(_FROZEN_XNYS_SESSIONS)
+}
+
+
 def build_tqqq_switching_characterization_contract() -> dict[str, object]:
     """Return the frozen, quota-free deterministic switching contract."""
 
@@ -587,6 +624,37 @@ def _same_number(left: object, right: object) -> bool:
     return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=1e-12)
 
 
+def _locked_metrics_match_backtest(
+    metrics: TqqqQqqRelativeMetrics,
+    result: BacktestResult,
+) -> bool:
+    if type(result) is not BacktestResult or metrics.benchmark_symbol != result.benchmark_symbol:
+        return False
+    fields = (
+        ("strategy_total_return", "total_return"),
+        ("strategy_cagr", "cagr"),
+        ("strategy_max_drawdown", "max_drawdown"),
+        ("qqq_cagr", "benchmark_cagr"),
+        ("qqq_max_drawdown", "benchmark_max_drawdown"),
+        ("excess_cagr", "excess_cagr"),
+        ("sharpe_ratio", "sharpe_ratio"),
+        ("sortino_ratio", "sortino_ratio"),
+        ("calmar_ratio", "calmar_ratio"),
+        ("annualized_volatility", "volatility"),
+        ("win_rate", "win_rate"),
+        ("sharpe_ratio", "oos_sharpe"),
+        ("calmar_ratio", "oos_calmar"),
+        ("strategy_max_drawdown", "oos_max_drawdown"),
+    )
+    return all(
+        _same_number(
+            getattr(metrics, metric_field),
+            _finite(getattr(result, result_field), "locked backtest metric"),
+        )
+        for metric_field, result_field in fields
+    )
+
+
 def classify_tqqq_legacy_parity(
     legacy_reference: Mapping[str, object],
     legacy_sessions: Sequence[Mapping[str, object]],
@@ -726,11 +794,15 @@ def _validate_switching_traces(
         "parked": "DEFENSIVE",
     }
     for trace in traces:
+        if type(trace) is not TqqqSwitchingTrace:
+            raise TqqqPromotionContractError("invalid switching trace")
+        signal_index = _FROZEN_XNYS_SESSION_INDEX.get(trace.signal_session)
+        execution_index = _FROZEN_XNYS_SESSION_INDEX.get(trace.execution_session)
         if (
-            type(trace) is not TqqqSwitchingTrace
-            or type(trace.signal_session) is not date
+            type(trace.signal_session) is not date
             or type(trace.execution_session) is not date
-            or not trace.signal_session < trace.execution_session
+            or signal_index is None
+            or execution_index != signal_index + 1
             or trace.execution_session not in sessions
             or states.get(trace.signal_state) != trace.signal_regime
             or type(trace.risk_reason_codes) is not tuple
@@ -817,6 +889,7 @@ def evaluate_tqqq_pre_result_acceptance(
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
     locked_metrics: dict[int, TqqqQqqRelativeMetrics] = {}
+    locked_backtests: dict[int, BacktestResult] = {}
     locked_summaries: dict[int, TqqqEpisodeSummary] = {}
     locked_defensive_only: dict[int, bool] = {}
     try:
@@ -904,6 +977,12 @@ def evaluate_tqqq_pre_result_acceptance(
             summary = locked.episode_summary
             if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            if (
+                not _locked_metrics_match_backtest(metrics, promotion_run.locked_oos_result)
+                or promotion_run.locked_oos_result.observation_count
+                != len(locked.sessions) + 1
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
             summary_counts = (
                 summary.episode_session_count,
                 summary.tqqq_exposure_session_count,
@@ -955,15 +1034,16 @@ def evaluate_tqqq_pre_result_acceptance(
             if metrics.strategy_max_drawdown > 0.0 or metrics.qqq_max_drawdown > 0.0:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             locked_metrics[cost] = metrics
+            locked_backtests[cost] = promotion_run.locked_oos_result
             locked_summaries[cost] = summary
     except (AttributeError, KeyError, TypeError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
     if (
-        locked_metrics[10].strategy_total_return
-        > locked_metrics[5].strategy_total_return + 1e-12
-        or locked_metrics[15].strategy_total_return
-        > locked_metrics[10].strategy_total_return + 1e-12
+        float(locked_backtests[10].total_return)
+        > float(locked_backtests[5].total_return) + 1e-12
+        or float(locked_backtests[15].total_return)
+        > float(locked_backtests[10].total_return) + 1e-12
     ):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(
@@ -974,15 +1054,19 @@ def evaluate_tqqq_pre_result_acceptance(
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(summary.parked_session_count for summary in locked_summaries.values()):
         return TQQQ_ACCEPTANCE_REJECT
-    if any(abs(metrics.strategy_max_drawdown) > 0.10 + 1e-12 for metrics in locked_metrics.values()):
+    if any(
+        abs(float(result.max_drawdown)) > 0.10 + 1e-12
+        for result in locked_backtests.values()
+    ):
         return TQQQ_ACCEPTANCE_REJECT
 
     metrics = locked_metrics[15]
-    candidate_return = metrics.strategy_total_return
+    locked_backtest = locked_backtests[15]
+    candidate_return = float(locked_backtest.total_return)
     qqq_return = metrics.qqq_total_return
     boxx_return = metrics.boxx_total_return
-    candidate_mdd = abs(metrics.strategy_max_drawdown)
-    qqq_mdd = abs(metrics.qqq_max_drawdown)
+    candidate_mdd = abs(float(locked_backtest.max_drawdown))
+    qqq_mdd = abs(float(locked_backtest.benchmark_max_drawdown))
     if qqq_return <= 0.0:
         passed = (
             candidate_return >= qqq_return
