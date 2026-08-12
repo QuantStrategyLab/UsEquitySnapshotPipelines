@@ -983,6 +983,65 @@ def _mutate_locked_cooldown(result, mutation: str):
     return replace(result, scenarios=tuple(scenarios))
 
 
+def _with_park_interrupted_fold_cooldown(result):
+    defensive = (
+        ("TQQQ", 0.0),
+        ("QQQM", 0.0),
+        ("BOXX", 0.20),
+        ("cash", 0.80),
+    )
+    scenarios = []
+    for scenario in result.scenarios:
+        fold = scenario.windows[0]
+        traces = list(fold.switching_traces)
+        cooldown_start = len(traces) - 22
+        for index in range(cooldown_start, len(traces) - 1):
+            traces[index] = replace(
+                traces[index],
+                signal_state="protective_cooldown",
+                signal_regime="DEFENSIVE",
+                intended_allocation=defensive,
+                risk_disposition="APPROVE",
+                risk_reason_codes=(),
+                replay_target_allocation=defensive,
+                executed_allocation=defensive,
+            )
+        park_index = cooldown_start + 10
+        traces[park_index] = replace(
+            traces[park_index],
+            risk_disposition="PARK",
+            risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+        )
+        updated_fold = replace(
+            fold,
+            switching_traces=tuple(traces),
+            episode_summary=replace(
+                fold.episode_summary,
+                parked_session_count=1,
+                breaker_reason="ACCOUNT_DRAWDOWN",
+                first_park_session=traces[park_index].execution_session,
+            ),
+        )
+        fold_results = list(scenario.promotion_run.fold_results)
+        fold_results[0] = replace(
+            fold_results[0],
+            source_script=_window_acceptance_source(
+                updated_fold, scenario.total_cost_bps
+            ),
+        )
+        scenarios.append(
+            replace(
+                scenario,
+                promotion_run=replace(
+                    scenario.promotion_run,
+                    fold_results=tuple(fold_results),
+                ),
+                windows=(updated_fold, *scenario.windows[1:]),
+            )
+        )
+    return replace(result, scenarios=tuple(scenarios))
+
+
 def test_protective_cooldown_is_exactly_20_then_fresh_base_signal() -> None:
     result = _with_valid_locked_cooldown(
         _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
@@ -1027,6 +1086,16 @@ def test_acceptance_rejects_malformed_protective_cooldown_sequence(
         )
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
+
+
+def test_acceptance_rejects_park_interrupted_protective_cooldown() -> None:
+    valid = _with_valid_locked_cooldown(
+        _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
+    )
+
+    assert evaluate_tqqq_pre_result_acceptance(
+        _with_park_interrupted_fold_cooldown(valid), "NOT_COMPARABLE"
+    ) == TQQQ_ACCEPTANCE_INCONCLUSIVE
 
 
 def test_acceptance_binds_locked_switching_allocations_to_backtest_result() -> None:

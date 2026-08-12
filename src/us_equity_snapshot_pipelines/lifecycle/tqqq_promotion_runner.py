@@ -922,6 +922,11 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("switching target exposure cap exceeded")
         if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
             raise TqqqPromotionContractError("UES/replay target allocation drift")
+        if (
+            trace.signal_state == "protective_cooldown"
+            and trace.risk_disposition != "APPROVE"
+        ):
+            raise TqqqPromotionContractError("invalid protective cooldown sequence")
         if trace.risk_disposition == "PARK":
             execution_is_cash = all(
                 executed[symbol] <= 1e-12 for symbol in _ALLOWED_ASSETS
