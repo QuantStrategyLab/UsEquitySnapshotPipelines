@@ -204,11 +204,11 @@ def test_exact_four_results_publish_then_consume_one_mandate_and_run_existing_pr
         assert manifest["calendar"] == {
             "calendar_id": "XNYS",
             "timezone": "America/New_York",
-            "session_date": "2025-07-01",
+            "session_date": "2026-07-31",
             "source": "exchange_calendars",
             "source_revision": (
                 "exchange_calendars:4.13.2:XNYS:"
-                "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
+                "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
             ),
         }
         assert manifest["producer"] == {
@@ -573,6 +573,20 @@ def test_unified_duration_covers_every_required_session_at_latest_authority_expi
         assert earliest_covered_session < first_eligible_session
 
 
+def test_locked_oos_calendar_identity_is_exact_and_at_least_twelve_months() -> None:
+    locked = tuple(
+        value
+        for value in orchestration.FROZEN_XNYS_SESSIONS
+        if "2025-07-02" <= value <= "2026-07-31"
+    )
+
+    assert orchestration.FIXED_CUTOFF == "2026-08-03T03:59:59Z"
+    assert len(locked) == 272
+    assert hashlib.sha256(
+        json.dumps(list(locked), separators=(",", ":")).encode()
+    ).hexdigest() == "fe4120013da919f99ec3585898c82409e8fc26423df4649377eafa665da103b8"
+
+
 def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -595,7 +609,7 @@ def test_exact_acquisition_order_and_first_failure_stop(monkeypatch: pytest.Monk
     assert calls[1]["expected_sessions"] == calls[0]["expected_sessions"]
     assert calls[2]["expected_sessions"][0] == date(2020, 10, 13)
     assert calls[3]["expected_sessions"][0] == date(2022, 12, 28)
-    assert all(call["expected_sessions"][-1] == date(2025, 7, 1) for call in calls)
+    assert all(call["expected_sessions"][-1] == date(2026, 7, 31) for call in calls)
 
     observed: list[str] = []
 
@@ -660,9 +674,9 @@ def test_current_acquisition_constructs_exact_core_parity_input(
         orchestration._canonical(
             {
                 "authority_receipt_sha256": _authority().authority_receipt_sha256,
-                "calendar_sha256": (
-                    "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
-                ),
+                    "calendar_sha256": (
+                        "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+                    ),
                 "candidate_profile": "tqqq_core_parity_v1",
                 "entitlement_receipt_sha256": _authority().entitlement_receipt_sha256,
                 "fallback": False,

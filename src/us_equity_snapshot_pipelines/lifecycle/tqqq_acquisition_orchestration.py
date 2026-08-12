@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,6 @@ from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
-from .soxl_pit_input_packager import _xnys_holidays
 from .tqqq_promotion_evidence import (
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
@@ -43,7 +42,7 @@ from .tqqq_promotion_evidence import (
 TQQQ_PROMOTION_ASSETS = ("QQQ", "TQQQ", "QQQM", "BOXX")
 EXACT_DURATIONS = {symbol: "9 Y" for symbol in TQQQ_PROMOTION_ASSETS}
 FIRST_ELIGIBLE_SESSION = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}
-FIXED_CUTOFF = "2025-07-02T03:59:59Z"
+FIXED_CUTOFF = "2026-08-03T03:59:59Z"
 INPUT_LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 INPUT_USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
 QPK_REVISION = promotion_runner._QPK_REVISION
@@ -53,11 +52,8 @@ _INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
 _PROFILE = "tqqq_core_parity_v1"
 _MANDATE_ID = "tqqq_core_parity_v1"
-_FROZEN_CALENDAR_SHA256 = "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
-_FROZEN_CALENDAR_SOURCE_REVISION = (
-    "exchange_calendars:4.13.2:XNYS:"
-    "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
-)
+_FROZEN_CALENDAR_SHA256 = promotion_runner._FROZEN_CALENDAR_SHA256
+_FROZEN_CALENDAR_SOURCE_REVISION = promotion_runner._FROZEN_CALENDAR_SOURCE_REVISION
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _DEPENDENCY_REPOSITORIES = {
@@ -122,25 +118,9 @@ def _canonical(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _frozen_xnys_sessions() -> tuple[str, ...]:
-    start = date(2018, 1, 2)
-    end = date(2025, 7, 1)
-    holidays = set().union(
-        *(_xnys_holidays(year) for year in range(start.year, end.year + 1))
-    )
-    sessions: list[str] = []
-    current = start
-    while current <= end:
-        if current.weekday() < 5 and current not in holidays:
-            sessions.append(current.isoformat())
-        current += timedelta(days=1)
-    result = tuple(sessions)
-    if hashlib.sha256(_canonical(list(result))).hexdigest() != _FROZEN_CALENDAR_SHA256:
-        raise RuntimeError("frozen TQQQ XNYS calendar contract is inconsistent")
-    return result
-
-
-FROZEN_XNYS_SESSIONS = _frozen_xnys_sessions()
+FROZEN_XNYS_SESSIONS = tuple(
+    session.isoformat() for session in promotion_runner._FROZEN_XNYS_SESSIONS
+)
 
 
 class TqqqOrchestrationError(ValueError):

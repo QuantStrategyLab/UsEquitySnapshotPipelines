@@ -22,6 +22,9 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
 from us_equity_strategies import entrypoints
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
+from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
+    FROZEN_XNYS_SESSIONS,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     TqqqPromotionEvidenceError,
     _Bar,
@@ -30,6 +33,9 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     _ReplayState,
     _state_projection,
     run_tqqq_promotion_evidence,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
+    TqqqSwitchingTrace,
 )
 
 RUNNER_REVISION = "1" * 40
@@ -79,8 +85,22 @@ def _sessions() -> list[date]:
         date(2024, 7, 1),
         date(2024, 7, 2),
         date(2025, 7, 1),
+        date(2025, 7, 2),
+        date(2026, 7, 31),
     }
-    return sorted(set(warmup) | boundaries)
+    development_sessions = {
+        date.fromisoformat(value)
+        for value in FROZEN_XNYS_SESSIONS
+        if "2022-12-27" <= value <= "2025-06-30"
+    }
+    locked_sessions = {
+        date.fromisoformat(value)
+        for value in FROZEN_XNYS_SESSIONS
+        if "2025-07-02" <= value <= "2026-07-31"
+    }
+    return sorted(
+        set(warmup) | boundaries | development_sessions | locked_sessions
+    )
 
 
 def _bar(symbol: str, session: date, index: int) -> dict[str, object]:
@@ -150,9 +170,12 @@ def _input_payload() -> dict[str, object]:
         "calendar": {
             "calendar_id": "XNYS",
             "timezone": "America/New_York",
-            "session_date": "2025-07-01",
+            "session_date": "2026-07-31",
             "source": "exchange_calendars",
-            "source_revision": "XNYS-2026-08-10",
+            "source_revision": (
+                "exchange_calendars:4.13.2:XNYS:"
+                "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+            ),
         },
         "adjustment": {
             "policy": "total_return_adjusted",
@@ -283,6 +306,9 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert result["evidence_sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
     risk = json.loads((tmp_path / "artifacts" / "risk.json").read_bytes())
     backtest = json.loads((tmp_path / "artifacts" / "backtest.json").read_bytes())
+    assert backtest["development_robustness_plan"]["aggregate_plan_sha256"] == (
+        "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+    )
     for scenario in backtest["scenarios"].values():
         cost = str(int(scenario["promotion_run"]["cost_model"]["slippage_bps"]))
         assert sum(window["decision_count"] for window in scenario["windows"]) == (
@@ -290,6 +316,7 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
         )
         for window in scenario["windows"]:
             assert window["decision_count"] == window["risk_assessment_count"] > 0
+            assert window["relative_metrics"]["boxx_total_return"] is not None
             assert set(window["episode_summary"]) == {
                 "episode_session_count",
                 "tqqq_exposure_session_count",
@@ -297,8 +324,25 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
                 "boxx_exposure_session_count",
                 "cash_only_session_count",
                 "parked_session_count",
+                "tqqq_entry_count",
+                "tqqq_stop_armed_count",
+                "tqqq_stop_crossing_count",
+                "tqqq_stop_fill_count",
+                "tqqq_unprotected_holding_session_count",
                 "breaker_reason",
                 "first_park_session",
+            }
+            assert window["switching_traces"]
+            assert set(window["switching_traces"][0]) == {
+                "signal_session",
+                "execution_session",
+                "signal_state",
+                "signal_regime",
+                "intended_allocation",
+                "risk_disposition",
+                "risk_reason_codes",
+                "replay_target_allocation",
+                "executed_allocation",
             }
     assessment_count = sum(
         counts["assessments"] for counts in risk["scenario_counts"].values()
@@ -349,6 +393,42 @@ def test_input_tamper_and_nonempty_output_fail_closed_before_replay(
     with pytest.raises(TqqqPromotionEvidenceError, match="empty"):
         run_tqqq_promotion_evidence(
             input_payload=_input_payload(),
+            config_payload=_config(),
+            output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
+        )
+
+
+def test_input_with_missing_locked_oos_session_fails_closed(tmp_path: Path) -> None:
+    payload = _input_payload()
+    missing_session = "2025-07-03"
+    for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
+        payload["bars"]["symbols"][symbol] = [
+            row
+            for row in payload["bars"]["symbols"][symbol]
+            if row["date"] != missing_session
+        ]
+        source = next(
+            item
+            for item in payload["input_manifest"]["sources"]
+            if item["source_id"] == f"ibkr:{symbol}"
+        )
+        source["content_sha256"] = hashlib.sha256(
+            _canonical(payload["bars"]["symbols"][symbol])
+        ).hexdigest()
+    bars_bytes = _canonical(payload["bars"])
+    payload["input_manifest"]["members"][0].update(
+        size_bytes=len(bars_bytes),
+        sha256=hashlib.sha256(bars_bytes).hexdigest(),
+    )
+    payload["input_manifest"]["manifest_id"] = (
+        "tqqq-ibkr-paper-single-acquisition-"
+        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
+    )
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="locked OOS calendar identity"):
+        run_tqqq_promotion_evidence(
+            input_payload=payload,
             config_payload=_config(),
             output_dir=tmp_path,
             mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
@@ -406,6 +486,7 @@ def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
     producer._state = _ReplayState()
     producer._state_sha256 = producer.identity.initial_state_sha256
     producer._scenario_counts = {}
+    producer._switching_traces = []
     return producer
 
 
@@ -443,6 +524,86 @@ def test_episode_executes_and_counts_only_in_window_sessions() -> None:
     assert replay.trade_count == 0
     assert replay.decision_count == replay.risk_assessment_count == 3
     assert replay.episode_summary.episode_session_count == 3
+
+
+def test_deterministic_switching_characterization_matches_direct_ues_seam() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-520:])
+    producer = _episode_producer(sessions)
+    qqq_values = [100.0 + index * 0.5 for index in range(300)] + [
+        249.5 - (index + 1) * 0.8 for index in range(220)
+    ]
+    producer.qqq = tuple(
+        _Bar(session, value, value * 1.001, value * 0.999, value, 1_000_000.0)
+        for session, value in zip(sessions, qqq_values)
+    )
+    producer._index = {session: index for index, session in enumerate(sessions)}
+    producer._reset(5, producer.identity.initial_state_sha256)
+    assert producer._state.parked is False
+    assert producer._state.breaker_reason is None
+    engine = build_risk_engine()
+
+    with (
+        patch.object(
+            evidence_module,
+            "evaluate_tqqq_growth_income_promotion_research",
+            wraps=entrypoints.evaluate_tqqq_growth_income_promotion_research,
+        ) as direct_seam,
+        patch("quant_platform_kit.risk.gate.build_risk_engine", return_value=engine),
+        patch.object(engine, "assess", wraps=engine.assess) as assess,
+    ):
+        risk_on = producer._assessment(299, sessions[300], 100_000.0)
+        producer._state.pending_weights = risk_on
+        producer._trade_to_target(sessions[300], 5)
+        defensive = producer._assessment(
+            518,
+            sessions[519],
+            producer._equity(sessions[518], "close"),
+        )
+        producer._state.pending_weights = defensive
+        producer._trade_to_target(sessions[519], 5)
+
+    assert direct_seam.call_count == assess.call_count == producer._state.assessment_count == 2
+    assert risk_on["TQQQ"] > 0.0 or risk_on["QQQM"] > 0.0
+    assert defensive["TQQQ"] == defensive["QQQM"] == 0.0
+    assert defensive["BOXX"] > 0.0
+    assert producer.switching_traces[0].signal_regime == "RISK_ON"
+    assert producer.switching_traces[1].signal_regime == "DEFENSIVE"
+    assert producer.switching_traces[0].execution_session == sessions[300]
+    assert producer.switching_traces[1].execution_session == sessions[519]
+    assert producer.switching_traces[0].replay_target_allocation == tuple(
+        sorted({**risk_on, "cash": 1.0 - sum(risk_on.values())}.items())
+    )
+    assert producer.switching_traces[1].replay_target_allocation == tuple(
+        sorted({**defensive, "cash": 1.0 - sum(defensive.values())}.items())
+    )
+    executed_defensive = dict(producer.switching_traces[1].executed_allocation)
+    assert executed_defensive["TQQQ"] == executed_defensive["QQQM"] == 0.0
+    assert executed_defensive["BOXX"] > 0.0
+
+
+def test_switching_characterization_invalid_input_fails_closed_without_decision() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
+    producer = _episode_producer(sessions)
+    del producer.prices["QQQM"][sessions[-2]]
+
+    with (
+        patch.object(
+            evidence_module,
+            "evaluate_tqqq_growth_income_promotion_research",
+            wraps=entrypoints.evaluate_tqqq_growth_income_promotion_research,
+        ) as direct_seam,
+        pytest.raises(TqqqPromotionEvidenceError, match="eligible asset data unavailable"),
+    ):
+        producer(
+            sessions[-2],
+            sessions[-1],
+            5,
+            producer.identity.initial_state_sha256,
+        )
+
+    direct_seam.assert_not_called()
+    assert producer._state.assessment_count == 0
+    assert producer.switching_traces == ()
 
 
 def test_pre_common_eligibility_episode_fails_closed() -> None:
@@ -527,9 +688,111 @@ def test_episode_breaker_reason_is_sticky() -> None:
     assert producer._state.first_park_session == session
 
 
+def test_parked_episode_liquidates_and_reports_without_reusing_stale_trace() -> None:
+    previous_session = date(2025, 1, 2)
+    session = date(2025, 1, 3)
+    producer = _episode_producer((previous_session, session))
+    producer._reset(5, producer.identity.initial_state_sha256)
+    risk_on = (("BOXX", 0.0), ("QQQM", 0.0), ("TQQQ", 0.10), ("cash", 0.90))
+    producer._switching_traces.append(
+        TqqqSwitchingTrace(
+            signal_session=previous_session - timedelta(days=1),
+            execution_session=previous_session,
+            signal_state="entry",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=risk_on,
+        )
+    )
+    producer._state = _ReplayState(
+        cash=90_000.0,
+        quantities={"TQQQ": 100.0, "QQQM": 0.0, "BOXX": 0.0},
+        tqqq_entry_price=100.0,
+        tqqq_stop_price=95.0,
+        parked=True,
+        breaker_reason="ACCOUNT_DRAWDOWN",
+        first_park_session=previous_session,
+        last_session=previous_session,
+    )
+
+    producer._trade_to_target(session, 5)
+
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+    assert producer._state.parked is True
+    parked = producer.switching_traces[-1]
+    assert parked.execution_session == session
+    assert parked.signal_state == "parked"
+    assert parked.signal_regime == "DEFENSIVE"
+    assert parked.risk_disposition == "PARK"
+    assert parked.risk_reason_codes == ("ACCOUNT_DRAWDOWN",)
+    assert dict(parked.executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
+
+
+def test_target_exit_breaker_liquidates_remaining_assets_and_reports_park() -> None:
+    previous_session = date(2025, 1, 2)
+    session = date(2025, 1, 3)
+    producer = _episode_producer((previous_session, session))
+    producer._reset(5, producer.identity.initial_state_sha256)
+    risk_on = (("BOXX", 0.50), ("QQQM", 0.10), ("TQQQ", 0.0), ("cash", 0.40))
+    producer._switching_traces.append(
+        TqqqSwitchingTrace(
+            signal_session=previous_session,
+            execution_session=session,
+            signal_state="macro_delever",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=(),
+        )
+    )
+    producer._state = _ReplayState(
+        cash=80_000.0,
+        quantities={"TQQQ": 100.0, "QQQM": 100.0, "BOXX": 0.0},
+        tqqq_entry_price=110.0,
+        tqqq_stop_price=104.50,
+        pending_weights={"TQQQ": 0.0, "QQQM": 0.10, "BOXX": 0.50},
+        consecutive_losing_exits=4,
+        last_session=previous_session,
+    )
+
+    producer._trade_to_target(session, 5)
+
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
+    assert producer._state.parked is True
+    parked = producer.switching_traces[-1]
+    assert parked.signal_state == "macro_delever"
+    assert parked.risk_disposition == "PARK"
+    assert parked.risk_reason_codes == ("CONSECUTIVE_TQQQ_LOSING_EXITS",)
+    assert parked.intended_allocation == parked.replay_target_allocation == risk_on
+    assert dict(parked.executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
+
+
 def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session)
+    risk_on = (("BOXX", 0.0), ("QQQM", 0.0), ("TQQQ", 0.10), ("cash", 0.90))
+    producer._switching_traces = [
+        TqqqSwitchingTrace(
+            signal_session=session - timedelta(days=1),
+            execution_session=session,
+            signal_state="entry",
+            signal_regime="RISK_ON",
+            intended_allocation=risk_on,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=risk_on,
+            executed_allocation=risk_on,
+        )
+    ]
     producer._state.high_water_equity = 100_000.0
     producer._state.decision_count = 7
     producer._state.assessment_count = 7
@@ -540,6 +803,8 @@ def test_final_session_drawdown_breaker_is_reported_without_new_decision() -> No
     assert producer._state.breaker_reason == "ACCOUNT_DRAWDOWN"
     assert producer._state.first_park_session == session
     assert producer._state.decision_count == producer._state.assessment_count == 7
+    assert producer.switching_traces[-1].risk_disposition == "PARK"
+    assert producer.switching_traces[-1].risk_reason_codes == ("ACCOUNT_DRAWDOWN",)
 
 
 
@@ -597,6 +862,20 @@ def test_multi_asset_target_rebalances_without_completed_exit_round_trip() -> No
 def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> None:
     session = date(2025, 1, 2)
     producer = _unit_producer(session, tqqq_open=95.0, tqqq_low=94.0)
+    target = (("BOXX", 0.0), ("QQQM", 0.10), ("TQQQ", 0.10), ("cash", 0.80))
+    producer._switching_traces = [
+        TqqqSwitchingTrace(
+            signal_session=session - timedelta(days=1),
+            execution_session=session,
+            signal_state="hold",
+            signal_regime="RISK_ON",
+            intended_allocation=target,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(),
+            replay_target_allocation=target,
+            executed_allocation=target,
+        )
+    ]
     producer._state = _ReplayState(
         cash=80_000.0,
         quantities={"TQQQ": 100.0, "QQQM": 100.0, "BOXX": 0.0},
@@ -607,11 +886,18 @@ def test_hard_stop_keeps_other_assets_and_triggers_completed_exit_breaker() -> N
 
     producer._apply_stop(session, 0)
 
-    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 100.0, "BOXX": 0.0}
+    assert producer._state.quantities == {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0}
     assert producer._state.consecutive_losing_exits == 5
     assert producer._state.parked is True
     assert producer._state.tqqq_entry_price is None
     assert producer._state.tqqq_stop_price is None
+    assert producer.switching_traces[-1].risk_disposition == "PARK"
+    assert producer.switching_traces[-1].risk_reason_codes == (
+        "CONSECUTIVE_TQQQ_LOSING_EXITS",
+    )
+    assert dict(producer.switching_traces[-1].executed_allocation) == pytest.approx(
+        {"TQQQ": 0.0, "QQQM": 0.0, "BOXX": 0.0, "cash": 1.0}
+    )
 
 
 def test_multi_asset_state_projection_digest_is_deterministic() -> None:
