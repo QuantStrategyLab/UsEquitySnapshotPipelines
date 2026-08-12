@@ -624,13 +624,16 @@ def _same_number(left: object, right: object) -> bool:
     return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=1e-12)
 
 
-def _locked_metrics_match_backtest(
-    metrics: TqqqQqqRelativeMetrics,
-    traces: tuple[TqqqSwitchingTrace, ...],
+def _window_metrics_match_backtest(
+    window: TqqqWindowEvidence,
     result: BacktestResult,
+    total_cost_bps: int,
 ) -> bool:
+    metrics = window.relative_metrics
     if (
-        type(result) is not BacktestResult
+        type(window) is not TqqqWindowEvidence
+        or type(metrics) is not TqqqQqqRelativeMetrics
+        or type(result) is not BacktestResult
         or metrics.benchmark_symbol != result.benchmark_symbol
         or result.start_date is None
         or result.end_date is None
@@ -649,7 +652,7 @@ def _locked_metrics_match_backtest(
             metrics.qqq_cagr,
             _cagr(1.0, 1.0 + metrics.qqq_total_return, result.start_date, result.end_date),
         )
-        or result.source_script != _locked_acceptance_source(metrics, traces)
+        or result.source_script != _window_acceptance_source(window, total_cost_bps)
     ):
         return False
     fields = (
@@ -677,15 +680,45 @@ def _locked_metrics_match_backtest(
     )
 
 
-def _locked_acceptance_source(
-    metrics: TqqqQqqRelativeMetrics,
-    traces: tuple[TqqqSwitchingTrace, ...],
+def _window_acceptance_source(
+    window: TqqqWindowEvidence,
+    total_cost_bps: int,
 ) -> str:
+    metrics = window.relative_metrics
+    summary = window.episode_summary
     digest = _canonical_sha256(
         {
-            "qqq_total_return": metrics.qqq_total_return,
-            "boxx_total_return": metrics.boxx_total_return,
-            "signal_regimes": [trace.signal_regime for trace in traces],
+            "total_cost_bps": total_cost_bps,
+            "start_date": window.start_date.isoformat(),
+            "end_date": window.end_date.isoformat(),
+            "prior_state_sha256": window.prior_state_sha256,
+            "final_state_sha256": window.final_state_sha256,
+            "relative_metrics": vars(metrics),
+            "episode_summary": {
+                **vars(summary),
+                "first_park_session": (
+                    summary.first_park_session.isoformat()
+                    if summary.first_park_session is not None
+                    else None
+                ),
+            },
+            "decision_count": window.decision_count,
+            "risk_assessment_count": window.risk_assessment_count,
+            "sessions": [session.isoformat() for session in window.sessions],
+            "switching_traces": [
+                {
+                    "signal_session": trace.signal_session.isoformat(),
+                    "execution_session": trace.execution_session.isoformat(),
+                    "signal_state": trace.signal_state,
+                    "signal_regime": trace.signal_regime,
+                    "intended_allocation": trace.intended_allocation,
+                    "risk_disposition": trace.risk_disposition,
+                    "risk_reason_codes": trace.risk_reason_codes,
+                    "replay_target_allocation": trace.replay_target_allocation,
+                    "executed_allocation": trace.executed_allocation,
+                }
+                for trace in window.switching_traces
+            ],
         }
     )
     return f"tqqq_promotion_runner:{digest}"
@@ -928,6 +961,128 @@ def _validate_switching_traces(
         raise TqqqPromotionContractError("invalid switching trace order")
 
 
+def _validated_window_evidence(
+    window: TqqqWindowEvidence,
+    backtest: BacktestResult,
+    *,
+    expected_sessions: tuple[date, ...],
+    expected_params: Mapping[str, object],
+    expected_param_set_id: str,
+    expected_initial_state_sha256: str,
+    expected_source_revision: str,
+    total_cost_bps: int,
+) -> tuple[TqqqQqqRelativeMetrics, TqqqEpisodeSummary, bool]:
+    if (
+        type(window) is not TqqqWindowEvidence
+        or type(backtest) is not BacktestResult
+        or window.start_date != backtest.start_date
+        or window.end_date != backtest.end_date
+        or window.sessions != expected_sessions
+        or type(window.sessions) is not tuple
+        or window.sessions != tuple(sorted(set(window.sessions)))
+        or backtest.observation_count != len(expected_sessions) + 1
+        or backtest.strategy_profile != _PROFILE
+        or backtest.domain != _DOMAIN
+        or backtest.param_set_id != expected_param_set_id
+        or dict(backtest.params) != expected_params
+        or backtest.source_revision != expected_source_revision
+        or backtest.cost_model != f"tqqq_all_in_per_side_{total_cost_bps}bp.v1"
+        or dict(backtest.cost_inputs)
+        != {
+            "commission_bps": 0.0,
+            "slippage_bps": float(total_cost_bps),
+            "market_impact_bps": 0.0,
+        }
+        or backtest.validation_identity is None
+        or backtest.validation_identity.fold_id != expected_param_set_id
+        or window.prior_state_sha256 != expected_initial_state_sha256
+        or not _is_hex(window.final_state_sha256, 64)
+        or type(window.decision_count) is not int
+        or not 0 < window.decision_count <= len(window.sessions)
+        or window.decision_count != window.risk_assessment_count
+    ):
+        raise TqqqPromotionContractError("window evidence identity mismatch")
+    _validate_switching_traces(
+        window.switching_traces,
+        sessions=window.sessions,
+        decision_count=window.decision_count,
+        total_cost_bps=total_cost_bps,
+    )
+    metrics = window.relative_metrics
+    summary = window.episode_summary
+    if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
+        raise TqqqPromotionContractError("invalid window evidence")
+    if (
+        sum(trace.risk_disposition == "PARK" for trace in window.switching_traces)
+        != summary.parked_session_count
+        or not _window_metrics_match_backtest(window, backtest, total_cost_bps)
+    ):
+        raise TqqqPromotionContractError("window replay/backtest mismatch")
+    summary_counts = (
+        summary.episode_session_count,
+        summary.tqqq_exposure_session_count,
+        summary.qqqm_exposure_session_count,
+        summary.boxx_exposure_session_count,
+        summary.cash_only_session_count,
+        summary.parked_session_count,
+        summary.tqqq_entry_count,
+        summary.tqqq_stop_armed_count,
+        summary.tqqq_stop_crossing_count,
+        summary.tqqq_stop_fill_count,
+        summary.tqqq_unprotected_holding_session_count,
+    )
+    if (
+        any(type(value) is not int or value < 0 for value in summary_counts)
+        or summary.episode_session_count != len(window.sessions)
+        or any(value > summary.episode_session_count for value in summary_counts[1:])
+        or summary.cash_only_session_count + summary.parked_session_count
+        > summary.episode_session_count
+        or summary.tqqq_entry_count != summary.tqqq_stop_armed_count
+        or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
+        or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
+        or summary.tqqq_unprotected_holding_session_count != 0
+        or (
+            summary.parked_session_count > 0
+            and (
+                summary.breaker_reason
+                not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
+                or type(summary.first_park_session) is not date
+                or not window.start_date
+                <= summary.first_park_session
+                <= window.end_date
+            )
+        )
+        or (
+            summary.parked_session_count == 0
+            and (
+                summary.breaker_reason is not None
+                or summary.first_park_session is not None
+            )
+        )
+    ):
+        raise TqqqPromotionContractError("invalid episode summary")
+    if metrics.benchmark_symbol != "QQQ":
+        raise TqqqPromotionContractError("invalid benchmark identity")
+    for field_name, value in vars(metrics).items():
+        if field_name == "benchmark_symbol":
+            continue
+        if field_name in {"strategy_recovery_sessions", "qqq_recovery_sessions"}:
+            if value is not None and (type(value) is not int or value < 0):
+                raise TqqqPromotionContractError("invalid recovery metric")
+            continue
+        if field_name in {"strategy_unrecovered_at_end", "qqq_unrecovered_at_end"}:
+            if type(value) is not bool:
+                raise TqqqPromotionContractError("invalid recovery metric")
+            continue
+        _finite(value, "acceptance metric")
+    if metrics.strategy_max_drawdown > 0.0 or metrics.qqq_max_drawdown > 0.0:
+        raise TqqqPromotionContractError("invalid drawdown metric")
+    defensive_only = all(
+        trace.signal_regime == "DEFENSIVE" for trace in window.switching_traces
+    )
+    return metrics, summary, defensive_only
+
+
 def evaluate_tqqq_pre_result_acceptance(
     result: TqqqPromotionResearchResult,
     legacy_parity_classification: str,
@@ -998,11 +1153,6 @@ def evaluate_tqqq_pre_result_acceptance(
                 != tuple((fold.test_start, fold.test_end) for fold in promotion_run.folds)
                 or promotion_run.locked_oos_result.start_date != _LOCKED_OOS_START
                 or promotion_run.locked_oos_result.end_date != _LOCKED_OOS_END
-                or dict(promotion_run.locked_oos_result.params) != expected_params
-                or any(
-                    dict(fold_result.params) != expected_params
-                    for fold_result in promotion_run.fold_results
-                )
                 or tuple((window.start_date, window.end_date) for window in scenario.windows)
                 != (
                     *tuple(
@@ -1013,18 +1163,6 @@ def evaluate_tqqq_pre_result_acceptance(
                 )
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            window_results = (*promotion_run.fold_results, promotion_run.locked_oos_result)
-            for window, backtest in zip(scenario.windows, window_results, strict=True):
-                expected_sessions = tuple(
-                    session
-                    for session in _FROZEN_XNYS_SESSIONS
-                    if window.start_date <= session <= window.end_date
-                )
-                if (
-                    window.sessions != expected_sessions
-                    or backtest.observation_count != len(expected_sessions) + 1
-                ):
-                    return TQQQ_ACCEPTANCE_INCONCLUSIVE
             cost_model = scenario.promotion_run.cost_model
             if (
                 type(cost_model) is not PromotionCostModel
@@ -1035,126 +1173,53 @@ def evaluate_tqqq_pre_result_acceptance(
                 != float(cost)
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            window_results = (*promotion_run.fold_results, promotion_run.locked_oos_result)
+            param_set_ids = (
+                *(
+                    f"tqqq_etf_only_{cost}bp_wf{index}"
+                    for index in range(len(promotion_run.folds))
+                ),
+                f"tqqq_etf_only_{cost}bp_locked_oos",
+            )
+            validated_windows = []
+            for window, backtest, param_set_id in zip(
+                scenario.windows, window_results, param_set_ids, strict=True
+            ):
+                expected_sessions = tuple(
+                    session
+                    for session in _FROZEN_XNYS_SESSIONS
+                    if window.start_date <= session <= window.end_date
+                )
+                validated_windows.append(
+                    _validated_window_evidence(
+                        window,
+                        backtest,
+                        expected_sessions=expected_sessions,
+                        expected_params=expected_params,
+                        expected_param_set_id=param_set_id,
+                        expected_initial_state_sha256=result.identity.initial_state_sha256,
+                        expected_source_revision=result.identity.ues_revision,
+                        total_cost_bps=cost,
+                    )
+                )
             locked = scenario.windows[-1]
             if locked.start_date != _LOCKED_OOS_START or locked.end_date != _LOCKED_OOS_END:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             if (
-                type(locked.sessions) is not tuple
-                or len(locked.sessions) != _LOCKED_OOS_SESSION_COUNT
-                or locked.sessions != tuple(sorted(set(locked.sessions)))
+                len(locked.sessions) != _LOCKED_OOS_SESSION_COUNT
                 or locked.sessions[0] != _LOCKED_OOS_START
                 or locked.sessions[-1] != _LOCKED_OOS_END
                 or _canonical_sha256(
                     [session.isoformat() for session in locked.sessions]
                 )
                 != _LOCKED_OOS_SESSIONS_SHA256
-                or not 0 < locked.decision_count <= len(locked.sessions)
-                or locked.decision_count != locked.risk_assessment_count
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            _validate_switching_traces(
-                locked.switching_traces,
-                sessions=locked.sessions,
-                decision_count=locked.decision_count,
-                total_cost_bps=cost,
-            )
-            locked_defensive_only[cost] = all(
-                trace.signal_regime == "DEFENSIVE"
-                for trace in locked.switching_traces
-            )
-            metrics = locked.relative_metrics
-            summary = locked.episode_summary
-            if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            if (
-                sum(
-                    trace.risk_disposition == "PARK"
-                    for trace in locked.switching_traces
-                )
-                != summary.parked_session_count
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            if (
-                not _locked_metrics_match_backtest(
-                    metrics,
-                    locked.switching_traces,
-                    promotion_run.locked_oos_result,
-                )
-                or promotion_run.locked_oos_result.observation_count
-                != len(locked.sessions) + 1
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            summary_counts = (
-                summary.episode_session_count,
-                summary.tqqq_exposure_session_count,
-                summary.qqqm_exposure_session_count,
-                summary.boxx_exposure_session_count,
-                summary.cash_only_session_count,
-                summary.parked_session_count,
-                summary.tqqq_entry_count,
-                summary.tqqq_stop_armed_count,
-                summary.tqqq_stop_crossing_count,
-                summary.tqqq_stop_fill_count,
-                summary.tqqq_unprotected_holding_session_count,
-            )
-            if (
-                any(type(value) is not int or value < 0 for value in summary_counts)
-                or summary.episode_session_count != len(locked.sessions)
-                or any(
-                    value > summary.episode_session_count
-                    for value in summary_counts[1:]
-                )
-                or summary.cash_only_session_count + summary.parked_session_count
-                > summary.episode_session_count
-                or summary.tqqq_entry_count != summary.tqqq_stop_armed_count
-                or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
-                or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
-                or summary.tqqq_unprotected_holding_session_count != 0
-                or (
-                    summary.parked_session_count > 0
-                    and (
-                        summary.breaker_reason
-                        not in {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
-                        or type(summary.first_park_session) is not date
-                        or not locked.start_date
-                        <= summary.first_park_session
-                        <= locked.end_date
-                    )
-                )
-                or (
-                    summary.parked_session_count == 0
-                    and (
-                        summary.breaker_reason is not None
-                        or summary.first_park_session is not None
-                    )
-                )
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            if metrics.benchmark_symbol != "QQQ":
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            for field_name, value in vars(metrics).items():
-                if field_name == "benchmark_symbol":
-                    continue
-                if field_name in {
-                    "strategy_recovery_sessions",
-                    "qqq_recovery_sessions",
-                }:
-                    if value is not None and (type(value) is not int or value < 0):
-                        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-                    continue
-                if field_name in {
-                    "strategy_unrecovered_at_end",
-                    "qqq_unrecovered_at_end",
-                }:
-                    if type(value) is not bool:
-                        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-                    continue
-                _finite(value, "acceptance metric")
-            if metrics.strategy_max_drawdown > 0.0 or metrics.qqq_max_drawdown > 0.0:
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            metrics, summary, defensive_only = validated_windows[-1]
             locked_metrics[cost] = metrics
             locked_backtests[cost] = promotion_run.locked_oos_result
             locked_summaries[cost] = summary
+            locked_defensive_only[cost] = defensive_only
     except (AttributeError, KeyError, TypeError, ValueError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
@@ -1710,20 +1775,19 @@ class TqqqPromotionRunner:
             total_cost_bps=self.total_cost_bps,
         )
         metrics = _relative_metrics(replay)
-        self._windows.append(
-            TqqqWindowEvidence(
-                start_date=start_date,
-                end_date=end_date,
-                prior_state_sha256=replay.prior_state_sha256,
-                final_state_sha256=replay.final_state_sha256,
-                relative_metrics=metrics,
-                episode_summary=replay.episode_summary,
-                decision_count=replay.decision_count,
-                risk_assessment_count=replay.risk_assessment_count,
-                sessions=replay.sessions,
-                switching_traces=replay.switching_traces,
-            )
+        window = TqqqWindowEvidence(
+            start_date=start_date,
+            end_date=end_date,
+            prior_state_sha256=replay.prior_state_sha256,
+            final_state_sha256=replay.final_state_sha256,
+            relative_metrics=metrics,
+            episode_summary=replay.episode_summary,
+            decision_count=replay.decision_count,
+            risk_assessment_count=replay.risk_assessment_count,
+            sessions=replay.sessions,
+            switching_traces=replay.switching_traces,
         )
+        self._windows.append(window)
         return BacktestResult(
             strategy_profile=_PROFILE,
             domain=_DOMAIN,
@@ -1749,7 +1813,7 @@ class TqqqPromotionRunner:
             oos_max_drawdown=metrics.strategy_max_drawdown,
             walk_forward_stability=1.0,
             run_duration_seconds=0.0,
-            source_script=_locked_acceptance_source(metrics, replay.switching_traces),
+            source_script=_window_acceptance_source(window, self.total_cost_bps),
         )
 
 
