@@ -332,6 +332,18 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
                 "breaker_reason",
                 "first_park_session",
             }
+            assert window["switching_traces"]
+            assert set(window["switching_traces"][0]) == {
+                "signal_session",
+                "execution_session",
+                "signal_state",
+                "signal_regime",
+                "intended_allocation",
+                "risk_disposition",
+                "risk_reason_codes",
+                "replay_target_allocation",
+                "executed_allocation",
+            }
     assessment_count = sum(
         counts["assessments"] for counts in risk["scenario_counts"].values()
     )
@@ -474,6 +486,7 @@ def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
     producer._state = _ReplayState()
     producer._state_sha256 = producer.identity.initial_state_sha256
     producer._scenario_counts = {}
+    producer._switching_traces = []
     return producer
 
 
@@ -511,6 +524,86 @@ def test_episode_executes_and_counts_only_in_window_sessions() -> None:
     assert replay.trade_count == 0
     assert replay.decision_count == replay.risk_assessment_count == 3
     assert replay.episode_summary.episode_session_count == 3
+
+
+def test_deterministic_switching_characterization_matches_direct_ues_seam() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-520:])
+    producer = _episode_producer(sessions)
+    qqq_values = [100.0 + index * 0.5 for index in range(300)] + [
+        249.5 - (index + 1) * 0.8 for index in range(220)
+    ]
+    producer.qqq = tuple(
+        _Bar(session, value, value * 1.001, value * 0.999, value, 1_000_000.0)
+        for session, value in zip(sessions, qqq_values)
+    )
+    producer._index = {session: index for index, session in enumerate(sessions)}
+    producer._reset(5, producer.identity.initial_state_sha256)
+    assert producer._state.parked is False
+    assert producer._state.breaker_reason is None
+    engine = build_risk_engine()
+
+    with (
+        patch.object(
+            evidence_module,
+            "evaluate_tqqq_growth_income_promotion_research",
+            wraps=entrypoints.evaluate_tqqq_growth_income_promotion_research,
+        ) as direct_seam,
+        patch("quant_platform_kit.risk.gate.build_risk_engine", return_value=engine),
+        patch.object(engine, "assess", wraps=engine.assess) as assess,
+    ):
+        risk_on = producer._assessment(299, sessions[300], 100_000.0)
+        producer._state.pending_weights = risk_on
+        producer._trade_to_target(sessions[300], 5)
+        defensive = producer._assessment(
+            518,
+            sessions[519],
+            producer._equity(sessions[518], "close"),
+        )
+        producer._state.pending_weights = defensive
+        producer._trade_to_target(sessions[519], 5)
+
+    assert direct_seam.call_count == assess.call_count == producer._state.assessment_count == 2
+    assert risk_on["TQQQ"] > 0.0 or risk_on["QQQM"] > 0.0
+    assert defensive["TQQQ"] == defensive["QQQM"] == 0.0
+    assert defensive["BOXX"] > 0.0
+    assert producer.switching_traces[0].signal_regime == "RISK_ON"
+    assert producer.switching_traces[1].signal_regime == "DEFENSIVE"
+    assert producer.switching_traces[0].execution_session == sessions[300]
+    assert producer.switching_traces[1].execution_session == sessions[519]
+    assert producer.switching_traces[0].replay_target_allocation == tuple(
+        sorted({**risk_on, "cash": 1.0 - sum(risk_on.values())}.items())
+    )
+    assert producer.switching_traces[1].replay_target_allocation == tuple(
+        sorted({**defensive, "cash": 1.0 - sum(defensive.values())}.items())
+    )
+    executed_defensive = dict(producer.switching_traces[1].executed_allocation)
+    assert executed_defensive["TQQQ"] == executed_defensive["QQQM"] == 0.0
+    assert executed_defensive["BOXX"] > 0.0
+
+
+def test_switching_characterization_invalid_input_fails_closed_without_decision() -> None:
+    sessions = tuple(date.fromisoformat(value) for value in FROZEN_XNYS_SESSIONS[-300:])
+    producer = _episode_producer(sessions)
+    del producer.prices["QQQM"][sessions[-2]]
+
+    with (
+        patch.object(
+            evidence_module,
+            "evaluate_tqqq_growth_income_promotion_research",
+            wraps=entrypoints.evaluate_tqqq_growth_income_promotion_research,
+        ) as direct_seam,
+        pytest.raises(TqqqPromotionEvidenceError, match="eligible asset data unavailable"),
+    ):
+        producer(
+            sessions[-2],
+            sessions[-1],
+            5,
+            producer.identity.initial_state_sha256,
+        )
+
+    direct_seam.assert_not_called()
+    assert producer._state.assessment_count == 0
+    assert producer.switching_traces == ()
 
 
 def test_pre_common_eligibility_episode_fails_closed() -> None:

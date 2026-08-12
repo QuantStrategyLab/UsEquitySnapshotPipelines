@@ -51,6 +51,9 @@ _SYSTEMATIC_WINDOW_SHA256 = {
     24: "1a3a85d1d10a8151bd3e4ff5218d3017ce19323927b0a2c2c7f614216916301e",
 }
 _SYSTEMATIC_PLAN_SHA256 = "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+TQQQ_SWITCHING_CHARACTERIZATION_SHA256 = (
+    "e76974408f2d101ac157c60efab1a3584dd908ee777705d050d6a0183e2ce70f"
+)
 
 LEGACY_PARITY_CLASSIFICATIONS = frozenset(
     {
@@ -134,6 +137,19 @@ class TqqqPromotionPlan:
 
 
 @dataclass(frozen=True)
+class TqqqSwitchingTrace:
+    signal_session: date
+    execution_session: date
+    signal_state: str
+    signal_regime: str
+    intended_allocation: tuple[tuple[str, float], ...]
+    risk_disposition: str
+    risk_reason_codes: tuple[str, ...]
+    replay_target_allocation: tuple[tuple[str, float], ...]
+    executed_allocation: tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True)
 class TqqqEpisodeSummary:
     episode_session_count: int
     tqqq_exposure_session_count: int
@@ -181,6 +197,7 @@ class TqqqWindowReplay:
     order_intents: tuple[object, ...] = ()
     executable_plan: tuple[object, ...] = ()
     execution_authorized: bool = False
+    switching_traces: tuple[TqqqSwitchingTrace, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +245,7 @@ class TqqqWindowEvidence:
     episode_summary: TqqqEpisodeSummary
     decision_count: int
     risk_assessment_count: int
+    switching_traces: tuple[TqqqSwitchingTrace, ...]
 
 
 @dataclass(frozen=True)
@@ -243,6 +261,7 @@ class TqqqPromotionResearchResult:
     identity: TqqqPromotionIdentity
     timing_sha256: str
     scenarios: tuple[TqqqCostScenarioResult, ...]
+    switching_characterization_sha256: str = TQQQ_SWITCHING_CHARACTERIZATION_SHA256
     authority_scope: str = "RESEARCH_ONLY"
     no_order: bool = True
     size_zero_required: bool = True
@@ -286,6 +305,41 @@ def _finite(value: object, label: str, *, nonnegative: bool = False) -> float:
 def _canonical_sha256(material: object) -> str:
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def build_tqqq_switching_characterization_contract() -> dict[str, object]:
+    """Return the frozen, quota-free deterministic switching contract."""
+
+    material: dict[str, object] = {
+        "schema_version": "tqqq_switching_characterization.v1",
+        "candidate_profile": _PROFILE,
+        "timing": "completed_close_t_to_open_t_plus_1",
+        "cases": (
+            "RISK_ON_TQQQ_OR_QQQM",
+            "DEFENSIVE_BOXX",
+            "RISK_ON_TO_DEFENSIVE_TRANSITION",
+            "INVALID_OR_PRELISTING_INPUT_FAILS_CLOSED",
+            "FRESH_EPISODE_WITHOUT_INHERITED_PARK",
+        ),
+        "trace_order": (
+            "signal_state",
+            "signal_regime",
+            "intended_allocation",
+            "risk_disposition",
+            "replay_target_allocation",
+            "executed_allocation",
+        ),
+        "risk_on_drift_terminal": TQQQ_ACCEPTANCE_INCONCLUSIVE,
+        "defensive_only_rule": (
+            "evaluate_with_frozen_performance_benchmarks_after_valid_input_config_"
+            "and_multicycle_coverage"
+        ),
+        "minimum_risk_asset_occupancy": None,
+        "minimum_trade_count": None,
+    }
+    if _canonical_sha256(material) != TQQQ_SWITCHING_CHARACTERIZATION_SHA256:
+        raise TqqqPromotionContractError("switching characterization identity mismatch")
+    return {**material, "sha256": TQQQ_SWITCHING_CHARACTERIZATION_SHA256}
 
 
 def build_tqqq_development_robustness_plan(
@@ -539,6 +593,76 @@ def classify_tqqq_legacy_parity(
     )
 
 
+def _validated_switching_allocation(
+    values: tuple[tuple[str, float], ...],
+) -> dict[str, float]:
+    if type(values) is not tuple or any(
+        type(item) is not tuple or len(item) != 2 or type(item[0]) is not str
+        for item in values
+    ):
+        raise TqqqPromotionContractError("invalid switching allocation")
+    allocation = {
+        symbol: _finite(value, "switching allocation", nonnegative=True)
+        for symbol, value in values
+    }
+    if (
+        len(allocation) != len(values)
+        or set(allocation) != _PARITY_ASSETS
+        or not math.isclose(sum(allocation.values()), 1.0, rel_tol=0.0, abs_tol=1e-9)
+    ):
+        raise TqqqPromotionContractError("invalid switching allocation")
+    return allocation
+
+
+def _validate_switching_traces(
+    traces: tuple[TqqqSwitchingTrace, ...],
+    *,
+    start_date: date,
+    end_date: date,
+    decision_count: int,
+) -> None:
+    if type(traces) is not tuple or len(traces) != decision_count:
+        raise TqqqPromotionContractError("complete switching traces are required")
+    execution_sessions: list[date] = []
+    states = {
+        "entry": "RISK_ON",
+        "hold": "RISK_ON",
+        "macro_delever": "RISK_ON",
+        "exit": "DEFENSIVE",
+        "idle": "DEFENSIVE",
+        "macro_risk_defense": "DEFENSIVE",
+        "crisis_defense": "DEFENSIVE",
+    }
+    for trace in traces:
+        if (
+            type(trace) is not TqqqSwitchingTrace
+            or type(trace.signal_session) is not date
+            or type(trace.execution_session) is not date
+            or not trace.signal_session < trace.execution_session
+            or not start_date <= trace.execution_session <= end_date
+            or states.get(trace.signal_state) != trace.signal_regime
+            or trace.risk_disposition != "APPROVE"
+            or type(trace.risk_reason_codes) is not tuple
+            or any(type(code) is not str or not code for code in trace.risk_reason_codes)
+        ):
+            raise TqqqPromotionContractError("invalid switching trace")
+        intended = _validated_switching_allocation(trace.intended_allocation)
+        target = _validated_switching_allocation(trace.replay_target_allocation)
+        executed = _validated_switching_allocation(trace.executed_allocation)
+        if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
+            raise TqqqPromotionContractError("UES/replay target allocation drift")
+        intended_risk = intended["TQQQ"] + intended["QQQM"]
+        executed_risk = executed["TQQQ"] + executed["QQQM"]
+        if trace.signal_regime == "RISK_ON":
+            if intended_risk <= 0.0 or executed_risk <= 0.0:
+                raise TqqqPromotionContractError("risk-on switching execution drift")
+        elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
+            raise TqqqPromotionContractError("defensive switching execution drift")
+        execution_sessions.append(trace.execution_session)
+    if execution_sessions != sorted(set(execution_sessions)):
+        raise TqqqPromotionContractError("invalid switching trace order")
+
+
 def evaluate_tqqq_pre_result_acceptance(
     result: TqqqPromotionResearchResult,
     legacy_parity_classification: str,
@@ -551,13 +675,12 @@ def evaluate_tqqq_pre_result_acceptance(
         or legacy_parity_classification not in LEGACY_PARITY_CLASSIFICATIONS
     ):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if legacy_parity_classification in {
-        "NOT_COMPARABLE",
-        "UNEXPLAINED_CORE_STRATEGY_DRIFT",
-    }:
+    if legacy_parity_classification == "UNEXPLAINED_CORE_STRATEGY_DRIFT":
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if (
-        result.authority_scope != "RESEARCH_ONLY"
+        result.switching_characterization_sha256
+        != TQQQ_SWITCHING_CHARACTERIZATION_SHA256
+        or result.authority_scope != "RESEARCH_ONLY"
         or result.no_order is not True
         or result.size_zero_required is not True
         or result.promotion_eligible is not False
@@ -598,6 +721,12 @@ def evaluate_tqqq_pre_result_acceptance(
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             if locked.decision_count <= 0 or locked.decision_count != locked.risk_assessment_count:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            _validate_switching_traces(
+                locked.switching_traces,
+                start_date=locked.start_date,
+                end_date=locked.end_date,
+                decision_count=locked.decision_count,
+            )
             metrics = locked.relative_metrics
             summary = locked.episode_summary
             if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
@@ -940,6 +1069,12 @@ def _validate_replay(
         raise TqqqPromotionContractError("RiskEngine assessment must occur exactly once per decision")
     if type(replay.trade_count) is not int or replay.trade_count < 0:
         raise TqqqPromotionContractError("invalid trade count")
+    _validate_switching_traces(
+        replay.switching_traces,
+        start_date=start_date,
+        end_date=end_date,
+        decision_count=replay.decision_count,
+    )
     _finite(replay.turnover, "turnover", nonnegative=True)
     if (
         type(replay.strategy_equity) is not tuple
@@ -1155,6 +1290,7 @@ class TqqqPromotionRunner:
                 episode_summary=replay.episode_summary,
                 decision_count=replay.decision_count,
                 risk_assessment_count=replay.risk_assessment_count,
+                switching_traces=replay.switching_traces,
             )
         )
         return BacktestResult(

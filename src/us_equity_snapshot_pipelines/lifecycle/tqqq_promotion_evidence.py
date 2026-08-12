@@ -8,7 +8,7 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -45,8 +45,10 @@ from .tqqq_promotion_runner import (
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
     TqqqPromotionResearchResult,
+    TqqqSwitchingTrace,
     TqqqWindowReplay,
     build_tqqq_development_robustness_plan,
+    build_tqqq_switching_characterization_contract,
     _resolve_runner_revision,
     run_tqqq_promotion_research,
 )
@@ -520,10 +522,15 @@ class _ImmutableReplayProducer:
         self._state = _ReplayState()
         self._state_sha256 = identity.initial_state_sha256
         self._scenario_counts: dict[int, dict[str, int]] = {}
+        self._switching_traces: list[TqqqSwitchingTrace] = []
 
     @property
     def scenario_counts(self) -> dict[int, dict[str, int]]:
         return copy.deepcopy(self._scenario_counts)
+
+    @property
+    def switching_traces(self) -> tuple[TqqqSwitchingTrace, ...]:
+        return tuple(self._switching_traces)
 
     def _reset(self, scenario: int, prior_state_sha256: str) -> None:
         if scenario not in _COST_SCENARIOS:
@@ -534,6 +541,7 @@ class _ImmutableReplayProducer:
         self._state = _ReplayState()
         self._state_sha256 = self.identity.initial_state_sha256
         self._scenario_counts.setdefault(scenario, {"decisions": 0, "assessments": 0})
+        self._switching_traces = []
 
     def _price(self, symbol: str, session: date) -> _Bar:
         try:
@@ -546,6 +554,32 @@ class _ImmutableReplayProducer:
             quantity * getattr(self._price(symbol, session), field)
             for symbol, quantity in self._state.quantities.items()
             if quantity > 0.0
+        )
+
+    def _allocation(self, session: date, field: str) -> tuple[tuple[str, float], ...]:
+        equity = self._equity(session, field)
+        if equity <= 0.0:
+            raise TqqqPromotionEvidenceError("nonpositive replay equity")
+        allocation = {
+            symbol: self._state.quantities[symbol]
+            * getattr(self._price(symbol, session), field)
+            / equity
+            for symbol in _ORDERABLE_ASSETS
+        }
+        allocation["cash"] = self._state.cash / equity
+        return tuple(sorted(allocation.items()))
+
+    def _record_executed_allocation(self, session: date) -> None:
+        if not getattr(self, "_switching_traces", None):
+            return
+        if (
+            self._switching_traces[-1].execution_session != session
+            or self._switching_traces[-1].executed_allocation
+        ):
+            raise TqqqPromotionEvidenceError("switching trace execution mismatch")
+        self._switching_traces[-1] = replace(
+            self._switching_traces[-1],
+            executed_allocation=self._allocation(session, "open"),
         )
 
     def _park(self, reason: str, session: date) -> None:
@@ -602,6 +636,7 @@ class _ImmutableReplayProducer:
                 state.tqqq_stop_price = None
                 state.tqqq_entry_identity_sha256 = None
         if state.parked:
+            self._record_executed_allocation(session)
             return
         for symbol in _ORDERABLE_ASSETS:
             value_delta = deltas.get(symbol, 0.0)
@@ -634,6 +669,7 @@ class _ImmutableReplayProducer:
                         "quantity": state.quantities[symbol],
                     }
                 )
+        self._record_executed_allocation(session)
 
     def _apply_stop(self, session: date, cost_bps: int) -> None:
         state = self._state
@@ -820,6 +856,38 @@ class _ImmutableReplayProducer:
                 raise TqqqPromotionEvidenceError("invalid UES core-parity target")
             targets[target.symbol] = _finite(target.target_weight, "target weight")
         diagnostics = result.decision.diagnostics
+        notification = diagnostics.get("notification_context")
+        signal = notification.get("signal") if isinstance(notification, Mapping) else None
+        signal_state = signal.get("state") if isinstance(signal, Mapping) else None
+        regimes = {
+            "entry": "RISK_ON",
+            "hold": "RISK_ON",
+            "macro_delever": "RISK_ON",
+            "exit": "DEFENSIVE",
+            "idle": "DEFENSIVE",
+            "macro_risk_defense": "DEFENSIVE",
+            "crisis_defense": "DEFENSIVE",
+        }
+        if signal_state not in regimes:
+            raise TqqqPromotionEvidenceError("invalid TQQQ switching signal")
+        intended = {**targets, "cash": 1.0 - math.fsum(targets.values())}
+        if intended["cash"] < -1e-12:
+            raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
+        intended["cash"] = max(0.0, intended["cash"])
+        intended_allocation = tuple(sorted(intended.items()))
+        self._switching_traces.append(
+            TqqqSwitchingTrace(
+                signal_session=signal_session,
+                execution_session=execution_session,
+                signal_state=signal_state,
+                signal_regime=regimes[signal_state],
+                intended_allocation=intended_allocation,
+                risk_disposition=assessment.outcome,
+                risk_reason_codes=tuple(assessment.reason_codes),
+                replay_target_allocation=intended_allocation,
+                executed_allocation=(),
+            )
+        )
         state.market_regime_control_sha256 = _digest(
             {
                 "enabled": diagnostics.get("market_regime_control_enabled"),
@@ -952,6 +1020,7 @@ class _ImmutableReplayProducer:
             risk_active_state_sha256=_digest({"weights": final_weights}),
             volatility_hysteresis_state_sha256=state.volatility_hysteresis_state_sha256,
             retention_state_sha256=state.retention_state_sha256,
+            switching_traces=self.switching_traces,
         )
 
 
@@ -1017,6 +1086,7 @@ def _result_artifacts(
             _canonical(
                 {
                     "schema_version": "tqqq_etf_only_promotion_backtest.v1",
+                    "switching_characterization": build_tqqq_switching_characterization_contract(),
                     "development_robustness_plan": build_tqqq_development_robustness_plan(
                         tuple(row.session for row in replay.qqq)
                     ),

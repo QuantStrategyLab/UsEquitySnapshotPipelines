@@ -10,6 +10,7 @@ from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFol
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     LEGACY_PARITY_CLASSIFICATIONS,
+    TQQQ_SWITCHING_CHARACTERIZATION_SHA256,
     TQQQ_ACCEPTANCE_INCONCLUSIVE,
     TQQQ_ACCEPTANCE_PASS,
     TQQQ_ACCEPTANCE_REJECT,
@@ -18,8 +19,10 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
     TqqqPromotionRunner,
+    TqqqSwitchingTrace,
     TqqqWindowReplay,
     build_tqqq_development_robustness_plan,
+    build_tqqq_switching_characterization_contract,
     classify_tqqq_legacy_parity,
     evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
@@ -89,6 +92,24 @@ class SyntheticReplay:
         strategy = (100.0, 102.0, 99.0, 105.0)
         benchmark = (100.0, 101.0, 100.0, 103.0)
         defensive_benchmark = (100.0, 100.1, 100.2, 100.3)
+        execution_sessions = tuple(
+            start_date + date.resolution * index for index in range(4)
+        )
+        intended = (("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10), ("cash", 0.65))
+        switching_traces = tuple(
+            TqqqSwitchingTrace(
+                signal_session=execution_session - (date.resolution),
+                execution_session=execution_session,
+                signal_state="entry" if index == 0 else "hold",
+                signal_regime="RISK_ON",
+                intended_allocation=intended,
+                risk_disposition="APPROVE",
+                risk_reason_codes=(),
+                replay_target_allocation=intended,
+                executed_allocation=intended,
+            )
+            for index, execution_session in enumerate(execution_sessions)
+        )
         summary = TqqqEpisodeSummary(
             episode_session_count=3,
             tqqq_exposure_session_count=3,
@@ -126,6 +147,7 @@ class SyntheticReplay:
             risk_assessment_count=4,
             warmup_sessions=257,
             episode_summary=summary,
+            switching_traces=switching_traces,
         )
 
 
@@ -262,6 +284,22 @@ def test_frozen_development_plan_enumerates_every_3_6_12_24_month_window() -> No
     }
 
 
+def test_switching_characterization_contract_has_frozen_semantic_identity() -> None:
+    contract = build_tqqq_switching_characterization_contract()
+
+    assert contract["sha256"] == TQQQ_SWITCHING_CHARACTERIZATION_SHA256
+    assert contract["timing"] == "completed_close_t_to_open_t_plus_1"
+    assert contract["cases"] == (
+        "RISK_ON_TQQQ_OR_QQQM",
+        "DEFENSIVE_BOXX",
+        "RISK_ON_TO_DEFENSIVE_TRANSITION",
+        "INVALID_OR_PRELISTING_INPUT_FAILS_CLOSED",
+        "FRESH_EPISODE_WITHOUT_INHERITED_PARK",
+    )
+    assert contract["minimum_risk_asset_occupancy"] is None
+    assert contract["minimum_trade_count"] is None
+
+
 def _legacy_identity() -> dict[str, object]:
     return {
         "code_commit": "1" * 40,
@@ -359,13 +397,78 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
 
     assert evaluate_tqqq_pre_result_acceptance(passing, "MATCH") == TQQQ_ACCEPTANCE_PASS
-    assert (
-        evaluate_tqqq_pre_result_acceptance(passing, "NOT_COMPARABLE")
-        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    assert evaluate_tqqq_pre_result_acceptance(passing, "NOT_COMPARABLE") == TQQQ_ACCEPTANCE_PASS
+    defensive_allocation = (
+        ("TQQQ", 0.0),
+        ("QQQM", 0.0),
+        ("BOXX", 0.50),
+        ("cash", 0.50),
+    )
+    defensive = replace(
+        passing,
+        scenarios=tuple(
+            replace(
+                scenario,
+                windows=(
+                    *scenario.windows[:-1],
+                    replace(
+                        scenario.windows[-1],
+                        switching_traces=tuple(
+                            replace(
+                                trace,
+                                signal_state="idle",
+                                signal_regime="DEFENSIVE",
+                                intended_allocation=defensive_allocation,
+                                replay_target_allocation=defensive_allocation,
+                                executed_allocation=defensive_allocation,
+                            )
+                            for trace in scenario.windows[-1].switching_traces
+                        ),
+                    ),
+                ),
+            )
+            for scenario in passing.scenarios
+        ),
+    )
+    assert evaluate_tqqq_pre_result_acceptance(defensive, "NOT_COMPARABLE") == (
+        TQQQ_ACCEPTANCE_PASS
     )
     assert (
         evaluate_tqqq_pre_result_acceptance(
             passing, "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    locked = passing.scenarios[0].windows[-1]
+    trace = locked.switching_traces[0]
+    semantic_drift = replace(
+        trace,
+        executed_allocation=(
+            ("TQQQ", 0.0),
+            ("QQQM", 0.0),
+            ("BOXX", 0.50),
+            ("cash", 0.50),
+        ),
+    )
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(
+                        passing.scenarios[0],
+                        windows=(
+                            *passing.scenarios[0].windows[:-1],
+                            replace(
+                                locked,
+                                switching_traces=(semantic_drift, *locked.switching_traces[1:]),
+                            ),
+                        ),
+                    ),
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "NOT_COMPARABLE",
         )
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
