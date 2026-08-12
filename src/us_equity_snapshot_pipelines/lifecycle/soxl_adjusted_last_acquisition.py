@@ -617,10 +617,11 @@ def build_request_bound_ibkr_app(
             *,
             expected_session_count: int,
             expected_duration: str,
+            expected_end_datetime: str = "",
             **request_kwargs: Any,
         ) -> StrictAdjustedHistoryRequestOutcome:
             exact_request = {
-                "endDateTime": "",
+                "endDateTime": expected_end_datetime,
                 "durationStr": expected_duration,
                 "barSizeSetting": "1 day",
                 "whatToShow": "ADJUSTED_LAST",
@@ -635,6 +636,7 @@ def build_request_bound_ibkr_app(
                 or not isinstance(expected_session_count, int)
                 or expected_session_count <= 0
                 or not isinstance(expected_duration, str)
+                or not isinstance(expected_end_datetime, str)
                 or request_kwargs != exact_request
             ):
                 raise SoxlAdjustedLastDiagnosticError(
@@ -657,7 +659,7 @@ def build_request_bound_ibkr_app(
                 self.reqHistoricalData(
                     request_id,
                     contract,
-                    "",
+                    expected_end_datetime,
                     expected_duration,
                     "1 day",
                     "ADJUSTED_LAST",
@@ -715,6 +717,7 @@ def acquire_strict_adjusted_last(
     end_datetime: datetime,
     duration: str,
     expected_sessions: Sequence[date],
+    provider_end_datetime: str = "",
     stock_factory: Callable[..., Any] | None = None,
     requester: Callable[..., StrictAdjustedHistoryRequestOutcome],
 ) -> StrictAdjustedHistoryResult:
@@ -725,7 +728,10 @@ def acquire_strict_adjusted_last(
         contract: Any,
         **request_kwargs: Any,
     ) -> StrictAdjustedHistoryRequestOutcome:
-        outcome = requester(contract, **{**request_kwargs, "endDateTime": ""})
+        outcome = requester(
+            contract,
+            **{**request_kwargs, "endDateTime": provider_end_datetime},
+        )
         if not isinstance(outcome, StrictAdjustedHistoryRequestOutcome):
             return outcome
         try:
@@ -746,7 +752,11 @@ def acquire_strict_adjusted_last(
             except (TypeError, ValueError):
                 filtered_bars.append(bar)
                 continue
-            if frozen_sessions[0] <= session < end_datetime.date():
+            if frozen_sessions[0] <= session and (
+                session <= end_datetime.date()
+                if provider_end_datetime
+                else session < end_datetime.date()
+            ):
                 filtered_bars.append(bar)
 
         return StrictAdjustedHistoryRequestOutcome(

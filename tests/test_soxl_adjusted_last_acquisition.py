@@ -680,6 +680,46 @@ def _request_history(app):
     )
 
 
+def test_request_bound_lifecycle_accepts_one_explicit_frozen_end_time() -> None:
+    app = _request_bound_app()
+    app.on_history = lambda request_id: (
+        app.historicalData(request_id, _bar(EXPECTED[0])),
+        app.historicalDataEnd(request_id, "raw start", "raw end"),
+    )
+    contract = _FakeContract()
+    contract.symbol = "SOXL"
+    contract.secType = "STK"
+    contract.exchange = "SMART"
+    contract.currency = "USD"
+    contract.conId = 123
+
+    outcome = app.request_adjusted_history(
+        "SOXL",
+        contract,
+        expected_session_count=1,
+        expected_duration="1 D",
+        expected_end_datetime="20260813 20:01:00 UTC",
+        endDateTime="20260813 20:01:00 UTC",
+        durationStr="1 D",
+        barSizeSetting="1 day",
+        whatToShow="ADJUSTED_LAST",
+        useRTH=True,
+        formatDate=1,
+        keepUpToDate=False,
+    )
+
+    assert outcome.completion_observed is True
+    assert app.history_calls[0][2:9] == (
+        "20260813 20:01:00 UTC",
+        "1 D",
+        "1 day",
+        "ADJUSTED_LAST",
+        1,
+        1,
+        False,
+    )
+
+
 def test_request_bound_lifecycle_accepts_on_demand_hmds_then_matching_end() -> None:
     app = _request_bound_app()
 
