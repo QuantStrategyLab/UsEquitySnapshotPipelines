@@ -51,6 +51,13 @@ _SYSTEMATIC_WINDOW_SHA256 = {
     24: "1a3a85d1d10a8151bd3e4ff5218d3017ce19323927b0a2c2c7f614216916301e",
 }
 _SYSTEMATIC_PLAN_SHA256 = "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+_DEVELOPMENT_SESSION_COUNT = 624
+_DEVELOPMENT_SESSIONS_SHA256 = (
+    "80aa5b9ed15cbe1263f212d121968bd0eed5a2553261f25c8df99457a5432fb4"
+)
+_FROZEN_TIMING_SHA256 = (
+    "72973ff51aa0b99524e67352c67f4b98cb3c6ca5d62f9585c4d26c82221d17f1"
+)
 TQQQ_SWITCHING_CHARACTERIZATION_SHA256 = (
     "e76974408f2d101ac157c60efab1a3584dd908ee777705d050d6a0183e2ce70f"
 )
@@ -88,6 +95,8 @@ _LEGACY_REFERENCE_FIELDS = {
     "calendar",
     "range_start",
     "range_end",
+    "session_count",
+    "sessions_sha256",
     "initial_state_sha256",
     "decision_timing",
     "fill_timing",
@@ -182,6 +191,7 @@ class TqqqWindowReplay:
     risk_assessment_count: int
     warmup_sessions: int
     episode_summary: TqqqEpisodeSummary
+    sessions: tuple[date, ...]
     market_regime_control_sha256: str = "a" * 64
     risk_active_state_sha256: str = "b" * 64
     volatility_hysteresis_state_sha256: str = "c" * 64
@@ -245,6 +255,7 @@ class TqqqWindowEvidence:
     episode_summary: TqqqEpisodeSummary
     decision_count: int
     risk_assessment_count: int
+    sessions: tuple[date, ...]
     switching_traces: tuple[TqqqSwitchingTrace, ...]
 
 
@@ -357,9 +368,21 @@ def build_tqqq_development_robustness_plan(
     if ordered != tuple(sorted(set(ordered))):
         raise TqqqPromotionContractError("invalid development calendar")
     grouped: dict[tuple[int, int], list[date]] = {}
-    for session in ordered:
-        if date(2023, 1, 1) <= session <= date(2025, 6, 30):
-            grouped.setdefault((session.year, session.month), []).append(session)
+    development_sessions = tuple(
+        session
+        for session in ordered
+        if date(2023, 1, 1) <= session <= date(2025, 6, 30)
+    )
+    if (
+        len(development_sessions) != _DEVELOPMENT_SESSION_COUNT
+        or _canonical_sha256(
+            [session.isoformat() for session in development_sessions]
+        )
+        != _DEVELOPMENT_SESSIONS_SHA256
+    ):
+        raise TqqqPromotionContractError("development calendar identity mismatch")
+    for session in development_sessions:
+        grouped.setdefault((session.year, session.month), []).append(session)
     expected_months = tuple(
         (year, month)
         for year in range(2023, 2026)
@@ -435,6 +458,7 @@ def _valid_legacy_reference(reference: Mapping[str, object]) -> bool:
         "metrics_sha256",
         "trades_sha256",
         "allocations_sha256",
+        "sessions_sha256",
     ):
         if not _is_hex(reference[field], 64):
             return False
@@ -452,12 +476,18 @@ def _valid_legacy_reference(reference: Mapping[str, object]) -> bool:
         end = date.fromisoformat(str(reference["range_end"]))
     except ValueError:
         return False
-    return start <= end <= date(2025, 7, 1)
+    return (
+        start <= end <= date(2025, 7, 1)
+        and type(reference["session_count"]) is int
+        and reference["session_count"] > 0
+    )
 
 
 def _validated_parity_rows(
     values: Sequence[Mapping[str, object]],
     reference: Mapping[str, object],
+    *,
+    verify_reference_digests: bool,
 ) -> tuple[dict[str, object], ...] | None:
     if isinstance(values, (str, bytes)) or not values:
         return None
@@ -513,6 +543,41 @@ def _validated_parity_rows(
     if (
         sessions[0].isoformat() != reference["range_start"]
         or sessions[-1].isoformat() != reference["range_end"]
+        or len(sessions) != reference["session_count"]
+        or _canonical_sha256([session.isoformat() for session in sessions])
+        != reference["sessions_sha256"]
+    ):
+        return None
+    allocations = [
+        {
+            "session": row["session"].isoformat(),
+            "signal": row["signal"],
+            "regime": row["regime"],
+            "target_allocation": row["target_allocation"],
+            "switch": row["switch"],
+        }
+        for row in rows
+    ]
+    trades = [
+        {
+            "session": row["session"].isoformat(),
+            "trade_count": row["trade_count"],
+            "cost": row["cost"],
+        }
+        for row in rows
+    ]
+    metrics = [
+        {
+            "session": row["session"].isoformat(),
+            "gross_return": row["gross_return"],
+            "net_return": row["net_return"],
+        }
+        for row in rows
+    ]
+    if verify_reference_digests and (
+        _canonical_sha256(allocations) != reference["allocations_sha256"]
+        or _canonical_sha256(trades) != reference["trades_sha256"]
+        or _canonical_sha256(metrics) != reference["metrics_sha256"]
     ):
         return None
     return tuple(rows)
@@ -533,18 +598,31 @@ def classify_tqqq_legacy_parity(
 
     if not _valid_legacy_reference(legacy_reference):
         return "NOT_COMPARABLE"
-    changes = tuple(explicit_architecture_changes)
-    if len(changes) != len(set(changes)) or not set(changes) <= _EXPLICIT_ARCHITECTURE_CHANGES:
+    try:
+        if isinstance(explicit_architecture_changes, (str, bytes)):
+            return "NOT_COMPARABLE"
+        changes = tuple(explicit_architecture_changes)
+        change_set = set(changes)
+    except TypeError:
         return "NOT_COMPARABLE"
-    legacy = _validated_parity_rows(legacy_sessions, legacy_reference)
-    candidate = _validated_parity_rows(candidate_sessions, legacy_reference)
+    if (
+        any(type(change) is not str for change in changes)
+        or len(changes) != len(change_set)
+        or not change_set <= _EXPLICIT_ARCHITECTURE_CHANGES
+    ):
+        return "NOT_COMPARABLE"
+    legacy = _validated_parity_rows(
+        legacy_sessions, legacy_reference, verify_reference_digests=True
+    )
+    candidate = _validated_parity_rows(
+        candidate_sessions, legacy_reference, verify_reference_digests=False
+    )
     if legacy is None or candidate is None:
         return "NOT_COMPARABLE"
     if tuple(row["session"] for row in legacy) != tuple(row["session"] for row in candidate):
         return "NOT_COMPARABLE"
 
     expected_difference = False
-    change_set = set(changes)
     timing_or_state_changes = {
         "CLOSE_T_TO_OPEN_T_PLUS_1",
         "FRESH_EPISODE_INITIAL_STATE",
@@ -583,7 +661,13 @@ def classify_tqqq_legacy_parity(
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
         if not _same_number(old["net_return"], new["net_return"]):
-            if not change_set:
+            if not change_set & (
+                timing_or_state_changes
+                | {
+                    "RISK_ENGINE_AND_APPROVED_SIZING",
+                    "COST_NORMALIZATION_5_10_15_BPS",
+                }
+            ):
                 return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
             expected_difference = True
     return (
@@ -690,8 +774,12 @@ def evaluate_tqqq_pre_result_acceptance(
     ):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     try:
+        _validate_identity(result.identity)
+        if result.timing_sha256 != _FROZEN_TIMING_SHA256:
+            return TQQQ_ACCEPTANCE_INCONCLUSIVE
+        expected_params = _params(result.identity, result.timing_sha256)
         scenarios = {scenario.total_cost_bps: scenario for scenario in result.scenarios}
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if set(scenarios) != set(_COST_SCENARIOS_BPS) or len(result.scenarios) != 3:
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
@@ -703,7 +791,43 @@ def evaluate_tqqq_pre_result_acceptance(
             scenario = scenarios[cost]
             if (
                 scenario.cost_model_scope != "ALL_IN_PER_SIDE"
+                or type(scenario.windows) is not tuple
                 or len(scenario.windows) != 4
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            promotion_run = scenario.promotion_run
+            promotion_plan = TqqqPromotionPlan(
+                folds=promotion_run.folds,
+                locked_oos_start=promotion_run.locked_oos_start,
+                locked_oos_end=promotion_run.locked_oos_end,
+                purge_days=promotion_run.purge_days,
+                embargo_days=promotion_run.embargo_days,
+            )
+            _validate_plan(promotion_plan)
+            if (
+                _timing_sha256(promotion_plan) != result.timing_sha256
+                or promotion_run.source_revision != result.identity.ues_revision
+                or len(promotion_run.fold_results) != len(promotion_run.folds)
+                or tuple(
+                    (fold_result.start_date, fold_result.end_date)
+                    for fold_result in promotion_run.fold_results
+                )
+                != tuple((fold.test_start, fold.test_end) for fold in promotion_run.folds)
+                or promotion_run.locked_oos_result.start_date != _LOCKED_OOS_START
+                or promotion_run.locked_oos_result.end_date != _LOCKED_OOS_END
+                or dict(promotion_run.locked_oos_result.params) != expected_params
+                or any(
+                    dict(fold_result.params) != expected_params
+                    for fold_result in promotion_run.fold_results
+                )
+                or tuple((window.start_date, window.end_date) for window in scenario.windows)
+                != (
+                    *tuple(
+                        (fold.test_start, fold.test_end)
+                        for fold in promotion_run.folds
+                    ),
+                    (_LOCKED_OOS_START, _LOCKED_OOS_END),
+                )
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             cost_model = scenario.promotion_run.cost_model
@@ -719,7 +843,19 @@ def evaluate_tqqq_pre_result_acceptance(
             locked = scenario.windows[-1]
             if locked.start_date != _LOCKED_OOS_START or locked.end_date != _LOCKED_OOS_END:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            if locked.decision_count <= 0 or locked.decision_count != locked.risk_assessment_count:
+            if (
+                type(locked.sessions) is not tuple
+                or len(locked.sessions) != _LOCKED_OOS_SESSION_COUNT
+                or locked.sessions != tuple(sorted(set(locked.sessions)))
+                or locked.sessions[0] != _LOCKED_OOS_START
+                or locked.sessions[-1] != _LOCKED_OOS_END
+                or _canonical_sha256(
+                    [session.isoformat() for session in locked.sessions]
+                )
+                != _LOCKED_OOS_SESSIONS_SHA256
+                or locked.decision_count != len(locked.sessions)
+                or locked.decision_count != locked.risk_assessment_count
+            ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             _validate_switching_traces(
                 locked.switching_traces,
@@ -727,13 +863,40 @@ def evaluate_tqqq_pre_result_acceptance(
                 end_date=locked.end_date,
                 decision_count=locked.decision_count,
             )
+            if (
+                tuple(trace.execution_session for trace in locked.switching_traces)
+                != locked.sessions
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
             metrics = locked.relative_metrics
             summary = locked.episode_summary
             if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            summary_counts = (
+                summary.episode_session_count,
+                summary.tqqq_exposure_session_count,
+                summary.qqqm_exposure_session_count,
+                summary.boxx_exposure_session_count,
+                summary.cash_only_session_count,
+                summary.parked_session_count,
+                summary.tqqq_entry_count,
+                summary.tqqq_stop_armed_count,
+                summary.tqqq_stop_crossing_count,
+                summary.tqqq_stop_fill_count,
+                summary.tqqq_unprotected_holding_session_count,
+            )
             if (
-                summary.tqqq_entry_count != summary.tqqq_stop_armed_count
+                any(type(value) is not int or value < 0 for value in summary_counts)
+                or summary.episode_session_count != len(locked.sessions)
+                or any(
+                    value > summary.episode_session_count
+                    for value in summary_counts[1:]
+                )
+                or summary.cash_only_session_count + summary.parked_session_count
+                > summary.episode_session_count
+                or summary.tqqq_entry_count != summary.tqqq_stop_armed_count
                 or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
+                or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
                 or summary.tqqq_unprotected_holding_session_count != 0
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
@@ -761,7 +924,7 @@ def evaluate_tqqq_pre_result_acceptance(
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
             locked_metrics[cost] = metrics
             locked_summaries[cost] = summary
-    except (AttributeError, TqqqPromotionContractError):
+    except (AttributeError, KeyError, TypeError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
     if (
@@ -1069,12 +1232,37 @@ def _validate_replay(
         raise TqqqPromotionContractError("RiskEngine assessment must occur exactly once per decision")
     if type(replay.trade_count) is not int or replay.trade_count < 0:
         raise TqqqPromotionContractError("invalid trade count")
+    if (
+        type(replay.sessions) is not tuple
+        or not replay.sessions
+        or any(type(session) is not date for session in replay.sessions)
+        or replay.sessions != tuple(sorted(set(replay.sessions)))
+        or replay.sessions[0] != start_date
+        or replay.sessions[-1] != end_date
+    ):
+        raise TqqqPromotionContractError("replay session identity mismatch")
+    if start_date == _LOCKED_OOS_START and end_date == _LOCKED_OOS_END and (
+        len(replay.sessions) != _LOCKED_OOS_SESSION_COUNT
+        or _canonical_sha256([session.isoformat() for session in replay.sessions])
+        != _LOCKED_OOS_SESSIONS_SHA256
+    ):
+        raise TqqqPromotionContractError("locked OOS session identity mismatch")
+    if (
+        replay.decision_count != len(replay.sessions)
+        or summary.episode_session_count != len(replay.sessions)
+    ):
+        raise TqqqPromotionContractError("episode session count mismatch")
     _validate_switching_traces(
         replay.switching_traces,
         start_date=start_date,
         end_date=end_date,
         decision_count=replay.decision_count,
     )
+    if (
+        tuple(trace.execution_session for trace in replay.switching_traces)
+        != replay.sessions
+    ):
+        raise TqqqPromotionContractError("switching trace session identity mismatch")
     _finite(replay.turnover, "turnover", nonnegative=True)
     if (
         type(replay.strategy_equity) is not tuple
@@ -1290,6 +1478,7 @@ class TqqqPromotionRunner:
                 episode_summary=replay.episode_summary,
                 decision_count=replay.decision_count,
                 risk_assessment_count=replay.risk_assessment_count,
+                sessions=replay.sessions,
                 switching_traces=replay.switching_traces,
             )
         )

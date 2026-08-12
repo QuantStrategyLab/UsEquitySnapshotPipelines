@@ -999,6 +999,9 @@ class _ImmutableReplayProducer:
             decision_count=state.decision_count,
             risk_assessment_count=state.assessment_count,
             warmup_sessions=start_index,
+            sessions=tuple(
+                row.session for row in self.qqq[start_index : end_index + 1]
+            ),
             episode_summary=TqqqEpisodeSummary(
                 episode_session_count=end_index - start_index + 1,
                 tqqq_exposure_session_count=exposure_counts["TQQQ"],

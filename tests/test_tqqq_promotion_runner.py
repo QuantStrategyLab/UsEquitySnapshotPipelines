@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import date
 from unittest.mock import patch
@@ -31,6 +33,11 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
 QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 RUNNER_REVISION = "1" * 40
+
+
+def _sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _identity() -> TqqqPromotionIdentity:
@@ -87,13 +94,31 @@ class SyntheticReplay:
         total_cost_bps: int,
         prior_state_sha256: str,
     ) -> TqqqWindowReplay:
+        from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
+            FROZEN_XNYS_SESSIONS,
+        )
+
         self.calls.append((start_date, end_date, total_cost_bps, prior_state_sha256))
         call_number = (len(self.calls) - 1) % 4 + 1
-        strategy = (100.0, 102.0, 99.0, 105.0)
-        benchmark = (100.0, 101.0, 100.0, 103.0)
-        defensive_benchmark = (100.0, 100.1, 100.2, 100.3)
-        execution_sessions = tuple(
-            start_date + date.resolution * index for index in range(4)
+        if start_date == _plan().locked_oos_start and end_date == _plan().locked_oos_end:
+            sessions = tuple(
+                date.fromisoformat(value)
+                for value in FROZEN_XNYS_SESSIONS
+                if start_date.isoformat() <= value <= end_date.isoformat()
+            )
+        else:
+            sessions = (start_date, start_date + (end_date - start_date) / 2, end_date)
+        strategy = (100.0, 102.0, 99.0) + tuple(
+            99.0 + (105.0 - 99.0) * index / (len(sessions) - 2)
+            for index in range(1, len(sessions) - 1)
+        )
+        benchmark = (100.0, 101.0, 100.0) + tuple(
+            100.0 + 3.0 * index / (len(sessions) - 2)
+            for index in range(1, len(sessions) - 1)
+        )
+        defensive_benchmark = (100.0, 100.1, 100.2) + tuple(
+            100.2 + 0.1 * index / (len(sessions) - 2)
+            for index in range(1, len(sessions) - 1)
         )
         intended = (("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10), ("cash", 0.65))
         switching_traces = tuple(
@@ -108,13 +133,13 @@ class SyntheticReplay:
                 replay_target_allocation=intended,
                 executed_allocation=intended,
             )
-            for index, execution_session in enumerate(execution_sessions)
+            for index, execution_session in enumerate(sessions)
         )
         summary = TqqqEpisodeSummary(
-            episode_session_count=3,
-            tqqq_exposure_session_count=3,
-            qqqm_exposure_session_count=3,
-            boxx_exposure_session_count=3,
+            episode_session_count=len(sessions),
+            tqqq_exposure_session_count=len(sessions),
+            qqqm_exposure_session_count=len(sessions),
+            boxx_exposure_session_count=len(sessions),
             cash_only_session_count=0,
             parked_session_count=0,
             tqqq_entry_count=0,
@@ -143,10 +168,11 @@ class SyntheticReplay:
             asset_weights=(("TQQQ", 0.05), ("QQQM", 0.20), ("BOXX", 0.10)),
             turnover=0.4,
             trade_count=2,
-            decision_count=4,
-            risk_assessment_count=4,
+            decision_count=len(sessions),
+            risk_assessment_count=len(sessions),
             warmup_sessions=257,
             episode_summary=summary,
+            sessions=sessions,
             switching_traces=switching_traces,
         )
 
@@ -207,7 +233,7 @@ def test_each_fold_and_locked_oos_starts_from_fresh_episode_state() -> None:
     assert metrics.alpha is not None
     assert metrics.beta is not None
     assert metrics.information_ratio is not None
-    assert metrics.var_95 <= metrics.cvar_95 + abs(metrics.var_95)
+    assert metrics.cvar_95 <= metrics.var_95
     assert metrics.turnover == pytest.approx(0.4)
     assert metrics.trade_count == 2
 
@@ -283,6 +309,16 @@ def test_frozen_development_plan_enumerates_every_3_6_12_24_month_window() -> No
         ),
     }
 
+    development_sessions = tuple(
+        date.fromisoformat(value)
+        for value in FROZEN_XNYS_SESSIONS
+        if "2023-01-01" <= value <= "2025-06-30"
+    )
+    with pytest.raises(TqqqPromotionContractError, match="development calendar identity"):
+        build_tqqq_development_robustness_plan(
+            development_sessions[:100] + development_sessions[101:]
+        )
+
 
 def test_switching_characterization_contract_has_frozen_semantic_identity() -> None:
     contract = build_tqqq_switching_characterization_contract()
@@ -300,7 +336,11 @@ def test_switching_characterization_contract_has_frozen_semantic_identity() -> N
     assert contract["minimum_trade_count"] is None
 
 
-def _legacy_identity() -> dict[str, object]:
+def _legacy_identity(
+    rows: tuple[dict[str, object], ...] | None = None,
+) -> dict[str, object]:
+    rows = rows or (_parity_session(),)
+    sessions = [str(row["session"]) for row in rows]
     return {
         "code_commit": "1" * 40,
         "code_sha256": "2" * 64,
@@ -309,16 +349,47 @@ def _legacy_identity() -> dict[str, object]:
         "data_source": "bound-private-source",
         "adjustment": "total_return_adjusted",
         "calendar": "XNYS",
-        "range_start": "2025-06-30",
-        "range_end": "2025-06-30",
+        "range_start": sessions[0],
+        "range_end": sessions[-1],
+        "session_count": len(rows),
+        "sessions_sha256": _sha256(sessions),
         "initial_state_sha256": "5" * 64,
         "decision_timing": "completed_close_t",
         "fill_timing": "same_close_t",
         "cost_model_sha256": "6" * 64,
         "input_sha256": "7" * 64,
-        "metrics_sha256": "8" * 64,
-        "trades_sha256": "9" * 64,
-        "allocations_sha256": "a" * 64,
+        "metrics_sha256": _sha256(
+            [
+                {
+                    "session": row["session"],
+                    "gross_return": row["gross_return"],
+                    "net_return": row["net_return"],
+                }
+                for row in rows
+            ]
+        ),
+        "trades_sha256": _sha256(
+            [
+                {
+                    "session": row["session"],
+                    "trade_count": row["trade_count"],
+                    "cost": row["cost"],
+                }
+                for row in rows
+            ]
+        ),
+        "allocations_sha256": _sha256(
+            [
+                {
+                    "session": row["session"],
+                    "signal": row["signal"],
+                    "regime": row["regime"],
+                    "target_allocation": row["target_allocation"],
+                    "switch": row["switch"],
+                }
+                for row in rows
+            ]
+        ),
     }
 
 
@@ -368,6 +439,51 @@ def test_legacy_parity_contract_is_session_first_and_fail_closed() -> None:
             explicit_architecture_changes=("CLOSE_T_TO_OPEN_T_PLUS_1",),
         )
         == "EXPECTED_DIFFERENCE_DUE_TO_EXPLICIT_ARCHITECTURE_CHANGE"
+    )
+    assert (
+        classify_tqqq_legacy_parity(
+            _legacy_identity(),
+            legacy,
+            (_parity_session(net_return=0.008),),
+            explicit_architecture_changes=("EXECUTION_SESSION_COUNTER_ATTRIBUTION",),
+        )
+        == "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+    )
+    assert (
+        classify_tqqq_legacy_parity(
+            _legacy_identity(),
+            legacy,
+            legacy,
+            explicit_architecture_changes=None,  # type: ignore[arg-type]
+        )
+        == "NOT_COMPARABLE"
+    )
+    assert (
+        classify_tqqq_legacy_parity(
+            _legacy_identity(),
+            legacy,
+            legacy,
+            explicit_architecture_changes=([],),  # type: ignore[arg-type]
+        )
+        == "NOT_COMPARABLE"
+    )
+    assert (
+        classify_tqqq_legacy_parity(
+            {**_legacy_identity(), "metrics_sha256": "0" * 64}, legacy, legacy
+        )
+        == "NOT_COMPARABLE"
+    )
+    complete = (
+        _parity_session(session="2025-06-27"),
+        _parity_session(session="2025-06-28"),
+        _parity_session(),
+    )
+    incomplete = (complete[0], complete[-1])
+    assert (
+        classify_tqqq_legacy_parity(
+            _legacy_identity(complete), incomplete, incomplete
+        )
+        == "NOT_COMPARABLE"
     )
 
 
@@ -525,6 +641,58 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
         evaluate_tqqq_pre_result_acceptance(replace(passing, no_order=False), "MATCH")
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
     )
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, timing_sha256="0" * 64), "MATCH"
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(passing, identity=replace(passing.identity, config_sha256="0" * 64)),
+            "MATCH",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(passing.scenarios[0], windows=None),  # type: ignore[arg-type]
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "MATCH",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    locked_run = passing.scenarios[0].promotion_run.locked_oos_result
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(
+                        passing.scenarios[0],
+                        promotion_run=replace(
+                            passing.scenarios[0].promotion_run,
+                            locked_oos_result=replace(
+                                locked_run,
+                                params={
+                                    **locked_run.params,
+                                    "config_sha256": "0" * 64,
+                                },
+                            ),
+                        ),
+                    ),
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "MATCH",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
     incomplete = passing.scenarios[0].windows[-1]
     incomplete = replace(
         incomplete,
@@ -538,6 +706,55 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
                     replace(
                         passing.scenarios[0],
                         windows=(*passing.scenarios[0].windows[:-1], incomplete),
+                    ),
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "MATCH",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    sparse = passing.scenarios[0].windows[-1]
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(
+                        passing.scenarios[0],
+                        windows=(
+                            *passing.scenarios[0].windows[:-1],
+                            replace(sparse, sessions=sparse.sessions[1:]),
+                        ),
+                    ),
+                    *passing.scenarios[1:],
+                ),
+            ),
+            "MATCH",
+        )
+        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+    )
+    invalid_counts = passing.scenarios[0].windows[-1]
+    assert (
+        evaluate_tqqq_pre_result_acceptance(
+            replace(
+                passing,
+                scenarios=(
+                    replace(
+                        passing.scenarios[0],
+                        windows=(
+                            *passing.scenarios[0].windows[:-1],
+                            replace(
+                                invalid_counts,
+                                episode_summary=replace(
+                                    invalid_counts.episode_summary,
+                                    tqqq_stop_crossing_count=2,
+                                    tqqq_stop_fill_count=2,
+                                    tqqq_entry_count=1,
+                                    tqqq_stop_armed_count=1,
+                                ),
+                            ),
+                        ),
                     ),
                     *passing.scenarios[1:],
                 ),
@@ -596,7 +813,7 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
         ({"option_overlay_enabled": True}, "option overlay"),
         ({"order_intents": (object(),)}, "order intents"),
         ({"executable_plan": (object(),)}, "executable plan"),
-        ({"risk_assessment_count": 3}, "exactly once"),
+        ({"risk_assessment_count": 2}, "exactly once"),
         ({"market_regime_control_sha256": ""}, "state/plugin"),
         ({"warmup_sessions": 256}, "warmup"),
         ({"cash_reset": True}, "cash reset"),
@@ -643,3 +860,47 @@ def test_pre_common_eligibility_plan_fails_closed_before_replay() -> None:
         run_tqqq_promotion_research(_identity(), plan, replay)
 
     assert replay.calls == []
+
+
+def test_locked_oos_replay_requires_every_frozen_session() -> None:
+    replay = SyntheticReplay()
+    original = replay.__call__
+
+    def sparse(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if result.start_date != _plan().locked_oos_start:
+            return result
+        sessions = result.sessions[:100] + result.sessions[101:]
+        traces = result.switching_traces[:100] + result.switching_traces[101:]
+        return replace(
+            result,
+            sessions=sessions,
+            switching_traces=traces,
+            decision_count=len(sessions),
+            risk_assessment_count=len(sessions),
+            episode_summary=replace(
+                result.episode_summary,
+                episode_session_count=len(sessions),
+                tqqq_exposure_session_count=len(sessions),
+                qqqm_exposure_session_count=len(sessions),
+                boxx_exposure_session_count=len(sessions),
+            ),
+            strategy_equity=result.strategy_equity[:101] + result.strategy_equity[102:],
+            qqq_total_return_equity=(
+                result.qqq_total_return_equity[:101]
+                + result.qqq_total_return_equity[102:]
+            ),
+            boxx_total_return_equity=(
+                result.boxx_total_return_equity[:101]
+                + result.boxx_total_return_equity[102:]
+            ),
+        )
+
+    with (
+        patch(
+            "us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner._resolve_runner_revision",
+            return_value=RUNNER_REVISION,
+        ),
+        pytest.raises(TqqqPromotionContractError, match="locked OOS session identity"),
+    ):
+        run_tqqq_promotion_research(_identity(), _plan(), sparse)

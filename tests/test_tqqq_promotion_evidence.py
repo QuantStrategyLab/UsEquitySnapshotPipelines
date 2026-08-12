@@ -85,21 +85,18 @@ def _sessions() -> list[date]:
         date(2025, 7, 2),
         date(2026, 7, 31),
     }
-    development_month_boundaries: set[date] = set()
-    by_month: dict[str, list[date]] = {}
-    for value in FROZEN_XNYS_SESSIONS:
-        session = date.fromisoformat(value)
-        if date(2023, 1, 1) <= session <= date(2025, 6, 30):
-            by_month.setdefault(value[:7], []).append(session)
-    for sessions in by_month.values():
-        development_month_boundaries.update((sessions[0], sessions[-1]))
+    development_sessions = {
+        date.fromisoformat(value)
+        for value in FROZEN_XNYS_SESSIONS
+        if "2023-01-01" <= value <= "2025-06-30"
+    }
     locked_sessions = {
         date.fromisoformat(value)
         for value in FROZEN_XNYS_SESSIONS
         if "2025-07-02" <= value <= "2026-07-31"
     }
     return sorted(
-        set(warmup) | boundaries | development_month_boundaries | locked_sessions
+        set(warmup) | boundaries | development_sessions | locked_sessions
     )
 
 
