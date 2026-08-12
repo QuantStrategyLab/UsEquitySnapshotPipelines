@@ -22,6 +22,9 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
 from us_equity_strategies import entrypoints
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
+from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
+    FROZEN_XNYS_SESSIONS,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     TqqqPromotionEvidenceError,
     _Bar,
@@ -79,8 +82,25 @@ def _sessions() -> list[date]:
         date(2024, 7, 1),
         date(2024, 7, 2),
         date(2025, 7, 1),
+        date(2025, 7, 2),
+        date(2026, 7, 31),
     }
-    return sorted(set(warmup) | boundaries)
+    development_month_boundaries: set[date] = set()
+    by_month: dict[str, list[date]] = {}
+    for value in FROZEN_XNYS_SESSIONS:
+        session = date.fromisoformat(value)
+        if date(2023, 1, 1) <= session <= date(2025, 6, 30):
+            by_month.setdefault(value[:7], []).append(session)
+    for sessions in by_month.values():
+        development_month_boundaries.update((sessions[0], sessions[-1]))
+    locked_sessions = {
+        date.fromisoformat(value)
+        for value in FROZEN_XNYS_SESSIONS
+        if "2025-07-02" <= value <= "2026-07-31"
+    }
+    return sorted(
+        set(warmup) | boundaries | development_month_boundaries | locked_sessions
+    )
 
 
 def _bar(symbol: str, session: date, index: int) -> dict[str, object]:
@@ -150,9 +170,12 @@ def _input_payload() -> dict[str, object]:
         "calendar": {
             "calendar_id": "XNYS",
             "timezone": "America/New_York",
-            "session_date": "2025-07-01",
+            "session_date": "2026-07-31",
             "source": "exchange_calendars",
-            "source_revision": "XNYS-2026-08-10",
+            "source_revision": (
+                "exchange_calendars:4.13.2:XNYS:"
+                "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+            ),
         },
         "adjustment": {
             "policy": "total_return_adjusted",
@@ -283,6 +306,9 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert result["evidence_sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
     risk = json.loads((tmp_path / "artifacts" / "risk.json").read_bytes())
     backtest = json.loads((tmp_path / "artifacts" / "backtest.json").read_bytes())
+    assert backtest["development_robustness_plan"]["aggregate_plan_sha256"] == (
+        "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+    )
     for scenario in backtest["scenarios"].values():
         cost = str(int(scenario["promotion_run"]["cost_model"]["slippage_bps"]))
         assert sum(window["decision_count"] for window in scenario["windows"]) == (
@@ -290,6 +316,7 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
         )
         for window in scenario["windows"]:
             assert window["decision_count"] == window["risk_assessment_count"] > 0
+            assert window["relative_metrics"]["boxx_total_return"] is not None
             assert set(window["episode_summary"]) == {
                 "episode_session_count",
                 "tqqq_exposure_session_count",
@@ -297,6 +324,11 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
                 "boxx_exposure_session_count",
                 "cash_only_session_count",
                 "parked_session_count",
+                "tqqq_entry_count",
+                "tqqq_stop_armed_count",
+                "tqqq_stop_crossing_count",
+                "tqqq_stop_fill_count",
+                "tqqq_unprotected_holding_session_count",
                 "breaker_reason",
                 "first_park_session",
             }
@@ -349,6 +381,42 @@ def test_input_tamper_and_nonempty_output_fail_closed_before_replay(
     with pytest.raises(TqqqPromotionEvidenceError, match="empty"):
         run_tqqq_promotion_evidence(
             input_payload=_input_payload(),
+            config_payload=_config(),
+            output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
+        )
+
+
+def test_input_with_missing_locked_oos_session_fails_closed(tmp_path: Path) -> None:
+    payload = _input_payload()
+    missing_session = "2025-07-03"
+    for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
+        payload["bars"]["symbols"][symbol] = [
+            row
+            for row in payload["bars"]["symbols"][symbol]
+            if row["date"] != missing_session
+        ]
+        source = next(
+            item
+            for item in payload["input_manifest"]["sources"]
+            if item["source_id"] == f"ibkr:{symbol}"
+        )
+        source["content_sha256"] = hashlib.sha256(
+            _canonical(payload["bars"]["symbols"][symbol])
+        ).hexdigest()
+    bars_bytes = _canonical(payload["bars"])
+    payload["input_manifest"]["members"][0].update(
+        size_bytes=len(bars_bytes),
+        sha256=hashlib.sha256(bars_bytes).hexdigest(),
+    )
+    payload["input_manifest"]["manifest_id"] = (
+        "tqqq-ibkr-paper-single-acquisition-"
+        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
+    )
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="locked OOS calendar identity"):
+        run_tqqq_promotion_evidence(
+            input_payload=payload,
             config_payload=_config(),
             output_dir=tmp_path,
             mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,

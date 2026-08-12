@@ -12,7 +12,7 @@ import json
 import math
 import statistics
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -35,6 +35,77 @@ _ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
 _EFFECTIVE_EXPOSURE_CAP = 0.50
 _COST_SCENARIOS_BPS = (5, 10, 15)
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
+_LOCKED_OOS_START = date(2025, 7, 2)
+_LOCKED_OOS_END = date(2026, 7, 31)
+_LOCKED_OOS_SESSION_COUNT = 272
+_LOCKED_OOS_SESSIONS_SHA256 = "fe4120013da919f99ec3585898c82409e8fc26423df4649377eafa665da103b8"
+_FROZEN_CALENDAR_SHA256 = "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+_FROZEN_CALENDAR_SOURCE_REVISION = (
+    "exchange_calendars:4.13.2:XNYS:"
+    "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+)
+_SYSTEMATIC_WINDOW_SHA256 = {
+    3: "877136166f09def7019ba2fe7616c8c820bae3c13212f3b485cfe001b455d66f",
+    6: "31a9a72c6839e8ea117184aa0af19ebf1063d83dd8231457d50a1a6cc7d73434",
+    12: "145a3ef1598a54a3c1e138a223e67ab2325357d7bd405749730be9baa2d76adc",
+    24: "1a3a85d1d10a8151bd3e4ff5218d3017ce19323927b0a2c2c7f614216916301e",
+}
+_SYSTEMATIC_PLAN_SHA256 = "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+
+LEGACY_PARITY_CLASSIFICATIONS = frozenset(
+    {
+        "MATCH",
+        "EXPECTED_DIFFERENCE_DUE_TO_EXPLICIT_ARCHITECTURE_CHANGE",
+        "UNEXPLAINED_CORE_STRATEGY_DRIFT",
+        "NOT_COMPARABLE",
+    }
+)
+TQQQ_ACCEPTANCE_PASS = "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION"
+TQQQ_ACCEPTANCE_REJECT = "REJECT_NEGATIVE_STRATEGY_EVIDENCE"
+TQQQ_ACCEPTANCE_INCONCLUSIVE = "INCONCLUSIVE_DATA_OR_EXECUTION"
+
+_EXPLICIT_ARCHITECTURE_CHANGES = frozenset(
+    {
+        "RISK_ENGINE_AND_APPROVED_SIZING",
+        "CLOSE_T_TO_OPEN_T_PLUS_1",
+        "COST_NORMALIZATION_5_10_15_BPS",
+        "FRESH_EPISODE_INITIAL_STATE",
+        "PRE_WINDOW_TRADE_DELETION",
+        "PARK_NOT_CARRIED_BETWEEN_EPISODES",
+        "EXECUTION_SESSION_COUNTER_ATTRIBUTION",
+    }
+)
+_LEGACY_REFERENCE_FIELDS = {
+    "code_commit",
+    "code_sha256",
+    "runtime_config_sha256",
+    "switching_rules_sha256",
+    "data_source",
+    "adjustment",
+    "calendar",
+    "range_start",
+    "range_end",
+    "initial_state_sha256",
+    "decision_timing",
+    "fill_timing",
+    "cost_model_sha256",
+    "input_sha256",
+    "metrics_sha256",
+    "trades_sha256",
+    "allocations_sha256",
+}
+_LEGACY_SESSION_FIELDS = {
+    "session",
+    "signal",
+    "regime",
+    "target_allocation",
+    "switch",
+    "gross_return",
+    "trade_count",
+    "cost",
+    "net_return",
+}
+_PARITY_ASSETS = {"TQQQ", "QQQM", "BOXX", "cash"}
 
 
 class TqqqPromotionContractError(ValueError):
@@ -70,6 +141,11 @@ class TqqqEpisodeSummary:
     boxx_exposure_session_count: int
     cash_only_session_count: int
     parked_session_count: int
+    tqqq_entry_count: int
+    tqqq_stop_armed_count: int
+    tqqq_stop_crossing_count: int
+    tqqq_stop_fill_count: int
+    tqqq_unprotected_holding_session_count: int
     breaker_reason: str | None
     first_park_session: date | None
 
@@ -82,6 +158,7 @@ class TqqqWindowReplay:
     final_state_sha256: str
     strategy_equity: tuple[float, ...]
     qqq_total_return_equity: tuple[float, ...]
+    boxx_total_return_equity: tuple[float, ...]
     asset_weights: tuple[tuple[str, float], ...]
     turnover: float
     trade_count: int
@@ -111,6 +188,7 @@ class TqqqQqqRelativeMetrics:
     benchmark_symbol: str
     strategy_total_return: float
     qqq_total_return: float
+    boxx_total_return: float
     excess_total_return: float
     strategy_cagr: float
     qqq_cagr: float
@@ -205,6 +283,398 @@ def _finite(value: object, label: str, *, nonnegative: bool = False) -> float:
     return number
 
 
+def _canonical_sha256(material: object) -> str:
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_tqqq_development_robustness_plan(
+    sessions: Sequence[date],
+) -> dict[str, object]:
+    """Freeze every complete 3/6/12/24-month seen-development window."""
+
+    if (
+        isinstance(sessions, (str, bytes))
+        or not sessions
+        or any(type(session) is not date for session in sessions)
+    ):
+        raise TqqqPromotionContractError("invalid development calendar")
+    ordered = tuple(sessions)
+    if ordered != tuple(sorted(set(ordered))):
+        raise TqqqPromotionContractError("invalid development calendar")
+    grouped: dict[tuple[int, int], list[date]] = {}
+    for session in ordered:
+        if date(2023, 1, 1) <= session <= date(2025, 6, 30):
+            grouped.setdefault((session.year, session.month), []).append(session)
+    expected_months = tuple(
+        (year, month)
+        for year in range(2023, 2026)
+        for month in range(1, 13)
+        if (year, month) <= (2025, 6)
+    )
+    if tuple(sorted(grouped)) != expected_months:
+        raise TqqqPromotionContractError("incomplete development calendar")
+
+    rolling: dict[str, dict[str, object]] = {}
+    all_windows: list[dict[str, object]] = []
+    for horizon in (3, 6, 12, 24):
+        windows = [
+            {
+                "horizon_months": horizon,
+                "start_month": (
+                    f"{expected_months[index - horizon + 1][0]:04d}-"
+                    f"{expected_months[index - horizon + 1][1]:02d}"
+                ),
+                "end_month": (
+                    f"{expected_months[index][0]:04d}-{expected_months[index][1]:02d}"
+                ),
+                "start_session": grouped[expected_months[index - horizon + 1]][0].isoformat(),
+                "end_session": grouped[expected_months[index]][-1].isoformat(),
+            }
+            for index in range(horizon - 1, len(expected_months))
+        ]
+        if _canonical_sha256(windows) != _SYSTEMATIC_WINDOW_SHA256[horizon]:
+            raise TqqqPromotionContractError("development window identity mismatch")
+        all_windows.extend(windows)
+        rolling[f"{horizon}_month"] = {
+            "count": len(windows),
+            "first": [windows[0]["start_session"], windows[0]["end_session"]],
+            "last": [windows[-1]["start_session"], windows[-1]["end_session"]],
+            "sha256": _SYSTEMATIC_WINDOW_SHA256[horizon],
+            "windows": windows,
+        }
+    if _canonical_sha256(all_windows) != _SYSTEMATIC_PLAN_SHA256:
+        raise TqqqPromotionContractError("development plan identity mismatch")
+    return {
+        "aggregate_plan_sha256": _SYSTEMATIC_PLAN_SHA256,
+        "seen_development_cutoff_inclusive": "2025-07-01",
+        "whole_month_range": "2023-01 through 2025-06",
+        "enumeration_rule": (
+            "for H in 3,6,12,24, enumerate every complete H-month window ending at every "
+            "eligible month-end; never select or delete windows"
+        ),
+        "merge_with_locked_oos": False,
+        "promotion_evidence": False,
+        "regime_labels": {
+            "basis": "annualized QQQ adjusted total return on the same window/calendar valuation",
+            "bear": "<= -0.05",
+            "bull": ">= +0.05",
+            "sideways": "otherwise",
+            "report_only": True,
+        },
+        "rolling_windows": rolling,
+    }
+
+
+def _valid_legacy_reference(reference: Mapping[str, object]) -> bool:
+    if not isinstance(reference, Mapping) or set(reference) != _LEGACY_REFERENCE_FIELDS:
+        return False
+    if not _is_hex(reference["code_commit"], 40):
+        return False
+    for field in (
+        "code_sha256",
+        "runtime_config_sha256",
+        "switching_rules_sha256",
+        "initial_state_sha256",
+        "cost_model_sha256",
+        "input_sha256",
+        "metrics_sha256",
+        "trades_sha256",
+        "allocations_sha256",
+    ):
+        if not _is_hex(reference[field], 64):
+            return False
+    for field in (
+        "data_source",
+        "adjustment",
+        "calendar",
+        "decision_timing",
+        "fill_timing",
+    ):
+        if not isinstance(reference[field], str) or not reference[field].strip():
+            return False
+    try:
+        start = date.fromisoformat(str(reference["range_start"]))
+        end = date.fromisoformat(str(reference["range_end"]))
+    except ValueError:
+        return False
+    return start <= end <= date(2025, 7, 1)
+
+
+def _validated_parity_rows(
+    values: Sequence[Mapping[str, object]],
+    reference: Mapping[str, object],
+) -> tuple[dict[str, object], ...] | None:
+    if isinstance(values, (str, bytes)) or not values:
+        return None
+    rows: list[dict[str, object]] = []
+    for value in values:
+        if not isinstance(value, Mapping) or set(value) != _LEGACY_SESSION_FIELDS:
+            return None
+        try:
+            session = date.fromisoformat(str(value["session"]))
+            gross_return = _finite(value["gross_return"], "legacy gross return")
+            cost = _finite(value["cost"], "legacy cost", nonnegative=True)
+            net_return = _finite(value["net_return"], "legacy net return")
+        except (TqqqPromotionContractError, ValueError):
+            return None
+        allocation = value["target_allocation"]
+        if not isinstance(allocation, Mapping) or set(allocation) != _PARITY_ASSETS:
+            return None
+        try:
+            normalized_allocation = {
+                symbol: _finite(allocation[symbol], "legacy allocation", nonnegative=True)
+                for symbol in sorted(_PARITY_ASSETS)
+            }
+        except TqqqPromotionContractError:
+            return None
+        if not math.isclose(sum(normalized_allocation.values()), 1.0, abs_tol=1e-12):
+            return None
+        if (
+            not isinstance(value["signal"], str)
+            or not value["signal"]
+            or not isinstance(value["regime"], str)
+            or not value["regime"]
+            or type(value["switch"]) is not bool
+            or type(value["trade_count"]) is not int
+            or value["trade_count"] < 0
+        ):
+            return None
+        rows.append(
+            {
+                "session": session,
+                "signal": value["signal"],
+                "regime": value["regime"],
+                "target_allocation": normalized_allocation,
+                "switch": value["switch"],
+                "gross_return": gross_return,
+                "trade_count": value["trade_count"],
+                "cost": cost,
+                "net_return": net_return,
+            }
+        )
+    sessions = tuple(row["session"] for row in rows)
+    if sessions != tuple(sorted(set(sessions))):
+        return None
+    if (
+        sessions[0].isoformat() != reference["range_start"]
+        or sessions[-1].isoformat() != reference["range_end"]
+    ):
+        return None
+    return tuple(rows)
+
+
+def _same_number(left: object, right: object) -> bool:
+    return math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=1e-12)
+
+
+def classify_tqqq_legacy_parity(
+    legacy_reference: Mapping[str, object],
+    legacy_sessions: Sequence[Mapping[str, object]],
+    candidate_sessions: Sequence[Mapping[str, object]],
+    *,
+    explicit_architecture_changes: Sequence[str] = (),
+) -> str:
+    """Classify same-range session-first parity without reconstructing missing legacy evidence."""
+
+    if not _valid_legacy_reference(legacy_reference):
+        return "NOT_COMPARABLE"
+    changes = tuple(explicit_architecture_changes)
+    if len(changes) != len(set(changes)) or not set(changes) <= _EXPLICIT_ARCHITECTURE_CHANGES:
+        return "NOT_COMPARABLE"
+    legacy = _validated_parity_rows(legacy_sessions, legacy_reference)
+    candidate = _validated_parity_rows(candidate_sessions, legacy_reference)
+    if legacy is None or candidate is None:
+        return "NOT_COMPARABLE"
+    if tuple(row["session"] for row in legacy) != tuple(row["session"] for row in candidate):
+        return "NOT_COMPARABLE"
+
+    expected_difference = False
+    change_set = set(changes)
+    timing_or_state_changes = {
+        "CLOSE_T_TO_OPEN_T_PLUS_1",
+        "FRESH_EPISODE_INITIAL_STATE",
+        "PRE_WINDOW_TRADE_DELETION",
+        "PARK_NOT_CARRIED_BETWEEN_EPISODES",
+    }
+    for old, new in zip(legacy, candidate):
+        if old["signal"] != new["signal"] or old["regime"] != new["regime"]:
+            return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+        if any(
+            not _same_number(old["target_allocation"][symbol], new["target_allocation"][symbol])
+            for symbol in _PARITY_ASSETS
+        ):
+            if "RISK_ENGINE_AND_APPROVED_SIZING" not in change_set:
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+        if old["switch"] != new["switch"]:
+            if "CLOSE_T_TO_OPEN_T_PLUS_1" not in change_set:
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+        if not _same_number(old["gross_return"], new["gross_return"]):
+            if not change_set & timing_or_state_changes:
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+        if old["trade_count"] != new["trade_count"]:
+            if not change_set & (
+                timing_or_state_changes | {"EXECUTION_SESSION_COUNTER_ATTRIBUTION"}
+            ):
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+        if not _same_number(old["cost"], new["cost"]):
+            if not change_set & {
+                "CLOSE_T_TO_OPEN_T_PLUS_1",
+                "COST_NORMALIZATION_5_10_15_BPS",
+            }:
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+        if not _same_number(old["net_return"], new["net_return"]):
+            if not change_set:
+                return "UNEXPLAINED_CORE_STRATEGY_DRIFT"
+            expected_difference = True
+    return (
+        "EXPECTED_DIFFERENCE_DUE_TO_EXPLICIT_ARCHITECTURE_CHANGE"
+        if expected_difference
+        else "MATCH"
+    )
+
+
+def evaluate_tqqq_pre_result_acceptance(
+    result: TqqqPromotionResearchResult,
+    legacy_parity_classification: str,
+) -> str:
+    """Apply the frozen pre-result terminal mapping to complete replay evidence."""
+
+    if (
+        type(result) is not TqqqPromotionResearchResult
+        or type(legacy_parity_classification) is not str
+        or legacy_parity_classification not in LEGACY_PARITY_CLASSIFICATIONS
+    ):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if legacy_parity_classification in {
+        "NOT_COMPARABLE",
+        "UNEXPLAINED_CORE_STRATEGY_DRIFT",
+    }:
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if (
+        result.authority_scope != "RESEARCH_ONLY"
+        or result.no_order is not True
+        or result.size_zero_required is not True
+        or result.promotion_eligible is not False
+        or result.live_ready is not False
+        or result.executable_plan
+        or result.order_client_intents
+    ):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    try:
+        scenarios = {scenario.total_cost_bps: scenario for scenario in result.scenarios}
+    except (AttributeError, TypeError):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if set(scenarios) != set(_COST_SCENARIOS_BPS) or len(result.scenarios) != 3:
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+
+    locked_metrics: dict[int, TqqqQqqRelativeMetrics] = {}
+    locked_summaries: dict[int, TqqqEpisodeSummary] = {}
+    try:
+        for cost in _COST_SCENARIOS_BPS:
+            scenario = scenarios[cost]
+            if (
+                scenario.cost_model_scope != "ALL_IN_PER_SIDE"
+                or len(scenario.windows) != 4
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            cost_model = scenario.promotion_run.cost_model
+            if (
+                type(cost_model) is not PromotionCostModel
+                or cost_model.model_id != f"tqqq_all_in_per_side_{cost}bp.v1"
+                or _finite(cost_model.commission_bps, "commission", nonnegative=True)
+                + _finite(cost_model.slippage_bps, "slippage", nonnegative=True)
+                + _finite(cost_model.market_impact_bps, "market impact", nonnegative=True)
+                != float(cost)
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            locked = scenario.windows[-1]
+            if locked.start_date != _LOCKED_OOS_START or locked.end_date != _LOCKED_OOS_END:
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            if locked.decision_count <= 0 or locked.decision_count != locked.risk_assessment_count:
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            metrics = locked.relative_metrics
+            summary = locked.episode_summary
+            if type(metrics) is not TqqqQqqRelativeMetrics or type(summary) is not TqqqEpisodeSummary:
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            if (
+                summary.tqqq_entry_count != summary.tqqq_stop_armed_count
+                or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
+                or summary.tqqq_unprotected_holding_session_count != 0
+            ):
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            if metrics.benchmark_symbol != "QQQ":
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            for field_name, value in vars(metrics).items():
+                if field_name == "benchmark_symbol":
+                    continue
+                if field_name in {
+                    "strategy_recovery_sessions",
+                    "qqq_recovery_sessions",
+                }:
+                    if value is not None and (type(value) is not int or value < 0):
+                        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+                    continue
+                if field_name in {
+                    "strategy_unrecovered_at_end",
+                    "qqq_unrecovered_at_end",
+                }:
+                    if type(value) is not bool:
+                        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+                    continue
+                _finite(value, "acceptance metric")
+            if metrics.strategy_max_drawdown > 0.0 or metrics.qqq_max_drawdown > 0.0:
+                return TQQQ_ACCEPTANCE_INCONCLUSIVE
+            locked_metrics[cost] = metrics
+            locked_summaries[cost] = summary
+    except (AttributeError, TqqqPromotionContractError):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+
+    if (
+        locked_metrics[10].strategy_total_return
+        > locked_metrics[5].strategy_total_return + 1e-12
+        or locked_metrics[15].strategy_total_return
+        > locked_metrics[10].strategy_total_return + 1e-12
+    ):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if any(
+        not _same_number(getattr(locked_metrics[cost], field), getattr(locked_metrics[15], field))
+        for cost in (5, 10)
+        for field in ("qqq_total_return", "boxx_total_return", "qqq_max_drawdown")
+    ):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
+    if any(summary.parked_session_count for summary in locked_summaries.values()):
+        return TQQQ_ACCEPTANCE_REJECT
+    if any(abs(metrics.strategy_max_drawdown) > 0.10 + 1e-12 for metrics in locked_metrics.values()):
+        return TQQQ_ACCEPTANCE_REJECT
+
+    metrics = locked_metrics[15]
+    candidate_return = metrics.strategy_total_return
+    qqq_return = metrics.qqq_total_return
+    boxx_return = metrics.boxx_total_return
+    candidate_mdd = abs(metrics.strategy_max_drawdown)
+    qqq_mdd = abs(metrics.qqq_max_drawdown)
+    if qqq_return <= 0.0:
+        passed = (
+            candidate_return >= qqq_return
+            and candidate_mdd <= min(0.10, 0.60 * qqq_mdd) + 1e-12
+            and candidate_return >= boxx_return - 0.02
+        )
+    else:
+        passed = (
+            candidate_return > 0.0
+            and candidate_return >= 0.50 * qqq_return
+            and candidate_mdd <= qqq_mdd + 1e-12
+            and candidate_mdd <= 0.10 + 1e-12
+        )
+    return TQQQ_ACCEPTANCE_PASS if passed else TQQQ_ACCEPTANCE_REJECT
+
+
 def _validate_identity(identity: TqqqPromotionIdentity) -> None:
     if type(identity) is not TqqqPromotionIdentity:
         raise TqqqPromotionContractError("invalid immutable identity")
@@ -235,6 +705,8 @@ def _validate_plan(plan: TqqqPromotionPlan) -> None:
         raise TqqqPromotionContractError("at least three typed purged folds are required")
     if type(plan.locked_oos_start) is not date or type(plan.locked_oos_end) is not date:
         raise TqqqPromotionContractError("invalid locked OOS timing")
+    if plan.locked_oos_start != _LOCKED_OOS_START or plan.locked_oos_end != _LOCKED_OOS_END:
+        raise TqqqPromotionContractError("locked OOS calendar identity mismatch")
     if (
         type(plan.purge_days) is not int
         or plan.purge_days <= 0
@@ -411,6 +883,11 @@ def _validate_replay(
         summary.boxx_exposure_session_count,
         summary.cash_only_session_count,
         summary.parked_session_count,
+        summary.tqqq_entry_count,
+        summary.tqqq_stop_armed_count,
+        summary.tqqq_stop_crossing_count,
+        summary.tqqq_stop_fill_count,
+        summary.tqqq_unprotected_holding_session_count,
     )
     if any(type(value) is not int or value < 0 for value in counts):
         raise TqqqPromotionContractError("invalid episode summary")
@@ -418,6 +895,13 @@ def _validate_replay(
         raise TqqqPromotionContractError("invalid episode summary")
     if summary.cash_only_session_count + summary.parked_session_count > summary.episode_session_count:
         raise TqqqPromotionContractError("invalid episode summary")
+    if (
+        summary.tqqq_entry_count != summary.tqqq_stop_armed_count
+        or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
+        or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
+        or summary.tqqq_unprotected_holding_session_count != 0
+    ):
+        raise TqqqPromotionContractError("TQQQ stop coverage is incomplete")
     allowed_breakers = {"ACCOUNT_DRAWDOWN", "CONSECUTIVE_TQQQ_LOSING_EXITS"}
     if summary.parked_session_count:
         if summary.breaker_reason not in allowed_breakers or type(summary.first_park_session) is not date:
@@ -460,11 +944,17 @@ def _validate_replay(
     if (
         type(replay.strategy_equity) is not tuple
         or type(replay.qqq_total_return_equity) is not tuple
+        or type(replay.boxx_total_return_equity) is not tuple
         or len(replay.strategy_equity) < 2
         or len(replay.strategy_equity) != len(replay.qqq_total_return_equity)
+        or len(replay.strategy_equity) != len(replay.boxx_total_return_equity)
     ):
-        raise TqqqPromotionContractError("aligned strategy/QQQ equity is required")
-    for series in (replay.strategy_equity, replay.qqq_total_return_equity):
+        raise TqqqPromotionContractError("aligned strategy/QQQ/BOXX equity is required")
+    for series in (
+        replay.strategy_equity,
+        replay.qqq_total_return_equity,
+        replay.boxx_total_return_equity,
+    ):
         if any(_finite(value, "equity") <= 0.0 for value in series):
             raise TqqqPromotionContractError("equity must be positive")
     if summary.episode_session_count != len(replay.strategy_equity) - 1:
@@ -474,11 +964,13 @@ def _validate_replay(
 def _relative_metrics(replay: TqqqWindowReplay) -> TqqqQqqRelativeMetrics:
     strategy = tuple(float(value) for value in replay.strategy_equity)
     benchmark = tuple(float(value) for value in replay.qqq_total_return_equity)
+    defensive_benchmark = tuple(float(value) for value in replay.boxx_total_return_equity)
     strategy_returns = _returns(strategy)
     benchmark_returns = _returns(benchmark)
     excess_returns = tuple(a - b for a, b in zip(strategy_returns, benchmark_returns))
     strategy_total = strategy[-1] / strategy[0] - 1.0
     benchmark_total = benchmark[-1] / benchmark[0] - 1.0
+    defensive_benchmark_total = defensive_benchmark[-1] / defensive_benchmark[0] - 1.0
     strategy_cagr = _cagr(strategy[0], strategy[-1], replay.start_date, replay.end_date)
     benchmark_cagr = _cagr(benchmark[0], benchmark[-1], replay.start_date, replay.end_date)
     strategy_mdd, strategy_recovery, strategy_unrecovered = _drawdown_recovery(strategy)
@@ -523,6 +1015,7 @@ def _relative_metrics(replay: TqqqWindowReplay) -> TqqqQqqRelativeMetrics:
         benchmark_symbol="QQQ",
         strategy_total_return=strategy_total,
         qqq_total_return=benchmark_total,
+        boxx_total_return=defensive_benchmark_total,
         excess_total_return=strategy_total - benchmark_total,
         strategy_cagr=strategy_cagr,
         qqq_cagr=benchmark_cagr,

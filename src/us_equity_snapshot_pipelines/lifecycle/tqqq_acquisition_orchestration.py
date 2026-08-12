@@ -43,7 +43,7 @@ from .tqqq_promotion_evidence import (
 TQQQ_PROMOTION_ASSETS = ("QQQ", "TQQQ", "QQQM", "BOXX")
 EXACT_DURATIONS = {symbol: "9 Y" for symbol in TQQQ_PROMOTION_ASSETS}
 FIRST_ELIGIBLE_SESSION = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}
-FIXED_CUTOFF = "2025-07-02T03:59:59Z"
+FIXED_CUTOFF = "2026-08-03T03:59:59Z"
 INPUT_LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 INPUT_USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
 QPK_REVISION = promotion_runner._QPK_REVISION
@@ -53,11 +53,8 @@ _INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
 _PROFILE = "tqqq_core_parity_v1"
 _MANDATE_ID = "tqqq_core_parity_v1"
-_FROZEN_CALENDAR_SHA256 = "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
-_FROZEN_CALENDAR_SOURCE_REVISION = (
-    "exchange_calendars:4.13.2:XNYS:"
-    "cb72b5dde5293bdb029c53e20ed3d06198e6d3bf096a4993139e59e5377ef51c"
-)
+_FROZEN_CALENDAR_SHA256 = promotion_runner._FROZEN_CALENDAR_SHA256
+_FROZEN_CALENDAR_SOURCE_REVISION = promotion_runner._FROZEN_CALENDAR_SOURCE_REVISION
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _DEPENDENCY_REPOSITORIES = {
@@ -124,7 +121,7 @@ def _canonical(value: Any) -> bytes:
 
 def _frozen_xnys_sessions() -> tuple[str, ...]:
     start = date(2018, 1, 2)
-    end = date(2025, 7, 1)
+    end = promotion_runner._LOCKED_OOS_END
     holidays = set().union(
         *(_xnys_holidays(year) for year in range(start.year, end.year + 1))
     )
@@ -137,6 +134,19 @@ def _frozen_xnys_sessions() -> tuple[str, ...]:
     result = tuple(sessions)
     if hashlib.sha256(_canonical(list(result))).hexdigest() != _FROZEN_CALENDAR_SHA256:
         raise RuntimeError("frozen TQQQ XNYS calendar contract is inconsistent")
+    locked = tuple(
+        value
+        for value in result
+        if promotion_runner._LOCKED_OOS_START.isoformat()
+        <= value
+        <= promotion_runner._LOCKED_OOS_END.isoformat()
+    )
+    if (
+        len(locked) != promotion_runner._LOCKED_OOS_SESSION_COUNT
+        or hashlib.sha256(_canonical(list(locked))).hexdigest()
+        != promotion_runner._LOCKED_OOS_SESSIONS_SHA256
+    ):
+        raise RuntimeError("frozen TQQQ locked OOS calendar identity is inconsistent")
     return result
 
 

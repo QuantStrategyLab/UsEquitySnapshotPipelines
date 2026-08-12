@@ -36,11 +36,17 @@ from .tqqq_promotion_runner import (
     _QPK_REVISION,
     _UES_REVISION,
     _EXACT_COMMON_ELIGIBILITY,
+    _FROZEN_CALENDAR_SOURCE_REVISION,
+    _LOCKED_OOS_END,
+    _LOCKED_OOS_SESSION_COUNT,
+    _LOCKED_OOS_SESSIONS_SHA256,
+    _LOCKED_OOS_START,
     TqqqEpisodeSummary,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
     TqqqPromotionResearchResult,
     TqqqWindowReplay,
+    build_tqqq_development_robustness_plan,
     _resolve_runner_revision,
     run_tqqq_promotion_research,
 )
@@ -110,8 +116,8 @@ _PLAN = TqqqPromotionPlan(
             test_end=date(2024, 5, 31),
         ),
     ),
-    locked_oos_start=date(2024, 7, 1),
-    locked_oos_end=date(2025, 7, 1),
+    locked_oos_start=_LOCKED_OOS_START,
+    locked_oos_end=_LOCKED_OOS_END,
     purge_days=20,
     embargo_days=20,
 )
@@ -154,6 +160,11 @@ class _ReplayState:
     trade_count: int = 0
     decision_count: int = 0
     assessment_count: int = 0
+    tqqq_entry_count: int = 0
+    tqqq_stop_armed_count: int = 0
+    tqqq_stop_crossing_count: int = 0
+    tqqq_stop_fill_count: int = 0
+    tqqq_unprotected_holding_session_count: int = 0
     market_regime_control_sha256: str = field(
         default_factory=lambda: _digest({"state": "ABSENT"})
     )
@@ -340,7 +351,7 @@ def _validate_input(
         or manifest["calendar"]["calendar_id"] != "XNYS"
         or manifest["calendar"]["timezone"] != "America/New_York"
         or manifest["calendar"]["source"] != "exchange_calendars"
-        or not manifest["calendar"]["source_revision"]
+        or manifest["calendar"]["source_revision"] != _FROZEN_CALENDAR_SOURCE_REVISION
         or manifest["adjustment"]["policy"] != "total_return_adjusted"
         or manifest["adjustment"]["source"] != "IBKR_ADJUSTED_LAST"
     ):
@@ -421,6 +432,16 @@ def _validate_input(
         or sum(session < _PLAN.folds[0].test_start for session in qqq_sessions) < 257
     ):
         raise TqqqPromotionEvidenceError("immutable input coverage mismatch")
+    locked_sessions = tuple(
+        session.isoformat()
+        for session in qqq_sessions
+        if _LOCKED_OOS_START <= session <= _LOCKED_OOS_END
+    )
+    if (
+        len(locked_sessions) != _LOCKED_OOS_SESSION_COUNT
+        or _sha256(_canonical(list(locked_sessions))) != _LOCKED_OOS_SESSIONS_SHA256
+    ):
+        raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
     return provenance, parsed, research_input_manifest_sha256(manifest)
 
 
@@ -439,6 +460,11 @@ def _initial_state_projection() -> dict[str, Any]:
         "breaker_reason": None,
         "first_park_session": None,
         "last_session": None,
+        "tqqq_entry_count": 0,
+        "tqqq_stop_armed_count": 0,
+        "tqqq_stop_crossing_count": 0,
+        "tqqq_stop_fill_count": 0,
+        "tqqq_unprotected_holding_session_count": 0,
         "market_regime_control_sha256": _digest({"state": "ABSENT"}),
         "volatility_hysteresis_state_sha256": _digest({"state": "UNINITIALIZED"}),
         "retention_state_sha256": _digest({"state": "UNINITIALIZED"}),
@@ -460,6 +486,13 @@ def _state_projection(state: _ReplayState) -> dict[str, Any]:
         "breaker_reason": state.breaker_reason,
         "first_park_session": state.first_park_session,
         "last_session": state.last_session,
+        "tqqq_entry_count": state.tqqq_entry_count,
+        "tqqq_stop_armed_count": state.tqqq_stop_armed_count,
+        "tqqq_stop_crossing_count": state.tqqq_stop_crossing_count,
+        "tqqq_stop_fill_count": state.tqqq_stop_fill_count,
+        "tqqq_unprotected_holding_session_count": (
+            state.tqqq_unprotected_holding_session_count
+        ),
         "market_regime_control_sha256": state.market_regime_control_sha256,
         "volatility_hysteresis_state_sha256": state.volatility_hysteresis_state_sha256,
         "retention_state_sha256": state.retention_state_sha256,
@@ -585,11 +618,13 @@ class _ImmutableReplayProducer:
             state.turnover += value_delta / opening_equity
             state.trade_count += 1
             if symbol == "TQQQ":
+                state.tqqq_entry_count += 1
                 state.tqqq_entry_price = (
                     (state.tqqq_entry_price or bar.open) * prior_quantity
                     + fill * added_quantity
                 ) / state.quantities[symbol]
                 state.tqqq_stop_price = state.tqqq_entry_price * 0.95
+                state.tqqq_stop_armed_count += 1
                 state.tqqq_entry_identity_sha256 = _digest(
                     {
                         "candidate": self.candidate.candidate_sha256,
@@ -603,17 +638,22 @@ class _ImmutableReplayProducer:
     def _apply_stop(self, session: date, cost_bps: int) -> None:
         state = self._state
         quantity = state.quantities["TQQQ"]
-        if quantity <= 0.0 or state.tqqq_stop_price is None:
+        if quantity <= 0.0:
+            return
+        if state.tqqq_stop_price is None:
+            state.tqqq_unprotected_holding_session_count += 1
             return
         bar = self._price("TQQQ", session)
         if bar.low > state.tqqq_stop_price:
             return
+        state.tqqq_stop_crossing_count += 1
         exit_reference = min(bar.open, state.tqqq_stop_price)
         fill = exit_reference * (1.0 - cost_bps / 10_000.0)
         opening_equity = max(self._equity(session, "open"), 1e-12)
         state.cash += quantity * fill
         state.turnover += quantity * exit_reference / opening_equity
         state.trade_count += 1
+        state.tqqq_stop_fill_count += 1
         self._record_completed_exit(fill, session)
         state.quantities["TQQQ"] = 0.0
         state.tqqq_entry_price = None
@@ -836,9 +876,11 @@ class _ImmutableReplayProducer:
             state.last_equity,
         )
         benchmark_origin = self.qqq[start_index].open
+        defensive_benchmark_origin = self._price("BOXX", start_date).open
         strategy_origin = state.last_equity
         window_strategy: list[float] = [100.0]
         window_benchmark: list[float] = [100.0]
+        window_defensive_benchmark: list[float] = [100.0]
         exposure_counts = {symbol: 0 for symbol in _ORDERABLE_ASSETS}
         cash_only_session_count = 0
         parked_session_count = 0
@@ -858,6 +900,11 @@ class _ImmutableReplayProducer:
                 state.pending_weights = self._assessment(index, next_session, equity)
             window_strategy.append(equity / strategy_origin * 100.0)
             window_benchmark.append(qqq.close / benchmark_origin * 100.0)
+            window_defensive_benchmark.append(
+                self._price("BOXX", qqq.session).close
+                / defensive_benchmark_origin
+                * 100.0
+            )
             has_exposure = False
             for symbol in _ORDERABLE_ASSETS:
                 if state.quantities[symbol] > 1e-12:
@@ -877,6 +924,7 @@ class _ImmutableReplayProducer:
             final_state_sha256=self._state_sha256,
             strategy_equity=tuple(window_strategy),
             qqq_total_return_equity=tuple(window_benchmark),
+            boxx_total_return_equity=tuple(window_defensive_benchmark),
             asset_weights=weights,
             turnover=state.turnover,
             trade_count=state.trade_count,
@@ -890,6 +938,13 @@ class _ImmutableReplayProducer:
                 boxx_exposure_session_count=exposure_counts["BOXX"],
                 cash_only_session_count=cash_only_session_count,
                 parked_session_count=parked_session_count,
+                tqqq_entry_count=state.tqqq_entry_count,
+                tqqq_stop_armed_count=state.tqqq_stop_armed_count,
+                tqqq_stop_crossing_count=state.tqqq_stop_crossing_count,
+                tqqq_stop_fill_count=state.tqqq_stop_fill_count,
+                tqqq_unprotected_holding_session_count=(
+                    state.tqqq_unprotected_holding_session_count
+                ),
                 breaker_reason=state.breaker_reason,
                 first_park_session=state.first_park_session,
             ),
@@ -962,6 +1017,9 @@ def _result_artifacts(
             _canonical(
                 {
                     "schema_version": "tqqq_etf_only_promotion_backtest.v1",
+                    "development_robustness_plan": build_tqqq_development_robustness_plan(
+                        tuple(row.session for row in replay.qqq)
+                    ),
                     "scenarios": {
                         str(cost): {
                             "promotion_run": scenario.promotion_run,
