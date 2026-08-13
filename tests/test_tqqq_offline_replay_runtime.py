@@ -287,7 +287,7 @@ def test_offline_builder_exposes_only_safe_locked_vcs_cache_miss_diagnostic(
         python_major_minor="3.12",
     )
     monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
-    raw_stderr = "git+locked-vcs-source was not found in the cache"
+    raw_stderr = "Remote Git fetches are not allowed because network connectivity is disabled: git+locked-vcs-source"
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -330,7 +330,7 @@ def test_offline_builder_keeps_non_vcs_cache_miss_safe_when_local_vcs_source_exi
         python_major_minor="3.12",
     )
     monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
-    raw_stderr = "private-package-1.0.0-py3-none-any.whl was not found in the cache"
+    raw_stderr = "requested data wasn't found in the cache: private-package-1.0.0-py3-none-any.whl"
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -405,7 +405,10 @@ def test_offline_builder_recognizes_build_system_cache_miss_before_wheel(monkeyp
             raise subprocess.CalledProcessError(
                 1,
                 command,
-                stderr="Failed to resolve requirements from build-system.requires: wheel",
+                stderr=(
+                    "Failed to resolve requirements from `build-system.requires`: "
+                    "requested data wasn't found in the cache: wheel"
+                ),
             )
         raise AssertionError("the failed sync must stop the builder")
 
@@ -417,6 +420,44 @@ def test_offline_builder_recognizes_build_system_cache_miss_before_wheel(monkeyp
         "source_category": "build_requirement",
         "target_python": "3.12",
         "artifact_kind": "build_requirement",
+    }
+
+
+def test_offline_builder_does_not_call_unsatisfiable_build_requirements_a_cache_miss(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    _write_project(project)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["uv", "sync"]:
+            raise subprocess.CalledProcessError(
+                1,
+                command,
+                stderr="Failed to resolve requirements from `build-system.requires`: incompatible requirements",
+            )
+        raise AssertionError("the failed sync must stop the builder")
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError) as error:
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert error.value.diagnostic == {
+        "failure_category": "offline_sync_failed",
+        "source_category": "unclassified",
+        "target_python": "3.12",
+        "artifact_kind": None,
     }
 
 

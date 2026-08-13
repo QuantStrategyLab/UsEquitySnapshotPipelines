@@ -155,11 +155,19 @@ def _offline_sync_diagnostic(
     failure_category = "offline_sync_failed"
     source_category = "unclassified"
     artifact_kind: str | None = None
-    if "failed to resolve requirements from build-system.requires" in message:
+    cache_miss_markers = (
+        "not found in the cache",
+        "not available in the cache",
+        "no cache entry",
+        "requested data wasn't found in the cache",
+        "remote git fetches are not allowed because network connectivity is disabled",
+    )
+    has_cache_miss = any(marker in message for marker in cache_miss_markers)
+    if has_cache_miss and "failed to resolve requirements from" in message and "build-system.requires" in message:
         failure_category = "offline_cache_miss"
         source_category = "build_requirement"
         artifact_kind = "build_requirement"
-    elif any(marker in message for marker in ("not found in the cache", "not available in the cache", "no cache entry")):
+    elif has_cache_miss:
         failure_category = "offline_cache_miss"
     if failure_category == "offline_cache_miss" and artifact_kind is None and (
         "git+" in message or ("github.com/" in message and ".git" in message)
