@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -75,8 +74,6 @@ def test_manifest_derives_identity_from_versioned_source_and_current_lock(monkey
         "schema_version": "qsl.tqqq.offline-replay-runtime.v1",
         "uesp_revision": "d" * 40,
         "lockfile_sha256": hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest(),
-        "qpk_revision": "a" * 40,
-        "ues_revision": "b" * 40,
         "python_major_minor": "3.12",
     }
 
@@ -105,7 +102,7 @@ def test_manifest_rejects_mutable_or_editable_dependency_identity(
     monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match=message):
-        runtime.derive_tqqq_offline_replay_runtime_manifest(project)
+        runtime.derive_tqqq_offline_replay_runtime_manifest(project, python_major_minor="3.12")
 
 
 def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, tmp_path: Path) -> None:
@@ -115,7 +112,7 @@ def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, t
     script_only.mkdir()
     script_only.joinpath("repair.py").write_text("print('legacy')\n", encoding="utf-8")
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="source and lockfile"):
-        runtime.derive_tqqq_offline_replay_runtime_manifest(script_only)
+        runtime.derive_tqqq_offline_replay_runtime_manifest(script_only, python_major_minor="3.12")
 
     project = tmp_path / "project"
     _write_project(project, qpk_revision="a" * 40)
@@ -123,7 +120,7 @@ def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, t
     lock.write_text(lock.read_text(encoding="utf-8").replace("a" * 40, "e" * 40), encoding="utf-8")
     monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="lockfile identity mismatch"):
-        runtime.derive_tqqq_offline_replay_runtime_manifest(project)
+        runtime.derive_tqqq_offline_replay_runtime_manifest(project, python_major_minor="3.12")
 
 
 def test_offline_builder_rejects_target_inside_source_checkout(
@@ -138,11 +135,9 @@ def test_offline_builder_rejects_target_inside_source_checkout(
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -150,7 +145,7 @@ def test_offline_builder_rejects_target_inside_source_checkout(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="outside source checkout"):
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert not target.exists()
     assert calls == []
@@ -168,12 +163,9 @@ def test_offline_builder_uses_manifest_python_not_ci_python_and_preflights_runne
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
-    monkeypatch.setattr(runtime.sys, "version_info", SimpleNamespace(major=3, minor=13))
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -186,7 +178,7 @@ def test_offline_builder_uses_manifest_python_not_ci_python_and_preflights_runne
             return subprocess.CompletedProcess(command, 0, "3.12\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    manifest = runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+    manifest = runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert target.joinpath("manifest.json").is_file()
     assert manifest.uesp_revision == "d" * 40
@@ -201,8 +193,14 @@ def test_offline_builder_uses_manifest_python_not_ci_python_and_preflights_runne
         "3.12",
         "--offline",
         "--no-editable",
+        "--reinstall-package",
+        "us-equity-snapshot-pipelines",
     ]
     assert sync_kwargs["cwd"] == project
+    environment = sync_kwargs["env"]
+    assert isinstance(environment, dict)
+    assert "UV_PYTHON" not in environment
+    assert "VIRTUAL_ENV" not in environment
     identity_command, identity_kwargs = calls[1]
     assert identity_command == [
         str(target / ".venv" / "bin" / "python"),
@@ -235,11 +233,9 @@ def test_offline_builder_rejects_mismatched_target_interpreter_and_cleans_up(
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     calls: list[list[str]] = []
     provider_calls = 0
 
@@ -257,7 +253,7 @@ def test_offline_builder_rejects_mismatched_target_interpreter_and_cleans_up(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="target Python identity mismatch"):
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert not target.exists()
     assert provider_calls == 0
@@ -277,11 +273,9 @@ def test_offline_builder_rejects_missing_target_interpreter_and_cleans_up(
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     calls: list[list[str]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -294,7 +288,7 @@ def test_offline_builder_rejects_missing_target_interpreter_and_cleans_up(
         raise FileNotFoundError(command[0])
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed"):
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert not target.exists()
     assert all("provider" not in " ".join(command) for command in calls)
@@ -312,11 +306,9 @@ def test_offline_builder_exposes_only_safe_locked_vcs_cache_miss_diagnostic(
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     raw_stderr = "Remote Git fetches are not allowed because network connectivity is disabled: git+locked-vcs-source"
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -327,7 +319,7 @@ def test_offline_builder_exposes_only_safe_locked_vcs_cache_miss_diagnostic(
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed") as error:
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert error.value.diagnostic == {
         "failure_category": "offline_cache_miss",
@@ -355,11 +347,9 @@ def test_offline_builder_keeps_non_vcs_cache_miss_safe_when_local_vcs_source_exi
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
     raw_stderr = "requested data wasn't found in the cache: private-package-1.0.0-py3-none-any.whl"
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -368,7 +358,7 @@ def test_offline_builder_keeps_non_vcs_cache_miss_safe_when_local_vcs_source_exi
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed") as error:
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert local_vcs_source.is_dir()
     assert error.value.diagnostic == {
@@ -392,11 +382,9 @@ def test_offline_builder_does_not_call_unknown_sync_failure_a_cache_miss(monkeyp
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -404,7 +392,7 @@ def test_offline_builder_does_not_call_unknown_sync_failure_a_cache_miss(monkeyp
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError) as error:
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert error.value.diagnostic == {
         "failure_category": "offline_sync_failed",
@@ -424,11 +412,9 @@ def test_offline_builder_recognizes_build_system_cache_miss_before_wheel(monkeyp
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -443,7 +429,7 @@ def test_offline_builder_recognizes_build_system_cache_miss_before_wheel(monkeyp
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError) as error:
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert error.value.diagnostic == {
         "failure_category": "offline_cache_miss",
@@ -465,11 +451,9 @@ def test_offline_builder_does_not_call_unsatisfiable_build_requirements_a_cache_
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -481,7 +465,7 @@ def test_offline_builder_does_not_call_unsatisfiable_build_requirements_a_cache_
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError) as error:
-        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", run=fake_run)
 
     assert error.value.diagnostic == {
         "failure_category": "offline_sync_failed",
@@ -501,11 +485,9 @@ def test_network_enabled_sync_failure_does_not_capture_output(monkeypatch, tmp_p
         schema_version="qsl.tqqq.offline-replay-runtime.v1",
         uesp_revision="d" * 40,
         lockfile_sha256="e" * 64,
-        qpk_revision="a" * 40,
-        ues_revision="b" * 40,
         python_major_minor="3.12",
     )
-    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda *_args, **_kwargs: manifest)
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if command[:2] == ["uv", "sync"]:
@@ -515,6 +497,6 @@ def test_network_enabled_sync_failure_does_not_capture_output(monkeypatch, tmp_p
         raise AssertionError("the failed sync must stop the builder")
 
     with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed"):
-        runtime.build_tqqq_offline_replay_runtime(project, target, allow_network=True, run=fake_run)
+        runtime.build_tqqq_offline_replay_runtime(project, target, target_python="3.12", allow_network=True, run=fake_run)
 
     assert not target.exists()

@@ -4,7 +4,6 @@ import hashlib
 import inspect
 import json
 import subprocess
-import sys
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -47,8 +46,6 @@ RUNTIME_MANIFEST = {
     "schema_version": "qsl.tqqq.offline-replay-runtime.v1",
     "uesp_revision": RUNNER_REVISION,
     "lockfile_sha256": "7" * 64,
-    "qpk_revision": "8" * 40,
-    "ues_revision": "9" * 40,
     "python_major_minor": "3.12",
 }
 
@@ -178,9 +175,6 @@ def _runner_consumable_execution_binding(
     *,
     authority_receipt: Path,
     authority_receipt_sha256: str,
-    runtime_manifest_path: Path,
-    runtime_manifest_sha256: str,
-    runtime_python: Path | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": "qsl.tqqq.execution-binding-record.runner-consumable.v3",
@@ -207,14 +201,7 @@ def _runner_consumable_execution_binding(
                 "revision": RUNNER_REVISION,
                 "tree_sha": RUNNER_TREE_SHA,
             },
-            "runtime_manifest": {
-                "identity": dict(RUNTIME_MANIFEST),
-                "materialization": {
-                    "manifest_path": str(runtime_manifest_path),
-                    "manifest_sha256": runtime_manifest_sha256,
-                    "python_executable": str(runtime_python or Path(sys.executable)),
-                },
-            },
+            "runtime_manifest": dict(RUNTIME_MANIFEST),
             "session_identity": {"session_class": "live-data-only"},
         },
         "verification": {
@@ -296,59 +283,18 @@ def test_diagnostic_compatibility_allows_runtime_binding_only_changes(
     )
 
 
-def test_current_runtime_identity_reads_the_bound_source_checkout(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    source_checkout = tmp_path / "source-checkout"
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if command[3] == "status":
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[4] == "HEAD":
-            return subprocess.CompletedProcess(command, 0, RUNNER_REVISION + "\n", "")
-        return subprocess.CompletedProcess(command, 0, RUNNER_TREE_SHA + "\n", "")
-
-    monkeypatch.setattr(diagnostic_cli, "_RUNNER_PROJECT_ROOT", source_checkout)
-    monkeypatch.setattr(
-        diagnostic_cli,
-        "resolve_tqqq_runtime_identity",
-        lambda: (_ for _ in ()).throw(AssertionError()),
-        raising=False,
-    )
-    monkeypatch.setattr(diagnostic_cli.subprocess, "run", fake_run)
-
-    assert diagnostic_cli._current_runtime_identity() == (RUNNER_REVISION, RUNNER_TREE_SHA)
-    assert all(command[2] == str(source_checkout) for command in calls)
-
-
 def test_runner_consumable_execution_binding_loads_only_explicit_matching_identities(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(diagnostic_cli, "_current_runtime_manifest", lambda: RUNTIME_MANIFEST)
-    identity_calls = 0
-
-    def runtime_identity() -> tuple[str, str]:
-        nonlocal identity_calls
-        identity_calls += 1
-        return RUNNER_REVISION, RUNNER_TREE_SHA
-
-    monkeypatch.setattr(diagnostic_cli, "_current_runtime_identity", runtime_identity)
     authority_receipt = tmp_path / "authority.json"
     authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
-    runtime_manifest = tmp_path / "runtime-manifest.json"
-    runtime_manifest_sha256 = _write_private_json(runtime_manifest, RUNTIME_MANIFEST)
     binding = tmp_path / "execution-binding.json"
     binding_sha256 = _write_private_json(
         binding,
         _runner_consumable_execution_binding(
             authority_receipt=authority_receipt,
             authority_receipt_sha256=authority_receipt_sha256,
-            runtime_manifest_path=runtime_manifest,
-            runtime_manifest_sha256=runtime_manifest_sha256,
         ),
     )
 
@@ -369,43 +315,40 @@ def test_runner_consumable_execution_binding_loads_only_explicit_matching_identi
         RUNNER_TREE_SHA,
         "live-data-only",
     )
-    assert identity_calls == 1
 
 
-def test_runner_binding_rejects_symlinked_builder_python_from_another_environment(
+def test_runner_binding_is_independent_from_current_checkout_and_materialization(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(diagnostic_cli, "_current_runtime_manifest", lambda: RUNTIME_MANIFEST)
-    monkeypatch.setattr(
-        diagnostic_cli, "_current_runtime_identity", lambda: (RUNNER_REVISION, RUNNER_TREE_SHA)
-    )
     authority_receipt = tmp_path / "authority.json"
     authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
-    runtime_manifest = tmp_path / "runtime-manifest.json"
-    runtime_manifest_sha256 = _write_private_json(runtime_manifest, RUNTIME_MANIFEST)
-    builder_python = tmp_path / "builder-python"
-    builder_python.symlink_to(Path(sys.executable).resolve())
     binding = tmp_path / "execution-binding.json"
     binding_sha256 = _write_private_json(
         binding,
         _runner_consumable_execution_binding(
             authority_receipt=authority_receipt,
             authority_receipt_sha256=authority_receipt_sha256,
-            runtime_manifest_path=runtime_manifest,
-            runtime_manifest_sha256=runtime_manifest_sha256,
-            runtime_python=builder_python,
         ),
     )
 
-    with pytest.raises(ValueError, match="invalid execution binding"):
-        diagnostic_cli._load_execution_binding(
-            binding,
-            binding_sha256,
-            risk_standard_id=_authority().risk_standard_id,
-            risk_standard_sha256=_authority().risk_standard_sha256,
-            platform_execution_revision=_authority().platform_execution_revision,
-        )
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "_current_runtime_identity",
+        lambda: (_ for _ in ()).throw(AssertionError()),
+        raising=False,
+    )
+
+    result = diagnostic_cli._load_execution_binding(
+        binding,
+        binding_sha256,
+        risk_standard_id=_authority().risk_standard_id,
+        risk_standard_sha256=_authority().risk_standard_sha256,
+        platform_execution_revision=_authority().platform_execution_revision,
+    )
+
+    assert result[6:8] == (RUNNER_REVISION, RUNNER_TREE_SHA)
+
 
 
 @pytest.mark.parametrize(
@@ -413,11 +356,9 @@ def test_runner_binding_rejects_symlinked_builder_python_from_another_environmen
     (
         ("schema_version", "qsl.tqqq.execution-binding-record.runner-consumable.v2"),
         ("binding.immutable_snapshot_identity.snapshot_digest", "not-a-digest"),
-        ("execution.runtime_manifest.identity.lockfile_sha256", "not-a-digest"),
-        ("execution.runtime_manifest.identity.uesp_revision", "0" * 40),
-        ("execution.runtime_manifest.identity.legacy_runtime_identity", "legacy"),
-        ("execution.runtime_manifest.materialization.python_executable", "invalid"),
-        ("execution.runtime_manifest.materialization.manifest_sha256", "0" * 64),
+        ("execution.runtime_manifest.lockfile_sha256", "not-a-digest"),
+        ("execution.runtime_manifest.uesp_revision", "0" * 40),
+        ("execution.runtime_manifest.legacy_runtime_identity", "legacy"),
         ("execution.runner_runtime_identity.tree_sha", "not-a-revision"),
         ("execution.legacy_runtime_identity", "legacy"),
         ("binding.authority_identity.risk_standard_sha256", "0" * 64),
@@ -435,13 +376,9 @@ def test_non_runner_consumable_binding_fails_closed_before_runner_or_provider(
 ) -> None:
     authority_receipt = tmp_path / "authority.json"
     authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
-    runtime_manifest = tmp_path / "runtime-manifest.json"
-    runtime_manifest_sha256 = _write_private_json(runtime_manifest, RUNTIME_MANIFEST)
     record = _runner_consumable_execution_binding(
         authority_receipt=authority_receipt,
         authority_receipt_sha256=authority_receipt_sha256,
-        runtime_manifest_path=runtime_manifest,
-        runtime_manifest_sha256=runtime_manifest_sha256,
     )
     target = record
     *parents, leaf = mutation[0].split(".")
@@ -452,10 +389,6 @@ def test_non_runner_consumable_binding_fails_closed_before_runner_or_provider(
     binding_sha256 = _write_private_json(binding, record)
     calls: list[str] = []
     monkeypatch.setattr(diagnostic_cli, "_require_filevault", lambda: calls.append("filevault"))
-    monkeypatch.setattr(diagnostic_cli, "_current_runtime_manifest", lambda: RUNTIME_MANIFEST)
-    monkeypatch.setattr(
-        diagnostic_cli, "_current_runtime_identity", lambda: (RUNNER_REVISION, RUNNER_TREE_SHA)
-    )
     monkeypatch.setattr(
         diagnostic_cli,
         "orchestrate_existing_tqqq_snapshot_diagnostic",
