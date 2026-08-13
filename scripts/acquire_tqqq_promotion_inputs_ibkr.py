@@ -19,6 +19,9 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition impor
     acquire_strict_adjusted_last,
     build_request_bound_ibkr_app,
 )
+from us_equity_snapshot_pipelines.tqqq_offline_replay_runtime import (
+    derive_tqqq_offline_replay_runtime_manifest,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     EXACT_DURATIONS,
     FIRST_ELIGIBLE_SESSION,
@@ -198,8 +201,9 @@ class _SanitizedParser(argparse.ArgumentParser):
         raise ValueError("invalid arguments")
 
 
-def _authority(raw_argv: list[str]) -> tuple[TqqqOrchestrationAuthority, str]:
+def _authority(raw_argv: list[str]) -> tuple[TqqqOrchestrationAuthority, str, Path]:
     parser = _SanitizedParser(add_help=False)
+    parser.add_argument("--authority-receipt", required=True, type=Path)
     parser.add_argument("--authority-receipt-sha256", required=True)
     parser.add_argument("--entitlement-receipt-sha256", required=True)
     parser.add_argument("--license-receipt-sha256", required=True)
@@ -228,13 +232,14 @@ def _authority(raw_argv: list[str]) -> tuple[TqqqOrchestrationAuthority, str]:
             input_usage_scope=args.input_usage_scope,
         ),
         args.session_mode,
+        args.authority_receipt,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the closed acquisition envelope and emit only a sanitized terminal."""
     try:
-        authority, session_class = _authority(
+        authority, session_class, authority_receipt = _authority(
             list(sys.argv[1:] if argv is None else argv)
         )
     except (TypeError, ValueError):
@@ -283,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
             raise TqqqOrchestrationError("retention authority is expired")
         _require_filevault_local_root()
         runner_revision, runner_tree_sha = resolve_tqqq_runtime_identity()
+        runtime_manifest = derive_tqqq_offline_replay_runtime_manifest(
+            Path(__file__).resolve().parents[1],
+            python_major_minor=f"{sys.version_info.major}.{sys.version_info.minor}",
+        ).to_dict()
         app, contract_factory = _runtime()
         client_id = secrets.randbelow(2_000_000_000) + 1
         app.connect(_HOST, _SESSION_PORT[session_class], client_id)
@@ -304,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
             runner_revision=runner_revision,
             runner_tree_sha=runner_tree_sha,
             session_class=session_class,
+            authority_receipt=authority_receipt,
+            runtime_manifest=runtime_manifest,
         )
         if outcome.get("asset_count") != len(EXACT_ASSETS) or any(
             outcome.get(field) is not expected

@@ -1078,6 +1078,8 @@ class _FakeRuntimeApp:
 
 def _valid_cli_args() -> list[str]:
     return [
+        "--authority-receipt",
+        "/private/authority-receipt.json",
         "--authority-receipt-sha256",
         "1" * 64,
         "--entitlement-receipt-sha256",
@@ -1120,6 +1122,12 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         "resolve_tqqq_runtime_identity",
         lambda: events.append("identity") or (RUNNER_REVISION, RUNNER_TREE_SHA),
     )
+    monkeypatch.setattr(
+        acquisition_cli,
+        "derive_tqqq_offline_replay_runtime_manifest",
+        lambda *_args, **_kwargs: events.append("manifest")
+        or SimpleNamespace(to_dict=lambda: dict(RUNTIME_MANIFEST)),
+    )
     monkeypatch.setattr(acquisition_cli, "_runtime", lambda: (app, object()))
     monkeypatch.setattr(
         acquisition_cli,
@@ -1135,6 +1143,8 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
         assert tuple(results) == acquisition_cli.EXACT_ASSETS
         assert kwargs["output_root"] == tmp_path / "runs"
         assert kwargs["session_class"] == expected_session_class
+        assert kwargs["authority_receipt"] == Path("/private/authority-receipt.json")
+        assert kwargs["runtime_manifest"] == RUNTIME_MANIFEST
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 4,
@@ -1168,7 +1178,7 @@ def test_cli_connects_once_and_emits_only_sanitized_terminal(
     assert app.connect_calls[0][0:2] == ("127.0.0.1", expected_port)
     assert app.disconnect_calls == 1
     assert app.events == ["connect", "start_reader", "handshake", "disconnect"]
-    assert events == ["filevault", "identity", "orchestrate"]
+    assert events == ["filevault", "identity", "manifest", "orchestrate"]
     serialized = json.dumps(payload, sort_keys=True).lower()
     for forbidden in ("private_bars", "provider_message", "response_body", "credential", '"bars"', '"price"'):
         assert forbidden not in serialized
@@ -1791,3 +1801,102 @@ def test_existing_snapshot_diagnostic_committed_surface_has_no_provider_or_order
         "reqexecutions",
     ):
         assert forbidden not in combined
+
+@pytest.mark.parametrize(
+    "runtime_manifest",
+    (
+        None,
+        {
+            **RUNTIME_MANIFEST,
+            "uesp_revision": "0" * 40,
+        },
+    ),
+)
+def test_current_acquisition_rejects_missing_or_mismatched_runner_binding_identity_before_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runtime_manifest: dict[str, str] | None,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    authority_receipt = tmp_path / "authority.json"
+    authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
+    replay_calls: list[str] = []
+    monkeypatch.setattr(
+        orchestration,
+        "run_tqqq_promotion_evidence",
+        lambda **_kwargs: replay_calls.append("replay"),
+    )
+
+    with pytest.raises(TqqqOrchestrationError, match="runner binding"):
+        orchestrate_tqqq_promotion(
+            _results(),
+            authority=replace(_authority(), authority_receipt_sha256=authority_receipt_sha256),
+            output_root=tmp_path / "runs",
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha=RUNNER_TREE_SHA,
+            session_class="live-data-only",
+            authority_receipt=authority_receipt,
+            runtime_manifest=runtime_manifest,
+            clock=lambda: datetime(2026, 8, 11, 8, 0, tzinfo=UTC),
+        )
+
+    assert replay_calls == []
+
+
+def test_current_acquisition_persists_runner_consumable_v3_for_existing_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    authority_receipt = tmp_path / "authority.json"
+    authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
+    monkeypatch.setattr(diagnostic_cli, "_LOCAL_RESEARCH_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        orchestration,
+        "run_tqqq_promotion_evidence",
+        lambda *, output_dir, input_payload, mandate_receipt_sha256, **_kwargs: _fake_producer(
+            output_dir,
+            input_manifest_sha256=research_input_manifest_sha256(
+                input_payload["input_manifest"]
+            ),
+            mandate_receipt_sha256=mandate_receipt_sha256,
+        ),
+    )
+    monkeypatch.setattr(
+        orchestration, "validate_evidence_package_v2", lambda *_args, **_kwargs: ()
+    )
+
+    result = orchestrate_tqqq_promotion(
+        _results(),
+        authority=replace(_authority(), authority_receipt_sha256=authority_receipt_sha256),
+        output_root=tmp_path / "runs",
+        runner_revision=RUNNER_REVISION,
+        runner_tree_sha=RUNNER_TREE_SHA,
+        session_class="live-data-only",
+        authority_receipt=authority_receipt,
+        runtime_manifest=RUNTIME_MANIFEST,
+        clock=lambda: datetime(2026, 8, 11, 8, 0, tzinfo=UTC),
+    )
+
+    binding = tmp_path / "runs" / result["snapshot_digest"] / "execution-binding.v3.json"
+    binding_sha256 = hashlib.sha256(binding.read_bytes()).hexdigest()
+    record = json.loads(binding.read_bytes())
+    assert record["schema_version"] == "qsl.tqqq.execution-binding-record.runner-consumable.v3"
+    assert record["binding"]["immutable_snapshot_identity"] == {
+        "snapshot_digest": result["snapshot_digest"]
+    }
+    assert record["binding"]["source_mandate_identity"] == {
+        "mandate_receipt_digest": result["mandate_receipt_digest"]
+    }
+    assert diagnostic_cli._load_execution_binding(
+        binding,
+        binding_sha256,
+        risk_standard_id=_authority().risk_standard_id,
+        risk_standard_sha256=_authority().risk_standard_sha256,
+        platform_execution_revision=_authority().platform_execution_revision,
+    )[0:4] == (
+        tmp_path / "runs" / result["snapshot_digest"],
+        replace(_authority(), authority_receipt_sha256=authority_receipt_sha256),
+        result["snapshot_digest"],
+        result["mandate_receipt_digest"],
+    )

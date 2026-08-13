@@ -58,6 +58,7 @@ _FROZEN_CALENDAR_SHA256 = promotion_runner._FROZEN_CALENDAR_SHA256
 _FROZEN_CALENDAR_SOURCE_REVISION = promotion_runner._FROZEN_CALENDAR_SOURCE_REVISION
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
+_PYTHON_MAJOR_MINOR = re.compile(r"^\d+\.\d+$")
 _DEPENDENCY_REPOSITORIES = {
     "quant-platform-kit": "https://github.com/QuantStrategyLab/QuantPlatformKit.git",
     "us-equity-strategies": "https://github.com/QuantStrategyLab/UsEquityStrategies.git",
@@ -541,6 +542,95 @@ def _write_private(path: Path, payload: bytes) -> None:
             os.fsync(handle.fileno())
     finally:
         os.close(descriptor)
+
+
+def _runner_consumable_binding(
+    *,
+    snapshot_digest: str,
+    mandate_receipt_digest: str,
+    authority: TqqqOrchestrationAuthority,
+    authority_receipt: Path,
+    runner_revision: str,
+    runner_tree_sha: str,
+    runtime_manifest: Mapping[str, Any],
+    session_class: str,
+) -> dict[str, Any]:
+    """Build the current runner record only from verified acquisition identities."""
+    if session_class != "live-data-only":
+        raise TqqqOrchestrationError("runner binding requires live-data-only session")
+    if (
+        not isinstance(runtime_manifest, Mapping)
+        or set(runtime_manifest)
+        != {"schema_version", "uesp_revision", "lockfile_sha256", "python_major_minor"}
+        or runtime_manifest.get("schema_version")
+        != "qsl.tqqq.offline-replay-runtime.v1"
+        or runtime_manifest.get("uesp_revision") != runner_revision
+        or not isinstance(runtime_manifest.get("lockfile_sha256"), str)
+        or _DIGEST.fullmatch(runtime_manifest["lockfile_sha256"]) is None
+        or not isinstance(runtime_manifest.get("python_major_minor"), str)
+        or _PYTHON_MAJOR_MINOR.fullmatch(runtime_manifest["python_major_minor"]) is None
+    ):
+        raise TqqqOrchestrationError("invalid runner binding runtime identity")
+    try:
+        if (
+            authority_receipt.is_symlink()
+            or not authority_receipt.is_file()
+            or stat.S_IMODE(authority_receipt.stat().st_mode) != 0o600
+            or hashlib.sha256(authority_receipt.read_bytes()).hexdigest()
+            != authority.authority_receipt_sha256
+            or not isinstance(json.loads(authority_receipt.read_bytes()), dict)
+        ):
+            raise TqqqOrchestrationError("invalid runner binding authority identity")
+    except TqqqOrchestrationError:
+        raise
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise TqqqOrchestrationError("invalid runner binding authority identity") from exc
+    return {
+        "schema_version": "qsl.tqqq.execution-binding-record.runner-consumable.v3",
+        "binding": {
+            "immutable_snapshot_identity": {"snapshot_digest": snapshot_digest},
+            "source_mandate_identity": {
+                "mandate_receipt_digest": mandate_receipt_digest
+            },
+            "authority_identity": {
+                "authority_receipt": str(authority_receipt),
+                "authority_receipt_sha256": authority.authority_receipt_sha256,
+                "entitlement_receipt_sha256": authority.entitlement_receipt_sha256,
+                "license_receipt_sha256": authority.license_receipt_sha256,
+                "retention_expires_at": authority.retention_expires_at,
+                "risk_standard_id": authority.risk_standard_id,
+                "risk_standard_sha256": authority.risk_standard_sha256,
+                "platform_execution_revision": authority.platform_execution_revision,
+            },
+        },
+        "execution": {
+            "snapshot_execution_identity": {
+                "revision": runner_revision,
+                "tree_sha": runner_tree_sha,
+            },
+            "runner_runtime_identity": {
+                "revision": runner_revision,
+                "tree_sha": runner_tree_sha,
+            },
+            "runtime_manifest": dict(runtime_manifest),
+            "session_identity": {"session_class": session_class},
+        },
+        "verification": {
+            "authority_transaction_consumed": True,
+            "evidence_artifact_count": 0,
+            "evidence_runner_invocation_count": 1,
+            "evidence_runner_completion_count": 0,
+            "provider_reacquisition": 0,
+            "second_evidence_run": 0,
+            "safety": {
+                "no_order": True,
+                "size_zero_required": True,
+                "order_calls": 0,
+                "account_positions_funds_orders_executions_capital_calls": 0,
+                "raw_bars_dates_prices_volumes_provider_messages_logged": 0,
+            },
+        },
+    }
 
 
 def _publish_input(
@@ -1277,6 +1367,8 @@ def orchestrate_tqqq_promotion(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str = "paper",
+    authority_receipt: Path | None = None,
+    runtime_manifest: Mapping[str, Any] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Publish exact input, consume one mandate, then invoke existing evidence once."""
@@ -1286,6 +1378,8 @@ def orchestrate_tqqq_promotion(
         raise TqqqOrchestrationError("invalid provider session identity")
     runner_revision = _require_revision(runner_revision, "runner revision")
     runner_tree_sha = _require_revision(runner_tree_sha, "runner tree")
+    if (authority_receipt is None) != (runtime_manifest is None):
+        raise TqqqOrchestrationError("incomplete runner binding identity")
     if (
         _installed_vcs_revision("quant-platform-kit") != QPK_REVISION
         or _installed_vcs_revision("us-equity-strategies") != UES_REVISION
@@ -1361,6 +1455,18 @@ def orchestrate_tqqq_promotion(
             input_digest=manifest_sha256,
             authority_id=authority.authority_receipt_sha256,
         )
+        runner_binding = None
+        if authority_receipt is not None and runtime_manifest is not None:
+            runner_binding = _runner_consumable_binding(
+                snapshot_digest=manifest_sha256,
+                mandate_receipt_digest=consumption.receipt_digest,
+                authority=authority,
+                authority_receipt=authority_receipt,
+                runner_revision=runner_revision,
+                runner_tree_sha=runner_tree_sha,
+                runtime_manifest=runtime_manifest,
+                session_class=session_class,
+            )
         evidence_root = run_root / "evidence"
         failure_stage = "promotion_evidence_runner"
         failure_class = "promotion_runner_failed"
@@ -1450,6 +1556,10 @@ def orchestrate_tqqq_promotion(
                 failure_stage=failure_stage,
                 failure_class=failure_class,
             ) from exc
+        if runner_binding is not None:
+            _write_private(
+                run_root / "execution-binding.v3.json", _canonical(runner_binding)
+            )
         _seal_private_tree(run_root)
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
