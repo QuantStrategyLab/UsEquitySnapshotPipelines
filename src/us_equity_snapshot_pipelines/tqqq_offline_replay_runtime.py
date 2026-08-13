@@ -35,6 +35,10 @@ _REQUIRED_REPOSITORIES = {
 class TqqqOfflineReplayRuntimeError(RuntimeError):
     """The replay runtime cannot be reproduced from the committed inputs."""
 
+    def __init__(self, message: str, *, diagnostic: dict[str, str | None] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
 
 @dataclass(frozen=True)
 class TqqqOfflineReplayRuntimeManifest:
@@ -143,6 +147,33 @@ def _python_major_minor(value: str | None) -> str:
     return result
 
 
+def _offline_sync_diagnostic(
+    stderr: str | bytes | None, manifest: TqqqOfflineReplayRuntimeManifest
+) -> dict[str, str | None]:
+    """Return a fixed, non-sensitive cache-miss category without retaining uv output."""
+    message = stderr.lower() if isinstance(stderr, str) else ""
+    source_category = "unclassified"
+    artifact_kind: str | None = None
+    if "git+" in message or ("github.com/" in message and ".git" in message):
+        source_category = "locked_vcs_source"
+        artifact_kind = "source"
+    elif "build requirement" in message or "build backend" in message:
+        source_category = "build_requirement"
+        artifact_kind = "build_requirement"
+    elif ".whl" in message or "wheel" in message:
+        source_category = "third_party_artifact"
+        artifact_kind = "wheel"
+    elif ".tar.gz" in message or "sdist" in message:
+        source_category = "third_party_artifact"
+        artifact_kind = "sdist"
+    return {
+        "failure_category": "offline_cache_miss",
+        "source_category": source_category,
+        "target_python": manifest.python_major_minor,
+        "artifact_kind": artifact_kind,
+    }
+
+
 def derive_tqqq_offline_replay_runtime_manifest(
     project_root: Path, *, python_major_minor: str | None = None
 ) -> TqqqOfflineReplayRuntimeManifest:
@@ -235,7 +266,17 @@ def build_tqqq_offline_replay_runtime(
         if not allow_network:
             command.append("--offline")
         command.append("--no-editable")
-        run(command, check=True, cwd=project_root, env=environment)
+        offline_diagnostic: dict[str, str | None] | None = None
+        try:
+            run(command, check=True, capture_output=True, text=True, cwd=project_root, env=environment)
+        except subprocess.CalledProcessError as exc:
+            if allow_network:
+                raise
+            offline_diagnostic = _offline_sync_diagnostic(exc.stderr, manifest)
+        if offline_diagnostic is not None:
+            raise TqqqOfflineReplayRuntimeError(
+                "offline replay runtime build failed", diagnostic=offline_diagnostic
+            )
         runtime_python = target_directory / ".venv" / "bin" / "python"
         _verify_target_python_identity(
             runtime_python,
@@ -256,7 +297,10 @@ def build_tqqq_offline_replay_runtime(
             cwd=project_root,
             env=environment,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(target_directory, ignore_errors=True)
+        raise TqqqOfflineReplayRuntimeError("offline replay runtime build failed") from exc
+    except OSError as exc:
         shutil.rmtree(target_directory, ignore_errors=True)
         raise TqqqOfflineReplayRuntimeError("offline replay runtime build failed") from exc
     except Exception:

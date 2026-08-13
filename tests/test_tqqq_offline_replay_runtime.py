@@ -268,3 +268,85 @@ def test_offline_builder_rejects_missing_target_interpreter_and_cleans_up(
 
     assert not target.exists()
     assert all("provider" not in " ".join(command) for command in calls)
+
+
+def test_offline_builder_exposes_only_safe_locked_vcs_cache_miss_diagnostic(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    _write_project(project)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    raw_stderr = "failed to fetch git+locked-vcs-source"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["uv", "sync"]:
+            assert kwargs["capture_output"] is True
+            assert kwargs["text"] is True
+            raise subprocess.CalledProcessError(1, command, output="unsafe stdout", stderr=raw_stderr)
+        raise AssertionError("the failed sync must stop the builder")
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed") as error:
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert error.value.diagnostic == {
+        "failure_category": "offline_cache_miss",
+        "source_category": "locked_vcs_source",
+        "target_python": "3.12",
+        "artifact_kind": "source",
+    }
+    assert raw_stderr not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert not target.exists()
+
+
+def test_offline_builder_keeps_non_vcs_cache_miss_safe_when_local_vcs_source_exists(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    local_vcs_source = tmp_path / "QuantPlatformKit"
+    _write_project(project)
+    local_vcs_source.mkdir()
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    raw_stderr = "offline download unavailable: private-package-1.0.0-py3-none-any.whl"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["uv", "sync"]:
+            raise subprocess.CalledProcessError(1, command, output="unsafe stdout", stderr=raw_stderr)
+        raise AssertionError("the failed sync must stop the builder")
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed") as error:
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert local_vcs_source.is_dir()
+    assert error.value.diagnostic == {
+        "failure_category": "offline_cache_miss",
+        "source_category": "third_party_artifact",
+        "target_python": "3.12",
+        "artifact_kind": "wheel",
+    }
+    assert raw_stderr not in str(error.value)
+    assert local_vcs_source.name not in str(error.value)
+    assert not target.exists()
