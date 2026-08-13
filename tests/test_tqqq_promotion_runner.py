@@ -371,6 +371,8 @@ def test_frozen_trial_ledger_executes_and_reports_every_systematic_window() -> N
         for horizon in result.systematic_reporting.plan["rolling_windows"].values()
     )
     diagnostics = result.systematic_reporting.overfitting_diagnostics
+    assert diagnostics["pbo"]["algorithm"].startswith("for every equal")
+    assert diagnostics["deflated_sharpe"]["algorithm"].startswith("report the probability")
     assert diagnostics["pbo"]["status"] == "NOT_APPLICABLE"
     assert diagnostics["pbo"]["value"] is None
     assert diagnostics["deflated_sharpe"]["status"] == "NOT_APPLICABLE"

@@ -570,6 +570,11 @@ def _build_tqqq_overfitting_diagnostics(
         "trial_ledger_sha256": frozen_trial_ledger["sha256"],
         "pbo": {
             "method": "CSCV_PBO",
+            "algorithm": (
+                "for every equal in-sample/out-of-sample partition of chronological groups, "
+                "select the highest in-sample Sharpe trial and report the fraction whose "
+                "out-of-sample rank is below the cross-sectional median"
+            ),
             "input": "aligned completed candidate-trial return panels split into at least four chronological groups",
             "preconditions": {
                 "minimum_frozen_candidate_trials": 2,
@@ -582,6 +587,11 @@ def _build_tqqq_overfitting_diagnostics(
         },
         "deflated_sharpe": {
             "method": "DEFLATED_SHARPE_RATIO",
+            "algorithm": (
+                "report the probability that the selected observed Sharpe exceeds the expected "
+                "maximum Sharpe from the frozen trial distribution after finite-sample, skewness, "
+                "and kurtosis adjustment"
+            ),
             "input": "observed Sharpe, aligned return moments, and frozen candidate-trial Sharpe distribution",
             "preconditions": {
                 "minimum_frozen_candidate_trials": 2,
