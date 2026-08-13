@@ -43,6 +43,9 @@ _STAGES = {
     "promotion_replay_completed",
     "promotion_replay_exception",
 }
+_RUNNER_CONSUMABLE_BINDING_SCHEMA = (
+    "qsl.tqqq.execution-binding-record.runner-consumable.v1"
+)
 
 
 class _SanitizedParser(argparse.ArgumentParser):
@@ -107,25 +110,84 @@ def _load_execution_binding(
     platform_execution_revision: str,
 ) -> tuple[Path, TqqqOrchestrationAuthority, str, str, str, str, str]:
     terminal = _private_json(execution_terminal, execution_terminal_sha256)
-    immutable = terminal.get("immutable_result")
-    authority_metadata = terminal.get("authority_metadata")
-    repository = terminal.get("repository")
+    binding = terminal.get("binding")
     execution = terminal.get("execution")
-    safety = terminal.get("safety")
-    if not all(
-        isinstance(value, dict)
-        for value in (immutable, authority_metadata, repository, execution, safety)
+    verification = terminal.get("verification")
+    if (
+        terminal.get("schema_version") != _RUNNER_CONSUMABLE_BINDING_SCHEMA
+        or set(terminal) != {"schema_version", "binding", "execution", "verification"}
+        or not all(isinstance(value, dict) for value in (binding, execution, verification))
+        or set(binding)
+        != {
+            "immutable_snapshot_identity",
+            "source_mandate_identity",
+            "authority_identity",
+        }
+        or set(execution) != {"frozen_runtime_identity", "session_identity"}
+        or set(verification)
+        != {
+            "authority_transaction_consumed",
+            "evidence_artifact_count",
+            "evidence_runner_invocation_count",
+            "evidence_runner_completion_count",
+            "provider_reacquisition",
+            "second_evidence_run",
+            "safety",
+        }
     ):
         raise ValueError("invalid execution binding")
-    snapshot_digest = immutable.get("snapshot_digest")
-    mandate_receipt_digest = immutable.get("mandate_receipt_digest")
-    execution_revision = repository.get("runtime_head")
-    execution_tree_sha = repository.get("runtime_tree")
-    session_class = execution.get("session_class")
-    retention_expires_at = authority_metadata.get("retention_expires_at")
-    authority_receipt_sha256 = authority_metadata.get("human_authority_receipt_sha256")
-    entitlement_receipt_sha256 = authority_metadata.get("entitlement_receipt_sha256")
-    license_receipt_sha256 = authority_metadata.get("license_receipt_sha256")
+    immutable_snapshot_identity = binding["immutable_snapshot_identity"]
+    source_mandate_identity = binding["source_mandate_identity"]
+    authority_identity = binding["authority_identity"]
+    frozen_runtime_identity = execution["frozen_runtime_identity"]
+    session_identity = execution["session_identity"]
+    safety = verification["safety"]
+    if (
+        not all(
+            isinstance(value, dict)
+            for value in (
+                immutable_snapshot_identity,
+                source_mandate_identity,
+                authority_identity,
+                frozen_runtime_identity,
+                session_identity,
+                safety,
+            )
+        )
+        or set(immutable_snapshot_identity) != {"snapshot_digest"}
+        or set(source_mandate_identity) != {"mandate_receipt_digest"}
+        or set(authority_identity)
+        != {
+            "authority_receipt",
+            "authority_receipt_sha256",
+            "entitlement_receipt_sha256",
+            "license_receipt_sha256",
+            "retention_expires_at",
+            "risk_standard_id",
+            "risk_standard_sha256",
+            "platform_execution_revision",
+        }
+        or set(frozen_runtime_identity) != {"revision", "tree_sha"}
+        or set(session_identity) != {"session_class"}
+        or set(safety)
+        != {
+            "no_order",
+            "size_zero_required",
+            "order_calls",
+            "account_positions_funds_orders_executions_capital_calls",
+            "raw_bars_dates_prices_volumes_provider_messages_logged",
+        }
+    ):
+        raise ValueError("invalid execution binding")
+    snapshot_digest = immutable_snapshot_identity["snapshot_digest"]
+    mandate_receipt_digest = source_mandate_identity["mandate_receipt_digest"]
+    execution_revision = frozen_runtime_identity["revision"]
+    execution_tree_sha = frozen_runtime_identity["tree_sha"]
+    session_class = session_identity["session_class"]
+    retention_expires_at = authority_identity["retention_expires_at"]
+    authority_receipt_sha256 = authority_identity["authority_receipt_sha256"]
+    entitlement_receipt_sha256 = authority_identity["entitlement_receipt_sha256"]
+    license_receipt_sha256 = authority_identity["license_receipt_sha256"]
     if (
         not isinstance(snapshot_digest, str)
         or not _DIGEST.fullmatch(snapshot_digest)
@@ -143,12 +205,28 @@ def _load_execution_binding(
         or not _DIGEST.fullmatch(entitlement_receipt_sha256)
         or not isinstance(license_receipt_sha256, str)
         or not _DIGEST.fullmatch(license_receipt_sha256)
-        or authority_metadata.get("transaction_consumed") is not True
-        or immutable.get("evidence_artifact_count") != 0
-        or immutable.get("evidence_runner_invocation_count") != 1
-        or immutable.get("evidence_runner_completion_count") != 0
-        or immutable.get("provider_reacquisition") != 0
-        or immutable.get("second_evidence_run") != 0
+        or authority_identity["risk_standard_id"] != risk_standard_id
+        or authority_identity["risk_standard_sha256"] != risk_standard_sha256
+        or authority_identity["platform_execution_revision"] != platform_execution_revision
+        or verification["authority_transaction_consumed"] is not True
+        or any(
+            type(value) is not int
+            for value in (
+                verification["evidence_artifact_count"],
+                verification["evidence_runner_invocation_count"],
+                verification["evidence_runner_completion_count"],
+                verification["provider_reacquisition"],
+                verification["second_evidence_run"],
+                safety["order_calls"],
+                safety["account_positions_funds_orders_executions_capital_calls"],
+                safety["raw_bars_dates_prices_volumes_provider_messages_logged"],
+            )
+        )
+        or verification["evidence_artifact_count"] != 0
+        or verification["evidence_runner_invocation_count"] != 1
+        or verification["evidence_runner_completion_count"] != 0
+        or verification["provider_reacquisition"] != 0
+        or verification["second_evidence_run"] != 0
         or safety.get("no_order") is not True
         or safety.get("size_zero_required") is not True
         or safety.get("order_calls") != 0
@@ -156,7 +234,7 @@ def _load_execution_binding(
         or safety.get("raw_bars_dates_prices_volumes_provider_messages_logged") != 0
     ):
         raise ValueError("invalid execution binding")
-    authority_receipt_path = authority_metadata.get("human_authority_receipt")
+    authority_receipt_path = authority_identity["authority_receipt"]
     if not isinstance(authority_receipt_path, str):
         raise TypeError("invalid authority receipt binding")
     _private_json(Path(authority_receipt_path), authority_receipt_sha256)
