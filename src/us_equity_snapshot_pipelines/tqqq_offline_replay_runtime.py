@@ -35,6 +35,10 @@ _REQUIRED_REPOSITORIES = {
 class TqqqOfflineReplayRuntimeError(RuntimeError):
     """The replay runtime cannot be reproduced from the committed inputs."""
 
+    def __init__(self, message: str, *, diagnostic: dict[str, str | None] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
 
 @dataclass(frozen=True)
 class TqqqOfflineReplayRuntimeManifest:
@@ -143,6 +147,47 @@ def _python_major_minor(value: str | None) -> str:
     return result
 
 
+def _offline_sync_diagnostic(
+    stderr: str | bytes | None, manifest: TqqqOfflineReplayRuntimeManifest
+) -> dict[str, str | None]:
+    """Return a fixed, non-sensitive cache-miss category without retaining uv output."""
+    message = stderr.lower() if isinstance(stderr, str) else ""
+    failure_category = "offline_sync_failed"
+    source_category = "unclassified"
+    artifact_kind: str | None = None
+    cache_miss_markers = (
+        "not found in the cache",
+        "not available in the cache",
+        "no cache entry",
+        "requested data wasn't found in the cache",
+        "remote git fetches are not allowed because network connectivity is disabled",
+    )
+    has_cache_miss = any(marker in message for marker in cache_miss_markers)
+    if has_cache_miss and "failed to resolve requirements from" in message and "build-system.requires" in message:
+        failure_category = "offline_cache_miss"
+        source_category = "build_requirement"
+        artifact_kind = "build_requirement"
+    elif has_cache_miss:
+        failure_category = "offline_cache_miss"
+    if failure_category == "offline_cache_miss" and artifact_kind is None and (
+        "git+" in message or ("github.com/" in message and ".git" in message)
+    ):
+        source_category = "locked_vcs_source"
+        artifact_kind = "source"
+    elif failure_category == "offline_cache_miss" and artifact_kind is None and (".whl" in message or "wheel" in message):
+        source_category = "third_party_artifact"
+        artifact_kind = "wheel"
+    elif failure_category == "offline_cache_miss" and artifact_kind is None and (".tar.gz" in message or "sdist" in message):
+        source_category = "third_party_artifact"
+        artifact_kind = "sdist"
+    return {
+        "failure_category": failure_category,
+        "source_category": source_category,
+        "target_python": manifest.python_major_minor,
+        "artifact_kind": artifact_kind,
+    }
+
+
 def derive_tqqq_offline_replay_runtime_manifest(
     project_root: Path, *, python_major_minor: str | None = None
 ) -> TqqqOfflineReplayRuntimeManifest:
@@ -235,7 +280,20 @@ def build_tqqq_offline_replay_runtime(
         if not allow_network:
             command.append("--offline")
         command.append("--no-editable")
-        run(command, check=True, cwd=project_root, env=environment)
+        offline_diagnostic: dict[str, str | None] | None = None
+        sync_options: dict[str, object] = {"check": True, "cwd": project_root, "env": environment}
+        if not allow_network:
+            sync_options.update(capture_output=True, text=True)
+        try:
+            run(command, **sync_options)
+        except subprocess.CalledProcessError as exc:
+            if allow_network:
+                raise
+            offline_diagnostic = _offline_sync_diagnostic(exc.stderr, manifest)
+        if offline_diagnostic is not None:
+            raise TqqqOfflineReplayRuntimeError(
+                "offline replay runtime build failed", diagnostic=offline_diagnostic
+            )
         runtime_python = target_directory / ".venv" / "bin" / "python"
         _verify_target_python_identity(
             runtime_python,
@@ -256,7 +314,10 @@ def build_tqqq_offline_replay_runtime(
             cwd=project_root,
             env=environment,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(target_directory, ignore_errors=True)
+        raise TqqqOfflineReplayRuntimeError("offline replay runtime build failed") from exc
+    except OSError as exc:
         shutil.rmtree(target_directory, ignore_errors=True)
         raise TqqqOfflineReplayRuntimeError("offline replay runtime build failed") from exc
     except Exception:
