@@ -16,6 +16,40 @@ import pytest
 from us_equity_snapshot_pipelines import tqqq_r1_snapshot as snapshot
 
 
+def test_legacy_snapshot_is_not_comparable_without_runtime_or_authority(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    snapshot_dir = root / "snapshot"
+    snapshot_dir.mkdir(parents=True)
+    bars = b"{}"
+    manifest = {
+        "producer": {"repository": "QuantStrategyLab/UsEquitySnapshotPipelines", "tool": "tqqq_ibkr_paper_single_acquisition", "tool_version": "v1"},
+        "members": [{"path": "bars.json", "media_type": "application/json", "size_bytes": len(bars), "sha256": hashlib.sha256(bars).hexdigest()}],
+    }
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    snapshot_dir.joinpath("input-manifest.json").write_bytes(raw)
+    snapshot_dir.joinpath("bars.json").write_bytes(bars)
+    result = snapshot.assess_tqqq_r1_legacy_source(root, expected_manifest_sha256=hashlib.sha256(raw).hexdigest())
+    assert result.comparison_status == "NOT_COMPARABLE"
+    assert result.manifest_sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_legacy_snapshot_rejects_tampered_preserved_member(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    snapshot_dir = root / "snapshot"
+    snapshot_dir.mkdir(parents=True)
+    bars = b"{}"
+    manifest = {
+        "producer": {"repository": "QuantStrategyLab/UsEquitySnapshotPipelines", "tool": "tqqq_ibkr_paper_single_acquisition", "tool_version": "v1"},
+        "members": [{"path": "bars.json", "media_type": "application/json", "size_bytes": len(bars), "sha256": hashlib.sha256(bars).hexdigest()}],
+    }
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    snapshot_dir.joinpath("input-manifest.json").write_bytes(raw)
+    snapshot_dir.joinpath("bars.json").write_bytes(b'{"tampered":true}')
+
+    with pytest.raises(snapshot.SnapshotValidationError, match="legacy snapshot integrity mismatch"):
+        snapshot.assess_tqqq_r1_legacy_source(root, expected_manifest_sha256=hashlib.sha256(raw).hexdigest())
+
+
 def _fixture_prices() -> pd.DataFrame:
     return pd.DataFrame(
         [

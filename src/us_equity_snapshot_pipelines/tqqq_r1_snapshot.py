@@ -63,6 +63,14 @@ class SnapshotResult:
     manifest_sha256: str
 
 
+@dataclass(frozen=True)
+class LegacyTqqqSnapshotAssessment:
+    """Preserved legacy identity; never grants replay or promotion authority."""
+
+    comparison_status: str
+    manifest_sha256: str | None
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -777,6 +785,74 @@ def verify_tqqq_r1_research_input_proof(
             raise
         raise SnapshotValidationError("invalid research input proof") from None
     return SnapshotResult(output_dir=output, manifest_sha256=expected_manifest_sha256)
+
+
+def assess_tqqq_r1_legacy_source(
+    output_dir: str | Path,
+    *,
+    expected_manifest_sha256: str,
+) -> LegacyTqqqSnapshotAssessment:
+    """Authenticate preserved legacy bytes without treating them as runnable input."""
+    if not (
+        isinstance(expected_manifest_sha256, str)
+        and len(expected_manifest_sha256) == 64
+        and all(character in "0123456789abcdef" for character in expected_manifest_sha256)
+    ):
+        _invalid("invalid trusted legacy manifest hash")
+    try:
+        _require_descriptor_capabilities()
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+        root_fd = os.open(Path(output_dir), flags)
+        try:
+            snapshot_fd = os.open("snapshot", flags, dir_fd=root_fd)
+            try:
+                names: set[str] = set()
+                with os.scandir(snapshot_fd) as entries:
+                    for entry_count, entry in enumerate(entries, start=1):
+                        if entry_count > 2:
+                            _invalid("legacy snapshot integrity mismatch")
+                        names.add(entry.name)
+                if names != {"input-manifest.json", "bars.json"}:
+                    _invalid("legacy snapshot integrity mismatch")
+                manifest_raw = _read_member_from_root(snapshot_fd, "input-manifest.json", _PROOF_MANIFEST_BYTE_LIMIT)
+                bars_raw = _read_member_from_root(
+                    snapshot_fd, "bars.json", _MAX_TOTAL_MEMBER_BYTES - len(manifest_raw)
+                )
+            finally:
+                os.close(snapshot_fd)
+        finally:
+            os.close(root_fd)
+        manifest = _parse_json_object(manifest_raw, "legacy input manifest")
+        member = manifest.get("members")
+        valid_snapshot = (
+            hashlib.sha256(manifest_raw).hexdigest() == expected_manifest_sha256
+            and member
+            == [
+                {
+                    "path": "bars.json",
+                    "media_type": "application/json",
+                    "size_bytes": len(bars_raw),
+                    "sha256": hashlib.sha256(bars_raw).hexdigest(),
+                }
+            ]
+        )
+    except (OSError, SnapshotValidationError, TypeError, ValueError):
+        valid_snapshot = False
+        manifest = {}
+    if not valid_snapshot:
+        _invalid("legacy snapshot integrity mismatch")
+    producer = manifest.get("producer")
+    if not isinstance(producer, dict) or (
+        producer.get("repository"),
+        producer.get("tool"),
+        producer.get("tool_version"),
+    ) != (
+        "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "tqqq_ibkr_paper_single_acquisition",
+        "v1",
+    ):
+        return LegacyTqqqSnapshotAssessment("NOT_COMPARABLE", expected_manifest_sha256)
+    return LegacyTqqqSnapshotAssessment("NOT_COMPARABLE", expected_manifest_sha256)
 
 
 def materialize_tqqq_r1_research_input_proof(
