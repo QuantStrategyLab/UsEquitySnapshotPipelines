@@ -152,22 +152,28 @@ def _offline_sync_diagnostic(
 ) -> dict[str, str | None]:
     """Return a fixed, non-sensitive cache-miss category without retaining uv output."""
     message = stderr.lower() if isinstance(stderr, str) else ""
+    failure_category = "offline_sync_failed"
     source_category = "unclassified"
     artifact_kind: str | None = None
-    if "git+" in message or ("github.com/" in message and ".git" in message):
-        source_category = "locked_vcs_source"
-        artifact_kind = "source"
-    elif "build requirement" in message or "build backend" in message:
+    if "failed to resolve requirements from build-system.requires" in message:
+        failure_category = "offline_cache_miss"
         source_category = "build_requirement"
         artifact_kind = "build_requirement"
-    elif ".whl" in message or "wheel" in message:
+    elif any(marker in message for marker in ("not found in the cache", "not available in the cache", "no cache entry")):
+        failure_category = "offline_cache_miss"
+    if failure_category == "offline_cache_miss" and artifact_kind is None and (
+        "git+" in message or ("github.com/" in message and ".git" in message)
+    ):
+        source_category = "locked_vcs_source"
+        artifact_kind = "source"
+    elif failure_category == "offline_cache_miss" and artifact_kind is None and (".whl" in message or "wheel" in message):
         source_category = "third_party_artifact"
         artifact_kind = "wheel"
-    elif ".tar.gz" in message or "sdist" in message:
+    elif failure_category == "offline_cache_miss" and artifact_kind is None and (".tar.gz" in message or "sdist" in message):
         source_category = "third_party_artifact"
         artifact_kind = "sdist"
     return {
-        "failure_category": "offline_cache_miss",
+        "failure_category": failure_category,
         "source_category": source_category,
         "target_python": manifest.python_major_minor,
         "artifact_kind": artifact_kind,
@@ -267,8 +273,11 @@ def build_tqqq_offline_replay_runtime(
             command.append("--offline")
         command.append("--no-editable")
         offline_diagnostic: dict[str, str | None] | None = None
+        sync_options: dict[str, object] = {"check": True, "cwd": project_root, "env": environment}
+        if not allow_network:
+            sync_options.update(capture_output=True, text=True)
         try:
-            run(command, check=True, capture_output=True, text=True, cwd=project_root, env=environment)
+            run(command, **sync_options)
         except subprocess.CalledProcessError as exc:
             if allow_network:
                 raise
