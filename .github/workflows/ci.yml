@@ -27,22 +27,30 @@ jobs:
         run: |
           python -m pip install 'uv==0.11.19'
           target="$RUNNER_TEMP/tqqq-offline-runtime-smoke"
-          env -u UV_PYTHON -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT="$target/.venv" \
-            uv sync --project "$GITHUB_WORKSPACE" --locked --python "$TARGET_PYTHON" \
-              --no-editable --reinstall-package us-equity-snapshot-pipelines
-          "$target/.venv/bin/python" -I -c '
-          from importlib.metadata import distribution
+          env -u UV_PYTHON -u VIRTUAL_ENV uv venv --python "$TARGET_PYTHON" "$target/.venv"
+          SOURCE_ROOT="$GITHUB_WORKSPACE" "$target/.venv/bin/python" -I -c '
+          import os
+          import sys
           from pathlib import Path
+
+          sys.path.insert(0, str(Path(os.environ["SOURCE_ROOT"]) / "src"))
           from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
-          from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
 
           manifest = runtime.derive_tqqq_offline_replay_runtime_manifest(
-              Path.cwd(), python_major_minor="3.11"
+              Path(os.environ["SOURCE_ROOT"]), python_major_minor="3.11"
           ).to_dict()
           assert set(manifest) == {
               "schema_version", "uesp_revision", "lockfile_sha256", "python_major_minor"
           }
           assert manifest["python_major_minor"] == "3.11"
+          '
+          env -u UV_PYTHON -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT="$target/.venv" \
+            uv sync --project "$GITHUB_WORKSPACE" --locked --python "$TARGET_PYTHON" \
+              --no-editable --reinstall-package us-equity-snapshot-pipelines
+          "$target/.venv/bin/python" -I -c '
+          from importlib.metadata import distribution
+          from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
+
           assert distribution("us-equity-snapshot-pipelines").version
           assert tqqq_promotion_runner._PROFILE == "tqqq_core_parity_v1"
           '
