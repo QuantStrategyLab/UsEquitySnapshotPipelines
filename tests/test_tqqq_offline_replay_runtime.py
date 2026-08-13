@@ -126,6 +126,36 @@ def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, t
         runtime.derive_tqqq_offline_replay_runtime_manifest(project)
 
 
+def test_offline_builder_rejects_target_inside_source_checkout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = project / "runtime"
+    _write_project(project)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="outside source checkout"):
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert not target.exists()
+    assert calls == []
+
+
 def test_offline_builder_uses_manifest_python_not_ci_python_and_preflights_runner_import(
     monkeypatch, tmp_path: Path
 ) -> None:
