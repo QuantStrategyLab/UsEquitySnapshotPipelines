@@ -69,6 +69,7 @@ python -m pytest -q
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
 - [`docs/tecl-xlk-optimization-research.md`](docs/tecl-xlk-optimization-research.md) ([简体中文](docs/tecl-xlk-optimization-research.zh-CN.md))
+- [`docs/tqqq-validation-and-shadow-policy.md`](docs/tqqq-validation-and-shadow-policy.md)
 
 ## Safety and contribution notes
 
