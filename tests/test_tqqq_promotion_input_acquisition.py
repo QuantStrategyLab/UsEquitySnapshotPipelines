@@ -156,6 +156,158 @@ def _fake_producer(
     }
 
 
+def _write_private_json(path: Path, payload: dict[str, object]) -> str:
+    path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    path.chmod(0o600)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _runner_consumable_execution_binding(
+    *,
+    authority_receipt: Path,
+    authority_receipt_sha256: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": "qsl.tqqq.execution-binding-record.runner-consumable.v1",
+        "binding": {
+            "immutable_snapshot_identity": {"snapshot_digest": "3" * 64},
+            "source_mandate_identity": {"mandate_receipt_digest": "2" * 64},
+            "authority_identity": {
+                "authority_receipt": str(authority_receipt),
+                "authority_receipt_sha256": authority_receipt_sha256,
+                "entitlement_receipt_sha256": "d" * 64,
+                "license_receipt_sha256": "e" * 64,
+                "retention_expires_at": "2026-12-31T00:00:00Z",
+                "risk_standard_id": _authority().risk_standard_id,
+                "risk_standard_sha256": _authority().risk_standard_sha256,
+                "platform_execution_revision": _authority().platform_execution_revision,
+            },
+        },
+        "execution": {
+            "frozen_runtime_identity": {
+                "revision": RUNNER_REVISION,
+                "tree_sha": RUNNER_TREE_SHA,
+            },
+            "session_identity": {"session_class": "live-data-only"},
+        },
+        "verification": {
+            "authority_transaction_consumed": True,
+            "evidence_artifact_count": 0,
+            "evidence_runner_invocation_count": 1,
+            "evidence_runner_completion_count": 0,
+            "provider_reacquisition": 0,
+            "second_evidence_run": 0,
+            "safety": {
+                "no_order": True,
+                "size_zero_required": True,
+                "order_calls": 0,
+                "account_positions_funds_orders_executions_capital_calls": 0,
+                "raw_bars_dates_prices_volumes_provider_messages_logged": 0,
+            },
+        },
+    }
+
+
+def test_runner_consumable_execution_binding_loads_only_explicit_matching_identities(
+    tmp_path: Path,
+) -> None:
+    authority_receipt = tmp_path / "authority.json"
+    authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
+    binding = tmp_path / "execution-binding.json"
+    binding_sha256 = _write_private_json(
+        binding,
+        _runner_consumable_execution_binding(
+            authority_receipt=authority_receipt,
+            authority_receipt_sha256=authority_receipt_sha256,
+        ),
+    )
+
+    assert diagnostic_cli._load_execution_binding(
+        binding,
+        binding_sha256,
+        risk_standard_id=_authority().risk_standard_id,
+        risk_standard_sha256=_authority().risk_standard_sha256,
+        platform_execution_revision=_authority().platform_execution_revision,
+    ) == (
+        diagnostic_cli._LOCAL_RESEARCH_ROOT / ("3" * 64),
+        replace(_authority(), authority_receipt_sha256=authority_receipt_sha256),
+        "3" * 64,
+        "2" * 64,
+        RUNNER_REVISION,
+        RUNNER_TREE_SHA,
+        "live-data-only",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        ("schema_version", "qsl.tqqq.execution-binding-record.v1"),
+        ("binding.immutable_snapshot_identity.snapshot_digest", "not-a-digest"),
+        ("binding.authority_identity.risk_standard_sha256", "0" * 64),
+        ("execution.frozen_runtime_identity.tree_sha", "not-a-revision"),
+        ("execution.session_identity.session_class", "paper"),
+        ("verification.evidence_artifact_count", False),
+        ("verification.safety.order_calls", 0.0),
+        ("verification.safety.no_order", False),
+    ),
+)
+def test_non_runner_consumable_binding_fails_closed_before_runner_or_provider(
+    mutation: tuple[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    authority_receipt = tmp_path / "authority.json"
+    authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
+    record = _runner_consumable_execution_binding(
+        authority_receipt=authority_receipt,
+        authority_receipt_sha256=authority_receipt_sha256,
+    )
+    target = record
+    *parents, leaf = mutation[0].split(".")
+    for key in parents:
+        target = target[key]  # type: ignore[index]
+    target[leaf] = mutation[1]  # type: ignore[index]
+    binding = tmp_path / "execution-binding.json"
+    binding_sha256 = _write_private_json(binding, record)
+    calls: list[str] = []
+    monkeypatch.setattr(diagnostic_cli, "_require_filevault", lambda: calls.append("filevault"))
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "orchestrate_existing_tqqq_snapshot_diagnostic",
+        lambda *_args, **_kwargs: calls.append("runner"),
+    )
+
+    output = tmp_path / "terminal.json"
+    assert diagnostic_cli.main(
+        [
+            "--execution-terminal",
+            str(binding),
+            "--execution-terminal-sha256",
+            binding_sha256,
+            "--risk-standard-id",
+            _authority().risk_standard_id,
+            "--risk-standard-sha256",
+            _authority().risk_standard_sha256,
+            "--platform-execution-revision",
+            _authority().platform_execution_revision,
+            "--output",
+            str(output),
+        ]
+    ) == 1
+    assert calls == ["filevault"]
+    assert json.loads(output.read_bytes()) == {
+        "config_digest": None,
+        "exception_class": "ValueError",
+        "function_identifiers": [],
+        "mandate_receipt_digest": None,
+        "runner_completion_count": 0,
+        "runner_invocation_count": 0,
+        "snapshot_digest": None,
+        "stage": "preflight_validation_failed",
+    }
+
+
 def test_exact_four_results_publish_then_consume_one_mandate_and_run_existing_producer_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
