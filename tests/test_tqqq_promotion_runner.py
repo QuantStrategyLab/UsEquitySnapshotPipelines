@@ -370,6 +370,14 @@ def test_frozen_trial_ledger_executes_and_reports_every_systematic_window() -> N
         "sha256" not in horizon
         for horizon in result.systematic_reporting.plan["rolling_windows"].values()
     )
+    assert {
+        window.regime
+        for scenario in result.systematic_reporting.cost_scenarios
+        for horizon in scenario.horizons
+        for window in horizon.windows
+    } <= {"bear", "bull", "sideways"}
+    assert set(result.systematic_reporting.regime_coverage) == {"bear", "bull", "sideways"}
+    assert sum(result.systematic_reporting.regime_coverage.values()) == 28 + 25 + 19 + 7
     diagnostics = result.systematic_reporting.overfitting_diagnostics
     assert diagnostics["pbo"]["algorithm"].startswith("for every equal")
     assert diagnostics["deflated_sharpe"]["algorithm"].startswith("report the probability")

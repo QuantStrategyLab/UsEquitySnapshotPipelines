@@ -275,6 +275,7 @@ class TqqqCostScenarioResult:
 class TqqqSystematicWindowReport:
     start_date: date
     end_date: date
+    regime: str
     relative_metrics: TqqqQqqRelativeMetrics
     episode_summary: TqqqEpisodeSummary
     decision_count: int
@@ -300,6 +301,7 @@ class TqqqSystematicReporting:
     trial_ledger_sha256: str
     plan: dict[str, object]
     cost_scenarios: tuple[TqqqSystematicCostScenarioReport, ...]
+    regime_coverage: dict[str, int]
     overfitting_diagnostics: dict[str, object]
 
 
@@ -606,6 +608,14 @@ def _build_tqqq_overfitting_diagnostics(
     }
 
 
+def _systematic_regime(qqq_cagr: float) -> str:
+    if qqq_cagr <= -0.05:
+        return "bear"
+    if qqq_cagr >= 0.05:
+        return "bull"
+    return "sideways"
+
+
 def _run_tqqq_systematic_reporting(
     identity: TqqqPromotionIdentity,
     plan: TqqqPromotionPlan,
@@ -616,6 +626,7 @@ def _run_tqqq_systematic_reporting(
 ) -> TqqqSystematicReporting:
     development_plan = build_tqqq_development_robustness_plan(_FROZEN_XNYS_SESSIONS)
     cost_scenarios: list[TqqqSystematicCostScenarioReport] = []
+    regime_coverage = {"bear": 0, "bull": 0, "sideways": 0}
     for total_cost_bps in (5,):
         runner = TqqqPromotionRunner(
             identity,
@@ -645,21 +656,25 @@ def _run_tqqq_systematic_reporting(
             )
             if len(results) != len(windows):
                 raise TqqqPromotionContractError("systematic reporting execution mismatch")
+            report_windows = tuple(
+                TqqqSystematicWindowReport(
+                    start_date=window.start_date,
+                    end_date=window.end_date,
+                    regime=_systematic_regime(window.relative_metrics.qqq_cagr),
+                    relative_metrics=window.relative_metrics,
+                    episode_summary=window.episode_summary,
+                    decision_count=window.decision_count,
+                    risk_assessment_count=window.risk_assessment_count,
+                    session_count=len(window.sessions),
+                )
+                for window in runner.windows[start:]
+            )
+            for window in report_windows:
+                regime_coverage[window.regime] += 1
             horizons.append(
                 TqqqSystematicHorizonReport(
                     horizon_months=horizon_months,
-                    windows=tuple(
-                        TqqqSystematicWindowReport(
-                            start_date=window.start_date,
-                            end_date=window.end_date,
-                            relative_metrics=window.relative_metrics,
-                            episode_summary=window.episode_summary,
-                            decision_count=window.decision_count,
-                            risk_assessment_count=window.risk_assessment_count,
-                            session_count=len(window.sessions),
-                        )
-                        for window in runner.windows[start:]
-                    ),
+                    windows=report_windows,
                 )
             )
         cost_scenarios.append(
@@ -673,6 +688,7 @@ def _run_tqqq_systematic_reporting(
         trial_ledger_sha256=str(frozen_trial_ledger["sha256"]),
         plan=development_plan,
         cost_scenarios=tuple(cost_scenarios),
+        regime_coverage=regime_coverage,
         overfitting_diagnostics=_build_tqqq_overfitting_diagnostics(frozen_trial_ledger),
     )
 

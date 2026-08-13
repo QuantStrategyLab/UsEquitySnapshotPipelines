@@ -378,6 +378,11 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert backtest["systematic_reporting"]["overfitting_diagnostics"]["pbo"]["status"] == (
         "NOT_APPLICABLE"
     )
+    assert set(backtest["systematic_reporting"]["regime_coverage"]) == {
+        "bear",
+        "bull",
+        "sideways",
+    }
     systematic_by_cost = {
         str(scenario["total_cost_bps"]): scenario
         for scenario in backtest["systematic_reporting"]["cost_scenarios"]
