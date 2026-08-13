@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import hashlib
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+def _git_requirement(repository: str, revision: str) -> str:
+    return f"git+https://github.com/QuantStrategyLab/{repository}.git@{revision}"
+
+
+def _write_project(root: Path, *, qpk_revision: str = "a" * 40, ues_revision: str = "b" * 40) -> None:
+    qsp_revision = "c" * 40
+    root.mkdir()
+    root.joinpath("pyproject.toml").write_text(
+        "\n".join(
+            (
+                "[project]",
+                'name = "us-equity-snapshot-pipelines"',
+                'requires-python = ">=3.11"',
+                "dependencies = [",
+                "  \"quant-platform-kit @ "
+                f"{_git_requirement('QuantPlatformKit', qpk_revision)}\",",
+                "  \"quant-strategy-plugins @ "
+                f"{_git_requirement('QuantStrategyPlugins', qsp_revision)}\",",
+                "  \"us-equity-strategies @ "
+                f"{_git_requirement('UsEquityStrategies', ues_revision)}\",",
+                "]",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    root.joinpath("uv.lock").write_text(
+        "\n".join(
+            (
+                'version = 1',
+                "",
+                "[[package]]",
+                'name = "quant-platform-kit"',
+                "source = { git = "
+                f'"https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev={qpk_revision}#{qpk_revision}" }}',
+                "",
+                "[[package]]",
+                'name = "quant-strategy-plugins"',
+                "source = { git = "
+                f'"https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev={qsp_revision}#{qsp_revision}" }}',
+                "",
+                "[[package]]",
+                'name = "us-equity-strategies"',
+                "source = { git = "
+                f'"https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev={ues_revision}#{ues_revision}" }}',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_manifest_derives_identity_from_versioned_source_and_current_lock(monkeypatch, tmp_path: Path) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    _write_project(project)
+    monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
+
+    manifest = runtime.derive_tqqq_offline_replay_runtime_manifest(
+        project, python_major_minor="3.12"
+    )
+
+    assert manifest.to_dict() == {
+        "schema_version": "qsl.tqqq.offline-replay-runtime.v1",
+        "uesp_revision": "d" * 40,
+        "lockfile_sha256": hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest(),
+        "qpk_revision": "a" * 40,
+        "ues_revision": "b" * 40,
+        "python_major_minor": "3.12",
+    }
+
+
+@pytest.mark.parametrize(
+    ("dependency", "message"),
+    (
+        ("quant-platform-kit @ file:///tmp/QuantPlatformKit", "pinned VCS"),
+        ("quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@main", "pinned VCS"),
+    ),
+)
+def test_manifest_rejects_mutable_or_editable_dependency_identity(
+    monkeypatch, tmp_path: Path, dependency: str, message: str
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    _write_project(project)
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            _git_requirement("QuantPlatformKit", "a" * 40), dependency
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match=message):
+        runtime.derive_tqqq_offline_replay_runtime_manifest(project)
+
+
+def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, tmp_path: Path) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    script_only = tmp_path / "script-only"
+    script_only.mkdir()
+    script_only.joinpath("repair.py").write_text("print('legacy')\n", encoding="utf-8")
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="source and lockfile"):
+        runtime.derive_tqqq_offline_replay_runtime_manifest(script_only)
+
+    project = tmp_path / "project"
+    _write_project(project, qpk_revision="a" * 40)
+    lock = project / "uv.lock"
+    lock.write_text(lock.read_text(encoding="utf-8").replace("a" * 40, "e" * 40), encoding="utf-8")
+    monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="lockfile identity mismatch"):
+        runtime.derive_tqqq_offline_replay_runtime_manifest(project)
+
+
+def test_offline_builder_creates_clean_runtime_and_preflights_runner_import(monkeypatch, tmp_path: Path) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    _write_project(project)
+    monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        if command[:2] == ["uv", "sync"]:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            Path(environment["UV_PROJECT_ENVIRONMENT"]).joinpath("bin").mkdir(parents=True)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    manifest = runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert target.joinpath("manifest.json").is_file()
+    assert manifest.uesp_revision == "d" * 40
+    sync_command, sync_kwargs = calls[0]
+    assert sync_command == [
+        "uv",
+        "sync",
+        "--project",
+        str(project),
+        "--locked",
+        "--offline",
+        "--no-editable",
+    ]
+    assert sync_kwargs["cwd"] == project
+    preflight_command, _ = calls[1]
+    assert preflight_command[:3] == [str(target / ".venv" / "bin" / "python"), "-I", "-c"]
+    assert preflight_command[3] == (
+        "from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner "
+        "import run_tqqq_promotion_research"
+    )
+    assert "provider" not in preflight_command[3]
+    assert "run_tqqq_promotion_research(" not in preflight_command[3]
