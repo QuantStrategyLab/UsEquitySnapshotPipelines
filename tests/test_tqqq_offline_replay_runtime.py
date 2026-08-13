@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,13 +126,24 @@ def test_manifest_rejects_script_only_or_lock_mismatched_identity(monkeypatch, t
         runtime.derive_tqqq_offline_replay_runtime_manifest(project)
 
 
-def test_offline_builder_creates_clean_runtime_and_preflights_runner_import(monkeypatch, tmp_path: Path) -> None:
+def test_offline_builder_uses_manifest_python_not_ci_python_and_preflights_runner_import(
+    monkeypatch, tmp_path: Path
+) -> None:
     from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
 
     project = tmp_path / "project"
     target = tmp_path / "runtime"
     _write_project(project)
-    monkeypatch.setattr(runtime, "_clean_git_revision", lambda _: "d" * 40)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    monkeypatch.setattr(runtime.sys, "version_info", SimpleNamespace(major=3, minor=13))
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -140,6 +152,8 @@ def test_offline_builder_creates_clean_runtime_and_preflights_runner_import(monk
             environment = kwargs["env"]
             assert isinstance(environment, dict)
             Path(environment["UV_PROJECT_ENVIRONMENT"]).joinpath("bin").mkdir(parents=True)
+        if command[0] == str(target / ".venv" / "bin" / "python") and command[2] == "-c":
+            return subprocess.CompletedProcess(command, 0, "3.12\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     manifest = runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
@@ -153,11 +167,22 @@ def test_offline_builder_creates_clean_runtime_and_preflights_runner_import(monk
         "--project",
         str(project),
         "--locked",
+        "--python",
+        "3.12",
         "--offline",
         "--no-editable",
     ]
     assert sync_kwargs["cwd"] == project
-    preflight_command, _ = calls[1]
+    identity_command, identity_kwargs = calls[1]
+    assert identity_command == [
+        str(target / ".venv" / "bin" / "python"),
+        "-I",
+        "-c",
+        "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+    ]
+    assert identity_kwargs["capture_output"] is True
+    assert identity_kwargs["text"] is True
+    preflight_command, _ = calls[2]
     assert preflight_command[:3] == [str(target / ".venv" / "bin" / "python"), "-I", "-c"]
     assert preflight_command[3] == (
         "from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner "
@@ -165,3 +190,81 @@ def test_offline_builder_creates_clean_runtime_and_preflights_runner_import(monk
     )
     assert "provider" not in preflight_command[3]
     assert "run_tqqq_promotion_research(" not in preflight_command[3]
+
+
+def test_offline_builder_rejects_mismatched_target_interpreter_and_cleans_up(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The CI/builder Python must not stand in for the target runtime Python."""
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    _write_project(project)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    calls: list[list[str]] = []
+    provider_calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal provider_calls
+        calls.append(command)
+        if "provider" in " ".join(command):
+            provider_calls += 1
+        if command[:2] == ["uv", "sync"]:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            Path(environment["UV_PROJECT_ENVIRONMENT"]).joinpath("bin").mkdir(parents=True)
+        if command[0] == str(target / ".venv" / "bin" / "python") and command[2] == "-c":
+            return subprocess.CompletedProcess(command, 0, "3.13\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="target Python identity mismatch"):
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert not target.exists()
+    assert provider_calls == 0
+    assert all("provider" not in " ".join(command) for command in calls)
+    assert all("run_tqqq_promotion_research(" not in " ".join(command) for command in calls)
+
+
+def test_offline_builder_rejects_missing_target_interpreter_and_cleans_up(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from us_equity_snapshot_pipelines import tqqq_offline_replay_runtime as runtime
+
+    project = tmp_path / "project"
+    target = tmp_path / "runtime"
+    _write_project(project)
+    manifest = runtime.TqqqOfflineReplayRuntimeManifest(
+        schema_version="qsl.tqqq.offline-replay-runtime.v1",
+        uesp_revision="d" * 40,
+        lockfile_sha256="e" * 64,
+        qpk_revision="a" * 40,
+        ues_revision="b" * 40,
+        python_major_minor="3.12",
+    )
+    monkeypatch.setattr(runtime, "derive_tqqq_offline_replay_runtime_manifest", lambda _: manifest)
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[:2] == ["uv", "sync"]:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            Path(environment["UV_PROJECT_ENVIRONMENT"]).mkdir(parents=True)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        raise FileNotFoundError(command[0])
+
+    with pytest.raises(runtime.TqqqOfflineReplayRuntimeError, match="offline replay runtime build failed"):
+        runtime.build_tqqq_offline_replay_runtime(project, target, run=fake_run)
+
+    assert not target.exists()
+    assert all("provider" not in " ".join(command) for command in calls)
