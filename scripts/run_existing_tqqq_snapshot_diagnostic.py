@@ -188,7 +188,7 @@ def _load_execution_binding(
     risk_standard_id: str,
     risk_standard_sha256: str,
     platform_execution_revision: str,
-) -> tuple[Path, TqqqOrchestrationAuthority, str, str, str, str, str]:
+) -> tuple[Path, TqqqOrchestrationAuthority, str, str, str, str, str, str, str]:
     terminal = _private_json(execution_terminal, execution_terminal_sha256)
     binding = terminal.get("binding")
     execution = terminal.get("execution")
@@ -378,6 +378,8 @@ def _load_execution_binding(
         mandate_receipt_digest,
         execution_revision,
         execution_tree_sha,
+        runner_runtime_revision,
+        runner_runtime_tree_sha,
         session_class,
     )
 
@@ -463,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
             mandate_receipt_digest,
             execution_revision,
             execution_tree_sha,
+            runner_revision,
+            runner_tree_sha,
             session_class,
         ) = _load_execution_binding(
             args.execution_terminal,
@@ -478,7 +482,6 @@ def main(argv: list[str] | None = None) -> int:
             mandate_receipt_digest=mandate_receipt_digest,
             snapshot_digest=snapshot_digest,
         )
-        runner_revision, runner_tree_sha = _current_runtime_identity()
         terminal = orchestrate_existing_tqqq_snapshot_diagnostic(
             run_root,
             expected_snapshot_digest=snapshot_digest,

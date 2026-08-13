@@ -11,14 +11,12 @@ from pathlib import Path
 if __package__:
     from scripts.run_existing_tqqq_snapshot_diagnostic import (
         _RUNNER_PROJECT_ROOT,
-        _current_runtime_identity,
         _load_execution_binding,
         _require_filevault,
     )
 else:
     from run_existing_tqqq_snapshot_diagnostic import (  # type: ignore[import-not-found]
         _RUNNER_PROJECT_ROOT,
-        _current_runtime_identity,
         _load_execution_binding,
         _require_filevault,
     )
@@ -67,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             source_mandate_receipt_digest,
             execution_revision,
             execution_tree_sha,
+            runner_revision,
+            runner_tree_sha,
             session_class,
         ) = _load_execution_binding(
             args.execution_terminal,
@@ -76,7 +76,6 @@ def main(argv: list[str] | None = None) -> int:
             platform_execution_revision=args.platform_execution_revision,
         )
         terminal["snapshot_digest"] = snapshot_digest
-        runner_revision, runner_tree_sha = _current_runtime_identity()
         terminal = orchestrate_existing_tqqq_snapshot_promotion(
             run_root,
             expected_snapshot_digest=snapshot_digest,

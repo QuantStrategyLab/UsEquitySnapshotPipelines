@@ -260,6 +260,42 @@ def test_diagnostic_compatibility_reads_bound_source_checkout(
     assert all(command[2] == str(source_checkout) for command in calls)
 
 
+def test_diagnostic_compatibility_allows_runtime_binding_only_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_checkout = tmp_path / "source-checkout"
+    runner_revision = "e" * 40
+    runner_tree_sha = "f" * 40
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[-1] == f"{RUNNER_REVISION}^{{tree}}":
+            return subprocess.CompletedProcess(command, 0, RUNNER_TREE_SHA + "\n", "")
+        if command[-1] == f"{runner_revision}^{{tree}}":
+            return subprocess.CompletedProcess(command, 0, runner_tree_sha + "\n", "")
+        if "merge-base" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "diff" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "src/us_equity_snapshot_pipelines/tqqq_offline_replay_runtime.py\n"
+                + "tests/test_tqqq_offline_replay_runtime.py",
+                "",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(orchestration.subprocess, "run", fake_run)
+
+    orchestration._require_diagnostic_execution_compatibility(
+        RUNNER_REVISION,
+        RUNNER_TREE_SHA,
+        runner_revision,
+        runner_tree_sha,
+        source_checkout=source_checkout,
+    )
+
+
 def test_current_runtime_identity_reads_the_bound_source_checkout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -293,9 +329,14 @@ def test_runner_consumable_execution_binding_loads_only_explicit_matching_identi
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(diagnostic_cli, "_current_runtime_manifest", lambda: RUNTIME_MANIFEST)
-    monkeypatch.setattr(
-        diagnostic_cli, "_current_runtime_identity", lambda: (RUNNER_REVISION, RUNNER_TREE_SHA)
-    )
+    identity_calls = 0
+
+    def runtime_identity() -> tuple[str, str]:
+        nonlocal identity_calls
+        identity_calls += 1
+        return RUNNER_REVISION, RUNNER_TREE_SHA
+
+    monkeypatch.setattr(diagnostic_cli, "_current_runtime_identity", runtime_identity)
     authority_receipt = tmp_path / "authority.json"
     authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
     runtime_manifest = tmp_path / "runtime-manifest.json"
@@ -324,8 +365,11 @@ def test_runner_consumable_execution_binding_loads_only_explicit_matching_identi
         "2" * 64,
         SNAPSHOT_REVISION,
         SNAPSHOT_TREE_SHA,
+        RUNNER_REVISION,
+        RUNNER_TREE_SHA,
         "live-data-only",
     )
+    assert identity_calls == 1
 
 
 def test_runner_binding_rejects_symlinked_builder_python_from_another_environment(
@@ -1562,15 +1606,11 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
             "2" * 64,
             RUNNER_REVISION,
             RUNNER_TREE_SHA,
+            RUNNER_REVISION,
+            RUNNER_TREE_SHA,
             "live-data-only",
         ),
     )
-    monkeypatch.setattr(
-        snapshot_cli,
-        "_current_runtime_identity",
-        lambda: events.append("identity") or ("9" * 40, "8" * 40),
-    )
-
     def orchestrate(run_root, **kwargs):
         events.append("orchestrate")
         assert run_root == source_root
@@ -1603,7 +1643,7 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
             _authority().platform_execution_revision,
         ]
     ) == 0
-    assert events == ["filevault", "identity", "orchestrate"]
+    assert events == ["filevault", "orchestrate"]
     assert json.loads(capsys.readouterr().out) == {
         "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "asset_count": 4,
@@ -1759,13 +1799,10 @@ def test_existing_snapshot_diagnostic_cli_writes_only_mode_0600_sanitized_termin
             "2" * 64,
             RUNNER_REVISION,
             RUNNER_TREE_SHA,
+            RUNNER_REVISION,
+            RUNNER_TREE_SHA,
             "live-data-only",
         ),
-    )
-    monkeypatch.setattr(
-        diagnostic_cli,
-        "_current_runtime_identity",
-        lambda: (RUNNER_REVISION, RUNNER_TREE_SHA),
     )
     invocation: dict[str, object] = {}
 

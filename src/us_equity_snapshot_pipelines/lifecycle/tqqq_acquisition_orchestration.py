@@ -75,8 +75,10 @@ _DIAGNOSTIC_CHANGED_PATHS = {
     "scripts/run_existing_tqqq_snapshot_diagnostic.py",
     "src/us_equity_snapshot_pipelines/lifecycle/tqqq_acquisition_orchestration.py",
     "src/us_equity_snapshot_pipelines/lifecycle/tqqq_promotion_evidence.py",
+    "src/us_equity_snapshot_pipelines/tqqq_offline_replay_runtime.py",
     "tests/test_tqqq_promotion_evidence.py",
     "tests/test_tqqq_promotion_input_acquisition.py",
+    "tests/test_tqqq_offline_replay_runtime.py",
 }
 _DIAGNOSTIC_FUNCTION_IDENTIFIERS = {
     "quant_platform_kit.risk.engine:RiskEngine.assess",
