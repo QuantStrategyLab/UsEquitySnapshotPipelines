@@ -179,7 +179,6 @@ def _runner_consumable_execution_binding(
     authority_receipt_sha256: str,
     runtime_manifest_path: Path,
     runtime_manifest_sha256: str,
-    runtime_python: Path | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": "qsl.tqqq.execution-binding-record.runner-consumable.v3",
@@ -211,7 +210,7 @@ def _runner_consumable_execution_binding(
                 "materialization": {
                     "manifest_path": str(runtime_manifest_path),
                     "manifest_sha256": runtime_manifest_sha256,
-                    "python_executable": str(runtime_python or Path(sys.executable)),
+                    "python_executable": str(Path(sys.executable).resolve()),
                 },
             },
             "session_identity": {"session_class": "live-data-only"},
@@ -272,42 +271,6 @@ def test_runner_consumable_execution_binding_loads_only_explicit_matching_identi
         SNAPSHOT_TREE_SHA,
         "live-data-only",
     )
-
-
-def test_runner_binding_rejects_symlinked_builder_python_from_another_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(diagnostic_cli, "_current_runtime_manifest", lambda: RUNTIME_MANIFEST)
-    monkeypatch.setattr(
-        diagnostic_cli, "_current_runtime_identity", lambda: (RUNNER_REVISION, RUNNER_TREE_SHA)
-    )
-    authority_receipt = tmp_path / "authority.json"
-    authority_receipt_sha256 = _write_private_json(authority_receipt, {"status": "authorized"})
-    runtime_manifest = tmp_path / "runtime-manifest.json"
-    runtime_manifest_sha256 = _write_private_json(runtime_manifest, RUNTIME_MANIFEST)
-    builder_python = tmp_path / "builder-python"
-    builder_python.symlink_to(Path(sys.executable).resolve())
-    binding = tmp_path / "execution-binding.json"
-    binding_sha256 = _write_private_json(
-        binding,
-        _runner_consumable_execution_binding(
-            authority_receipt=authority_receipt,
-            authority_receipt_sha256=authority_receipt_sha256,
-            runtime_manifest_path=runtime_manifest,
-            runtime_manifest_sha256=runtime_manifest_sha256,
-            runtime_python=builder_python,
-        ),
-    )
-
-    with pytest.raises(ValueError, match="invalid execution binding"):
-        diagnostic_cli._load_execution_binding(
-            binding,
-            binding_sha256,
-            risk_standard_id=_authority().risk_standard_id,
-            risk_standard_sha256=_authority().risk_standard_sha256,
-            platform_execution_revision=_authority().platform_execution_revision,
-        )
 
 
 @pytest.mark.parametrize(

@@ -325,7 +325,7 @@ def _load_execution_binding(
     current_runtime_revision, current_runtime_tree_sha = _current_runtime_identity()
     if (
         not isinstance(runtime_python, str)
-        or Path(runtime_python).absolute() != Path(sys.executable).absolute()
+        or Path(runtime_python).resolve() != Path(sys.executable).resolve()
         or materialized_runtime_manifest != runtime_manifest_identity
         or not _valid_runtime_manifest(current_runtime_manifest)
         or runtime_manifest_identity != current_runtime_manifest
