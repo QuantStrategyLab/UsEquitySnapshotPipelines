@@ -174,6 +174,32 @@ def _write_manifest(destination: Path, manifest: TqqqOfflineReplayRuntimeManifes
     )
 
 
+def _verify_target_python_identity(
+    runtime_python: Path,
+    expected: str,
+    *,
+    project_root: Path,
+    environment: dict[str, str],
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> None:
+    result = run(
+        [
+            str(runtime_python),
+            "-I",
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+        env=environment,
+    )
+    observed = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    if observed != expected:
+        raise TqqqOfflineReplayRuntimeError("target Python identity mismatch")
+
+
 def build_tqqq_offline_replay_runtime(
     project_root: Path,
     target_directory: Path,
@@ -197,12 +223,27 @@ def build_tqqq_offline_replay_runtime(
         _write_manifest(target_directory / "manifest.json", manifest)
         environment = os.environ.copy()
         environment["UV_PROJECT_ENVIRONMENT"] = str(target_directory / ".venv")
-        command: list[str] = ["uv", "sync", "--project", str(project_root), "--locked"]
+        command: list[str] = [
+            "uv",
+            "sync",
+            "--project",
+            str(project_root),
+            "--locked",
+            "--python",
+            manifest.python_major_minor,
+        ]
         if not allow_network:
             command.append("--offline")
         command.append("--no-editable")
         run(command, check=True, cwd=project_root, env=environment)
         runtime_python = target_directory / ".venv" / "bin" / "python"
+        _verify_target_python_identity(
+            runtime_python,
+            manifest.python_major_minor,
+            project_root=project_root,
+            environment=environment,
+            run=run,
+        )
         run(
             [
                 str(runtime_python),
