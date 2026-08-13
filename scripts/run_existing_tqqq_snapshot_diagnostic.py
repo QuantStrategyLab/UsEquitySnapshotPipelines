@@ -22,10 +22,6 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
     _config,
     orchestrate_existing_tqqq_snapshot_diagnostic,
 )
-from us_equity_snapshot_pipelines.tqqq_offline_replay_runtime import (
-    derive_tqqq_offline_replay_runtime_manifest,
-)
-
 _LOCAL_RESEARCH_ROOT = Path.home() / ".local/share/qsl/tqqq-promotion-evidence-v2"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -53,8 +49,6 @@ _RUNTIME_MANIFEST_FIELDS = {
     "schema_version",
     "uesp_revision",
     "lockfile_sha256",
-    "qpk_revision",
-    "ues_revision",
     "python_major_minor",
 }
 _PYTHON_MAJOR_MINOR = re.compile(r"^\d+\.\d+$")
@@ -93,37 +87,6 @@ def _require_filevault() -> None:
         raise RuntimeError("FileVault is required")
 
 
-def _current_runtime_manifest() -> dict[str, str]:
-    return derive_tqqq_offline_replay_runtime_manifest(_RUNNER_PROJECT_ROOT).to_dict()
-
-
-def _current_runtime_identity() -> tuple[str, str]:
-    try:
-        status = subprocess.run(
-            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "status", "--porcelain", "--untracked-files=normal"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        revision = subprocess.run(
-            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        tree_sha = subprocess.run(
-            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "rev-parse", "HEAD^{tree}"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ValueError("runner implementation identity is unavailable") from exc
-    if status or not _REVISION.fullmatch(revision) or not _REVISION.fullmatch(tree_sha):
-        raise ValueError("runner implementation checkout is not immutable")
-    return revision, tree_sha
-
-
 def _valid_runtime_manifest(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != _RUNTIME_MANIFEST_FIELDS:
         return False
@@ -133,31 +96,9 @@ def _valid_runtime_manifest(value: object) -> bool:
         and _REVISION.fullmatch(value["uesp_revision"]) is not None
         and isinstance(value["lockfile_sha256"], str)
         and _DIGEST.fullmatch(value["lockfile_sha256"]) is not None
-        and isinstance(value["qpk_revision"], str)
-        and _REVISION.fullmatch(value["qpk_revision"]) is not None
-        and isinstance(value["ues_revision"], str)
-        and _REVISION.fullmatch(value["ues_revision"]) is not None
         and isinstance(value["python_major_minor"], str)
         and _PYTHON_MAJOR_MINOR.fullmatch(value["python_major_minor"]) is not None
     )
-
-
-def _load_materialized_runtime_manifest(path: object, expected_sha256: object) -> dict[str, str]:
-    if not isinstance(path, str) or not isinstance(expected_sha256, str) or not _DIGEST.fullmatch(expected_sha256):
-        raise ValueError("invalid runtime manifest")
-    candidate = Path(path)
-    try:
-        if candidate.is_symlink() or not candidate.is_file():
-            raise ValueError("invalid runtime manifest")
-        payload = candidate.read_bytes()
-        if hashlib.sha256(payload).hexdigest() != expected_sha256:
-            raise ValueError("runtime manifest identity mismatch")
-        result = json.loads(payload)
-    except (OSError, TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("runtime manifest is unavailable") from exc
-    if not _valid_runtime_manifest(result):
-        raise ValueError("invalid runtime manifest")
-    return result
 
 
 def _private_json(path: Path, expected_sha256: str) -> dict[str, Any]:
@@ -259,11 +200,7 @@ def _load_execution_binding(
         }
         or set(snapshot_execution_identity) != {"revision", "tree_sha"}
         or set(runner_runtime_identity) != {"revision", "tree_sha"}
-        or set(runtime_manifest) != {"identity", "materialization"}
-        or not _valid_runtime_manifest(runtime_manifest["identity"])
-        or not isinstance(runtime_manifest["materialization"], dict)
-        or set(runtime_manifest["materialization"])
-        != {"manifest_path", "manifest_sha256", "python_executable"}
+        or not _valid_runtime_manifest(runtime_manifest)
         or set(session_identity) != {"session_class"}
         or set(safety)
         != {
@@ -281,8 +218,7 @@ def _load_execution_binding(
     execution_tree_sha = snapshot_execution_identity["tree_sha"]
     runner_runtime_revision = runner_runtime_identity["revision"]
     runner_runtime_tree_sha = runner_runtime_identity["tree_sha"]
-    runtime_manifest_identity = runtime_manifest["identity"]
-    runtime_manifest_materialization = runtime_manifest["materialization"]
+    runtime_manifest_identity = runtime_manifest
     session_class = session_identity["session_class"]
     retention_expires_at = authority_identity["retention_expires_at"]
     authority_receipt_sha256 = authority_identity["authority_receipt_sha256"]
@@ -338,23 +274,7 @@ def _load_execution_binding(
         or safety.get("raw_bars_dates_prices_volumes_provider_messages_logged") != 0
     ):
         raise ValueError("invalid execution binding")
-    materialized_runtime_manifest = _load_materialized_runtime_manifest(
-        runtime_manifest_materialization["manifest_path"],
-        runtime_manifest_materialization["manifest_sha256"],
-    )
-    runtime_python = runtime_manifest_materialization["python_executable"]
-    current_runtime_manifest = _current_runtime_manifest()
-    current_runtime_revision, current_runtime_tree_sha = _current_runtime_identity()
-    if (
-        not isinstance(runtime_python, str)
-        or Path(runtime_python).absolute() != Path(sys.executable).absolute()
-        or materialized_runtime_manifest != runtime_manifest_identity
-        or not _valid_runtime_manifest(current_runtime_manifest)
-        or runtime_manifest_identity != current_runtime_manifest
-        or runner_runtime_revision != runtime_manifest_identity["uesp_revision"]
-        or current_runtime_revision != runner_runtime_revision
-        or current_runtime_tree_sha != runner_runtime_tree_sha
-    ):
+    if runner_runtime_revision != runtime_manifest_identity["uesp_revision"]:
         raise ValueError("invalid execution binding")
     authority_receipt_path = authority_identity["authority_receipt"]
     if not isinstance(authority_receipt_path, str):

@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import tomllib
 from typing import Callable
 
@@ -45,8 +44,6 @@ class TqqqOfflineReplayRuntimeManifest:
     schema_version: str
     uesp_revision: str
     lockfile_sha256: str
-    qpk_revision: str
-    ues_revision: str
     python_major_minor: str
 
     def to_dict(self) -> dict[str, str]:
@@ -140,8 +137,8 @@ def _verify_lockfile_revisions(lockfile_path: Path, expected: dict[str, str]) ->
         raise TqqqOfflineReplayRuntimeError("lockfile identity mismatch")
 
 
-def _python_major_minor(value: str | None) -> str:
-    result = value or f"{sys.version_info.major}.{sys.version_info.minor}"
+def _python_major_minor(value: str) -> str:
+    result = value
     if not re.fullmatch(r"\d+\.\d+", result):
         raise TqqqOfflineReplayRuntimeError("Python identity is invalid")
     return result
@@ -189,7 +186,7 @@ def _offline_sync_diagnostic(
 
 
 def derive_tqqq_offline_replay_runtime_manifest(
-    project_root: Path, *, python_major_minor: str | None = None
+    project_root: Path, *, python_major_minor: str
 ) -> TqqqOfflineReplayRuntimeManifest:
     """Derive provenance only from a clean UESP checkout and its committed lockfile."""
     project_root = project_root.resolve()
@@ -206,8 +203,6 @@ def derive_tqqq_offline_replay_runtime_manifest(
         schema_version=_MANIFEST_SCHEMA,
         uesp_revision=_clean_git_revision(project_root),
         lockfile_sha256=hashlib.sha256(lockfile_path.read_bytes()).hexdigest(),
-        qpk_revision=revisions["quant-platform-kit"],
-        ues_revision=revisions["us-equity-strategies"],
         python_major_minor=_python_major_minor(python_major_minor),
     )
 
@@ -249,6 +244,7 @@ def build_tqqq_offline_replay_runtime(
     project_root: Path,
     target_directory: Path,
     *,
+    target_python: str,
     allow_network: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> TqqqOfflineReplayRuntimeManifest:
@@ -257,7 +253,9 @@ def build_tqqq_offline_replay_runtime(
     `allow_network=True` is intentionally opt-in for an externally authorized installer.
     The default fails closed from local locked sources when the required uv cache is absent.
     """
-    manifest = derive_tqqq_offline_replay_runtime_manifest(project_root)
+    manifest = derive_tqqq_offline_replay_runtime_manifest(
+        project_root, python_major_minor=target_python
+    )
     project_root = project_root.resolve()
     target_directory = target_directory.resolve()
     try:
@@ -273,6 +271,8 @@ def build_tqqq_offline_replay_runtime(
     try:
         _write_manifest(target_directory / "manifest.json", manifest)
         environment = os.environ.copy()
+        environment.pop("UV_PYTHON", None)
+        environment.pop("VIRTUAL_ENV", None)
         environment["UV_PROJECT_ENVIRONMENT"] = str(target_directory / ".venv")
         command: list[str] = [
             "uv",
@@ -285,7 +285,7 @@ def build_tqqq_offline_replay_runtime(
         ]
         if not allow_network:
             command.append("--offline")
-        command.append("--no-editable")
+        command.extend(("--no-editable", "--reinstall-package", "us-equity-snapshot-pipelines"))
         offline_diagnostic: dict[str, str | None] | None = None
         sync_options: dict[str, object] = {"check": True, "cwd": project_root, "env": environment}
         if not allow_network:
