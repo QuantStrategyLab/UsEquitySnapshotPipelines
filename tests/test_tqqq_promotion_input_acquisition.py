@@ -1738,7 +1738,7 @@ def test_existing_snapshot_diagnostic_cli_writes_only_mode_0600_sanitized_termin
     )
     monkeypatch.setattr(
         diagnostic_cli,
-        "resolve_tqqq_runtime_identity",
+        "_current_runtime_identity",
         lambda: (RUNNER_REVISION, RUNNER_TREE_SHA),
     )
     monkeypatch.setattr(
