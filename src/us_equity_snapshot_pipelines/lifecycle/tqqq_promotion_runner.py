@@ -272,10 +272,46 @@ class TqqqCostScenarioResult:
 
 
 @dataclass(frozen=True)
+class TqqqSystematicWindowReport:
+    start_date: date
+    end_date: date
+    regime: str
+    relative_metrics: TqqqQqqRelativeMetrics
+    episode_summary: TqqqEpisodeSummary
+    decision_count: int
+    risk_assessment_count: int
+    session_count: int
+
+
+@dataclass(frozen=True)
+class TqqqSystematicHorizonReport:
+    horizon_months: int
+    windows: tuple[TqqqSystematicWindowReport, ...]
+
+
+@dataclass(frozen=True)
+class TqqqSystematicCostScenarioReport:
+    total_cost_bps: int
+    horizons: tuple[TqqqSystematicHorizonReport, ...]
+
+
+@dataclass(frozen=True)
+class TqqqSystematicReporting:
+    aggregate_plan_sha256: str
+    trial_ledger_sha256: str
+    plan: dict[str, object]
+    cost_scenarios: tuple[TqqqSystematicCostScenarioReport, ...]
+    regime_coverage: dict[str, int]
+    overfitting_diagnostics: dict[str, object]
+
+
+@dataclass(frozen=True)
 class TqqqPromotionResearchResult:
     identity: TqqqPromotionIdentity
     timing_sha256: str
     scenarios: tuple[TqqqCostScenarioResult, ...]
+    frozen_trial_ledger: dict[str, object]
+    systematic_reporting: TqqqSystematicReporting
     switching_characterization_sha256: str = TQQQ_SWITCHING_CHARACTERIZATION_SHA256
     authority_scope: str = "RESEARCH_ONLY"
     learning_only: bool = True
@@ -460,7 +496,6 @@ def build_tqqq_development_robustness_plan(
             "count": len(windows),
             "first": [windows[0]["start_session"], windows[0]["end_session"]],
             "last": [windows[-1]["start_session"], windows[-1]["end_session"]],
-            "sha256": _SYSTEMATIC_WINDOW_SHA256[horizon],
             "windows": windows,
         }
     if _canonical_sha256(all_windows) != _SYSTEMATIC_PLAN_SHA256:
@@ -484,6 +519,178 @@ def build_tqqq_development_robustness_plan(
         },
         "rolling_windows": rolling,
     }
+
+
+def build_tqqq_frozen_trial_ledger() -> dict[str, object]:
+    """Return the complete pre-replay TQQQ-only trial ledger.
+
+    The frozen scope contains one candidate only.  Cost scenarios and rolling
+    windows are reporting dimensions, never additional candidate trials.
+    """
+
+    material: dict[str, object] = {
+        "schema_version": "tqqq_frozen_trial_ledger.v1",
+        "candidate_profile": _PROFILE,
+        "candidate_variant": _CANDIDATE_VARIANT,
+        "scope": "TQQQ_ONLY_HISTORICAL_DIAGNOSTICS",
+        "complete_before_replay": True,
+        "trial_count": 1,
+        "entries": [
+            {
+                "trial_id": "tqqq_core_parity_v1",
+                "candidate_variant": _CANDIDATE_VARIANT,
+                "selection_status": "FROZEN_BEFORE_REPLAY",
+                "historical_execution": "REQUIRED",
+                "include_in_overfitting_diagnostics": True,
+            }
+        ],
+        "exclusions": {
+            "cost_scenarios_are_trials": False,
+            "rolling_windows_are_trials": False,
+            "additional_candidates": "FORBIDDEN_AFTER_FREEZE",
+        },
+    }
+    return {**material, "sha256": _canonical_sha256(material)}
+
+
+def _build_tqqq_overfitting_diagnostics(
+    frozen_trial_ledger: Mapping[str, object],
+) -> dict[str, object]:
+    """Freeze PBO/DSR prerequisites without fabricating unavailable statistics."""
+
+    trial_count = frozen_trial_ledger["trial_count"]
+    if type(trial_count) is not int or trial_count < 1:
+        raise TqqqPromotionContractError("invalid frozen trial ledger")
+    status = "NOT_APPLICABLE" if trial_count < 2 else "INCONCLUSIVE"
+    reason = (
+        "requires at least two frozen candidate trials; cost scenarios and rolling windows are not trials"
+        if status == "NOT_APPLICABLE"
+        else "requires aligned completed return panels for every frozen candidate trial"
+    )
+    return {
+        "schema_version": "tqqq_overfitting_diagnostics.v1",
+        "trial_ledger_sha256": frozen_trial_ledger["sha256"],
+        "pbo": {
+            "method": "CSCV_PBO",
+            "algorithm": (
+                "for every equal in-sample/out-of-sample partition of chronological groups, "
+                "select the highest in-sample Sharpe trial and report the fraction whose "
+                "out-of-sample rank is below the cross-sectional median"
+            ),
+            "input": "aligned completed candidate-trial return panels split into at least four chronological groups",
+            "preconditions": {
+                "minimum_frozen_candidate_trials": 2,
+                "minimum_chronological_groups": 4,
+                "complete_aligned_return_panels": True,
+            },
+            "status": status,
+            "value": None,
+            "reason": reason,
+        },
+        "deflated_sharpe": {
+            "method": "DEFLATED_SHARPE_RATIO",
+            "algorithm": (
+                "report the probability that the selected observed Sharpe exceeds the expected "
+                "maximum Sharpe from the frozen trial distribution after finite-sample, skewness, "
+                "and kurtosis adjustment"
+            ),
+            "input": "observed Sharpe, aligned return moments, and frozen candidate-trial Sharpe distribution",
+            "preconditions": {
+                "minimum_frozen_candidate_trials": 2,
+                "complete_aligned_return_panels": True,
+                "finite_return_moments": True,
+            },
+            "status": status,
+            "value": None,
+            "reason": reason,
+        },
+        "promotion_conclusion": "INCONCLUSIVE",
+    }
+
+
+def _systematic_regime(qqq_cagr: float) -> str:
+    if qqq_cagr <= -0.05:
+        return "bear"
+    if qqq_cagr >= 0.05:
+        return "bull"
+    return "sideways"
+
+
+def _run_tqqq_systematic_reporting(
+    identity: TqqqPromotionIdentity,
+    plan: TqqqPromotionPlan,
+    replay_window: ReplayWindow,
+    *,
+    timing_sha256: str,
+    frozen_trial_ledger: dict[str, object],
+) -> TqqqSystematicReporting:
+    development_plan = build_tqqq_development_robustness_plan(_FROZEN_XNYS_SESSIONS)
+    cost_scenarios: list[TqqqSystematicCostScenarioReport] = []
+    regime_coverage = {"bear": 0, "bull": 0, "sideways": 0}
+    for total_cost_bps in (5,):
+        runner = TqqqPromotionRunner(
+            identity,
+            plan,
+            replay_window,
+            total_cost_bps=total_cost_bps,
+        )
+        orchestrator = BacktestOrchestrator(store=_MemoryPerformanceStore())
+        orchestrator.register_runner(_DOMAIN, runner)
+        horizons: list[TqqqSystematicHorizonReport] = []
+        for horizon_months in (3, 6, 12, 24):
+            specification = development_plan["rolling_windows"][f"{horizon_months}_month"]
+            windows = tuple(
+                (
+                    date.fromisoformat(window["start_session"]),
+                    date.fromisoformat(window["end_session"]),
+                )
+                for window in specification["windows"]
+            )
+            start = len(runner.windows)
+            results = orchestrator.walk_forward(
+                _PROFILE,
+                domain=_DOMAIN,
+                params=_params(identity, timing_sha256),
+                param_set_id=f"tqqq_etf_only_{total_cost_bps}bp_systematic_{horizon_months}m",
+                windows=windows,
+            )
+            if len(results) != len(windows):
+                raise TqqqPromotionContractError("systematic reporting execution mismatch")
+            report_windows = tuple(
+                TqqqSystematicWindowReport(
+                    start_date=window.start_date,
+                    end_date=window.end_date,
+                    regime=_systematic_regime(window.relative_metrics.qqq_cagr),
+                    relative_metrics=window.relative_metrics,
+                    episode_summary=window.episode_summary,
+                    decision_count=window.decision_count,
+                    risk_assessment_count=window.risk_assessment_count,
+                    session_count=len(window.sessions),
+                )
+                for window in runner.windows[start:]
+            )
+            for window in report_windows:
+                regime_coverage[window.regime] += 1
+            horizons.append(
+                TqqqSystematicHorizonReport(
+                    horizon_months=horizon_months,
+                    windows=report_windows,
+                )
+            )
+        cost_scenarios.append(
+            TqqqSystematicCostScenarioReport(
+                total_cost_bps=total_cost_bps,
+                horizons=tuple(horizons),
+            )
+        )
+    return TqqqSystematicReporting(
+        aggregate_plan_sha256=str(development_plan["aggregate_plan_sha256"]),
+        trial_ledger_sha256=str(frozen_trial_ledger["sha256"]),
+        plan=development_plan,
+        cost_scenarios=tuple(cost_scenarios),
+        regime_coverage=regime_coverage,
+        overfitting_diagnostics=_build_tqqq_overfitting_diagnostics(frozen_trial_ledger),
+    )
 
 
 def _valid_legacy_reference(reference: Mapping[str, object]) -> bool:
@@ -1795,6 +2002,24 @@ class TqqqPromotionRunner:
             cost_model=cost_model,
         )
 
+    def run(
+        self,
+        strategy_profile: str,
+        params: Mapping[str, object],
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> BacktestResult:
+        if type(start_date) is not date or type(end_date) is not date:
+            raise TqqqPromotionContractError("systematic window timing is required")
+        return self._run_window(
+            strategy_profile,
+            params,
+            start_date=start_date,
+            end_date=end_date,
+            cost_model=_cost_model(self.total_cost_bps),
+        )
+
     def _run_window(
         self,
         strategy_profile: str,
@@ -1903,6 +2128,7 @@ def run_tqqq_promotion_research(
     if _resolve_runner_revision() != identity.runner_revision:
         raise TqqqPromotionContractError("runner revision mismatch")
     timing_sha256 = _timing_sha256(plan)
+    frozen_trial_ledger = build_tqqq_frozen_trial_ledger()
     scenarios: list[TqqqCostScenarioResult] = []
     for total_cost_bps in _COST_SCENARIOS_BPS:
         runner = TqqqPromotionRunner(
@@ -1934,8 +2160,17 @@ def run_tqqq_promotion_research(
                 windows=runner.windows,
             )
         )
+    systematic_reporting = _run_tqqq_systematic_reporting(
+        identity,
+        plan,
+        replay_window,
+        timing_sha256=timing_sha256,
+        frozen_trial_ledger=frozen_trial_ledger,
+    )
     return TqqqPromotionResearchResult(
         identity=identity,
         timing_sha256=timing_sha256,
         scenarios=tuple(scenarios),
+        frozen_trial_ledger=frozen_trial_ledger,
+        systematic_reporting=systematic_reporting,
     )

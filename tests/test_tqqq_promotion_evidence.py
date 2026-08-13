@@ -290,11 +290,24 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert "2022-12-27" in {bar["date"] for bar in payload["bars"]["symbols"]["QQQ"]}
 
     contexts = []
+    direct_calls = 0
+    assessment_count = 0
     engine = build_risk_engine()
+    original_assess = engine.assess
 
     def evaluate(ctx, **kwargs):
-        contexts.append(ctx)
+        nonlocal direct_calls
+        direct_calls += 1
+        if len(contexts) < 4:
+            contexts.append(ctx)
         return entrypoints.evaluate_tqqq_growth_income_promotion_research(ctx, **kwargs)
+
+    def counted_assess(*args, **kwargs):
+        nonlocal assessment_count
+        assessment_count += 1
+        return original_assess(*args, **kwargs)
+
+    engine.assess = counted_assess
 
     with (
         patch(
@@ -308,10 +321,9 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
         patch.object(
             evidence_module,
             "evaluate_tqqq_growth_income_promotion_research",
-            side_effect=evaluate,
-        ) as direct_seam,
+            new=evaluate,
+        ),
         patch("quant_platform_kit.risk.gate.build_risk_engine", return_value=engine),
-        patch.object(engine, "assess", wraps=engine.assess) as assess,
         patch.object(
             entrypoints,
             "compute_tqqq_growth_income_decision",
@@ -359,10 +371,33 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert backtest["development_robustness_plan"]["aggregate_plan_sha256"] == (
         "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
     )
+    assert backtest["frozen_trial_ledger"]["complete_before_replay"] is True
+    assert backtest["systematic_reporting"]["aggregate_plan_sha256"] == (
+        backtest["development_robustness_plan"]["aggregate_plan_sha256"]
+    )
+    assert backtest["systematic_reporting"]["overfitting_diagnostics"]["pbo"]["status"] == (
+        "NOT_APPLICABLE"
+    )
+    assert set(backtest["systematic_reporting"]["regime_coverage"]) == {
+        "bear",
+        "bull",
+        "sideways",
+    }
+    systematic_by_cost = {
+        str(scenario["total_cost_bps"]): scenario
+        for scenario in backtest["systematic_reporting"]["cost_scenarios"]
+    }
     for scenario in backtest["scenarios"].values():
         cost = str(int(scenario["promotion_run"]["cost_model"]["slippage_bps"]))
-        assert sum(window["decision_count"] for window in scenario["windows"]) == (
-            risk["scenario_counts"][cost]["decisions"]
+        systematic_decisions = sum(
+            window["decision_count"]
+            for horizon in systematic_by_cost.get(cost, {"horizons": []})["horizons"]
+            for window in horizon["windows"]
+        )
+        assert (
+            sum(window["decision_count"] for window in scenario["windows"])
+            + systematic_decisions
+            == risk["scenario_counts"][cost]["decisions"]
         )
         for window in scenario["windows"]:
             assert window["decision_count"] == window["risk_assessment_count"] > 0
@@ -394,10 +429,10 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
                 "replay_target_allocation",
                 "executed_allocation",
             }
-    assessment_count = sum(
+    reported_assessment_count = sum(
         counts["assessments"] for counts in risk["scenario_counts"].values()
     )
-    assert direct_seam.call_count == assess.call_count == assessment_count
+    assert direct_calls == assessment_count == reported_assessment_count
     legacy_entrypoint.assert_not_called()
     assert all(
         counts["assessments"] == counts["decisions"]

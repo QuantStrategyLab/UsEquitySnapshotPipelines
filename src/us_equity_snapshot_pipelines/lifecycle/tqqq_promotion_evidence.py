@@ -49,7 +49,6 @@ from .tqqq_promotion_runner import (
     TqqqSwitchingTrace,
     TqqqWindowReplay,
     _resolve_runner_revision,
-    build_tqqq_development_robustness_plan,
     build_tqqq_switching_characterization_contract,
     run_tqqq_promotion_research,
 )
@@ -1238,9 +1237,9 @@ def _result_artifacts(
                 {
                     "schema_version": "tqqq_etf_only_promotion_backtest.v1",
                     "switching_characterization": build_tqqq_switching_characterization_contract(),
-                    "development_robustness_plan": build_tqqq_development_robustness_plan(
-                        tuple(row.session for row in replay.qqq)
-                    ),
+                    "development_robustness_plan": result.systematic_reporting.plan,
+                    "frozen_trial_ledger": result.frozen_trial_ledger,
+                    "systematic_reporting": result.systematic_reporting,
                     "scenarios": {
                         str(cost): {
                             "promotion_run": scenario.promotion_run,
