@@ -2102,6 +2102,7 @@ def run_tqqq_promotion_research(
     if _resolve_runner_revision() != identity.runner_revision:
         raise TqqqPromotionContractError("runner revision mismatch")
     timing_sha256 = _timing_sha256(plan)
+    frozen_trial_ledger = build_tqqq_frozen_trial_ledger()
     scenarios: list[TqqqCostScenarioResult] = []
     for total_cost_bps in _COST_SCENARIOS_BPS:
         runner = TqqqPromotionRunner(
@@ -2133,7 +2134,6 @@ def run_tqqq_promotion_research(
                 windows=runner.windows,
             )
         )
-    frozen_trial_ledger = build_tqqq_frozen_trial_ledger()
     systematic_reporting = _run_tqqq_systematic_reporting(
         identity,
         plan,
