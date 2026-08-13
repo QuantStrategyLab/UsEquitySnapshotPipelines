@@ -260,6 +260,12 @@ def build_tqqq_offline_replay_runtime(
     manifest = derive_tqqq_offline_replay_runtime_manifest(project_root)
     project_root = project_root.resolve()
     target_directory = target_directory.resolve()
+    try:
+        target_directory.relative_to(project_root)
+    except ValueError:
+        pass
+    else:
+        raise TqqqOfflineReplayRuntimeError("target directory must be outside the source checkout")
     if target_directory.exists() or not target_directory.parent.is_dir():
         raise TqqqOfflineReplayRuntimeError("target directory must be clean and have an existing parent")
 
