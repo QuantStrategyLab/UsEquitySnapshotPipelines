@@ -313,7 +313,6 @@ def test_frozen_development_plan_enumerates_every_3_6_12_24_month_window() -> No
             plan["rolling_windows"][horizon]["count"],
             plan["rolling_windows"][horizon]["first"],
             plan["rolling_windows"][horizon]["last"],
-            plan["rolling_windows"][horizon]["sha256"],
         )
         for horizon in ("3_month", "6_month", "12_month", "24_month")
     } == {
@@ -321,25 +320,21 @@ def test_frozen_development_plan_enumerates_every_3_6_12_24_month_window() -> No
             28,
             ["2023-01-03", "2023-03-31"],
             ["2025-04-01", "2025-06-30"],
-            "877136166f09def7019ba2fe7616c8c820bae3c13212f3b485cfe001b455d66f",
         ),
         "6_month": (
             25,
             ["2023-01-03", "2023-06-30"],
             ["2025-01-02", "2025-06-30"],
-            "31a9a72c6839e8ea117184aa0af19ebf1063d83dd8231457d50a1a6cc7d73434",
         ),
         "12_month": (
             19,
             ["2023-01-03", "2023-12-29"],
             ["2024-07-01", "2025-06-30"],
-            "145a3ef1598a54a3c1e138a223e67ab2325357d7bd405749730be9baa2d76adc",
         ),
         "24_month": (
             7,
             ["2023-01-03", "2024-12-31"],
             ["2023-07-03", "2025-06-30"],
-            "1a3a85d1d10a8151bd3e4ff5218d3017ce19323927b0a2c2c7f614216916301e",
         ),
     }
 
@@ -352,6 +347,34 @@ def test_frozen_development_plan_enumerates_every_3_6_12_24_month_window() -> No
         build_tqqq_development_robustness_plan(
             development_sessions[:100] + development_sessions[101:]
         )
+
+
+def test_frozen_trial_ledger_executes_and_reports_every_systematic_window() -> None:
+    result, replay = _run()
+
+    assert result.frozen_trial_ledger["complete_before_replay"] is True
+    assert result.frozen_trial_ledger["trial_count"] == 1
+    assert result.systematic_reporting.aggregate_plan_sha256 == (
+        "28c4b4fbf587891112f1994b44a6ff3d111742cdb854adfcd172cfe664b1ae52"
+    )
+    assert len(replay.calls) == 12 + 28 + 25 + 19 + 7
+    assert {
+        (scenario.total_cost_bps, horizon.horizon_months, len(horizon.windows))
+        for scenario in result.systematic_reporting.cost_scenarios
+        for horizon in scenario.horizons
+    } == {
+        (5, horizon, count)
+        for horizon, count in ((3, 28), (6, 25), (12, 19), (24, 7))
+    }
+    assert all(
+        "sha256" not in horizon
+        for horizon in result.systematic_reporting.plan["rolling_windows"].values()
+    )
+    diagnostics = result.systematic_reporting.overfitting_diagnostics
+    assert diagnostics["pbo"]["status"] == "NOT_APPLICABLE"
+    assert diagnostics["pbo"]["value"] is None
+    assert diagnostics["deflated_sharpe"]["status"] == "NOT_APPLICABLE"
+    assert diagnostics["deflated_sharpe"]["value"] is None
 
 
 def test_switching_characterization_contract_has_frozen_semantic_identity() -> None:

@@ -29,9 +29,20 @@ sessions), and a locked XNYS OOS from
 It runs the 5/10/15 bp scenarios, preserves fresh episode state per window,
 and emits relative return, Sharpe, drawdown, VaR/CVaR, information coefficient,
 turnover, trade-count, allocation, and PARK evidence.  The evidence producer
-also freezes the deterministic enumeration of every 3/6/12/24-month
-seen-development window; that enumeration is not a trial ledger, not execution
-or reporting of those windows.
+freezes a complete TQQQ-only trial ledger, executes every deterministic
+3/6/12/24-month seen-development window through `BacktestOrchestrator`, and
+reports the resulting windows at the pre-specified 5 bp base cost.  The
+existing 5/10/15 bp cost-stress replay remains separate.  Cost scenarios and
+rolling windows are reporting dimensions, not additional candidate trials.
+The ledger currently has one frozen candidate, so CSCV/PBO and Deflated Sharpe
+are explicitly `NOT_APPLICABLE` (no value is fabricated); a future ledger with
+multiple trials but incomplete aligned return panels is `INCONCLUSIVE`.
+
+The single aggregate development-plan binding and the backtest artifact digest
+protect the reporting contract; individual horizons do not publish separate
+digests.  UESP only orchestrates and reports caller-supplied historical replay
+results.  TQQQ signal, allocation, RiskEngine, and runtime logic remain in
+`UsEquityStrategies`.
 
 This is historical replay coverage only.  It does not make a provider call by
 itself, does not activate a scheduler, and does not authorize paper, shadow,
@@ -40,19 +51,14 @@ a separate human promotion decision.
 
 ## Gaps and next gated slice
 
-The current runner does **not** record a complete frozen trial ledger, does
-not execute or report systematic 3/6/12/24-month window results, and does
-**not** implement PBO or Deflated Sharpe.  It therefore cannot yet claim the
-full overfitting-diagnostic part of this P3 contract, nor can an existing
-structural evidence package be treated as promotion acceptance.
+The historical-diagnostics contract is still research-only.  Its trial
+ledger and PBO/Deflated-Sharpe statuses are reporting controls, not promotion
+acceptance.  A structural evidence package cannot be treated as human
+promotion authority.
 
-The sole next slice is a fresh-human-authorized, tests-first, TQQQ-only
-historical-diagnostics addition to the existing runner/evidence contract:
-freeze and validate the trial-ledger input before replay, execute and report
-the systematic 3/6/12/24-month windows, then add explicitly specified PBO and
-Deflated Sharpe reporting.  It must not introduce a generic diagnostics
-framework, call a provider, read credentials, activate a scheduler, or enter
-paper/shadow/live/order/capital paths.
+Any future expansion must remain TQQQ-only and tests-first, without a generic
+diagnostics framework, provider call, credential read, scheduler activation,
+or paper/shadow/live/order/capital path.
 
 ## P4 optional forward observation
 
