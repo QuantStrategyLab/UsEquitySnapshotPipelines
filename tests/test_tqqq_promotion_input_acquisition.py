@@ -342,7 +342,11 @@ def test_referenced_evidence_validation_failure_is_sanitized(
         )
 
     assert "backtest" not in str(caught.value)
-    assert caught.value.sanitized_failure["runner_completion_count"] == 0
+    failure = caught.value.sanitized_failure
+    assert failure["failure_class"] == "referenced_artifact_validation_failed"
+    assert failure["recoverability"] == "fresh_human_authority_required"
+    assert failure["runner_completion_count"] == 0
+    assert failure["stage"] == "promotion_evidence_referenced_artifact_validation"
 
 
 def test_publish_is_atomic_and_failed_temporary_member_never_appears_final(
@@ -542,13 +546,57 @@ def test_producer_failure_retains_only_sanitized_committed_state(
     assert failure == {
         "classification": "promotion_evidence_failed",
         "evidence_artifact_count": 0,
+        "failure_class": "promotion_runner_failed",
         "mandate_receipt_digest": failure["mandate_receipt_digest"],
+        "recoverability": "fresh_human_authority_required",
         "runner_completion_count": 0,
         "runner_invocation_count": 1,
         "snapshot_digest": failure["snapshot_digest"],
-        "stage": "promotion_evidence_pre_artifact",
+        "stage": "promotion_evidence_runner",
     }
     assert "raw provider bars" not in str(caught.value)
+
+
+def test_structural_evidence_readback_failure_is_classified_as_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+
+    def producer(*, input_payload, output_dir, mandate_receipt_sha256, **_kwargs):
+        del mandate_receipt_sha256
+        output = Path(output_dir)
+        output.mkdir()
+        evidence_file = output / "strategy-evidence-package.v2.json"
+        terminal_file = output / "promotion-research-result.v1.json"
+        evidence_file.write_text("[]", encoding="utf-8")
+        terminal_file.write_text("{}", encoding="utf-8")
+        return {
+            "evidence_sha256": hashlib.sha256(evidence_file.read_bytes()).hexdigest(),
+            "promotion_result_sha256": hashlib.sha256(
+                terminal_file.read_bytes()
+            ).hexdigest(),
+            "candidate_identity_sha256": "2" * 64,
+            "input_manifest_sha256": research_input_manifest_sha256(
+                validate_research_input_manifest(input_payload["input_manifest"])
+            ),
+        }
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", producer)
+
+    with pytest.raises(TqqqOrchestrationError) as caught:
+        orchestrate_tqqq_promotion(
+            _results(),
+            authority=_authority(),
+            output_root=tmp_path / "runs",
+            runner_revision=RUNNER_REVISION,
+            runner_tree_sha=RUNNER_TREE_SHA,
+            clock=lambda: datetime(2026, 8, 11, 8, 0, tzinfo=UTC),
+        )
+
+    failure = caught.value.sanitized_failure
+    assert failure["failure_class"] == "promotion_evidence_readback_invalid"
+    assert failure["stage"] == "promotion_evidence_readback_validation"
 
 
 def test_unified_duration_covers_every_required_session_at_latest_authority_expiry() -> None:
@@ -1108,6 +1156,47 @@ def test_existing_snapshot_promotion_consumes_fresh_mandate_and_validates_eviden
         for path in source_root.rglob("*")
         if path.is_file()
     }
+
+
+def test_existing_snapshot_promotion_failure_retains_sanitized_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    source_root, snapshot_digest, _config_digest, source_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    monkeypatch.setattr(
+        orchestration, "_require_diagnostic_execution_compatibility", lambda *_args: None
+    )
+
+    def fail(*, output_dir, **_kwargs):
+        Path(output_dir).mkdir()
+        raise RuntimeError("private runner failure")
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", fail)
+
+    with pytest.raises(TqqqOrchestrationError) as caught:
+        orchestrate_existing_tqqq_snapshot_promotion(
+            source_root,
+            expected_snapshot_digest=snapshot_digest,
+            expected_source_mandate_receipt_digest=source_receipt_digest,
+            authority=_authority(),
+            output_root=tmp_path / "fresh-output",
+            execution_revision=RUNNER_REVISION,
+            execution_tree_sha=RUNNER_TREE_SHA,
+            runner_revision="9" * 40,
+            runner_tree_sha="8" * 40,
+            session_class="live-data-only",
+            clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+        )
+
+    failure = caught.value.sanitized_failure
+    assert failure["failure_class"] == "promotion_runner_failed"
+    assert failure["mandate_receipt_digest"]
+    assert failure["recoverability"] == "fresh_human_authority_required"
+    assert failure["snapshot_digest"] == snapshot_digest
+    assert failure["stage"] == "promotion_evidence_runner"
 
 
 @pytest.mark.parametrize("failure", ("snapshot", "source_config", "output_exists"))

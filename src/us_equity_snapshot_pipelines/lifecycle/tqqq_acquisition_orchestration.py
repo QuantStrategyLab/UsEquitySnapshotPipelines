@@ -135,6 +135,8 @@ class TqqqOrchestrationError(ValueError):
         snapshot_digest: str | None = None,
         mandate_receipt_digest: str | None = None,
         evidence_artifact_count: int | None = None,
+        failure_stage: str | None = None,
+        failure_class: str | None = None,
     ) -> None:
         super().__init__(message)
         if snapshot_digest is None:
@@ -148,20 +150,22 @@ class TqqqOrchestrationError(ValueError):
             or isinstance(evidence_artifact_count, bool)
             or not isinstance(evidence_artifact_count, int)
             or evidence_artifact_count < 0
+            or not isinstance(failure_stage, str)
+            or not failure_stage
+            or not isinstance(failure_class, str)
+            or not failure_class
         ):
             raise ValueError("invalid sanitized TQQQ orchestration failure")
         self.sanitized_failure = {
             "classification": "promotion_evidence_failed",
             "evidence_artifact_count": evidence_artifact_count,
+            "failure_class": failure_class,
             "mandate_receipt_digest": mandate_receipt_digest,
+            "recoverability": "fresh_human_authority_required",
             "runner_completion_count": 0,
             "runner_invocation_count": 1,
             "snapshot_digest": snapshot_digest,
-            "stage": (
-                "promotion_evidence_pre_artifact"
-                if evidence_artifact_count == 0
-                else "promotion_evidence"
-            ),
+            "stage": failure_stage,
         }
 
 
@@ -1135,6 +1139,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
             authority_id=authority.authority_receipt_sha256,
         )
         evidence_root = temporary / "evidence"
+        failure_stage = "promotion_evidence_runner"
+        failure_class = "promotion_runner_failed"
         try:
             evidence = run_tqqq_promotion_evidence(
                 input_payload=input_payload,
@@ -1143,6 +1149,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 generated_at=now.isoformat().replace("+00:00", "Z"),
                 mandate_receipt_sha256=consumption.receipt_digest,
             )
+            failure_stage = "promotion_evidence_result_validation"
+            failure_class = "promotion_evidence_result_invalid"
             if (
                 not isinstance(evidence, Mapping)
                 or set(evidence)
@@ -1160,11 +1168,22 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 )
             ):
                 raise ValueError("invalid evidence identity")
+            failure_stage = "promotion_evidence_artifact_readback"
+            failure_class = "promotion_evidence_artifact_readback_failed"
             evidence_bytes = (evidence_root / "strategy-evidence-package.v2.json").read_bytes()
             terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
             evidence_payload = json.loads(evidence_bytes)
             terminal_payload = json.loads(terminal_bytes)
-            promotion_run = evidence_payload.get("backtest", {}).get("promotion_run", {})
+            failure_stage = "promotion_evidence_readback_validation"
+            failure_class = "promotion_evidence_readback_invalid"
+            if (
+                not isinstance(evidence_payload, Mapping)
+                or not isinstance(terminal_payload, Mapping)
+                or not isinstance(evidence_payload.get("backtest"), Mapping)
+                or not isinstance(evidence_payload["backtest"].get("promotion_run"), Mapping)
+            ):
+                raise TypeError("invalid evidence readback")
+            promotion_run = evidence_payload["backtest"]["promotion_run"]
             fold_results = promotion_run.get("fold_results", [])
             locked_oos_result = promotion_run.get("locked_oos_result")
             if (
@@ -1187,9 +1206,12 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 or not _is_learning_only_evidence_readback(
                     evidence_payload, terminal_payload
                 )
-                or validate_evidence_package_v2(evidence_payload, base_dir=evidence_root)
             ):
-                raise ValueError("invalid evidence readback")
+                raise TypeError("invalid evidence readback")
+            failure_stage = "promotion_evidence_referenced_artifact_validation"
+            failure_class = "referenced_artifact_validation_failed"
+            if validate_evidence_package_v2(evidence_payload, base_dir=evidence_root):
+                raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
             try:
                 artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
@@ -1200,6 +1222,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 snapshot_digest=snapshot_digest,
                 mandate_receipt_digest=consumption.receipt_digest,
                 evidence_artifact_count=artifact_count,
+                failure_stage=failure_stage,
+                failure_class=failure_class,
             ) from exc
         _seal_private_tree(temporary)
         _publish_noreplace(temporary, published_root)
@@ -1322,6 +1346,8 @@ def orchestrate_tqqq_promotion(
             authority_id=authority.authority_receipt_sha256,
         )
         evidence_root = run_root / "evidence"
+        failure_stage = "promotion_evidence_runner"
+        failure_class = "promotion_runner_failed"
         try:
             evidence = run_tqqq_promotion_evidence(
                 input_payload=input_payload,
@@ -1330,6 +1356,8 @@ def orchestrate_tqqq_promotion(
                 generated_at=observed_at,
                 mandate_receipt_sha256=consumption.receipt_digest,
             )
+            failure_stage = "promotion_evidence_result_validation"
+            failure_class = "promotion_evidence_result_invalid"
             if (
                 not isinstance(evidence, Mapping)
                 or set(evidence)
@@ -1347,11 +1375,22 @@ def orchestrate_tqqq_promotion(
                 )
             ):
                 raise ValueError("invalid evidence identity")
+            failure_stage = "promotion_evidence_artifact_readback"
+            failure_class = "promotion_evidence_artifact_readback_failed"
             evidence_bytes = (evidence_root / "strategy-evidence-package.v2.json").read_bytes()
             terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
             evidence_payload = json.loads(evidence_bytes)
             terminal_payload = json.loads(terminal_bytes)
-            promotion_run = evidence_payload.get("backtest", {}).get("promotion_run", {})
+            failure_stage = "promotion_evidence_readback_validation"
+            failure_class = "promotion_evidence_readback_invalid"
+            if (
+                not isinstance(evidence_payload, Mapping)
+                or not isinstance(terminal_payload, Mapping)
+                or not isinstance(evidence_payload.get("backtest"), Mapping)
+                or not isinstance(evidence_payload["backtest"].get("promotion_run"), Mapping)
+            ):
+                raise TypeError("invalid evidence readback")
+            promotion_run = evidence_payload["backtest"]["promotion_run"]
             fold_results = promotion_run.get("fold_results", [])
             locked_oos_result = promotion_run.get("locked_oos_result")
             if (
@@ -1376,6 +1415,8 @@ def orchestrate_tqqq_promotion(
                 )
             ):
                 raise ValueError("invalid evidence readback")
+            failure_stage = "promotion_evidence_referenced_artifact_validation"
+            failure_class = "referenced_artifact_validation_failed"
             if validate_evidence_package_v2(
                 evidence_payload, base_dir=evidence_root
             ):
@@ -1390,6 +1431,8 @@ def orchestrate_tqqq_promotion(
                 snapshot_digest=manifest_sha256,
                 mandate_receipt_digest=consumption.receipt_digest,
                 evidence_artifact_count=artifact_count,
+                failure_stage=failure_stage,
+                failure_class=failure_class,
             ) from exc
         _seal_private_tree(run_root)
         return {
