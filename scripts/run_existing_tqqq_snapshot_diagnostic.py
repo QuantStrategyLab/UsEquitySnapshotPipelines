@@ -21,7 +21,6 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration impor
     _canonical,
     _config,
     orchestrate_existing_tqqq_snapshot_diagnostic,
-    resolve_tqqq_runtime_identity,
 )
 from us_equity_snapshot_pipelines.tqqq_offline_replay_runtime import (
     derive_tqqq_offline_replay_runtime_manifest,
@@ -99,7 +98,30 @@ def _current_runtime_manifest() -> dict[str, str]:
 
 
 def _current_runtime_identity() -> tuple[str, str]:
-    return resolve_tqqq_runtime_identity()
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "status", "--porcelain", "--untracked-files=normal"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        revision = subprocess.run(
+            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        tree_sha = subprocess.run(
+            ["git", "-C", str(_RUNNER_PROJECT_ROOT), "rev-parse", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError("runner implementation identity is unavailable") from exc
+    if status or not _REVISION.fullmatch(revision) or not _REVISION.fullmatch(tree_sha):
+        raise ValueError("runner implementation checkout is not immutable")
+    return revision, tree_sha
 
 
 def _valid_runtime_manifest(value: object) -> bool:
@@ -456,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
             mandate_receipt_digest=mandate_receipt_digest,
             snapshot_digest=snapshot_digest,
         )
-        runner_revision, runner_tree_sha = resolve_tqqq_runtime_identity()
+        runner_revision, runner_tree_sha = _current_runtime_identity()
         terminal = orchestrate_existing_tqqq_snapshot_diagnostic(
             run_root,
             expected_snapshot_digest=snapshot_digest,

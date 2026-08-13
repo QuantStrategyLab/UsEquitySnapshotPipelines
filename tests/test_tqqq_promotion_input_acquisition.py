@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -232,6 +233,34 @@ def _runner_consumable_execution_binding(
             },
         },
     }
+
+
+def test_current_runtime_identity_reads_the_bound_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_checkout = tmp_path / "source-checkout"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[3] == "status":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[4] == "HEAD":
+            return subprocess.CompletedProcess(command, 0, RUNNER_REVISION + "\n", "")
+        return subprocess.CompletedProcess(command, 0, RUNNER_TREE_SHA + "\n", "")
+
+    monkeypatch.setattr(diagnostic_cli, "_RUNNER_PROJECT_ROOT", source_checkout)
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "resolve_tqqq_runtime_identity",
+        lambda: (_ for _ in ()).throw(AssertionError()),
+        raising=False,
+    )
+    monkeypatch.setattr(diagnostic_cli.subprocess, "run", fake_run)
+
+    assert diagnostic_cli._current_runtime_identity() == (RUNNER_REVISION, RUNNER_TREE_SHA)
+    assert all(command[2] == str(source_checkout) for command in calls)
 
 
 def test_runner_consumable_execution_binding_loads_only_explicit_matching_identities(
