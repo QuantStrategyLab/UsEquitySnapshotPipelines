@@ -656,8 +656,10 @@ def _require_diagnostic_execution_compatibility(
     execution_tree_sha: str,
     runner_revision: str,
     runner_tree_sha: str,
+    *,
+    source_checkout: Path | None = None,
 ) -> None:
-    repository = Path(__file__).resolve().parents[3]
+    repository = source_checkout or Path(__file__).resolve().parents[3]
     try:
         observed_execution_tree = subprocess.run(
             ["git", "-C", str(repository), "rev-parse", f"{execution_revision}^{{tree}}"],
@@ -720,6 +722,7 @@ def _load_existing_tqqq_snapshot(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str,
+    source_checkout: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         if (
@@ -793,12 +796,19 @@ def _load_existing_tqqq_snapshot(
         "tool_version": "v1",
     }:
         raise TqqqOrchestrationError("snapshot producer identity mismatch")
-    _require_diagnostic_execution_compatibility(
+    compatibility_args = (
         execution_revision,
         execution_tree_sha,
         runner_revision,
         runner_tree_sha,
     )
+    if source_checkout is None:
+        _require_diagnostic_execution_compatibility(*compatibility_args)
+    else:
+        _require_diagnostic_execution_compatibility(
+            *compatibility_args,
+            source_checkout=source_checkout,
+        )
     return bars, readback_manifest
 
 
@@ -914,6 +924,7 @@ def orchestrate_existing_tqqq_snapshot_diagnostic(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str,
+    source_checkout: Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Validate a consumed immutable snapshot and replay it once without persistence."""
@@ -949,6 +960,7 @@ def orchestrate_existing_tqqq_snapshot_diagnostic(
         runner_revision=runner_revision,
         runner_tree_sha=runner_tree_sha,
         session_class=session_class,
+        source_checkout=source_checkout,
     )
     config = _config(authority, session_class=session_class)
     config_digest = hashlib.sha256(_canonical(config)).hexdigest()

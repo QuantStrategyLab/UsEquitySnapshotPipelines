@@ -235,6 +235,31 @@ def _runner_consumable_execution_binding(
     }
 
 
+def test_diagnostic_compatibility_reads_bound_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_checkout = tmp_path / "source-checkout"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, RUNNER_TREE_SHA + "\n", "")
+
+    monkeypatch.setattr(orchestration.subprocess, "run", fake_run)
+
+    orchestration._require_diagnostic_execution_compatibility(
+        RUNNER_REVISION,
+        RUNNER_TREE_SHA,
+        RUNNER_REVISION,
+        RUNNER_TREE_SHA,
+        source_checkout=source_checkout,
+    )
+
+    assert calls
+    assert all(command[2] == str(source_checkout) for command in calls)
+
+
 def test_current_runtime_identity_reads_the_bound_source_checkout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1741,10 +1766,16 @@ def test_existing_snapshot_diagnostic_cli_writes_only_mode_0600_sanitized_termin
         "_current_runtime_identity",
         lambda: (RUNNER_REVISION, RUNNER_TREE_SHA),
     )
+    invocation: dict[str, object] = {}
+
+    def run_diagnostic(*_args: object, **kwargs: object) -> dict[str, object]:
+        invocation.update(kwargs)
+        return outcome
+
     monkeypatch.setattr(
         diagnostic_cli,
         "orchestrate_existing_tqqq_snapshot_diagnostic",
-        lambda *_args, **_kwargs: outcome,
+        run_diagnostic,
     )
 
     assert diagnostic_cli.main(
@@ -1766,6 +1797,7 @@ def test_existing_snapshot_diagnostic_cli_writes_only_mode_0600_sanitized_termin
     assert output.stat().st_mode & 0o777 == 0o600
     assert json.loads(output.read_bytes()) == outcome
     assert json.loads(capsys.readouterr().out) == outcome
+    assert invocation["source_checkout"] == diagnostic_cli._RUNNER_PROJECT_ROOT
 
 
 def test_existing_snapshot_diagnostic_committed_surface_has_no_provider_or_order_calls() -> None:

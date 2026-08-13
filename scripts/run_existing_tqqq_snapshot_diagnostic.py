@@ -489,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
             runner_revision=runner_revision,
             runner_tree_sha=runner_tree_sha,
             session_class=session_class,
+            source_checkout=_RUNNER_PROJECT_ROOT,
         )
     except Exception as exc:  # noqa: BLE001 - diagnostic terminal must remain sanitized
         exception_class = type(exc).__name__
