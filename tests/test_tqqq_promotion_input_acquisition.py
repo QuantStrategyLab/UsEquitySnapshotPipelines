@@ -1567,7 +1567,7 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
     )
     monkeypatch.setattr(
         snapshot_cli,
-        "resolve_tqqq_runtime_identity",
+        "_current_runtime_identity",
         lambda: events.append("identity") or ("9" * 40, "8" * 40),
     )
 
@@ -1576,6 +1576,7 @@ def test_existing_snapshot_promotion_cli_is_provider_free_and_sanitized(
         assert run_root == source_root
         assert kwargs["expected_source_mandate_receipt_digest"] == "2" * 64
         assert kwargs["output_root"] == tmp_path / "output" / AUTHORITY_SHA256
+        assert kwargs["source_checkout"] == snapshot_cli._RUNNER_PROJECT_ROOT
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 4,

@@ -1039,6 +1039,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str,
+    source_checkout: Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Validate one existing snapshot, consume one fresh mandate, and replay once."""
@@ -1073,6 +1074,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
         runner_revision=runner_revision,
         runner_tree_sha=runner_tree_sha,
         session_class=session_class,
+        source_checkout=source_checkout,
     )
     config = _config(authority, session_class=session_class)
     config_digest = hashlib.sha256(_canonical(config)).hexdigest()

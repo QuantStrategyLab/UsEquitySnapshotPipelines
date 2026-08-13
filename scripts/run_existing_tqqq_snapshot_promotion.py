@@ -10,18 +10,21 @@ from pathlib import Path
 
 if __package__:
     from scripts.run_existing_tqqq_snapshot_diagnostic import (
+        _RUNNER_PROJECT_ROOT,
+        _current_runtime_identity,
         _load_execution_binding,
         _require_filevault,
     )
 else:
     from run_existing_tqqq_snapshot_diagnostic import (  # type: ignore[import-not-found]
+        _RUNNER_PROJECT_ROOT,
+        _current_runtime_identity,
         _load_execution_binding,
         _require_filevault,
     )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     TqqqOrchestrationError,
     orchestrate_existing_tqqq_snapshot_promotion,
-    resolve_tqqq_runtime_identity,
 )
 
 _LOCAL_RESEARCH_ROOT = (
@@ -73,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             platform_execution_revision=args.platform_execution_revision,
         )
         terminal["snapshot_digest"] = snapshot_digest
-        runner_revision, runner_tree_sha = resolve_tqqq_runtime_identity()
+        runner_revision, runner_tree_sha = _current_runtime_identity()
         terminal = orchestrate_existing_tqqq_snapshot_promotion(
             run_root,
             expected_snapshot_digest=snapshot_digest,
@@ -85,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             runner_revision=runner_revision,
             runner_tree_sha=runner_tree_sha,
             session_class=session_class,
+            source_checkout=_RUNNER_PROJECT_ROOT,
         )
     except TqqqOrchestrationError as exc:
         if exc.sanitized_failure is not None:
@@ -92,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             terminal["snapshot_digest"] = failure["snapshot_digest"]
             terminal["mandate_receipt_digest"] = failure["mandate_receipt_digest"]
             terminal["orchestration_failure"] = failure
-    except Exception:  # noqa: BLE001 - terminal output must remain sanitized
+    except Exception:  # noqa: BLE001, S110 - terminal output must remain sanitized
         pass
     print(json.dumps(terminal, sort_keys=True, separators=(",", ":")))
     return (
