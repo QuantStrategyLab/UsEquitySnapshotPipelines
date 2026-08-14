@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,14 +22,15 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_platform_kit.strategy_contracts import StrategyContext
+from quant_platform_kit.risk.engine import build_risk_engine
+from quant_platform_kit.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
     validate_evidence_package_v2,
 )
 from us_equity_strategies.entrypoints import (
-    evaluate_tqqq_growth_income_promotion_research,
+    _build_tqqq_growth_income_decision,
 )
 
 from .tqqq_promotion_runner import (
@@ -85,6 +86,8 @@ _COST_SCENARIOS = (5, 10, 15)
 _COOLDOWN_EXECUTION_SESSIONS = 20
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
+_ACCOUNT_NOMINAL_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
+_ACCOUNT_LOSS_BUDGET = 0.01
 _RUNTIME_OVERRIDES = {
     "benchmark_symbol": "QQQ",
     "managed_symbols": _ORDERABLE_ASSETS,
@@ -671,15 +674,8 @@ class _ImmutableReplayProducer:
     def _record_executed_allocation(self, session: date) -> None:
         if not getattr(self, "_switching_traces", None):
             return
-        if (
-            self._switching_traces[-1].execution_session != session
-            or self._switching_traces[-1].executed_allocation
-        ):
+        if self._switching_traces[-1].execution_session != session:
             raise TqqqPromotionEvidenceError("switching trace execution mismatch")
-        self._switching_traces[-1] = replace(
-            self._switching_traces[-1],
-            executed_allocation=self._allocation(session, "open"),
-        )
 
     def _record_parked_allocation(self, session: date) -> None:
         state = self._state
@@ -762,23 +758,17 @@ class _ImmutableReplayProducer:
                 not was_parked
                 and self._switching_traces
                 and self._switching_traces[-1].execution_session == session
-                and self._switching_traces[-1].risk_disposition == "APPROVE"
             ):
                 self._switching_traces[-1] = replace(
                     self._switching_traces[-1],
-                    risk_disposition="PARK",
-                    risk_reason_codes=("ACCOUNT_DRAWDOWN",),
+                    executed_allocation=self._allocation({}),
                 )
 
     def _trade_to_target(self, session: date, cost_bps: int) -> None:
         state = self._state
-        was_parked = state.parked
         rate = cost_bps / 10_000.0
         opening_equity = self._equity(session, "open")
-        target_weights = {
-            symbol: 0.0 if state.parked else state.pending_weights[symbol]
-            for symbol in _ORDERABLE_ASSETS
-        }
+        target_weights = dict(state.pending_weights)
         deltas = {
             symbol: opening_equity * target_weights[symbol]
             - state.quantities[symbol] * self._price(symbol, session).open
@@ -803,32 +793,6 @@ class _ImmutableReplayProducer:
                 state.tqqq_entry_price = None
                 state.tqqq_stop_price = None
                 state.tqqq_entry_identity_sha256 = None
-        if state.parked:
-            if was_parked:
-                self._record_parked_allocation(session)
-            else:
-                for symbol in _ORDERABLE_ASSETS:
-                    quantity = state.quantities[symbol]
-                    if quantity <= 1e-12:
-                        continue
-                    bar = self._price(symbol, session)
-                    state.cash += quantity * bar.open * (1.0 - rate)
-                    state.turnover += quantity * bar.open / opening_equity
-                    state.trade_count += 1
-                    state.quantities[symbol] = 0.0
-                state.tqqq_entry_price = None
-                state.tqqq_stop_price = None
-                state.tqqq_entry_identity_sha256 = None
-                trace = self._switching_traces[-1]
-                if trace.execution_session != session or trace.executed_allocation:
-                    raise TqqqPromotionEvidenceError("switching trace execution mismatch")
-                self._switching_traces[-1] = replace(
-                    trace,
-                    risk_disposition="PARK",
-                    risk_reason_codes=(state.breaker_reason,),
-                    executed_allocation=self._allocation(session, "open"),
-                )
-            return
         for symbol in _ORDERABLE_ASSETS:
             value_delta = deltas.get(symbol, 0.0)
             if value_delta <= tolerance:
@@ -896,79 +860,66 @@ class _ImmutableReplayProducer:
             for symbol, state_quantity in self._state.quantities.items()
         }
 
+    @staticmethod
+    def _allocation(weights: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
+        targets = {
+            symbol: _finite(weights.get(symbol, 0.0), "target weight")
+            for symbol in _ORDERABLE_ASSETS
+        }
+        cash = 1.0 - math.fsum(targets.values())
+        if cash < -1e-12:
+            raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
+        return tuple(sorted({**targets, "cash": max(0.0, cash)}.items()))
+
+    @staticmethod
+    def _decision_weights(decision: object, equity: float) -> dict[str, float]:
+        if not isinstance(decision, StrategyDecision) or equity <= 0.0:
+            raise TqqqPromotionEvidenceError("invalid UES core-parity target")
+        targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+        for position in decision.positions:
+            symbol = getattr(position, "symbol", None)
+            if symbol in {"cash", "CASH"}:
+                continue
+            if symbol not in targets:
+                continue
+            weight = getattr(position, "target_weight", None)
+            if weight is None:
+                value = getattr(position, "target_value", None)
+                if value is None:
+                    raise TqqqPromotionEvidenceError("invalid UES core-parity target")
+                weight = _finite(value, "target value") / equity
+            targets[symbol] = _finite(weight, "target weight")
+        _ImmutableReplayProducer._allocation(targets)
+        return targets
+
+    @staticmethod
+    def _account_overlay_target(
+        strategy_targets: Mapping[str, float],
+        *,
+        loss_budget: float = _ACCOUNT_LOSS_BUDGET,
+        nominal_caps: Mapping[str, float] = _ACCOUNT_NOMINAL_CAPS,
+    ) -> dict[str, float]:
+        risk_budget_cap = _finite(loss_budget, "account loss budget") / 0.05
+        targets: dict[str, float] = {}
+        for symbol in _ORDERABLE_ASSETS:
+            cap = _finite(nominal_caps.get(symbol), "account nominal cap")
+            targets[symbol] = min(
+                _finite(strategy_targets.get(symbol, 0.0), "strategy target"),
+                cap,
+                risk_budget_cap,
+            )
+        _ImmutableReplayProducer._allocation(targets)
+        return targets
+
     def _assessment(
         self, signal_index: int, execution_session: date, equity: float
     ) -> dict[str, float]:
         state = self._state
         signal_session = self.qqq[signal_index].session
         protective_cooldown = state.cooldown_remaining_execution_sessions > 0
-        if state.parked:
-            raise TqqqPromotionEvidenceError("parked episode cannot create a decision")
         if signal_index + 1 < 257:
             raise TqqqPromotionEvidenceError("insufficient core-parity warmup")
-        drawdown = max(0.0, 1.0 - equity / state.high_water_equity)
-        scalar = 1.0 if drawdown <= 0.05 else 0.5 if drawdown <= 0.10 else 0.0
-        if drawdown > 0.10:
-            self._park("ACCOUNT_DRAWDOWN", signal_session)
-            return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
         now = datetime.now(UTC)
-        effective_at = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
-        expires_at = (now + timedelta(days=30)).isoformat().replace("+00:00", "Z")
-        evaluated_at = now.isoformat().replace("+00:00", "Z")
-        entry_identity = state.tqqq_entry_identity_sha256 or _digest(
-            {
-                "candidate": self.candidate.candidate_sha256,
-                "signal_session": signal_session,
-                "execution_session": execution_session,
-                "precommitted_stop": True,
-            }
-        )
-        mandate = {
-            "mandate_id": _MANDATE_ID,
-            "mandate_version": "v1",
-            "authority_receipt_sha256": self.candidate.authority_receipt_sha256,
-            "authority_scope": "RESEARCH_ONLY",
-            "strategy_profile": self.candidate.strategy_profile,
-            "account_mode": self.candidate.account_mode,
-            "strategy_revision": self.candidate.strategy_revision,
-            "runner_revision": self.candidate.runner_revision,
-            "config_sha256": self.candidate.config_sha256,
-            "input_manifest_sha256": self.candidate.input_manifest_sha256,
-            "candidate_identity_sha256": self.candidate.candidate_sha256,
-            "effective_at": effective_at,
-            "expires_at": expires_at,
-            "max_snapshot_age_seconds": 300,
-            "effective_exposure_cap": 0.50,
-            "loss_budget": 0.01,
-            "loss_budget_equity_reference": "completed_session_equity",
-            "product_caps": {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50},
-            "nominal_caps": {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50},
-            "product_effective_caps": {"TQQQ": 0.45, "QQQM": 0.50, "BOXX": 0.50},
-            "product_leverage_factors": _ASSET_FACTORS,
-            "allowed_nonzero_assets": list(_ORDERABLE_ASSETS),
-            "max_nonzero_assets": 3,
-            "broker_margin_factor": 1,
-            "margin_stacking": False,
-            "borrowing": False,
-            "shorting": False,
-            "income_sleeve_enabled": False,
-            "option_overlay_enabled": False,
-            "precommitted_executable_stop_distance": 0.05,
-            "max_consecutive_completed_losing_exits": 5,
-            "source_revision": _QPK_REVISION,
-        }
-        risk_state = {
-            "as_of": evaluated_at,
-            "mandate_id": _MANDATE_ID,
-            "candidate_identity_sha256": self.candidate.candidate_sha256,
-            "stop_loss_distance": 0.05,
-            "stop_intent_ready": True,
-            "tqqq_entry_fill_identity_sha256": entry_identity,
-            "stop_entry_fill_identity_sha256": entry_identity,
-            "consecutive_completed_losing_exits": state.consecutive_losing_exits,
-            "account_drawdown_fraction": drawdown,
-            "drawdown_scalar": scalar,
-        }
         positions = tuple(
             Position(
                 symbol=symbol,
@@ -981,18 +932,18 @@ class _ImmutableReplayProducer:
         )
         observed_weights = self._current_weights(signal_session, equity)
         portfolio = PortfolioSnapshot(
-                as_of=now,
-                total_equity=equity,
-                buying_power=state.cash,
-                cash_balance=state.cash,
-                positions=positions,
-                metadata={
-                    "observed_effective_exposure": math.fsum(
-                        observed_weights[symbol] * _ASSET_FACTORS[symbol]
-                        for symbol in _ORDERABLE_ASSETS
-                    )
-                },
-            )
+            as_of=now,
+            total_equity=equity,
+            buying_power=state.cash,
+            cash_balance=state.cash,
+            positions=positions,
+            metadata={
+                "observed_effective_exposure": math.fsum(
+                    observed_weights[symbol] * _ASSET_FACTORS[symbol]
+                    for symbol in _ORDERABLE_ASSETS
+                )
+            },
+        )
         completed_session = datetime.combine(
             signal_session,
             time(16, 0),
@@ -1009,70 +960,71 @@ class _ImmutableReplayProducer:
             }
             for row in self.qqq[: signal_index + 1]
         )
-        result = evaluate_tqqq_growth_income_promotion_research(
-            StrategyContext(
-                as_of=completed_session,
-                portfolio=portfolio,
-                market_data={
-                    "benchmark_history": benchmark_history,
-                    "signal_session": signal_session.isoformat(),
-                    "next_execution_session": execution_session.isoformat(),
-                },
-                runtime_config=(
-                    {
-                        **_RUNTIME_OVERRIDES,
-                        # The frozen UES revision parses these values through float().
-                        "dual_drive_qqq_weight": "0.0",
-                        "dual_drive_tqqq_weight": "0.0",
-                    }
-                    if protective_cooldown
-                    else _RUNTIME_OVERRIDES
-                ),
-            ),
-            mandate_provenance=mandate,
-            candidate_identity=self.candidate,
-            stop_loss_distances={symbol: 0.05 for symbol in _ORDERABLE_ASSETS},
-            drawdown_scalar=scalar if not state.parked else 0.0,
-            inputs_fresh=not state.parked,
-            risk_control_state=risk_state,
+        core_context = StrategyContext(
+            as_of=completed_session,
+            portfolio=portfolio,
+            market_data={
+                "benchmark_history": benchmark_history,
+                "signal_session": signal_session.isoformat(),
+                "next_execution_session": execution_session.isoformat(),
+            },
+            runtime_config=_RUNTIME_OVERRIDES,
+        )
+        raw_decision = _build_tqqq_growth_income_decision(core_context)
+        raw_targets = self._decision_weights(raw_decision, equity)
+        member_decision = StrategyDecision(
+            positions=tuple(
+                PositionTarget(symbol=symbol, target_weight=weight)
+                for symbol, weight in sorted(raw_targets.items())
+                if weight > 0.0
+            )
+        )
+        member_assessment = build_risk_engine().assess(
+            member_decision,
+            portfolio,
+            market_data=core_context.market_data,
         )
         state.decision_count += 1
         state.assessment_count += 1
         self._scenario_counts[self._scenario]["decisions"] += 1
         self._scenario_counts[self._scenario]["assessments"] += 1
-        assessment = result.assessment
-        if assessment.execution_authorized is not False:
-            raise TqqqPromotionEvidenceError("execution authority is forbidden")
-        if assessment.outcome != "APPROVE":
-            self._park("RISK_ENGINE_NON_APPROVE", execution_session)
-            cash = tuple(
-                sorted(
-                    {
-                        **{symbol: 0.0 for symbol in _ORDERABLE_ASSETS},
-                        "cash": 1.0,
-                    }.items()
-                )
-            )
+        intended_allocation = self._allocation(raw_targets)
+        if member_assessment.action != "approve":
+            cash = self._allocation({})
             self._switching_traces.append(
                 TqqqSwitchingTrace(
                     signal_session=signal_session,
                     execution_session=execution_session,
                     signal_state="risk_engine_non_approve",
                     signal_regime="DEFENSIVE",
-                    intended_allocation=cash,
-                    risk_disposition="PARK",
-                    risk_reason_codes=("RISK_ENGINE_NON_APPROVE",),
+                    intended_allocation=intended_allocation,
+                    risk_disposition="REJECT",
+                    risk_reason_codes=(member_assessment.reason,),
                     replay_target_allocation=cash,
-                    executed_allocation=(),
+                    executed_allocation=cash,
                 )
             )
             return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
-        targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
-        for target in result.decision.positions:
-            if target.symbol not in targets or target.target_weight is None:
-                raise TqqqPromotionEvidenceError("invalid UES core-parity target")
-            targets[target.symbol] = _finite(target.target_weight, "target weight")
-        diagnostics = result.decision.diagnostics
+
+        strategy_context = core_context
+        if protective_cooldown:
+            strategy_context = StrategyContext(
+                as_of=core_context.as_of,
+                portfolio=portfolio,
+                market_data=core_context.market_data,
+                runtime_config={
+                    **_RUNTIME_OVERRIDES,
+                    "dual_drive_qqq_weight": "0.0",
+                    "dual_drive_tqqq_weight": "0.0",
+                },
+            )
+        strategy_decision = (
+            raw_decision
+            if strategy_context is core_context
+            else _build_tqqq_growth_income_decision(strategy_context)
+        )
+        strategy_targets = self._decision_weights(strategy_decision, equity)
+        diagnostics = raw_decision.diagnostics
         notification = diagnostics.get("notification_context")
         signal = notification.get("signal") if isinstance(notification, Mapping) else None
         signal_state = signal.get("state") if isinstance(signal, Mapping) else None
@@ -1087,28 +1039,36 @@ class _ImmutableReplayProducer:
         }
         if signal_state not in regimes:
             raise TqqqPromotionEvidenceError("invalid TQQQ switching signal")
+        risk_reason_codes: tuple[str, ...] = ()
         if protective_cooldown:
-            if (
-                targets["TQQQ"] > 1e-12
-                or targets["QQQM"] > 1e-12
-                or targets["BOXX"] <= 0.0
-            ):
-                raise TqqqPromotionEvidenceError("protective cooldown sizing failed closed")
             signal_state = "protective_cooldown"
             regimes[signal_state] = "DEFENSIVE"
-        risk_reason_codes = tuple(assessment.reason_codes)
-        if protective_cooldown:
             risk_reason_codes = (
                 (_COOLDOWN_TRIGGER_REASON,)
                 if not self._switching_traces
                 or self._switching_traces[-1].signal_state != "protective_cooldown"
                 else ()
             )
-        intended = {**targets, "cash": 1.0 - math.fsum(targets.values())}
-        if intended["cash"] < -1e-12:
-            raise TqqqPromotionEvidenceError("invalid TQQQ switching allocation")
-        intended["cash"] = max(0.0, intended["cash"])
-        intended_allocation = tuple(sorted(intended.items()))
+        replay_target_allocation = self._allocation(strategy_targets)
+        account_targets = (
+            {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+            if state.parked
+            else self._account_overlay_target(strategy_targets)
+        )
+        account_decision = StrategyDecision(
+            positions=tuple(
+                PositionTarget(symbol=symbol, target_weight=weight)
+                for symbol, weight in sorted(account_targets.items())
+                if weight > 0.0
+            )
+        )
+        account_assessment = build_risk_engine().assess(
+            account_decision,
+            portfolio,
+            market_data=core_context.market_data,
+        )
+        if account_assessment.action != "approve":
+            account_targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
         self._switching_traces.append(
             TqqqSwitchingTrace(
                 signal_session=signal_session,
@@ -1116,10 +1076,10 @@ class _ImmutableReplayProducer:
                 signal_state=signal_state,
                 signal_regime=regimes[signal_state],
                 intended_allocation=intended_allocation,
-                risk_disposition=assessment.outcome,
+                risk_disposition="APPROVE",
                 risk_reason_codes=risk_reason_codes,
-                replay_target_allocation=intended_allocation,
-                executed_allocation=(),
+                replay_target_allocation=replay_target_allocation,
+                executed_allocation=self._allocation(account_targets),
             )
         )
         state.market_regime_control_sha256 = _digest(
@@ -1149,7 +1109,7 @@ class _ImmutableReplayProducer:
                 "source": diagnostics.get("dual_drive_volatility_delever_retention_source"),
             }
         )
-        return targets
+        return strategy_targets
 
     def __call__(
         self,
@@ -1198,7 +1158,7 @@ class _ImmutableReplayProducer:
             state.last_session = qqq.session
             self._apply_drawdown_breaker(qqq.session, equity)
             self._complete_cooldown_execution_session(qqq.session)
-            if not state.parked and index < end_index:
+            if index < end_index:
                 next_session = self.qqq[index + 1].session
                 state.pending_weights = self._assessment(index, next_session, equity)
             window_strategy.append(equity / strategy_origin * 100.0)

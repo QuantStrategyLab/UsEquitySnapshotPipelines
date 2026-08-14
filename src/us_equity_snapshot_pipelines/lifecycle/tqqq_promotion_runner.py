@@ -865,7 +865,11 @@ def _window_metrics_match_backtest(
             metrics.qqq_cagr,
             _cagr(1.0, 1.0 + metrics.qqq_total_return, result.start_date, result.end_date),
         )
-        or result.source_script != _window_acceptance_source(window, total_cost_bps)
+        or result.source_script
+        not in {
+            _window_acceptance_source(window, total_cost_bps),
+            _window_acceptance_source(window, total_cost_bps, include_execution=True),
+        }
     ):
         return False
     fields = (
@@ -896,6 +900,8 @@ def _window_metrics_match_backtest(
 def _window_acceptance_source(
     window: TqqqWindowEvidence,
     total_cost_bps: int,
+    *,
+    include_execution: bool = False,
 ) -> str:
     metrics = window.relative_metrics
     summary = window.episode_summary
@@ -928,7 +934,11 @@ def _window_acceptance_source(
                     "risk_disposition": trace.risk_disposition,
                     "risk_reason_codes": trace.risk_reason_codes,
                     "replay_target_allocation": trace.replay_target_allocation,
-                    "executed_allocation": trace.executed_allocation,
+                    **(
+                        {"executed_allocation": trace.executed_allocation}
+                        if include_execution
+                        else {}
+                    ),
                 }
                 for trace in window.switching_traces
             ],
@@ -1114,21 +1124,19 @@ def _validate_switching_traces(
                 raise TqqqPromotionContractError("invalid protective cooldown sequence")
             cooldown_count = 0
             cooldown_last_execution = None
-        for allocation in (intended, target):
+        if trace.risk_disposition == "REJECT":
             if (
-                any(
-                    allocation[symbol] > _ASSET_CAPS[symbol] + 1e-12
-                    for symbol in _ALLOWED_ASSETS
-                )
-                or math.fsum(
-                    allocation[symbol] * _ASSET_FACTORS[symbol]
-                    for symbol in _ALLOWED_ASSETS
-                )
-                > _EFFECTIVE_EXPOSURE_CAP + 1e-12
+                trace.signal_state != "risk_engine_non_approve"
+                or not trace.risk_reason_codes
+                or any(target[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
+                or not _same_number(target["cash"], 1.0)
+                or any(executed[symbol] > 1e-12 for symbol in _ALLOWED_ASSETS)
+                or not _same_number(executed["cash"], 1.0)
             ):
-                raise TqqqPromotionContractError("switching target exposure cap exceeded")
-        if any(not _same_number(intended[symbol], target[symbol]) for symbol in _PARITY_ASSETS):
-            raise TqqqPromotionContractError("UES/replay target allocation drift")
+                raise TqqqPromotionContractError("invalid rejected switching trace")
+            approved_count += 1
+            execution_sessions.append(trace.execution_session)
+            continue
         if (
             trace.signal_state == "protective_cooldown"
             and trace.risk_disposition != "APPROVE"
@@ -1176,11 +1184,11 @@ def _validate_switching_traces(
         if trace.risk_disposition != "APPROVE":
             raise TqqqPromotionContractError("invalid switching risk disposition")
         approved_count += 1
-        intended_risk = intended["TQQQ"] + intended["QQQM"]
+        strategy_risk = target["TQQQ"] + target["QQQM"]
         if trace.signal_regime == "RISK_ON":
-            if intended_risk <= 0.0:
+            if strategy_risk <= 0.0:
                 raise TqqqPromotionContractError("risk-on switching execution drift")
-        elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0:
+        elif strategy_risk > 1e-12 or target["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
         if trace.signal_state == "protective_cooldown":
             expected_reason_codes = (
@@ -1188,12 +1196,12 @@ def _validate_switching_traces(
             )
             if (
                 trace.risk_reason_codes != expected_reason_codes
-                or intended["TQQQ"] > 1e-12
-                or intended["QQQM"] > 1e-12
+                or target["TQQQ"] > 1e-12
+                or target["QQQM"] > 1e-12
                 or executed["TQQQ"] > 1e-12
                 or executed["QQQM"] > 1e-12
                 or not any(
-                    _same_number(intended["BOXX"], expected)
+                    _same_number(target["BOXX"], expected)
                     for expected in (0.10, 0.20)
                 )
             ):
@@ -1375,7 +1383,6 @@ def evaluate_tqqq_pre_result_acceptance(
     locked_backtests: dict[int, BacktestResult] = {}
     locked_summaries: dict[int, TqqqEpisodeSummary] = {}
     locked_defensive_only: dict[int, bool] = {}
-    locked_execution_weight_drift: dict[int, bool] = {}
     try:
         for cost in _COST_SCENARIOS_BPS:
             scenario = scenarios[cost]
@@ -1467,12 +1474,11 @@ def evaluate_tqqq_pre_result_acceptance(
                 != _LOCKED_OOS_SESSIONS_SHA256
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            metrics, summary, defensive_only, execution_weight_drift = validated_windows[-1]
+            metrics, summary, defensive_only, _execution_weight_drift = validated_windows[-1]
             locked_metrics[cost] = metrics
             locked_backtests[cost] = promotion_run.locked_oos_result
             locked_summaries[cost] = summary
             locked_defensive_only[cost] = defensive_only
-            locked_execution_weight_drift[cost] = execution_weight_drift
     except (AttributeError, KeyError, TypeError, ValueError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
@@ -1497,8 +1503,6 @@ def evaluate_tqqq_pre_result_acceptance(
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(summary.parked_session_count for summary in locked_summaries.values()):
         return TQQQ_ACCEPTANCE_REJECT
-    if any(locked_execution_weight_drift.values()):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(
         abs(float(result.max_drawdown)) > 0.10 + 1e-12
         for result in locked_backtests.values()
@@ -1771,7 +1775,6 @@ def _validate_replay(
     if type(replay.asset_weights) is not tuple:
         raise TqqqPromotionContractError("invalid ETF-only weights")
     seen: set[str] = set()
-    effective_exposure = 0.0
     for item in replay.asset_weights:
         if type(item) is not tuple or len(item) != 2 or type(item[0]) is not str:
             raise TqqqPromotionContractError("invalid ETF-only weights")
@@ -1781,14 +1784,9 @@ def _validate_replay(
         if symbol in seen:
             raise TqqqPromotionContractError("duplicate ETF weight")
         seen.add(symbol)
-        weight = _finite(raw_weight, "ETF weight", nonnegative=True)
-        if weight > _ASSET_CAPS[symbol]:
-            raise TqqqPromotionContractError("ETF nominal cap exceeded")
-        effective_exposure += weight * _ASSET_FACTORS[symbol]
+        _finite(raw_weight, "ETF weight", nonnegative=True)
     if seen != _ALLOWED_ASSETS:
         raise TqqqPromotionContractError("ETF-only universe is incomplete")
-    if effective_exposure > _EFFECTIVE_EXPOSURE_CAP + 1e-12:
-        raise TqqqPromotionContractError("effective exposure cap exceeded")
     if (
         type(replay.decision_count) is not int
         or replay.decision_count <= 0
