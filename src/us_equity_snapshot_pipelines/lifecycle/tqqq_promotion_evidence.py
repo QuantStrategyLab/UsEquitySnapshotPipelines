@@ -63,6 +63,15 @@ _SIGNAL_MODEL = "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_coold
 _MANDATE_ID = "tqqq_core_parity_v1"
 _LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
 _USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
+_PERSONAL_ATTESTATION_SCHEMA = "personal_research_scope_retention.v1"
+_PERSONAL_ATTESTATION_ASSETS = ["QQQ", "TQQQ", "QQQM", "BOXX"]
+_PERSONAL_ATTESTATION_SCOPE = "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY"
+_PERSONAL_ATTESTATION_PROVENANCE = {
+    "provider": "human_attested_personal_internal_research",
+    "provider_revision": "not_independently_verified",
+    "license": "human_attested_no_third_party_license_claim",
+    "usage_scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY_NO_REDISTRIBUTION",
+}
 _SESSION_PROVIDER = {
     "paper": "IBKR Paper Gateway TWS API",
     "live-data-only": "IBKR Live Gateway Data Only TWS API",
@@ -255,6 +264,66 @@ def _timestamp(value: str | None) -> str:
     return value
 
 
+def _personal_attestation_provenance(
+    value: object, manifest_sha256: str
+) -> dict[str, Any]:
+    attestation = _exact_mapping(
+        value,
+        {
+            "schema_version",
+            "assets",
+            "attested_at",
+            "authority_basis",
+            "independent_legal_verification_claim",
+            "input_root_sha256",
+            "redistribution",
+            "retention_expires_at",
+            "scope",
+            "third_party_license_claim",
+        },
+        "personal attestation",
+    )
+    try:
+        retention_expires_at = datetime.fromisoformat(
+            attestation["retention_expires_at"].removesuffix("Z") + "+00:00"
+        )
+    except (AttributeError, ValueError) as exc:
+        raise TqqqPromotionEvidenceError("invalid personal retention expiry") from exc
+    if (
+        not isinstance(attestation["retention_expires_at"], str)
+        or not attestation["retention_expires_at"].endswith("Z")
+        or retention_expires_at.tzinfo != UTC
+        or retention_expires_at <= datetime.now(UTC)
+    ):
+        raise TqqqPromotionEvidenceError("invalid personal retention expiry")
+    try:
+        attested_at = datetime.fromisoformat(
+            attestation["attested_at"].removesuffix("Z") + "+00:00"
+        )
+    except (AttributeError, ValueError) as exc:
+        raise TqqqPromotionEvidenceError("invalid personal attestation") from exc
+    if (
+        not isinstance(attestation["attested_at"], str)
+        or not attestation["attested_at"].endswith("Z")
+        or attested_at.tzinfo != UTC
+    ):
+        raise TqqqPromotionEvidenceError("invalid personal attestation")
+    if attestation["scope"] != _PERSONAL_ATTESTATION_SCOPE:
+        raise TqqqPromotionEvidenceError("invalid personal scope")
+    if (
+        attestation["schema_version"] != _PERSONAL_ATTESTATION_SCHEMA
+        or attestation["assets"] != _PERSONAL_ATTESTATION_ASSETS
+        or attestation["authority_basis"] != "FRESH_HUMAN_CONFIRMATION"
+        or attestation["independent_legal_verification_claim"] != "NONE"
+        or attestation["redistribution"] != "PROHIBITED"
+        or attestation["third_party_license_claim"] != "NONE"
+    ):
+        raise TqqqPromotionEvidenceError("invalid personal attestation")
+    if attestation["input_root_sha256"] != manifest_sha256:
+        raise TqqqPromotionEvidenceError("personal attestation root mismatch")
+    return copy.deepcopy(_PERSONAL_ATTESTATION_PROVENANCE)
+
+
 def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     fields = {
         "schema_version",
@@ -321,30 +390,6 @@ def _validate_input(
     value: Mapping[str, Any], config: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, tuple[_Bar, ...]], str]:
     payload = _exact_mapping(value, {"provenance", "input_manifest", "bars"}, "input payload")
-    provenance = _exact_mapping(
-        payload["provenance"],
-        {
-            "evidence_class",
-            "real_producer",
-            "provider",
-            "provider_revision",
-            "license",
-            "usage_scope",
-            "session_class",
-        },
-        "input provenance",
-    )
-    if (
-        provenance["evidence_class"] != "provider_observed"
-        or provenance["real_producer"] is not True
-        or provenance["session_class"] != config["session_class"]
-        or provenance["provider"] != _SESSION_PROVIDER[config["session_class"]]
-        or not isinstance(provenance["provider_revision"], str)
-        or not provenance["provider_revision"]
-        or provenance["license"] != config["input_license"]
-        or provenance["usage_scope"] != config["input_usage_scope"]
-    ):
-        raise TqqqPromotionEvidenceError("invalid provider provenance")
     try:
         manifest = validate_research_input_manifest(payload["input_manifest"])
     except InvalidResearchInputEvidence as exc:
@@ -362,6 +407,39 @@ def _validate_input(
         or manifest["adjustment"]["source"] != "IBKR_ADJUSTED_LAST"
     ):
         raise TqqqPromotionEvidenceError("invalid immutable input contract")
+    manifest_sha256 = research_input_manifest_sha256(manifest)
+    raw_provenance = payload["provenance"]
+    personal_attested = (
+        isinstance(raw_provenance, Mapping)
+        and raw_provenance.get("schema_version") == _PERSONAL_ATTESTATION_SCHEMA
+    )
+    if personal_attested:
+        provenance = _personal_attestation_provenance(raw_provenance, manifest_sha256)
+    else:
+        provenance = _exact_mapping(
+            raw_provenance,
+            {
+                "evidence_class",
+                "real_producer",
+                "provider",
+                "provider_revision",
+                "license",
+                "usage_scope",
+                "session_class",
+            },
+            "input provenance",
+        )
+        if (
+            provenance["evidence_class"] != "provider_observed"
+            or provenance["real_producer"] is not True
+            or provenance["session_class"] != config["session_class"]
+            or provenance["provider"] != _SESSION_PROVIDER[config["session_class"]]
+            or not isinstance(provenance["provider_revision"], str)
+            or not provenance["provider_revision"]
+            or provenance["license"] != config["input_license"]
+            or provenance["usage_scope"] != config["input_usage_scope"]
+        ):
+            raise TqqqPromotionEvidenceError("invalid provider provenance")
     session_class = config["session_class"]
     manifest_prefix = f"tqqq-ibkr-{session_class}-single-acquisition-"
     manifest_suffix = manifest["manifest_id"].removeprefix(manifest_prefix)
@@ -396,10 +474,9 @@ def _validate_input(
     parsed: dict[str, tuple[_Bar, ...]] = {}
     source_digests = {item["source_id"]: item["content_sha256"] for item in manifest["sources"]}
     source_revisions = {item["revision"] for item in manifest["sources"]}
-    if (
-        set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:QQQM", "ibkr:TQQQ"}
-        or source_revisions != {provenance["provider_revision"]}
-    ):
+    if set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:QQQM", "ibkr:TQQQ"}:
+        raise TqqqPromotionEvidenceError("invalid provider source identities")
+    if not personal_attested and source_revisions != {provenance["provider_revision"]}:
         raise TqqqPromotionEvidenceError("invalid provider source identities")
     for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
         rows = symbols[symbol]
@@ -448,7 +525,7 @@ def _validate_input(
         or _sha256(_canonical(list(locked_sessions))) != _LOCKED_OOS_SESSIONS_SHA256
     ):
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
-    return provenance, parsed, research_input_manifest_sha256(manifest)
+    return provenance, parsed, manifest_sha256
 
 
 def _initial_state_projection() -> dict[str, Any]:
