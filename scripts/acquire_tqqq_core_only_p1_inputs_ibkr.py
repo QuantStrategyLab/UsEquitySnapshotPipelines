@@ -9,9 +9,11 @@ import re
 import threading
 import time
 from collections.abc import Mapping
-from datetime import date
+from datetime import UTC, date, datetime
+from datetime import time as datetime_time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
@@ -23,12 +25,11 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     publish_tqqq_core_only_p1_inputs as _publish,
 )
 
-
 _FAILURE_CLASSES = frozenset({"data_only_acquisition_failed"})
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _HISTORICAL_DURATION = "1 Y"
 _HISTORICAL_BAR_SIZE = "1 day"
-_HISTORICAL_END_SUFFIX = "23:59:59 America/New_York"
+_NYSE_TIMEZONE = ZoneInfo("America/New_York")
 _INFORMATIONAL_FARM_NOTIFICATION_CODES = frozenset({2104, 2106, 2158})
 _FROZEN_LOGICAL_WINDOWS = {
     "QQQ": (
@@ -391,6 +392,12 @@ def build_tqqq_core_only_ibkr_callback_app(
     return TqqqCoreOnlyIbkrCallbackApp()
 
 
+def _utc_end_datetime_from_logical_cutoff(logical_cutoff: str) -> str:
+    cutoff = date.fromisoformat(logical_cutoff)
+    nyse_cutoff = datetime.combine(cutoff, datetime_time(23, 59, 59), tzinfo=_NYSE_TIMEZONE)
+    return nyse_cutoff.astimezone(UTC).strftime("%Y%m%d-%H:%M:%S")
+
+
 def _frozen_request_envelopes(
     *,
     symbol: str,
@@ -414,7 +421,7 @@ def _frozen_request_envelopes(
             "symbol": symbol,
             "start_date": start_date,
             "date_cutoff": chunk_end,
-            "endDateTime": f"{chunk_end.replace('-', '')} {_HISTORICAL_END_SUFFIX}",
+            "endDateTime": _utc_end_datetime_from_logical_cutoff(chunk_end),
             "durationStr": _HISTORICAL_DURATION,
             "barSizeSetting": _HISTORICAL_BAR_SIZE,
             "whatToShow": "ADJUSTED_LAST",
