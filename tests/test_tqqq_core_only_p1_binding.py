@@ -234,7 +234,14 @@ class _QueuedCallbackClient:
                 bars = _bars_for_window(str(envelope["start_date"]), str(envelope["date_cutoff"]))
             if behavior == "error":
                 self.wrapper.error(request_id, 0, 321, "synthetic provider detail", "")
-            elif behavior in {"success", "partial"}:
+            elif behavior == "global_error":
+                self.wrapper.error(-1, 0, 321, "synthetic provider detail", "")
+            elif behavior == "connection_closed":
+                self.wrapper.connectionClosed()
+            elif behavior in {"success", "partial", "informational_then_success"}:
+                if behavior == "informational_then_success":
+                    for code in (2104, 2106, 2158):
+                        self.wrapper.error(-1, 0, code, "synthetic informational", "")
                 for bar in bars[:1] if behavior == "partial" else bars:
                     self.wrapper.historicalData(request_id, bar)
                 self.wrapper.historicalDataEnd(request_id, "raw start", "raw end")
@@ -429,7 +436,13 @@ def test_publisher_callback_boundary_matches_official_interface_and_stays_provid
     app.historicalDataEnd(1, "", "")
     assert app.isConnected() is False
     assert app.history_calls == []
-    assert app.tqqq_core_only_terminal_state() == {"active_request_id": None, "terminal": "IDLE"}
+    assert app.tqqq_core_only_terminal_state() == {
+        "active_request_id": None,
+        "terminal": "IDLE",
+        "terminal_class": "IDLE",
+        "matching_end_count": 0,
+        "informational_notification_count": 0,
+    }
 
 
 def _fetch_tqqq_core_only_bars(app: object) -> dict[str, object]:
@@ -558,7 +571,9 @@ def test_callback_app_rejects_an_incomplete_chunk_before_the_next_request(tmp_pa
     assert not output.exists()
 
 
-@pytest.mark.parametrize("behavior", ("error", "timeout", "foreign_end"))
+@pytest.mark.parametrize(
+    "behavior", ("error", "global_error", "connection_closed", "timeout", "foreign_end")
+)
 def test_callback_port_fails_closed_on_error_or_timeout(behavior: str) -> None:
     app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
         client_type=_QueuedCallbackClient,
@@ -575,6 +590,29 @@ def test_callback_port_fails_closed_on_error_or_timeout(behavior: str) -> None:
     assert len(app.history_calls) == 1
     assert app.disconnect_calls == 1
     assert "synthetic provider detail" not in repr(app.tqqq_core_only_terminal_state())
+
+
+def test_callback_port_ignores_active_request_informational_farm_notifications() -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.1,
+    )
+    app.behavior = "informational_then_success"
+    app.emit_frozen_window_bars = True
+
+    result = _fetch_tqqq_core_only_bars(app)
+    app.close()
+
+    assert isinstance(result["bars"], list)
+    assert app.tqqq_core_only_terminal_state() == {
+        "active_request_id": None,
+        "terminal": "COMPLETED",
+        "terminal_class": "COMPLETED",
+        "matching_end_count": 1,
+        "informational_notification_count": 3,
+    }
 
 
 def test_callback_port_requires_matching_end_and_normalizes_terminal_failures() -> None:
