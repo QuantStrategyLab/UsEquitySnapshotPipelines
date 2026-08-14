@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
+import sys
+import tempfile
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Protocol
 
 from quant_platform_kit.data.research_input import (
+    canonical_research_input_manifest_bytes,
     research_input_manifest_sha256,
     validate_research_input_manifest,
 )
@@ -19,6 +29,22 @@ INPUT_CONTRACT_ID = "tqqq_core_only_ibkr_adjusted_last.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_OUTPUT_FILENAMES = frozenset({"bars.json", "binding.json", "manifest.json"})
+
+
+class TqqqCoreOnlyHistoricalBarsProvider(Protocol):
+    """Injected data-only port for one adjusted historical-bars request per symbol."""
+
+    def fetch_historical_bars(
+        self,
+        *,
+        symbol: str,
+        calendar_id: str,
+        timezone: str,
+        adjustment_policy: str,
+        feed: str,
+        date_cutoff: str,
+    ) -> Mapping[str, object]: ...
 
 
 class TqqqCoreOnlyP1BindingError(ValueError):
@@ -195,3 +221,171 @@ def validate_tqqq_core_only_input_manifest(
     ):
         raise TqqqCoreOnlyP1BindingError("TQQQ core-only input binding mismatch")
     return research_input_manifest_sha256(validated)
+
+
+def _publish_noreplace(source: Path, destination: Path) -> None:
+    """Atomically publish a prepared private root without replacing an existing one."""
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            raise TqqqCoreOnlyP1BindingError("required no-clobber capability unavailable")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        parent_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_fd = os.open(destination.parent, parent_flags)
+        try:
+            result = renameat2(parent_fd, source.name.encode(), parent_fd, destination.name.encode(), 1)
+        finally:
+            os.close(parent_fd)
+        if result != 0:
+            if ctypes.get_errno() == errno.EEXIST:
+                raise TqqqCoreOnlyP1BindingError("immutable output already exists")
+            raise TqqqCoreOnlyP1BindingError("atomic no-clobber publish failed")
+        return
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            raise TqqqCoreOnlyP1BindingError("required no-clobber capability unavailable")
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        if renamex_np(str(source).encode(), str(destination).encode(), 4) != 0:
+            if ctypes.get_errno() == errno.EEXIST:
+                raise TqqqCoreOnlyP1BindingError("immutable output already exists")
+            raise TqqqCoreOnlyP1BindingError("atomic no-clobber publish failed")
+        return
+    raise TqqqCoreOnlyP1BindingError("unsupported platform for atomic no-clobber publish")
+
+
+def _require_new_private_output_root(output_root: str | Path) -> Path:
+    destination = Path(output_root)
+    if destination.exists() or destination.is_symlink():
+        raise TqqqCoreOnlyP1BindingError("immutable output already exists")
+    if destination.parent.is_symlink() or not destination.parent.is_dir():
+        raise TqqqCoreOnlyP1BindingError("output parent is unavailable")
+    return destination
+
+
+def _collect_frozen_four_inputs(
+    provider: TqqqCoreOnlyHistoricalBarsProvider,
+    binding: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, str]]:
+    identity = binding["data_identity"]
+    assert isinstance(identity, dict)
+    calendar = identity["calendar"]
+    adjustment = identity["adjustment"]
+    assert isinstance(calendar, dict) and isinstance(adjustment, dict)
+    symbols: dict[str, object] = {}
+    source_content_sha256: dict[str, str] = {}
+    for symbol in _UNIVERSE:
+        try:
+            response = provider.fetch_historical_bars(
+                symbol=symbol,
+                calendar_id=str(calendar["calendar_id"]),
+                timezone=str(calendar["timezone"]),
+                adjustment_policy=str(adjustment["policy"]),
+                feed=str(identity["feed"]),
+                date_cutoff=str(identity["date_cutoff"]),
+            )
+        except Exception:
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+        if not isinstance(response, Mapping):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+        normalized = dict(response)
+        try:
+            source_content_sha256[symbol] = hashlib.sha256(_canonical(normalized)).hexdigest()
+        except (TypeError, ValueError):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+        symbols[symbol] = normalized
+    return symbols, source_content_sha256
+
+
+def publish_tqqq_core_only_p1_inputs(
+    provider: TqqqCoreOnlyHistoricalBarsProvider,
+    *,
+    output_root: str | Path,
+    observed_at: str,
+    producer: Mapping[str, object],
+) -> dict[str, object]:
+    """Acquire exactly the frozen four inputs and atomically publish one private input root."""
+    destination = _require_new_private_output_root(output_root)
+    binding = build_tqqq_core_only_p1_binding()
+    symbols, source_content_sha256 = _collect_frozen_four_inputs(provider, binding)
+    try:
+        bars_bytes = _canonical(
+            {
+                "schema_version": "tqqq_core_only_private_bars.v1",
+                "symbols": symbols,
+            }
+        )
+        manifest = build_tqqq_core_only_input_manifest(
+            binding,
+            observed_at=observed_at,
+            producer=producer,
+            member_bytes=bars_bytes,
+            source_content_sha256=source_content_sha256,
+        )
+        manifest_bytes = canonical_research_input_manifest_bytes(manifest)
+    except (TypeError, ValueError):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input") from None
+    temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    try:
+        temporary.chmod(0o700)
+        (temporary / "binding.json").write_bytes(canonical_binding_bytes(binding))
+        (temporary / "bars.json").write_bytes(bars_bytes)
+        (temporary / "manifest.json").write_bytes(manifest_bytes)
+        manifest_sha256 = verify_tqqq_core_only_input_root(temporary)
+        _publish_noreplace(temporary, destination)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return {"manifest_sha256": manifest_sha256, "status": "P1_DATA_ONLY_INPUTS_PUBLISHED"}
+
+
+def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
+    """Verify the complete QPK-compatible immutable root without provider access."""
+    root = Path(output_root)
+    try:
+        root_stat = root.lstat()
+        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+            raise ValueError
+        if stat.S_IMODE(root_stat.st_mode) != 0o700:
+            raise ValueError
+        if {entry.name for entry in root.iterdir()} != _OUTPUT_FILENAMES:
+            raise ValueError
+        binding_bytes = (root / "binding.json").read_bytes()
+        bars_bytes = (root / "bars.json").read_bytes()
+        manifest_bytes = (root / "manifest.json").read_bytes()
+        binding = json.loads(binding_bytes)
+        if binding_bytes != canonical_binding_bytes(binding):
+            raise ValueError
+        manifest = json.loads(manifest_bytes)
+        if manifest_bytes != canonical_research_input_manifest_bytes(manifest):
+            raise ValueError
+        manifest_sha256 = validate_tqqq_core_only_input_manifest(manifest, binding)
+        payload = json.loads(bars_bytes)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != "tqqq_core_only_private_bars.v1"
+            or not isinstance(payload.get("symbols"), dict)
+            or set(payload["symbols"]) != set(_UNIVERSE)
+        ):
+            raise ValueError
+        members = manifest["members"]
+        if (
+            len(members) != 1
+            or members[0]["path"] != "bars.json"
+            or members[0]["sha256"] != hashlib.sha256(bars_bytes).hexdigest()
+            or members[0]["size_bytes"] != len(bars_bytes)
+        ):
+            raise ValueError
+        source_hashes = {source["source_id"]: source["content_sha256"] for source in manifest["sources"]}
+        if source_hashes != {
+            f"ibkr_adjusted_last:{symbol}": hashlib.sha256(_canonical(payload["symbols"][symbol])).hexdigest()
+            for symbol in _UNIVERSE
+        }:
+            raise ValueError
+        return manifest_sha256
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input root") from None
