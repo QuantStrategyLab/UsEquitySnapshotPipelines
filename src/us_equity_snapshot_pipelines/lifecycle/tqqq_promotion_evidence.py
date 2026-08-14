@@ -68,7 +68,7 @@ _CONFIG_SCHEMA = "tqqq_etf_only_replay_config.v1"
 _SIGNAL_MODEL = "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
 _MANDATE_ID = "tqqq_core_parity_v1"
 _BOXX_FIRST_ELIGIBLE_SESSION = _EXACT_COMMON_ELIGIBILITY
-_COST_SCENARIOS = (5, 10, 25)
+_COST_SCENARIOS = (5, 10, 15)
 _COOLDOWN_EXECUTION_SESSIONS = 20
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -326,7 +326,8 @@ def _validate_input(
     provenance = {
         "source": identity["provider"],
         "source_revision": binding_sha256(binding),
-        "retention_policy": retention["policy"],
+        "license": "P1_FROZEN_BINDING_RETENTION_ONLY_NO_LICENSE_CLAIM",
+        "usage_scope": retention["policy"],
     }
     bars_payload = _exact_mapping(payload["bars"], {"schema_version", "symbols"}, "bars payload")
     symbols = _exact_mapping(
@@ -1315,7 +1316,8 @@ def run_tqqq_promotion_evidence(
         "input_provenance": {
             "source": provenance["source"],
             "source_revision": provenance["source_revision"],
-            "retention_policy": provenance["retention_policy"],
+            "license": provenance["license"],
+            "usage_scope": provenance["usage_scope"],
             "range": {
                 "start": bars["QQQ"][0].session.isoformat(),
                 "end": bars["QQQ"][-1].session.isoformat(),

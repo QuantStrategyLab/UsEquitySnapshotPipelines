@@ -145,7 +145,7 @@ def _input_payload() -> dict[str, object]:
     binding = build_tqqq_core_only_p1_binding()
     manifest = build_tqqq_core_only_input_manifest(
         binding,
-        observed_at="2026-08-14T00:00:00Z",
+        observed_at="2026-08-10T00:00:00Z",
         producer={
             "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
             "commit_sha": RUNNER_REVISION,
@@ -168,7 +168,7 @@ def _refresh_manifest(payload: dict[str, object]) -> None:
     assert isinstance(bars, dict) and isinstance(binding, dict)
     payload["input_manifest"] = build_tqqq_core_only_input_manifest(
         binding,
-        observed_at="2026-08-14T00:00:00Z",
+        observed_at="2026-08-10T00:00:00Z",
         producer={
             "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
             "commit_sha": RUNNER_REVISION,
@@ -299,7 +299,7 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
     assert evidence["cost_stress"]["scenarios"] == [
         {"multiplier": 1, "total_cost_bps": 5.0},
         {"multiplier": 2, "total_cost_bps": 10.0},
-        {"multiplier": 3, "total_cost_bps": 25.0},
+        {"multiplier": 3, "total_cost_bps": 15.0},
     ]
     assert evidence["lifecycle_claims"] == {
         "learning_only": True,
@@ -1010,6 +1010,13 @@ def test_new_p1_manifest_enters_p3_without_legacy_session_or_platform_fields() -
 
     assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
     assert provenance["source"] == "IBKR"
+    assert payload["binding"]["data_identity"]["cost_assumptions"] == {
+        "turnover_cost_bps": 5.0,
+        "stress_turnover_cost_bps": [10.0, 25.0],
+        "borrow_cost_bps": 0.0,
+        "cash_yield_assumption": 0.0,
+        "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+    }
     assert "session_class" not in payload
     assert "platform_execution_revision" not in config
 

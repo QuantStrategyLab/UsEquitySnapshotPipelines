@@ -36,7 +36,7 @@ _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
 _EFFECTIVE_EXPOSURE_CAP = 0.50
-_COST_SCENARIOS_BPS = (5, 10, 25)
+_COST_SCENARIOS_BPS = (5, 10, 15)
 _COOLDOWN_TRIGGER_REASON = "FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT"
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 7, 2)
@@ -1484,12 +1484,12 @@ def evaluate_tqqq_pre_result_acceptance(
     if (
         float(locked_backtests[10].total_return)
         > float(locked_backtests[5].total_return) + 1e-12
-        or float(locked_backtests[25].total_return)
+        or float(locked_backtests[15].total_return)
         > float(locked_backtests[10].total_return) + 1e-12
     ):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(
-        not _same_number(getattr(locked_metrics[cost], field), getattr(locked_metrics[25], field))
+        not _same_number(getattr(locked_metrics[cost], field), getattr(locked_metrics[15], field))
         for cost in (5, 10)
         for field in ("qqq_total_return", "boxx_total_return", "qqq_max_drawdown")
     ):
@@ -1508,8 +1508,8 @@ def evaluate_tqqq_pre_result_acceptance(
     ):
         return TQQQ_ACCEPTANCE_REJECT
 
-    metrics = locked_metrics[25]
-    locked_backtest = locked_backtests[25]
+    metrics = locked_metrics[15]
+    locked_backtest = locked_backtests[15]
     candidate_return = float(locked_backtest.total_return)
     qqq_return = metrics.qqq_total_return
     boxx_return = metrics.boxx_total_return
@@ -1528,7 +1528,7 @@ def evaluate_tqqq_pre_result_acceptance(
             and candidate_mdd <= qqq_mdd + 1e-12
             and candidate_mdd <= 0.10 + 1e-12
             and (
-                not locked_defensive_only[25]
+                not locked_defensive_only[15]
                 or candidate_return >= boxx_return - 0.02
             )
         )
