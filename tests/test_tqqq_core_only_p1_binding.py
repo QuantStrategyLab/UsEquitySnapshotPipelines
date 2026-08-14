@@ -263,6 +263,36 @@ def test_cli_without_an_injected_provider_is_parked_without_publishing(tmp_path:
     assert not output.exists()
 
 
+def test_cli_provider_failure_emits_only_fixed_sanitized_lifecycle(
+    tmp_path: Path, capsys
+) -> None:
+    output = tmp_path / "immutable-input"
+    provider = _FakeHistoricalBarsProvider(fail_on="TQQQ")
+
+    assert (
+        acquisition_cli.main(
+            ["--output-root", str(output), "--observed-at", "2026-08-14T00:00:00Z"],
+            provider=provider,
+            producer=_producer(),
+        )
+        == 2
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "candidate_id": "tqqq_core_only_p2_v1",
+        "failure_class": "data_only_acquisition_failed",
+        "request_id": None,
+        "event_type": "historical_bars",
+        "submitted": True,
+        "completed": False,
+        "count": 2,
+        "source_commit": "a" * 40,
+        "status": "PARKED",
+    }
+    assert not output.exists()
+
+
 def test_publisher_callback_boundary_matches_official_interface_and_stays_provider_zero() -> None:
     app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
         client_type=_UnconnectedCallbackShapeClient,
