@@ -37,6 +37,7 @@ from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
 from .tqqq_promotion_evidence import (
     _SIGNAL_MODEL,
+    TqqqPromotionEvidenceError,
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
 )
@@ -139,6 +140,7 @@ class TqqqOrchestrationError(ValueError):
         evidence_artifact_count: int | None = None,
         failure_stage: str | None = None,
         failure_class: str | None = None,
+        recoverability: str = "fresh_human_authority_required",
     ) -> None:
         super().__init__(message)
         if snapshot_digest is None:
@@ -156,6 +158,11 @@ class TqqqOrchestrationError(ValueError):
             or not failure_stage
             or not isinstance(failure_class, str)
             or not failure_class
+            or recoverability
+            not in {
+                "fresh_human_authority_required",
+                "static_runner_contract_correction_required",
+            }
         ):
             raise ValueError("invalid sanitized TQQQ orchestration failure")
         self.sanitized_failure = {
@@ -163,7 +170,7 @@ class TqqqOrchestrationError(ValueError):
             "evidence_artifact_count": evidence_artifact_count,
             "failure_class": failure_class,
             "mandate_receipt_digest": mandate_receipt_digest,
-            "recoverability": "fresh_human_authority_required",
+            "recoverability": recoverability,
             "runner_completion_count": 0,
             "runner_invocation_count": 1,
             "snapshot_digest": snapshot_digest,
@@ -1157,6 +1164,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
         evidence_root = temporary / "evidence"
         failure_stage = "promotion_evidence_runner"
         failure_class = "promotion_runner_failed"
+        recoverability = "fresh_human_authority_required"
         try:
             evidence = run_tqqq_promotion_evidence(
                 input_payload=input_payload,
@@ -1229,6 +1237,13 @@ def orchestrate_existing_tqqq_snapshot_promotion(
             if validate_evidence_package_v2(evidence_payload, base_dir=evidence_root):
                 raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
+            if isinstance(exc, TqqqPromotionEvidenceError):
+                failure_stage = "promotion_evidence_contract"
+                failure_class = "promotion_evidence_contract_failed"
+            elif isinstance(exc, promotion_runner.TqqqPromotionContractError):
+                failure_stage = "promotion_evidence_runner_contract"
+                failure_class = "promotion_runner_contract_failed"
+                recoverability = "static_runner_contract_correction_required"
             try:
                 artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
             except OSError:
@@ -1240,6 +1255,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 evidence_artifact_count=artifact_count,
                 failure_stage=failure_stage,
                 failure_class=failure_class,
+                recoverability=recoverability,
             ) from exc
         _seal_private_tree(temporary)
         _publish_noreplace(temporary, published_root)

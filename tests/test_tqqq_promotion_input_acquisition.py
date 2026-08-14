@@ -1468,6 +1468,67 @@ def test_existing_snapshot_promotion_failure_retains_sanitized_state(
     assert failure["stage"] == "promotion_evidence_runner"
 
 
+@pytest.mark.parametrize(
+    ("error_type", "failure_class", "stage", "recoverability"),
+    (
+        (
+            evidence.TqqqPromotionEvidenceError,
+            "promotion_evidence_contract_failed",
+            "promotion_evidence_contract",
+            "fresh_human_authority_required",
+        ),
+        (
+            orchestration.promotion_runner.TqqqPromotionContractError,
+            "promotion_runner_contract_failed",
+            "promotion_evidence_runner_contract",
+            "static_runner_contract_correction_required",
+        ),
+    ),
+)
+def test_existing_snapshot_promotion_typed_failure_is_distinguished(
+    error_type: type[ValueError],
+    failure_class: str,
+    stage: str,
+    recoverability: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _allow_pinned_dependency_provenance(monkeypatch)
+    source_root, snapshot_digest, _config_digest, source_receipt_digest = (
+        _consumed_diagnostic_run(tmp_path)
+    )
+    monkeypatch.setattr(
+        orchestration, "_require_diagnostic_execution_compatibility", lambda *_args: None
+    )
+
+    def fail(**_kwargs):
+        raise error_type("private evidence detail")
+
+    monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", fail)
+
+    with pytest.raises(TqqqOrchestrationError) as caught:
+        orchestrate_existing_tqqq_snapshot_promotion(
+            source_root,
+            expected_snapshot_digest=snapshot_digest,
+            expected_source_mandate_receipt_digest=source_receipt_digest,
+            authority=_authority(),
+            output_root=tmp_path / "fresh-output",
+            execution_revision=RUNNER_REVISION,
+            execution_tree_sha=RUNNER_TREE_SHA,
+            runner_revision="9" * 40,
+            runner_tree_sha="8" * 40,
+            session_class="live-data-only",
+            clock=lambda: datetime(2026, 8, 11, 9, 0, tzinfo=UTC),
+        )
+
+    failure = caught.value.sanitized_failure
+    assert failure["failure_class"] == failure_class
+    assert failure["stage"] == stage
+    assert failure["recoverability"] == recoverability
+    assert "private evidence detail" not in json.dumps(failure)
+    assert "private evidence detail" not in str(caught.value)
+
+
 @pytest.mark.parametrize("failure", ("snapshot", "source_config", "output_exists"))
 def test_existing_snapshot_promotion_preflight_failure_issues_no_mandate_or_replay(
     failure: str,
