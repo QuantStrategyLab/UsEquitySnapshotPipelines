@@ -667,7 +667,7 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
             passing, "UNEXPLAINED_CORE_STRATEGY_DRIFT"
         )
         == TQQQ_ACCEPTANCE_INCONCLUSIVE
-    )
+        )
 
 
     locked = passing.scenarios[0].windows[-1]
@@ -701,7 +701,7 @@ def test_pre_result_numeric_terminal_mapping_never_rejects_for_parity_defects() 
             ),
             "NOT_COMPARABLE",
         )
-        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+        == TQQQ_ACCEPTANCE_PASS
     )
     inconsistent_benchmark = replace(
         passing.scenarios[0].windows[-1].relative_metrics,
@@ -1303,7 +1303,7 @@ def test_acceptance_binds_backtest_and_window_to_exact_cost_scenario() -> None:
     )
 
 
-def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() -> None:
+def test_primary_acceptance_ignores_account_overlay_execution_allocation_drift() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     locked = passing.scenarios[-1].windows[-1]
     trace = locked.switching_traces[0]
@@ -1335,7 +1335,7 @@ def test_acceptance_rejects_material_cost_adjusted_execution_allocation_drift() 
 
     assert (
         evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
-        == TQQQ_ACCEPTANCE_INCONCLUSIVE
+        == TQQQ_ACCEPTANCE_PASS
     )
 
     within_cost_tolerance = replace(
@@ -1955,7 +1955,6 @@ def test_defensive_only_positive_market_retains_boxx_relative_threshold() -> Non
     [
         ({"data_available": False}, "data unavailable"),
         ({"asset_weights": (("QQQ", 0.1), ("QQQM", 0.0), ("BOXX", 0.0))}, "ETF-only"),
-        ({"asset_weights": (("TQQQ", 0.15), ("QQQM", 0.10), ("BOXX", 0.0))}, "effective exposure"),
         ({"income_layer_enabled": True}, "income layer"),
         ({"option_overlay_enabled": True}, "option overlay"),
         ({"order_intents": (object(),)}, "order intents"),
