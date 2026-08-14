@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from queue import Empty, Queue
+import re
 from pathlib import Path
+from queue import Empty, Queue
 from types import SimpleNamespace
 
 import pytest
@@ -508,7 +509,21 @@ def test_callback_app_uses_the_fixed_single_concurrency_annual_plan(tmp_path: Pa
         *[("BOXX", f"{year}-08-01", f"{year + 1}-07-31") for year in range(2023, 2026)],
     ]
     assert len(app.history_calls) == 28
-    assert all(call[3:] == ("1 Y", "1 day", "ADJUSTED_LAST", 1, 1, False, []) for call in app.history_calls)
+    assert [envelope["endDateTime"] for envelope in app.request_envelopes[:2]] == [
+        "20180801-03:59:59",
+        "20190801-03:59:59",
+    ]
+    assert app.request_envelopes[-1]["endDateTime"] == "20260801-03:59:59"
+    assert all(
+        isinstance(envelope["endDateTime"], str)
+        and re.fullmatch(r"\d{8}-\d{2}:\d{2}:\d{2}", envelope["endDateTime"])
+        and "America/New_York" not in envelope["endDateTime"]
+        for envelope in app.request_envelopes
+    )
+    assert all(
+        call[3:] == ("1 Y", "1 day", "ADJUSTED_LAST", 1, 1, False, [])
+        for call in app.history_calls
+    )
 
 
 @pytest.mark.parametrize("behavior", ("error", "timeout", "foreign_end"))
