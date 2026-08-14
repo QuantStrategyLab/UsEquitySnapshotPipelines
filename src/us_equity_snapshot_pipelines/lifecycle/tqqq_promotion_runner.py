@@ -133,7 +133,6 @@ class TqqqPromotionIdentity:
     qpk_revision: str
     ues_revision: str
     runner_revision: str
-    platform_execution_revision: str
     config_sha256: str
     input_manifest_sha256: str
     mandate_receipt_sha256: str
@@ -1543,10 +1542,7 @@ def _validate_identity(identity: TqqqPromotionIdentity) -> None:
         raise TqqqPromotionContractError("QPK revision mismatch")
     if identity.ues_revision != _UES_REVISION:
         raise TqqqPromotionContractError("UES revision mismatch")
-    for label, value in (
-        ("runner revision", identity.runner_revision),
-        ("platform execution revision", identity.platform_execution_revision),
-    ):
+    for label, value in (("runner revision", identity.runner_revision),):
         if not _is_hex(value, 40):
             raise TqqqPromotionContractError(f"invalid {label}")
     for label, value in (
@@ -2101,7 +2097,6 @@ def _params(identity: TqqqPromotionIdentity, timing_sha256: str) -> dict[str, ob
         "config_sha256": identity.config_sha256,
         "input_manifest_sha256": identity.input_manifest_sha256,
         "mandate_receipt_sha256": identity.mandate_receipt_sha256,
-        "platform_execution_revision": identity.platform_execution_revision,
         "qpk_revision": identity.qpk_revision,
         "runner_revision": identity.runner_revision,
         "timing_sha256": timing_sha256,

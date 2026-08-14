@@ -14,7 +14,8 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
 
 def _write_snapshot(root: Path) -> Path:
     root.mkdir()
-    (root / "input-manifest.json").write_text('{"manifest":"preserved"}')
+    (root / "binding.json").write_text('{"binding":"preserved"}')
+    (root / "manifest.json").write_text('{"manifest":"preserved"}')
     (root / "bars.json").write_text('{"bars":"preserved"}')
     return root
 
@@ -55,6 +56,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
     ) == 0
     assert captured == {
         "input_payload": {
+            "binding": {"binding": "preserved"},
             "input_manifest": {"manifest": "preserved"},
             "bars": {"bars": "preserved"},
         },

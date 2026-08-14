@@ -14,17 +14,15 @@ def _load_script_module():
     return module
 
 
-def test_cli_passes_personal_attestation_to_evidence_consumer(tmp_path: Path) -> None:
+def test_cli_passes_new_p1_root_to_evidence_consumer(tmp_path: Path) -> None:
     module = _load_script_module()
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
+    binding = {"binding": "identity"}
     manifest = {"manifest": "identity"}
     bars = {"bars": "private"}
-    attestation = {"attestation": "human_attested"}
-    (snapshot / "input-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (snapshot / "bars.json").write_text(json.dumps(bars), encoding="utf-8")
-    attestation_path = tmp_path / "scope-retention-attestation.v1.json"
-    attestation_path.write_text(json.dumps(attestation), encoding="utf-8")
+    for filename, value in (("binding.json", binding), ("manifest.json", manifest), ("bars.json", bars)):
+        (snapshot / filename).write_text(json.dumps(value), encoding="utf-8")
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     captured: dict[str, object] = {}
@@ -37,20 +35,31 @@ def test_cli_passes_personal_attestation_to_evidence_consumer(tmp_path: Path) ->
 
     assert module.main(
         [
-            "--snapshot-root",
-            str(snapshot),
-            "--personal-attestation",
-            str(attestation_path),
-            "--config",
-            str(config_path),
-            "--mandate-receipt-sha256",
-            "2" * 64,
-            "--output-dir",
-            str(tmp_path / "output"),
+            "--snapshot-root", str(snapshot),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--output-dir", str(tmp_path / "output"),
         ]
     ) == 0
     assert captured["input_payload"] == {
-        "provenance": attestation,
+        "binding": binding,
+        "input_manifest": manifest,
+        "bars": bars,
+    }
+
+
+def test_cli_reads_new_p1_root_without_personal_attestation(tmp_path: Path) -> None:
+    module = _load_script_module()
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    binding = {"binding": "identity"}
+    manifest = {"manifest": "identity"}
+    bars = {"bars": "private"}
+    for filename, value in (("binding.json", binding), ("manifest.json", manifest), ("bars.json", bars)):
+        (snapshot / filename).write_text(json.dumps(value), encoding="utf-8")
+
+    assert module._snapshot_payload(snapshot) == {
+        "binding": binding,
         "input_manifest": manifest,
         "bars": bars,
     }

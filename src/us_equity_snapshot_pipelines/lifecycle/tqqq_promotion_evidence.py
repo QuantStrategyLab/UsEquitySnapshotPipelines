@@ -18,7 +18,6 @@ from quant_platform_kit.common.models import PortfolioSnapshot, Position
 from quant_platform_kit.data.research_input import (
     InvalidResearchInputEvidence,
     canonical_research_input_manifest_bytes,
-    research_input_manifest_sha256,
     validate_research_input_manifest,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
@@ -33,16 +32,23 @@ from us_equity_strategies.entrypoints import (
     _build_tqqq_growth_income_decision,
 )
 
+from .tqqq_core_only_p1_binding import (
+    CANDIDATE_CONFIG_SHA256,
+    binding_sha256,
+    validate_tqqq_core_only_input_manifest,
+    validate_tqqq_core_only_p1_binding,
+)
+from .tqqq_core_only_p1_binding import (
+    UES_REVISION as _P1_UES_REVISION,
+)
 from .tqqq_promotion_runner import (
     _COOLDOWN_TRIGGER_REASON,
     _EXACT_COMMON_ELIGIBILITY,
-    _FROZEN_CALENDAR_SOURCE_REVISION,
     _LOCKED_OOS_END,
     _LOCKED_OOS_SESSION_COUNT,
     _LOCKED_OOS_SESSIONS_SHA256,
     _LOCKED_OOS_START,
     _QPK_REVISION,
-    _UES_REVISION,
     TqqqEpisodeSummary,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
@@ -57,30 +63,10 @@ from .tqqq_promotion_runner import (
 
 _PROFILE = "tqqq_core_parity_v1"
 _DOMAIN = "us_equity"
-_INPUT_CONTRACT_ID = "tqqq_etf_only_ibkr_adjusted_last.v1"
-_INPUT_SCHEMA = "tqqq_etf_only_private_bars.v1"
+_INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "tqqq_etf_only_replay_config.v1"
 _SIGNAL_MODEL = "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
 _MANDATE_ID = "tqqq_core_parity_v1"
-_LICENSE = "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04"
-_USAGE_SCOPE = "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION"
-_PERSONAL_ATTESTATION_SCHEMA = "personal_research_scope_retention.v1"
-_PERSONAL_ATTESTATION_ASSETS = ["QQQ", "TQQQ", "QQQM", "BOXX"]
-_PERSONAL_ATTESTATION_SCOPE = "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY"
-_PERSONAL_ATTESTATION_PROVENANCE = {
-    "provider": "human_attested_personal_internal_research",
-    "provider_revision": "not_independently_verified",
-    "license": "human_attested_no_third_party_license_claim",
-    "usage_scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY_NO_REDISTRIBUTION",
-}
-_SESSION_PROVIDER = {
-    "paper": "IBKR Paper Gateway TWS API",
-    "live-data-only": "IBKR Live Gateway Data Only TWS API",
-}
-_SESSION_TOOL = {
-    "paper": "tqqq_ibkr_paper_single_acquisition",
-    "live-data-only": "tqqq_ibkr_live_data_only_single_acquisition",
-}
 _BOXX_FIRST_ELIGIBLE_SESSION = _EXACT_COMMON_ELIGIBILITY
 _COST_SCENARIOS = (5, 10, 15)
 _COOLDOWN_EXECUTION_SESSIONS = 20
@@ -267,66 +253,6 @@ def _timestamp(value: str | None) -> str:
     return value
 
 
-def _personal_attestation_provenance(
-    value: object, manifest_sha256: str
-) -> dict[str, Any]:
-    attestation = _exact_mapping(
-        value,
-        {
-            "schema_version",
-            "assets",
-            "attested_at",
-            "authority_basis",
-            "independent_legal_verification_claim",
-            "input_root_sha256",
-            "redistribution",
-            "retention_expires_at",
-            "scope",
-            "third_party_license_claim",
-        },
-        "personal attestation",
-    )
-    try:
-        retention_expires_at = datetime.fromisoformat(
-            attestation["retention_expires_at"].removesuffix("Z") + "+00:00"
-        )
-    except (AttributeError, ValueError) as exc:
-        raise TqqqPromotionEvidenceError("invalid personal retention expiry") from exc
-    if (
-        not isinstance(attestation["retention_expires_at"], str)
-        or not attestation["retention_expires_at"].endswith("Z")
-        or retention_expires_at.tzinfo != UTC
-        or retention_expires_at <= datetime.now(UTC)
-    ):
-        raise TqqqPromotionEvidenceError("invalid personal retention expiry")
-    try:
-        attested_at = datetime.fromisoformat(
-            attestation["attested_at"].removesuffix("Z") + "+00:00"
-        )
-    except (AttributeError, ValueError) as exc:
-        raise TqqqPromotionEvidenceError("invalid personal attestation") from exc
-    if (
-        not isinstance(attestation["attested_at"], str)
-        or not attestation["attested_at"].endswith("Z")
-        or attested_at.tzinfo != UTC
-    ):
-        raise TqqqPromotionEvidenceError("invalid personal attestation")
-    if attestation["scope"] != _PERSONAL_ATTESTATION_SCOPE:
-        raise TqqqPromotionEvidenceError("invalid personal scope")
-    if (
-        attestation["schema_version"] != _PERSONAL_ATTESTATION_SCHEMA
-        or attestation["assets"] != _PERSONAL_ATTESTATION_ASSETS
-        or attestation["authority_basis"] != "FRESH_HUMAN_CONFIRMATION"
-        or attestation["independent_legal_verification_claim"] != "NONE"
-        or attestation["redistribution"] != "PROHIBITED"
-        or attestation["third_party_license_claim"] != "NONE"
-    ):
-        raise TqqqPromotionEvidenceError("invalid personal attestation")
-    if attestation["input_root_sha256"] != manifest_sha256:
-        raise TqqqPromotionEvidenceError("personal attestation root mismatch")
-    return copy.deepcopy(_PERSONAL_ATTESTATION_PROVENANCE)
-
-
 def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     fields = {
         "schema_version",
@@ -340,10 +266,6 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         "risk_standard_id",
         "risk_standard_sha256",
         "authority_receipt_sha256",
-        "platform_execution_revision",
-        "input_license",
-        "input_usage_scope",
-        "session_class",
     }
     config = _exact_mapping(value, fields, "config")
     if (
@@ -357,15 +279,10 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         or config["risk_mandate_id"] != _MANDATE_ID
         or not isinstance(config["risk_standard_id"], str)
         or not config["risk_standard_id"]
-        or config["input_license"] != _LICENSE
-        or config["input_usage_scope"] != _USAGE_SCOPE
-        or not isinstance(config["session_class"], str)
-        or config["session_class"] not in _SESSION_PROVIDER
     ):
         raise TqqqPromotionEvidenceError("invalid frozen config")
     _digest_text(config["risk_standard_sha256"], 64, "risk standard digest")
     _digest_text(config["authority_receipt_sha256"], 64, "authority digest")
-    _digest_text(config["platform_execution_revision"], 40, "platform revision")
     return config
 
 
@@ -392,84 +309,26 @@ def _parse_bar(value: object) -> _Bar:
 def _validate_input(
     value: Mapping[str, Any], config: Mapping[str, Any]
 ) -> tuple[dict[str, Any], dict[str, tuple[_Bar, ...]], str]:
-    payload = _exact_mapping(value, {"provenance", "input_manifest", "bars"}, "input payload")
+    del config
+    payload = _exact_mapping(value, {"binding", "input_manifest", "bars"}, "input payload")
     try:
+        binding = validate_tqqq_core_only_p1_binding(payload["binding"])
+        manifest_sha256 = validate_tqqq_core_only_input_manifest(
+            payload["input_manifest"], binding
+        )
         manifest = validate_research_input_manifest(payload["input_manifest"])
-    except InvalidResearchInputEvidence as exc:
-        raise TqqqPromotionEvidenceError("invalid input manifest") from exc
-    if (
-        manifest["research_input_contract_id"] != _INPUT_CONTRACT_ID
-        or manifest["domain"] != _DOMAIN
-        or manifest["profile"] != _PROFILE
-        or manifest["artifact_type"] != "immutable_adjusted_ohlcv_etf_only"
-        or manifest["calendar"]["calendar_id"] != "XNYS"
-        or manifest["calendar"]["timezone"] != "America/New_York"
-        or manifest["calendar"]["source"] != "exchange_calendars"
-        or manifest["calendar"]["source_revision"] != _FROZEN_CALENDAR_SOURCE_REVISION
-        or manifest["adjustment"]["policy"] != "total_return_adjusted"
-        or manifest["adjustment"]["source"] != "IBKR_ADJUSTED_LAST"
-    ):
-        raise TqqqPromotionEvidenceError("invalid immutable input contract")
-    manifest_sha256 = research_input_manifest_sha256(manifest)
-    raw_provenance = payload["provenance"]
-    personal_attested = (
-        isinstance(raw_provenance, Mapping)
-        and raw_provenance.get("schema_version") == _PERSONAL_ATTESTATION_SCHEMA
-    )
-    if personal_attested:
-        provenance = _personal_attestation_provenance(raw_provenance, manifest_sha256)
-    else:
-        provenance = _exact_mapping(
-            raw_provenance,
-            {
-                "evidence_class",
-                "real_producer",
-                "provider",
-                "provider_revision",
-                "license",
-                "usage_scope",
-                "session_class",
-            },
-            "input provenance",
-        )
-        if (
-            provenance["evidence_class"] != "provider_observed"
-            or provenance["real_producer"] is not True
-            or provenance["session_class"] != config["session_class"]
-            or provenance["provider"] != _SESSION_PROVIDER[config["session_class"]]
-            or not isinstance(provenance["provider_revision"], str)
-            or not provenance["provider_revision"]
-            or provenance["license"] != config["input_license"]
-            or provenance["usage_scope"] != config["input_usage_scope"]
-        ):
-            raise TqqqPromotionEvidenceError("invalid provider provenance")
-    session_class = config["session_class"]
-    manifest_session_class = session_class
-    if personal_attested:
-        manifest_session_class = next(
-            (
-                label
-                for label in _SESSION_TOOL
-                if manifest["manifest_id"].startswith(
-                    f"tqqq-ibkr-{label}-single-acquisition-"
-                )
-            ),
-            None,
-        )
-        if manifest_session_class is None:
-            raise TqqqPromotionEvidenceError("invalid provider session identity")
-    manifest_prefix = f"tqqq-ibkr-{manifest_session_class}-single-acquisition-"
-    manifest_suffix = manifest["manifest_id"].removeprefix(manifest_prefix)
-    producer = manifest["producer"]
-    if (
-        not manifest["manifest_id"].startswith(manifest_prefix)
-        or len(manifest_suffix) != 24
-        or any(character not in "0123456789abcdef" for character in manifest_suffix)
-        or producer["repository"] != "QuantStrategyLab/UsEquitySnapshotPipelines"
-        or producer["tool"] != _SESSION_TOOL[manifest_session_class]
-        or producer["tool_version"] != "v1"
-    ):
-        raise TqqqPromotionEvidenceError("invalid provider session identity")
+    except (InvalidResearchInputEvidence, ValueError):
+        raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
+    identity = binding["data_identity"]
+    assert isinstance(identity, dict)
+    retention = identity["retention"]
+    assert isinstance(retention, dict)
+    provenance = {
+        "source": identity["provider"],
+        "source_revision": binding_sha256(binding),
+        "license": "P1_FROZEN_BINDING_RETENTION_ONLY_NO_LICENSE_CLAIM",
+        "usage_scope": retention["policy"],
+    }
     bars_payload = _exact_mapping(payload["bars"], {"schema_version", "symbols"}, "bars payload")
     symbols = _exact_mapping(
         bars_payload["symbols"], {"BOXX", "QQQ", "QQQM", "TQQQ"}, "bar symbols"
@@ -477,8 +336,6 @@ def _validate_input(
     if bars_payload["schema_version"] != _INPUT_SCHEMA:
         raise TqqqPromotionEvidenceError("invalid bars schema")
     bars_bytes = _canonical(bars_payload)
-    if manifest_suffix != _sha256(bars_bytes)[:24]:
-        raise TqqqPromotionEvidenceError("input identity mismatch")
     members = manifest["members"]
     if (
         len(members) != 1
@@ -490,16 +347,18 @@ def _validate_input(
         raise TqqqPromotionEvidenceError("input identity mismatch")
     parsed: dict[str, tuple[_Bar, ...]] = {}
     source_digests = {item["source_id"]: item["content_sha256"] for item in manifest["sources"]}
-    source_revisions = {item["revision"] for item in manifest["sources"]}
-    if set(source_digests) != {"ibkr:BOXX", "ibkr:QQQ", "ibkr:QQQM", "ibkr:TQQQ"}:
-        raise TqqqPromotionEvidenceError("invalid provider source identities")
-    if not personal_attested and source_revisions != {provenance["provider_revision"]}:
+    if set(source_digests) != {
+        "ibkr_adjusted_last:BOXX",
+        "ibkr_adjusted_last:QQQ",
+        "ibkr_adjusted_last:QQQM",
+        "ibkr_adjusted_last:TQQQ",
+    }:
         raise TqqqPromotionEvidenceError("invalid provider source identities")
     for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
         rows = symbols[symbol]
         if not isinstance(rows, list) or not rows:
             raise TqqqPromotionEvidenceError("missing immutable bars")
-        if source_digests[f"ibkr:{symbol}"] != _sha256(_canonical(rows)):
+        if source_digests[f"ibkr_adjusted_last:{symbol}"] != _sha256(_canonical(rows)):
             raise TqqqPromotionEvidenceError("input identity mismatch")
         values = tuple(_parse_bar(row) for row in rows)
         sessions = tuple(row.session for row in values)
@@ -1372,12 +1231,12 @@ def _run_tqqq_promotion_replay(
     provenance, bars, manifest_sha256 = _validate_input(input_payload, config)
     manifest = validate_research_input_manifest(input_payload["input_manifest"])
     runner_revision = _resolve_runner_revision()
-    config_sha256 = _sha256(_canonical(config))
+    config_sha256 = CANDIDATE_CONFIG_SHA256
     initial_state_sha256 = _digest(_initial_state_projection())
     candidate = CandidateRiskIdentity(
         strategy_profile=_PROFILE,
         account_mode="single_strategy_account_v1",
-        strategy_revision=_UES_REVISION,
+        strategy_revision=_P1_UES_REVISION,
         runner_revision=runner_revision,
         config_sha256=config_sha256,
         input_manifest_sha256=manifest_sha256,
@@ -1385,9 +1244,8 @@ def _run_tqqq_promotion_replay(
     )
     identity = TqqqPromotionIdentity(
         qpk_revision=_QPK_REVISION,
-        ues_revision=_UES_REVISION,
+        ues_revision=_P1_UES_REVISION,
         runner_revision=runner_revision,
-        platform_execution_revision=config["platform_execution_revision"],
         config_sha256=config_sha256,
         input_manifest_sha256=manifest_sha256,
         mandate_receipt_sha256=mandate_receipt_sha256,
@@ -1453,11 +1311,11 @@ def run_tqqq_promotion_evidence(
         "strategy": {
             "profile": _PROFILE,
             "domain": _DOMAIN,
-            "source_revision": _UES_REVISION,
+            "source_revision": _P1_UES_REVISION,
         },
         "input_provenance": {
-            "source": provenance["provider"],
-            "source_revision": provenance["provider_revision"],
+            "source": provenance["source"],
+            "source_revision": provenance["source_revision"],
             "license": provenance["license"],
             "usage_scope": provenance["usage_scope"],
             "range": {

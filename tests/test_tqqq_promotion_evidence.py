@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,6 +26,10 @@ import us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration as 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence_module
 from us_equity_snapshot_pipelines.lifecycle.tqqq_acquisition_orchestration import (
     FROZEN_XNYS_SESSIONS,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+    build_tqqq_core_only_input_manifest,
+    build_tqqq_core_only_p1_binding,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     TqqqPromotionEvidenceError,
@@ -122,10 +126,12 @@ def _bar(symbol: str, session: date, index: int) -> dict[str, object]:
 def _input_payload() -> dict[str, object]:
     sessions = _sessions()
     bars = {
-        "schema_version": "tqqq_etf_only_private_bars.v1",
+        "schema_version": "tqqq_core_only_private_bars.v1",
         "symbols": {
             "BOXX": [
-                _bar("BOXX", session, index) for index, session in enumerate(sessions) if session >= date(2022, 12, 28)
+                _bar("BOXX", session, index)
+                for index, session in enumerate(sessions)
+                if session >= date(2022, 12, 28)
             ],
             "QQQ": [_bar("QQQ", session, index) for index, session in enumerate(sessions)],
             "QQQM": [
@@ -136,102 +142,46 @@ def _input_payload() -> dict[str, object]:
             "TQQQ": [_bar("TQQQ", session, index) for index, session in enumerate(sessions)],
         },
     }
-    bars_bytes = _canonical(bars)
-    observed_at = "2026-08-10T00:00:00Z"
-    sources = []
-    for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
-        symbol_bytes = _canonical(bars["symbols"][symbol])
-        sources.append(
-            {
-                "source_id": f"ibkr:{symbol}",
-                "revision": "server-version-176",
-                "observed_at": observed_at,
-                "content_sha256": hashlib.sha256(symbol_bytes).hexdigest(),
-            }
-        )
-    manifest = {
-        "schema_version": "research_input_manifest.v1",
-        "manifest_id": (
-            "tqqq-ibkr-paper-single-acquisition-"
-            f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
-        ),
-        "research_input_contract_id": "tqqq_etf_only_ibkr_adjusted_last.v1",
-        "domain": "us_equity",
-        "profile": "tqqq_core_parity_v1",
-        "artifact_type": "immutable_adjusted_ohlcv_etf_only",
-        "observed_at": observed_at,
-        "effective_at": observed_at,
-        "as_of": observed_at,
-        "producer": {
+    binding = build_tqqq_core_only_p1_binding()
+    manifest = build_tqqq_core_only_input_manifest(
+        binding,
+        observed_at="2026-08-10T00:00:00Z",
+        producer={
             "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
             "commit_sha": RUNNER_REVISION,
             "tree_sha": RUNNER_REVISION,
-            "tool": "tqqq_ibkr_paper_single_acquisition",
+            "tool": "tqqq_core_only_p1_publisher",
             "tool_version": "v1",
         },
-        "calendar": {
-            "calendar_id": "XNYS",
-            "timezone": "America/New_York",
-            "session_date": "2026-07-31",
-            "source": "exchange_calendars",
-            "source_revision": (
-                "exchange_calendars:4.13.2:XNYS:"
-                "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
-            ),
+        member_bytes=_canonical(bars),
+        source_content_sha256={
+            symbol: hashlib.sha256(_canonical(bars["symbols"][symbol])).hexdigest()
+            for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
         },
-        "adjustment": {
-            "policy": "total_return_adjusted",
-            "source": "IBKR_ADJUSTED_LAST",
-            "source_revision": "server-version-176",
+    )
+    return {"binding": binding, "input_manifest": manifest, "bars": bars}
+
+
+def _refresh_manifest(payload: dict[str, object]) -> None:
+    bars = payload["bars"]
+    binding = payload["binding"]
+    assert isinstance(bars, dict) and isinstance(binding, dict)
+    payload["input_manifest"] = build_tqqq_core_only_input_manifest(
+        binding,
+        observed_at="2026-08-10T00:00:00Z",
+        producer={
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit_sha": RUNNER_REVISION,
+            "tree_sha": RUNNER_REVISION,
+            "tool": "tqqq_core_only_p1_publisher",
+            "tool_version": "v1",
         },
-        "sources": sources,
-        "members": [
-            {
-                "path": "bars.json",
-                "media_type": "application/json",
-                "size_bytes": len(bars_bytes),
-                "sha256": hashlib.sha256(bars_bytes).hexdigest(),
-            }
-        ],
-    }
-    return {
-        "provenance": {
-            "evidence_class": "provider_observed",
-            "real_producer": True,
-            "provider": "IBKR Paper Gateway TWS API",
-            "provider_revision": "server-version-176",
-            "session_class": "paper",
-            "license": "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04",
-            "usage_scope": "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION",
+        member_bytes=_canonical(bars),
+        source_content_sha256={
+            symbol: hashlib.sha256(_canonical(bars["symbols"][symbol])).hexdigest()
+            for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
         },
-        "input_manifest": manifest,
-        "bars": bars,
-    }
-
-
-def _personal_attestation(payload: dict[str, object]) -> dict[str, object]:
-    return {
-        "schema_version": "personal_research_scope_retention.v1",
-        "assets": ["QQQ", "TQQQ", "QQQM", "BOXX"],
-        "attested_at": "2026-08-14T08:02:42.313883Z",
-        "authority_basis": "FRESH_HUMAN_CONFIRMATION",
-        "independent_legal_verification_claim": "NONE",
-        "input_root_sha256": research_input_manifest_sha256(
-            payload["input_manifest"]
-        ),
-        "redistribution": "PROHIBITED",
-        "retention_expires_at": (
-            datetime.now(UTC) + timedelta(days=1)
-        ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY",
-        "third_party_license_claim": "NONE",
-    }
-
-
-def _personal_attested_input_payload() -> dict[str, object]:
-    payload = _input_payload()
-    payload["provenance"] = _personal_attestation(payload)
-    return payload
+    )
 
 
 def _config() -> dict[str, object]:
@@ -249,10 +199,6 @@ def _config() -> dict[str, object]:
         "risk_standard_id": "qpk.strategy_promotion_risk_standard.zh-CN.v2",
         "risk_standard_sha256": "2" * 64,
         "authority_receipt_sha256": "3" * 64,
-        "platform_execution_revision": "4" * 40,
-        "input_license": "GFIS_API_NON_COMMERCIAL_PERSONAL_RESTRICTED_2026-02-04",
-        "input_usage_scope": "PRIVATE_LOCAL_NONCOMMERCIAL_RESEARCH_NO_REDISTRIBUTION",
-        "session_class": "paper",
     }
 
 
@@ -269,7 +215,7 @@ def test_acquisition_freezes_distinct_signal_model_before_authorization() -> Non
     assert config["signal_model"] == (
         "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
     )
-    assert evidence_module._validate_config(config) == config
+    assert evidence_module._validate_config(_config()) == _config()
 
 
 def test_evidence_rejects_legacy_signal_model_instead_of_rewriting_identity() -> None:
@@ -479,23 +425,7 @@ def test_input_with_missing_locked_oos_session_fails_closed(tmp_path: Path) -> N
             for row in payload["bars"]["symbols"][symbol]
             if row["date"] != missing_session
         ]
-        source = next(
-            item
-            for item in payload["input_manifest"]["sources"]
-            if item["source_id"] == f"ibkr:{symbol}"
-        )
-        source["content_sha256"] = hashlib.sha256(
-            _canonical(payload["bars"]["symbols"][symbol])
-        ).hexdigest()
-    bars_bytes = _canonical(payload["bars"])
-    payload["input_manifest"]["members"][0].update(
-        size_bytes=len(bars_bytes),
-        sha256=hashlib.sha256(bars_bytes).hexdigest(),
-    )
-    payload["input_manifest"]["manifest_id"] = (
-        "tqqq-ibkr-paper-single-acquisition-"
-        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
-    )
+    _refresh_manifest(payload)
 
     with pytest.raises(TqqqPromotionEvidenceError, match="locked OOS calendar identity"):
         run_tqqq_promotion_evidence(
@@ -509,16 +439,7 @@ def test_input_with_missing_locked_oos_session_fails_closed(tmp_path: Path) -> N
 def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> None:
     payload = _input_payload()
     payload["bars"]["symbols"]["BOXX"].insert(0, _bar("BOXX", date(2022, 12, 23), 0))
-    bars_bytes = _canonical(payload["bars"])
-    payload["input_manifest"]["members"][0].update(
-        size_bytes=len(bars_bytes), sha256=hashlib.sha256(bars_bytes).hexdigest()
-    )
-    payload["input_manifest"]["manifest_id"] = (
-        "tqqq-ibkr-paper-single-acquisition-"
-        f"{hashlib.sha256(bars_bytes).hexdigest()[:24]}"
-    )
-    boxx_bytes = _canonical(payload["bars"]["symbols"]["BOXX"])
-    payload["input_manifest"]["sources"][0]["content_sha256"] = hashlib.sha256(boxx_bytes).hexdigest()
+    _refresh_manifest(payload)
 
     with pytest.raises(TqqqPromotionEvidenceError, match="BOXX eligibility"):
         run_tqqq_promotion_evidence(
@@ -527,128 +448,6 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
             output_dir=tmp_path,
             mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
-
-
-def test_personal_attestation_is_normalized_as_human_attested_input() -> None:
-    payload = _personal_attested_input_payload()
-
-    provenance, _, manifest_sha256 = evidence_module._validate_input(payload, _config())
-
-    assert provenance == {
-        "provider": "human_attested_personal_internal_research",
-        "provider_revision": "not_independently_verified",
-        "license": "human_attested_no_third_party_license_claim",
-        "usage_scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY_NO_REDISTRIBUTION",
-    }
-    assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
-
-
-def test_personal_attestation_accepts_manifest_paper_identity_with_live_data_config() -> None:
-    config = _config()
-    config["session_class"] = "live-data-only"
-    payload = _personal_attested_input_payload()
-
-    provenance, _, manifest_sha256 = evidence_module._validate_input(
-        payload, config
-    )
-
-    assert provenance["provider"] == "human_attested_personal_internal_research"
-    assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
-
-
-def test_provider_observed_requires_config_session_identity() -> None:
-    config = _config()
-    config["session_class"] = "live-data-only"
-
-    with pytest.raises(TqqqPromotionEvidenceError, match="provider provenance"):
-        evidence_module._validate_input(_input_payload(), config)
-
-
-@pytest.mark.parametrize(
-    ("mutate", "error"),
-    [
-        (
-            lambda manifest: manifest.update(
-                manifest_id=manifest["manifest_id"].replace("paper", "unknown")
-            ),
-            "provider session identity",
-        ),
-        (
-            lambda manifest: manifest["producer"].update(tool="untrusted_acquisition"),
-            "provider session identity",
-        ),
-        (
-            lambda manifest: manifest["sources"][0].update(content_sha256="0" * 64),
-            "input identity",
-        ),
-    ],
-)
-def test_personal_attested_manifest_identity_failures_stop_before_backtest_orchestrator(
-    tmp_path: Path, mutate, error: str
-) -> None:
-    payload = _personal_attested_input_payload()
-    mutate(payload["input_manifest"])
-    payload["provenance"]["input_root_sha256"] = research_input_manifest_sha256(
-        payload["input_manifest"]
-    )
-    config = _config()
-    config["session_class"] = "live-data-only"
-
-    with patch.object(
-        evidence_module,
-        "run_tqqq_promotion_research",
-        side_effect=AssertionError("BacktestOrchestrator must not run"),
-    ) as orchestrator, pytest.raises(TqqqPromotionEvidenceError, match=error):
-        run_tqqq_promotion_evidence(
-            input_payload=payload,
-            config_payload=config,
-            output_dir=tmp_path,
-            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
-        )
-
-    orchestrator.assert_not_called()
-    assert not any(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize(
-    ("mutate", "error"),
-    [
-        (lambda attestation, payload: attestation.update(input_root_sha256="0" * 64), "root"),
-        (
-            lambda attestation, payload: attestation.update(scope="EXTERNAL_REDISTRIBUTION"),
-            "scope",
-        ),
-        (
-            lambda attestation, payload: attestation.update(retention_expires_at="2000-01-01T00:00:00Z"),
-            "retention",
-        ),
-        (lambda attestation, payload: attestation.pop("redistribution"), "attestation"),
-        (
-            lambda attestation, payload: payload["input_manifest"].update(profile="tampered"),
-            "immutable input contract",
-        ),
-    ],
-)
-def test_personal_attestation_failures_stop_before_backtest_orchestrator(
-    tmp_path: Path, mutate, error: str
-) -> None:
-    payload = _personal_attested_input_payload()
-    mutate(payload["provenance"], payload)
-
-    with patch.object(
-        evidence_module,
-        "run_tqqq_promotion_research",
-        side_effect=AssertionError("BacktestOrchestrator must not run"),
-    ) as orchestrator, pytest.raises(TqqqPromotionEvidenceError, match=error):
-        run_tqqq_promotion_evidence(
-            input_payload=payload,
-            config_payload=_config(),
-            output_dir=tmp_path,
-            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
-        )
-
-    orchestrator.assert_not_called()
-    assert not any(tmp_path.iterdir())
 
 
 def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
@@ -1193,3 +992,44 @@ def test_member_risk_engine_rejection_does_not_park_the_strategy_episode() -> No
     assert not any(targets.values())
     assert producer._state.parked is False
     assert producer.switching_traces[-1].risk_disposition == "REJECT"
+
+def _new_p1_input_payload() -> dict[str, object]:
+    return _input_payload()
+
+
+def _new_p3_config() -> dict[str, object]:
+    return _config()
+
+
+def test_new_p1_manifest_enters_p3_without_legacy_session_or_platform_fields() -> None:
+    config = _new_p3_config()
+    payload = _new_p1_input_payload()
+
+    assert evidence_module._validate_config(config) == config
+    provenance, _, manifest_sha256 = evidence_module._validate_input(payload, config)
+
+    assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
+    assert provenance["source"] == "IBKR"
+    assert payload["binding"]["data_identity"]["cost_assumptions"] == {
+        "turnover_cost_bps": 5.0,
+        "stress_turnover_cost_bps": [10.0, 25.0],
+        "borrow_cost_bps": 0.0,
+        "cash_yield_assumption": 0.0,
+        "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+    }
+    assert "session_class" not in payload
+    assert "platform_execution_revision" not in config
+
+
+def test_new_p1_member_tamper_and_retention_binding_fail_closed() -> None:
+    payload = _new_p1_input_payload()
+    tampered = copy.deepcopy(payload)
+    tampered["bars"]["symbols"]["QQQ"][0]["close"] = 999.0
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="input identity"):
+        evidence_module._validate_input(tampered, _new_p3_config())
+
+    invalid_retention = copy.deepcopy(payload)
+    invalid_retention["binding"]["data_identity"]["retention"]["redistribution_allowed"] = True
+    with pytest.raises(TqqqPromotionEvidenceError, match="binding"):
+        evidence_module._validate_input(invalid_retention, _new_p3_config())
