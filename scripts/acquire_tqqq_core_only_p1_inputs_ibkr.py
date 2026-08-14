@@ -17,6 +17,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
     TqqqCoreOnlyHistoricalBarsProvider,
     TqqqCoreOnlyP1BindingError,
+    _expected_xnys_sessions,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     publish_tqqq_core_only_p1_inputs as _publish,
@@ -25,14 +26,26 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
 
 _FAILURE_CLASSES = frozenset({"data_only_acquisition_failed"})
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
-_HISTORICAL_DURATION = "9 Y"
+_HISTORICAL_DURATION = "1 Y"
 _HISTORICAL_BAR_SIZE = "1 day"
 _HISTORICAL_END_SUFFIX = "23:59:59 America/New_York"
-_FROZEN_START_DATES = {
-    "QQQ": "2018-01-02",
-    "TQQQ": "2018-01-02",
-    "QQQM": "2020-10-13",
-    "BOXX": "2022-12-28",
+_FROZEN_LOGICAL_WINDOWS = {
+    "QQQ": (
+        ("2018-01-02", "2018-07-31"),
+        *((f"{year}-08-01", f"{year + 1}-07-31") for year in range(2018, 2026)),
+    ),
+    "TQQQ": (
+        ("2018-01-02", "2018-07-31"),
+        *((f"{year}-08-01", f"{year + 1}-07-31") for year in range(2018, 2026)),
+    ),
+    "QQQM": (
+        ("2020-10-13", "2021-07-31"),
+        *((f"{year}-08-01", f"{year + 1}-07-31") for year in range(2021, 2026)),
+    ),
+    "BOXX": (
+        ("2022-12-28", "2023-07-31"),
+        *((f"{year}-08-01", f"{year + 1}-07-31") for year in range(2023, 2026)),
+    ),
 }
 
 
@@ -154,6 +167,7 @@ def build_tqqq_core_only_ibkr_callback_app(
             self._handshake_observed = False
             self._reader_thread: threading.Thread | None = None
             self._reader_exited = False
+            self._disconnect_called = False
             self._next_request_id = request_id_start
             self._active_request_id: int | None = None
             self._terminal = "IDLE"
@@ -208,8 +222,9 @@ def build_tqqq_core_only_ibkr_callback_app(
 
         def _teardown_reader(self) -> None:
             try:
-                if self.isConnected():
+                if not self._disconnect_called and self.isConnected():
                     self.disconnect()
+                    self._disconnect_called = True
             except Exception:  # noqa: BLE001 - teardown must not expose provider details
                 pass
             with self._condition:
@@ -279,7 +294,7 @@ def build_tqqq_core_only_ibkr_callback_app(
             feed: str,
             date_cutoff: str,
         ) -> dict[str, object]:
-            envelope = _frozen_request_envelope(
+            envelopes = _frozen_request_envelopes(
                 symbol=symbol,
                 calendar_id=calendar_id,
                 timezone=timezone,
@@ -297,54 +312,71 @@ def build_tqqq_core_only_ibkr_callback_app(
                 deadline = time.monotonic() + history_watchdog_seconds
                 if not self._wait_for_handshake(deadline):
                     raise ValueError
-                contract = contract_type()
-                contract.symbol = symbol
-                contract.secType = "STK"
-                contract.exchange = "SMART"
-                contract.currency = "USD"
-                with self._condition:
-                    if self._active_request_id is not None:
-                        raise ValueError
-                    request_id = self._next_request_id
-                    self._next_request_id += 1
-                    self._active_request_id = request_id
-                    self._terminal = "PENDING"
-                    self._bars = []
-                    self.last_tqqq_core_only_contract = contract
-                    self.last_tqqq_core_only_request_envelope = envelope
-                self.reqHistoricalData(
-                    request_id,
-                    contract,
-                    envelope["endDateTime"],
-                    envelope["durationStr"],
-                    envelope["barSizeSetting"],
-                    envelope["whatToShow"],
-                    envelope["useRTH"],
-                    1,
-                    False,
-                    [],
-                )
-                with self._condition:
-                    while self._terminal == "PENDING":
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            self._terminal = "COMPLETION_NOT_OBSERVED"
-                            break
-                        self._condition.wait(remaining)
-                    if self._terminal != "COMPLETED":
-                        raise ValueError
-                    return {"bars": list(self._bars)}
+                collected_bars: list[dict[str, object]] = []
+                for envelope in envelopes:
+                    chunk_deadline = time.monotonic() + history_watchdog_seconds
+                    contract = contract_type()
+                    contract.symbol = symbol
+                    contract.secType = "STK"
+                    contract.exchange = "SMART"
+                    contract.currency = "USD"
+                    with self._condition:
+                        if self._active_request_id is not None:
+                            raise ValueError
+                        request_id = self._next_request_id
+                        self._next_request_id += 1
+                        self._active_request_id = request_id
+                        self._terminal = "PENDING"
+                        self._bars = []
+                        self.last_tqqq_core_only_contract = contract
+                        self.last_tqqq_core_only_request_envelope = envelope
+                    self.reqHistoricalData(
+                        request_id,
+                        contract,
+                        envelope["endDateTime"],
+                        envelope["durationStr"],
+                        envelope["barSizeSetting"],
+                        envelope["whatToShow"],
+                        envelope["useRTH"],
+                        1,
+                        False,
+                        [],
+                    )
+                    with self._condition:
+                        while self._terminal == "PENDING":
+                            remaining = chunk_deadline - time.monotonic()
+                            if remaining <= 0:
+                                self._terminal = "COMPLETION_NOT_OBSERVED"
+                                break
+                            self._condition.wait(remaining)
+                        if self._terminal != "COMPLETED":
+                            raise ValueError
+                        chunk_bars = list(self._bars)
+                        self._active_request_id = None
+                    _validate_complete_chunk(chunk_bars, envelope)
+                    collected_bars.extend(chunk_bars)
+                return {"bars": collected_bars}
             except Exception:
+                with self._condition:
+                    request_id = self._active_request_id
+                    should_cancel = request_id is not None and self._terminal != "COMPLETED"
+                if should_cancel:
+                    try:
+                        self.cancelHistoricalData(request_id)
+                    except Exception:  # noqa: BLE001, S110 - cancellation must remain fail-closed
+                        pass
+                self._teardown_reader()
                 raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
             finally:
                 with self._condition:
                     self._active_request_id = None
+                    self._bars = []
 
     TqqqCoreOnlyIbkrCallbackApp.__name__ = "TqqqCoreOnlyIbkrCallbackApp"
     return TqqqCoreOnlyIbkrCallbackApp()
 
 
-def _frozen_request_envelope(
+def _frozen_request_envelopes(
     *,
     symbol: str,
     calendar_id: str,
@@ -352,9 +384,9 @@ def _frozen_request_envelope(
     adjustment_policy: str,
     feed: str,
     date_cutoff: str,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], ...]:
     if (
-        symbol not in _FROZEN_START_DATES
+        symbol not in _FROZEN_LOGICAL_WINDOWS
         or calendar_id != "XNYS"
         or timezone != "America/New_York"
         or adjustment_policy != "total_return_adjusted"
@@ -362,18 +394,37 @@ def _frozen_request_envelope(
         or date_cutoff != "2026-07-31"
     ):
         raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
-    return {
-        "symbol": symbol,
-        "start_date": _FROZEN_START_DATES[symbol],
-        "date_cutoff": date_cutoff,
-        "endDateTime": f"{date_cutoff.replace('-', '')} {_HISTORICAL_END_SUFFIX}",
-        "durationStr": _HISTORICAL_DURATION,
-        "barSizeSetting": _HISTORICAL_BAR_SIZE,
-        "whatToShow": "ADJUSTED_LAST",
-        "useRTH": 1,
-        "calendar_id": calendar_id,
-        "timezone": timezone,
-    }
+    return tuple(
+        {
+            "symbol": symbol,
+            "start_date": start_date,
+            "date_cutoff": chunk_end,
+            "endDateTime": f"{chunk_end.replace('-', '')} {_HISTORICAL_END_SUFFIX}",
+            "durationStr": _HISTORICAL_DURATION,
+            "barSizeSetting": _HISTORICAL_BAR_SIZE,
+            "whatToShow": "ADJUSTED_LAST",
+            "useRTH": 1,
+            "calendar_id": calendar_id,
+            "timezone": timezone,
+        }
+        for start_date, chunk_end in _FROZEN_LOGICAL_WINDOWS[symbol]
+    )
+
+
+def _validate_complete_chunk(bars: list[dict[str, object]], envelope: Mapping[str, object]) -> None:
+    start_date = str(envelope["start_date"])
+    chunk_end = str(envelope["date_cutoff"])
+    expected = tuple(
+        session
+        for session in _expected_xnys_sessions(chunk_end)
+        if session.isoformat() >= start_date
+    )
+    try:
+        observed = tuple(date.fromisoformat(str(bar["date"])) for bar in bars)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from exc
+    if observed != expected:
+        raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
 
 
 def _normalize_historical_bar(bar: Any) -> dict[str, object]:

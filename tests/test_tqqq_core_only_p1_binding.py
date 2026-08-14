@@ -185,8 +185,12 @@ class _QueuedCallbackClient:
     def __init__(self, wrapper: object) -> None:
         self.wrapper = wrapper
         self.history_calls: list[tuple[object, ...]] = []
+        self.request_envelopes: list[dict[str, object]] = []
+        self.cancel_calls: list[int] = []
         self.history_bars: list[object] = []
         self.behavior = "success"
+        self.behavior_by_request: dict[int, str] = {}
+        self.emit_frozen_window_bars = False
         self.run_calls = 0
         self.disconnect_calls = 0
         self._requests: Queue[int] = Queue()
@@ -197,12 +201,15 @@ class _QueuedCallbackClient:
 
     def reqHistoricalData(self, *args: object) -> None:
         self.history_calls.append(args)
+        envelope = self.wrapper.last_tqqq_core_only_request_envelope
+        assert isinstance(envelope, dict)
+        self.request_envelopes.append(dict(envelope))
         request_id = args[0]
         assert isinstance(request_id, int)
         self._requests.put(request_id)
 
-    def cancelHistoricalData(self, _request_id: int) -> None:
-        pass
+    def cancelHistoricalData(self, request_id: int) -> None:
+        self.cancel_calls.append(request_id)
 
     def disconnect(self) -> None:
         self.disconnect_calls += 1
@@ -219,13 +226,19 @@ class _QueuedCallbackClient:
                 request_id = self._requests.get(timeout=0.01)
             except Empty:
                 continue
-            if self.behavior == "error":
+            behavior = self.behavior_by_request.get(request_id, self.behavior)
+            bars = self.history_bars
+            if self.emit_frozen_window_bars:
+                envelope = self.wrapper.last_tqqq_core_only_request_envelope
+                assert isinstance(envelope, dict)
+                bars = _bars_for_window(str(envelope["start_date"]), str(envelope["date_cutoff"]))
+            if behavior == "error":
                 self.wrapper.error(request_id, 0, 321, "synthetic provider detail", "")
-            elif self.behavior in {"success", "partial"}:
-                for bar in self.history_bars:
+            elif behavior in {"success", "partial"}:
+                for bar in bars[:1] if behavior == "partial" else bars:
                     self.wrapper.historicalData(request_id, bar)
                 self.wrapper.historicalDataEnd(request_id, "raw start", "raw end")
-            elif self.behavior == "foreign_end":
+            elif behavior == "foreign_end":
                 self.wrapper.historicalDataEnd(request_id + 1, "raw start", "raw end")
 
 
@@ -252,6 +265,21 @@ def _bars_for(symbol: str) -> list[dict[str, object]]:
         }
         for session in tqqq_promotion_runner._FROZEN_XNYS_SESSIONS
         if eligible_start is None or session.isoformat() >= eligible_start
+    ]
+
+
+def _bars_for_window(start_date: str, date_cutoff: str) -> list[object]:
+    return [
+        SimpleNamespace(
+            date=session.strftime("%Y%m%d"),
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.0,
+            volume=1.0,
+        )
+        for session in tqqq_promotion_runner._FROZEN_XNYS_SESSIONS
+        if start_date <= session.isoformat() <= date_cutoff
     ]
 
 
@@ -434,55 +462,100 @@ def test_callback_port_requires_reader_and_handshake_before_request(behavior: st
     assert app.disconnect_calls == 1
 
 
-def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> None:
+def test_callback_app_uses_the_fixed_single_concurrency_annual_plan(tmp_path: Path) -> None:
     app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
         client_type=_QueuedCallbackClient,
         wrapper_type=_OfficialCallbackShapeWrapper,
         contract_type=_CallbackShapeContract,
         history_watchdog_seconds=0.1,
     )
-    app.history_bars = [
-        SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10),
-        SimpleNamespace(date="20180103", open=2.0, high=3.0, low=1.5, close=2.5, volume=20),
-    ]
+    app.emit_frozen_window_bars = True
 
-    response = _fetch_tqqq_core_only_bars(app)
-    app.close()
+    result = acquisition_cli.publish_tqqq_core_only_p1_inputs(
+        app,
+        output_root=tmp_path / "immutable-input",
+        observed_at="2026-08-14T00:00:00Z",
+        producer=_producer(),
+    )
 
-    assert response == {
-        "bars": [
-            {"date": "2018-01-02", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
-            {"date": "2018-01-03", "open": 2.0, "high": 3.0, "low": 1.5, "close": 2.5, "volume": 20.0},
-        ]
-    }
+    assert result["status"] == "P1_DATA_ONLY_INPUTS_PUBLISHED"
     assert app.run_calls == 1
     assert app.disconnect_calls == 1
-    assert app.history_calls == [
-        (
-            1_000_000,
-            app.last_tqqq_core_only_contract,
-            "20260731 23:59:59 America/New_York",
-            "9 Y",
-            "1 day",
-            "ADJUSTED_LAST",
-            1,
-            1,
-            False,
-            [],
-        )
+    assert [
+        (envelope["symbol"], envelope["start_date"], envelope["date_cutoff"])
+        for envelope in app.request_envelopes
+    ] == [
+        ("QQQ", "2018-01-02", "2018-07-31"),
+        *[("QQQ", f"{year}-08-01", f"{year + 1}-07-31") for year in range(2018, 2026)],
+        ("TQQQ", "2018-01-02", "2018-07-31"),
+        *[("TQQQ", f"{year}-08-01", f"{year + 1}-07-31") for year in range(2018, 2026)],
+        ("QQQM", "2020-10-13", "2021-07-31"),
+        *[("QQQM", f"{year}-08-01", f"{year + 1}-07-31") for year in range(2021, 2026)],
+        ("BOXX", "2022-12-28", "2023-07-31"),
+        *[("BOXX", f"{year}-08-01", f"{year + 1}-07-31") for year in range(2023, 2026)],
     ]
-    assert app.last_tqqq_core_only_request_envelope == {
-        "symbol": "QQQ",
-        "start_date": "2018-01-02",
-        "date_cutoff": "2026-07-31",
-        "endDateTime": "20260731 23:59:59 America/New_York",
-        "durationStr": "9 Y",
-        "barSizeSetting": "1 day",
-        "whatToShow": "ADJUSTED_LAST",
-        "useRTH": 1,
-        "calendar_id": "XNYS",
-        "timezone": "America/New_York",
-    }
+    assert len(app.history_calls) == 28
+    assert all(call[3:] == ("1 Y", "1 day", "ADJUSTED_LAST", 1, 1, False, []) for call in app.history_calls)
+
+
+@pytest.mark.parametrize("behavior", ("error", "timeout", "foreign_end"))
+def test_callback_app_halts_the_annual_plan_on_first_terminal_failure(
+    tmp_path: Path, behavior: str
+) -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.emit_frozen_window_bars = True
+    app.behavior_by_request[1_000_002] = behavior
+    output = tmp_path / "immutable-input"
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            app,
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+    assert [
+        (envelope["symbol"], envelope["start_date"], envelope["date_cutoff"])
+        for envelope in app.request_envelopes
+    ] == [
+        ("QQQ", "2018-01-02", "2018-07-31"),
+        ("QQQ", "2018-08-01", "2019-07-31"),
+        ("QQQ", "2019-08-01", "2020-07-31"),
+    ]
+    assert app.cancel_calls == [1_000_002]
+    assert app.disconnect_calls == 1
+    assert not output.exists()
+
+
+def test_callback_app_rejects_an_incomplete_chunk_before_the_next_request(tmp_path: Path) -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.1,
+    )
+    app.emit_frozen_window_bars = True
+    app.behavior = "partial"
+    output = tmp_path / "immutable-input"
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            app,
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+    assert len(app.history_calls) == 1
+    assert app.cancel_calls == []
+    assert app.disconnect_calls == 1
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("behavior", ("error", "timeout", "foreign_end"))
@@ -532,7 +605,7 @@ def test_callback_port_partial_history_cannot_publish_a_root(tmp_path: Path) -> 
     app.behavior = "partial"
     output = tmp_path / "immutable-input"
 
-    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="historical coverage"):
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
         acquisition_cli.publish_tqqq_core_only_p1_inputs(
             app,
             output_root=output,
