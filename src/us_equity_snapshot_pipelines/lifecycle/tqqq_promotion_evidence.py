@@ -441,7 +441,21 @@ def _validate_input(
         ):
             raise TqqqPromotionEvidenceError("invalid provider provenance")
     session_class = config["session_class"]
-    manifest_prefix = f"tqqq-ibkr-{session_class}-single-acquisition-"
+    manifest_session_class = session_class
+    if personal_attested:
+        manifest_session_class = next(
+            (
+                label
+                for label in _SESSION_TOOL
+                if manifest["manifest_id"].startswith(
+                    f"tqqq-ibkr-{label}-single-acquisition-"
+                )
+            ),
+            None,
+        )
+        if manifest_session_class is None:
+            raise TqqqPromotionEvidenceError("invalid provider session identity")
+    manifest_prefix = f"tqqq-ibkr-{manifest_session_class}-single-acquisition-"
     manifest_suffix = manifest["manifest_id"].removeprefix(manifest_prefix)
     producer = manifest["producer"]
     if (
@@ -449,7 +463,7 @@ def _validate_input(
         or len(manifest_suffix) != 24
         or any(character not in "0123456789abcdef" for character in manifest_suffix)
         or producer["repository"] != "QuantStrategyLab/UsEquitySnapshotPipelines"
-        or producer["tool"] != _SESSION_TOOL[session_class]
+        or producer["tool"] != _SESSION_TOOL[manifest_session_class]
         or producer["tool_version"] != "v1"
     ):
         raise TqqqPromotionEvidenceError("invalid provider session identity")
