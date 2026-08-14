@@ -1061,7 +1061,7 @@ def _validate_switching_traces(
     sessions: tuple[date, ...],
     decision_count: int,
     total_cost_bps: int,
-) -> None:
+) -> bool:
     if (
         type(traces) is not tuple
         or len(traces) != len(sessions)
@@ -1074,6 +1074,7 @@ def _validate_switching_traces(
     cooldown_last_execution: date | None = None
     cost_rate = total_cost_bps / 10_000.0
     allocation_tolerance = cost_rate / (1.0 - cost_rate) + 1e-9
+    observed_execution_weight_drift = False
     states = {
         "entry": "RISK_ON",
         "hold": "RISK_ON",
@@ -1167,20 +1168,19 @@ def _validate_switching_traces(
                     raise TqqqPromotionContractError("invalid parked switching trace")
             execution_sessions.append(trace.execution_session)
             continue
-        if any(
+        execution_weight_drift = any(
             abs(executed[symbol] - target[symbol]) > allocation_tolerance
             for symbol in _PARITY_ASSETS
-        ):
-            raise TqqqPromotionContractError("cost-adjusted execution allocation drift")
+        )
+        observed_execution_weight_drift |= execution_weight_drift
         if trace.risk_disposition != "APPROVE":
             raise TqqqPromotionContractError("invalid switching risk disposition")
         approved_count += 1
         intended_risk = intended["TQQQ"] + intended["QQQM"]
-        executed_risk = executed["TQQQ"] + executed["QQQM"]
         if trace.signal_regime == "RISK_ON":
-            if intended_risk <= 0.0 or executed_risk <= 0.0:
+            if intended_risk <= 0.0:
                 raise TqqqPromotionContractError("risk-on switching execution drift")
-        elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0 or executed["BOXX"] <= 0.0:
+        elif intended_risk > 1e-12 or intended["BOXX"] <= 0.0:
             raise TqqqPromotionContractError("defensive switching execution drift")
         if trace.signal_state == "protective_cooldown":
             expected_reason_codes = (
@@ -1206,9 +1206,9 @@ def _validate_switching_traces(
     if (
         tuple(execution_sessions) != sessions
         or approved_count != decision_count
-        or cooldown_count
     ):
         raise TqqqPromotionContractError("invalid switching trace order")
+    return observed_execution_weight_drift
 
 
 def _validated_window_evidence(
@@ -1221,7 +1221,7 @@ def _validated_window_evidence(
     expected_initial_state_sha256: str,
     expected_source_revision: str,
     total_cost_bps: int,
-) -> tuple[TqqqQqqRelativeMetrics, TqqqEpisodeSummary, bool]:
+) -> tuple[TqqqQqqRelativeMetrics, TqqqEpisodeSummary, bool, bool]:
     if (
         type(window) is not TqqqWindowEvidence
         or type(backtest) is not BacktestResult
@@ -1252,7 +1252,7 @@ def _validated_window_evidence(
         or window.decision_count != window.risk_assessment_count
     ):
         raise TqqqPromotionContractError("window evidence identity mismatch")
-    _validate_switching_traces(
+    observed_execution_weight_drift = _validate_switching_traces(
         window.switching_traces,
         sessions=window.sessions,
         decision_count=window.decision_count,
@@ -1330,7 +1330,7 @@ def _validated_window_evidence(
     defensive_only = all(
         trace.signal_regime == "DEFENSIVE" for trace in window.switching_traces
     )
-    return metrics, summary, defensive_only
+    return metrics, summary, defensive_only, observed_execution_weight_drift
 
 
 def evaluate_tqqq_pre_result_acceptance(
@@ -1375,6 +1375,7 @@ def evaluate_tqqq_pre_result_acceptance(
     locked_backtests: dict[int, BacktestResult] = {}
     locked_summaries: dict[int, TqqqEpisodeSummary] = {}
     locked_defensive_only: dict[int, bool] = {}
+    locked_execution_weight_drift: dict[int, bool] = {}
     try:
         for cost in _COST_SCENARIOS_BPS:
             scenario = scenarios[cost]
@@ -1466,11 +1467,12 @@ def evaluate_tqqq_pre_result_acceptance(
                 != _LOCKED_OOS_SESSIONS_SHA256
             ):
                 return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            metrics, summary, defensive_only = validated_windows[-1]
+            metrics, summary, defensive_only, execution_weight_drift = validated_windows[-1]
             locked_metrics[cost] = metrics
             locked_backtests[cost] = promotion_run.locked_oos_result
             locked_summaries[cost] = summary
             locked_defensive_only[cost] = defensive_only
+            locked_execution_weight_drift[cost] = execution_weight_drift
     except (AttributeError, KeyError, TypeError, ValueError, TqqqPromotionContractError):
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
 
@@ -1495,6 +1497,8 @@ def evaluate_tqqq_pre_result_acceptance(
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(summary.parked_session_count for summary in locked_summaries.values()):
         return TQQQ_ACCEPTANCE_REJECT
+    if any(locked_execution_weight_drift.values()):
+        return TQQQ_ACCEPTANCE_INCONCLUSIVE
     if any(
         abs(float(result.max_drawdown)) > 0.10 + 1e-12
         for result in locked_backtests.values()

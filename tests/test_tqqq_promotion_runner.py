@@ -1171,6 +1171,53 @@ def test_completed_cooldown_allows_fresh_risk_engine_park() -> None:
     )
 
 
+def test_right_censored_cooldown_is_complete_window_evidence() -> None:
+    locked = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06)).scenarios[0].windows[-1]
+    defensive = (("TQQQ", 0.0), ("QQQM", 0.0), ("BOXX", 0.20), ("cash", 0.80))
+    traces = list(locked.switching_traces)
+    for offset, index in enumerate(range(len(traces) - 10, len(traces))):
+        traces[index] = replace(
+            traces[index],
+            signal_state="protective_cooldown",
+            signal_regime="DEFENSIVE",
+            intended_allocation=defensive,
+            risk_disposition="APPROVE",
+            risk_reason_codes=(
+                ("FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT",) if offset == 0 else ()
+            ),
+            replay_target_allocation=defensive,
+            executed_allocation=defensive,
+        )
+
+    assert _validate_switching_traces(
+        tuple(traces),
+        sessions=locked.sessions,
+        decision_count=locked.decision_count,
+        total_cost_bps=5,
+    ) is False
+
+
+def test_observed_execution_weight_drift_is_evaluable_evidence() -> None:
+    locked = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06)).scenarios[0].windows[-1]
+    trace = locked.switching_traces[0]
+    drift = replace(
+        trace,
+        executed_allocation=(
+            ("TQQQ", 0.0),
+            ("QQQM", 0.000001),
+            ("BOXX", 0.0),
+            ("cash", 0.999999),
+        ),
+    )
+
+    assert _validate_switching_traces(
+        (drift, *locked.switching_traces[1:]),
+        sessions=locked.sessions,
+        decision_count=locked.decision_count,
+        total_cost_bps=5,
+    ) is True
+
+
 def test_acceptance_binds_locked_switching_allocations_to_backtest_result() -> None:
     passing = _acceptance_result(candidate_returns=(0.07, 0.065, 0.06))
     alternate = (
