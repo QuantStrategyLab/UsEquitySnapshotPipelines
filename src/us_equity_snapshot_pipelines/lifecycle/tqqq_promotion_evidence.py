@@ -50,6 +50,7 @@ from .tqqq_promotion_runner import (
     TqqqWindowReplay,
     _resolve_runner_revision,
     build_tqqq_switching_characterization_contract,
+    evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
 )
 
@@ -1391,6 +1392,7 @@ def run_tqqq_promotion_evidence(
     base = result.scenarios[0]
     locked = base.windows[-1]
     metrics = locked.relative_metrics
+    verdict = evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
     generated = _timestamp(generated_at)
     evidence: dict[str, Any] = {
         "schema_version": "strategy_evidence_package.v2",
@@ -1489,6 +1491,7 @@ def run_tqqq_promotion_evidence(
                 "schema_version": "tqqq_promotion_research_result.v1",
                 "generated_at": generated,
                 "status": "EVIDENCE_V2_COMPLETE",
+                "verdict": verdict,
                 "candidate_identity_sha256": candidate.candidate_sha256,
                 "input_manifest_sha256": manifest_sha256,
                 "evidence_sha256": evidence_record["sha256"],
@@ -1507,6 +1510,7 @@ def run_tqqq_promotion_evidence(
         "promotion_result_sha256": terminal_record["sha256"],
         "candidate_identity_sha256": candidate.candidate_sha256,
         "input_manifest_sha256": manifest_sha256,
+        "verdict": verdict,
     }
 
 

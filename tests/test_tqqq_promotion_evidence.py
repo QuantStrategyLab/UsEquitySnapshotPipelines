@@ -363,6 +363,8 @@ def test_real_consumer_writes_valid_redacted_evidence_v2(tmp_path: Path) -> None
         "no_order": True,
     }
     assert result["evidence_sha256"] == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    terminal = json.loads((tmp_path / "promotion-research-result.v1.json").read_bytes())
+    assert terminal["verdict"] == result["verdict"]
     risk = json.loads((tmp_path / "artifacts" / "risk.json").read_bytes())
     assert risk["strategy_losing_exit_cooldown_threshold"] == 5
     assert risk["protective_cooldown_execution_sessions"] == 20
