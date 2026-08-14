@@ -5,8 +5,10 @@ import inspect
 import json
 from pathlib import Path
 
+import pytest
 from quant_platform_kit.data.research_input import research_input_manifest_sha256
 
+from scripts import acquire_tqqq_core_only_p1_inputs_ibkr as acquisition_cli
 from scripts import bind_tqqq_core_only_p1_input as cli
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as binding
 
@@ -109,3 +111,132 @@ def test_binding_has_no_provider_runtime_or_order_path() -> None:
     for forbidden in ("ibapi", "gateway", "credential", "reqhistoricaldata", "placeorder"):
         assert forbidden not in source
         assert forbidden not in cli_source
+
+
+class _FakeHistoricalBarsProvider:
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        self.calls: list[dict[str, str]] = []
+        self.fail_on = fail_on
+
+    def fetch_historical_bars(
+        self,
+        *,
+        symbol: str,
+        calendar_id: str,
+        timezone: str,
+        adjustment_policy: str,
+        feed: str,
+        date_cutoff: str,
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "calendar_id": calendar_id,
+                "timezone": timezone,
+                "adjustment_policy": adjustment_policy,
+                "feed": feed,
+                "date_cutoff": date_cutoff,
+            }
+        )
+        if symbol == self.fail_on:
+            raise RuntimeError("synthetic provider failure")
+        return {"bars": [{"close": 100.0, "session": "2026-07-31"}]}
+
+
+def _producer() -> dict[str, str]:
+    return {
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit_sha": "a" * 40,
+        "tree_sha": "b" * 40,
+        "tool": "tqqq_core_only_p1_data_only_acquisition",
+        "tool_version": "v1",
+    }
+
+
+def test_injected_four_input_provider_publishes_private_qpk_manifest(tmp_path: Path) -> None:
+    output = tmp_path / "immutable-input"
+    provider = _FakeHistoricalBarsProvider()
+
+    result = acquisition_cli.publish_tqqq_core_only_p1_inputs(
+        provider,
+        output_root=output,
+        observed_at="2026-08-14T00:00:00Z",
+        producer=_producer(),
+    )
+
+    assert [call["symbol"] for call in provider.calls] == ["QQQ", "TQQQ", "QQQM", "BOXX"]
+    assert all(
+        {
+            "calendar_id": "XNYS",
+            "timezone": "America/New_York",
+            "adjustment_policy": "total_return_adjusted",
+            "feed": "ADJUSTED_LAST",
+            "date_cutoff": "2026-07-31",
+        }.items()
+        <= call.items()
+        for call in provider.calls
+    )
+    assert (output.stat().st_mode & 0o777) == 0o700
+    manifest = json.loads((output / "manifest.json").read_bytes())
+    assert result["manifest_sha256"] == research_input_manifest_sha256(manifest)
+    assert binding.verify_tqqq_core_only_input_root(output) == result["manifest_sha256"]
+
+
+def test_published_root_rejects_tampering_and_clobbering(tmp_path: Path) -> None:
+    output = tmp_path / "immutable-input"
+    acquisition_cli.publish_tqqq_core_only_p1_inputs(
+        _FakeHistoricalBarsProvider(),
+        output_root=output,
+        observed_at="2026-08-14T00:00:00Z",
+        producer=_producer(),
+    )
+    (output / "bars.json").write_bytes(b"{}")
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="invalid TQQQ core-only input root"):
+        binding.verify_tqqq_core_only_input_root(output)
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="immutable output already exists"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            _FakeHistoricalBarsProvider(),
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+
+def test_provider_failure_stops_without_publishing_partial_root(tmp_path: Path) -> None:
+    output = tmp_path / "immutable-input"
+    provider = _FakeHistoricalBarsProvider(fail_on="TQQQ")
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            provider,
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+    assert [call["symbol"] for call in provider.calls] == ["QQQ", "TQQQ"]
+    assert not output.exists()
+
+
+def test_cli_without_an_injected_provider_is_parked_without_publishing(tmp_path: Path, capsys) -> None:
+    output = tmp_path / "immutable-input"
+
+    assert (
+        acquisition_cli.main(
+            ["--output-root", str(output), "--observed-at", "2026-08-14T00:00:00Z"]
+        )
+        == 2
+    )
+
+    assert capsys.readouterr().out == '{"status":"PARKED"}\n'
+    assert not output.exists()
+
+
+def test_data_only_publisher_has_no_order_or_p3_reachability() -> None:
+    source = inspect.getsource(acquisition_cli).lower()
+    binding_source = inspect.getsource(binding).lower()
+
+    for forbidden in ("place_order", "placeorder", "promotion", "replay", "tqqq_r1", "v3"):
+        assert forbidden not in source
+        assert forbidden not in binding_source
