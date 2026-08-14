@@ -1468,7 +1468,28 @@ def test_existing_snapshot_promotion_failure_retains_sanitized_state(
     assert failure["stage"] == "promotion_evidence_runner"
 
 
-def test_existing_snapshot_promotion_evidence_contract_failure_is_distinguished(
+@pytest.mark.parametrize(
+    ("error_type", "failure_class", "stage", "recoverability"),
+    (
+        (
+            evidence.TqqqPromotionEvidenceError,
+            "promotion_evidence_contract_failed",
+            "promotion_evidence_contract",
+            "fresh_human_authority_required",
+        ),
+        (
+            orchestration.promotion_runner.TqqqPromotionContractError,
+            "promotion_runner_contract_failed",
+            "promotion_evidence_runner_contract",
+            "static_runner_contract_correction_required",
+        ),
+    ),
+)
+def test_existing_snapshot_promotion_typed_failure_is_distinguished(
+    error_type: type[ValueError],
+    failure_class: str,
+    stage: str,
+    recoverability: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1481,7 +1502,7 @@ def test_existing_snapshot_promotion_evidence_contract_failure_is_distinguished(
     )
 
     def fail(**_kwargs):
-        raise evidence.TqqqPromotionEvidenceError("private evidence detail")
+        raise error_type("private evidence detail")
 
     monkeypatch.setattr(orchestration, "run_tqqq_promotion_evidence", fail)
 
@@ -1501,9 +1522,9 @@ def test_existing_snapshot_promotion_evidence_contract_failure_is_distinguished(
         )
 
     failure = caught.value.sanitized_failure
-    assert failure["failure_class"] == "promotion_evidence_contract_failed"
-    assert failure["stage"] == "promotion_evidence_contract"
-    assert failure["recoverability"] == "fresh_human_authority_required"
+    assert failure["failure_class"] == failure_class
+    assert failure["stage"] == stage
+    assert failure["recoverability"] == recoverability
     assert "private evidence detail" not in json.dumps(failure)
     assert "private evidence detail" not in str(caught.value)
 
