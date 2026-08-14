@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
