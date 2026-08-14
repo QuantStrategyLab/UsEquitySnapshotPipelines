@@ -37,6 +37,7 @@ from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
 from .tqqq_promotion_evidence import (
     _SIGNAL_MODEL,
+    TqqqPromotionEvidenceError,
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
 )
@@ -1229,6 +1230,9 @@ def orchestrate_existing_tqqq_snapshot_promotion(
             if validate_evidence_package_v2(evidence_payload, base_dir=evidence_root):
                 raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
+            if isinstance(exc, TqqqPromotionEvidenceError):
+                failure_stage = "promotion_evidence_contract"
+                failure_class = "promotion_evidence_contract_failed"
             try:
                 artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
             except OSError:
