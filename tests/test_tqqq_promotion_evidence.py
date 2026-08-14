@@ -585,6 +585,73 @@ def test_personal_attestation_is_normalized_as_human_attested_input() -> None:
     assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
 
 
+def test_personal_attestation_accepts_manifest_paper_identity_with_live_data_config() -> None:
+    config = _config()
+    config["session_class"] = "live-data-only"
+    payload = _personal_attested_input_payload()
+
+    provenance, _, manifest_sha256 = evidence_module._validate_input(
+        payload, config
+    )
+
+    assert provenance["provider"] == "human_attested_personal_internal_research"
+    assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
+
+
+def test_provider_observed_requires_config_session_identity() -> None:
+    config = _config()
+    config["session_class"] = "live-data-only"
+
+    with pytest.raises(TqqqPromotionEvidenceError, match="provider provenance"):
+        evidence_module._validate_input(_input_payload(), config)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (
+            lambda manifest: manifest.update(
+                manifest_id=manifest["manifest_id"].replace("paper", "unknown")
+            ),
+            "provider session identity",
+        ),
+        (
+            lambda manifest: manifest["producer"].update(tool="untrusted_acquisition"),
+            "provider session identity",
+        ),
+        (
+            lambda manifest: manifest["sources"][0].update(content_sha256="0" * 64),
+            "input identity",
+        ),
+    ],
+)
+def test_personal_attested_manifest_identity_failures_stop_before_backtest_orchestrator(
+    tmp_path: Path, mutate, error: str
+) -> None:
+    payload = _personal_attested_input_payload()
+    mutate(payload["input_manifest"])
+    payload["provenance"]["input_root_sha256"] = research_input_manifest_sha256(
+        payload["input_manifest"]
+    )
+    config = _config()
+    config["session_class"] = "live-data-only"
+
+    with patch.object(
+        evidence_module,
+        "run_tqqq_promotion_research",
+        side_effect=AssertionError("BacktestOrchestrator must not run"),
+    ) as orchestrator, pytest.raises(TqqqPromotionEvidenceError, match=error):
+        run_tqqq_promotion_evidence(
+            input_payload=payload,
+            config_payload=config,
+            output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
+        )
+
+    orchestrator.assert_not_called()
+    assert not any(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize(
     ("mutate", "error"),
     [
