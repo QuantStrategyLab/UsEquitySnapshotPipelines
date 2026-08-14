@@ -52,7 +52,6 @@ def _identity() -> TqqqPromotionIdentity:
         qpk_revision=QPK_REVISION,
         ues_revision=UES_REVISION,
         runner_revision=RUNNER_REVISION,
-        platform_execution_revision="2" * 40,
         config_sha256="3" * 64,
         input_manifest_sha256="4" * 64,
         mandate_receipt_sha256="5" * 64,
@@ -232,7 +231,7 @@ def test_delegates_exact_three_cost_scenarios_to_qpk_promotion_orchestrator() ->
 
     assert TqqqPromotionRunner.runner_kind == "real"
     assert run_promotion.call_count == 3
-    assert [scenario.total_cost_bps for scenario in result.scenarios] == [5, 10, 15]
+    assert [scenario.total_cost_bps for scenario in result.scenarios] == [5, 10, 25]
     assert all(scenario.cost_model_scope == "ALL_IN_PER_SIDE" for scenario in result.scenarios)
     assert len(replay.calls) == 12 + 28 + 25 + 19 + 7
     assert all(
@@ -2085,3 +2084,7 @@ def test_locked_oos_replay_requires_every_frozen_session() -> None:
         pytest.raises(TqqqPromotionContractError, match="replay session identity"),
     ):
         run_tqqq_promotion_research(_identity(), _plan(), sparse)
+
+
+def test_p3_identity_excludes_platform_execution_revision() -> None:
+    assert "platform_execution_revision" not in TqqqPromotionIdentity.__dataclass_fields__
