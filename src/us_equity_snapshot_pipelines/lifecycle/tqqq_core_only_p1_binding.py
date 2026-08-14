@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Mapping
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -30,6 +31,8 @@ _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _OUTPUT_FILENAMES = frozenset({"bars.json", "binding.json", "manifest.json"})
+_P2_EARLIEST_TRAIN_SESSION = date(2018, 1, 2)
+_FIRST_ELIGIBLE_SESSION = {"QQQM": date(2020, 10, 13), "BOXX": date(2022, 12, 28)}
 
 
 class TqqqCoreOnlyHistoricalBarsProvider(Protocol):
@@ -267,6 +270,109 @@ def _require_new_private_output_root(output_root: str | Path) -> Path:
     return destination
 
 
+def _observed_fixed_holiday(day: date) -> date:
+    if day.weekday() == 5:
+        return day - timedelta(days=1)
+    if day.weekday() == 6:
+        return day + timedelta(days=1)
+    return day
+
+
+def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
+    current = date(year, month, 1)
+    return current + timedelta(days=(weekday - current.weekday()) % 7 + 7 * (occurrence - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    current = date(year + (month == 12), 1 if month == 12 else month + 1, 1) - timedelta(days=1)
+    return current - timedelta(days=(current.weekday() - weekday) % 7)
+
+
+def _easter_sunday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    length = (32 + 2 * e + 2 * i - h - k) % 7
+    month = (h + length - 7 * ((a + 11 * h + 22 * length) // 451) + 114) // 31
+    day = (h + length - 7 * ((a + 11 * h + 22 * length) // 451) + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def _xnys_holidays(year: int) -> set[date]:
+    new_year = date(year, 1, 1)
+    if new_year.weekday() == 6:
+        new_year += timedelta(days=1)
+    holidays = {
+        new_year,
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _easter_sunday(year) - timedelta(days=2),
+        _last_weekday(year, 5, 0),
+        _observed_fixed_holiday(date(year, 7, 4)),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed_fixed_holiday(date(year, 12, 25)),
+    }
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(date(year, 6, 19)))
+    holidays.update({date(2018, 12, 5), date(2025, 1, 9)})
+    return holidays
+
+
+def _expected_xnys_sessions(date_cutoff: str) -> tuple[date, ...]:
+    try:
+        cutoff = date.fromisoformat(date_cutoff)
+    except (TypeError, ValueError) as exc:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage") from exc
+    holidays = set().union(
+        *(_xnys_holidays(year) for year in range(_P2_EARLIEST_TRAIN_SESSION.year, cutoff.year + 1))
+    )
+    sessions: list[date] = []
+    current = _P2_EARLIEST_TRAIN_SESSION
+    while current <= cutoff:
+        if current.weekday() < 5 and current not in holidays:
+            sessions.append(current)
+        current += timedelta(days=1)
+    return tuple(sessions)
+
+
+def _response_sessions(value: object) -> tuple[date, ...]:
+    if not isinstance(value, Mapping) or not isinstance(value.get("bars"), list):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
+    sessions: list[date] = []
+    try:
+        for bar in value["bars"]:
+            if not isinstance(bar, Mapping):
+                raise TypeError
+            sessions.append(date.fromisoformat(bar["date"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage") from exc
+    return tuple(sessions)
+
+
+def _validate_frozen_historical_coverage(
+    symbols: Mapping[str, object], binding: Mapping[str, object]
+) -> None:
+    identity = binding["data_identity"]
+    assert isinstance(identity, Mapping)
+    expected = _expected_xnys_sessions(str(identity["date_cutoff"]))
+    if set(symbols) != set(_UNIVERSE):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
+    sessions = {symbol: _response_sessions(symbols[symbol]) for symbol in _UNIVERSE}
+    if sessions["QQQ"] != expected or sessions["TQQQ"] != expected:
+        raise TqqqCoreOnlyP1BindingError("incomplete TQQQ core-only historical coverage")
+    for symbol, first_eligible in _FIRST_ELIGIBLE_SESSION.items():
+        if sessions[symbol] != tuple(session for session in expected if session >= first_eligible):
+            raise TqqqCoreOnlyP1BindingError("incomplete TQQQ core-only historical coverage")
+
+
 def _collect_frozen_four_inputs(
     provider: TqqqCoreOnlyHistoricalBarsProvider,
     binding: Mapping[str, object],
@@ -312,6 +418,7 @@ def publish_tqqq_core_only_p1_inputs(
     destination = _require_new_private_output_root(output_root)
     binding = build_tqqq_core_only_p1_binding()
     symbols, source_content_sha256 = _collect_frozen_four_inputs(provider, binding)
+    _validate_frozen_historical_coverage(symbols, binding)
     try:
         bars_bytes = _canonical(
             {
@@ -372,6 +479,7 @@ def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
             or set(payload["symbols"]) != set(_UNIVERSE)
         ):
             raise ValueError
+        _validate_frozen_historical_coverage(payload["symbols"], binding)
         members = manifest["members"]
         if (
             len(members) != 1
