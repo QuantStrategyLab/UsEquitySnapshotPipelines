@@ -13,6 +13,20 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     run_tqqq_promotion_evidence,
 )
 
+_SOURCE_COMMIT = "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2"
+_FAILURE_CLASSIFICATIONS = {
+    "InputValidationError": ("input_validation_failure", "input_validation"),
+    "InvalidResearchInputEvidence": ("input_validation_failure", "input_validation"),
+    "ConfigContractError": ("config_contract_failure", "config_contract"),
+    "OrchestratorContractError": ("orchestrator_contract_failure", "orchestrator_contract"),
+    "TqqqPromotionContractError": ("orchestrator_contract_failure", "orchestrator_contract"),
+    "RiskContractError": ("risk_contract_failure", "risk_contract"),
+    "EvidenceValidationError": ("evidence_validation_failure", "evidence_validation"),
+    "TqqqPromotionEvidenceError": ("evidence_validation_failure", "evidence_validation"),
+    "RuntimeInternalError": ("runtime_internal_failure", "runtime_internal"),
+    "TqqqOfflineReplayRuntimeError": ("runtime_internal_failure", "runtime_internal"),
+}
+
 
 class _SanitizedParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -44,17 +58,46 @@ def _snapshot_payload(snapshot_root: Path) -> dict[str, object]:
     }
 
 
+def _failure_payload(error: Exception, *, stage: str, replay_started: bool) -> dict[str, object]:
+    failure_class, stage = _FAILURE_CLASSIFICATIONS.get(
+        type(error).__name__,
+        (
+            "input_validation_failure"
+            if stage == "input_validation"
+            else "config_contract_failure"
+            if stage == "config_contract"
+            else "runtime_internal_failure",
+            stage,
+        ),
+    )
+    return {
+        "complete_evidence": False,
+        "failure_class": failure_class,
+        "replay_started": replay_started,
+        "source_commit": _SOURCE_COMMIT,
+        "stage": stage,
+        "status": "PARKED",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    stage = "input_validation"
+    replay_started = False
     try:
         args = _arguments(list(sys.argv[1:] if argv is None else argv))
+        input_payload = _snapshot_payload(args.snapshot_root)
+        stage = "config_contract"
+        config_payload = _read_json(args.config)
+        stage = "orchestrator_contract"
+        replay_started = True
         result = run_tqqq_promotion_evidence(
-            input_payload=_snapshot_payload(args.snapshot_root),
-            config_payload=_read_json(args.config),
+            input_payload=input_payload,
+            config_payload=config_payload,
             mandate_receipt_sha256=args.mandate_receipt_sha256,
             output_dir=args.output_dir,
         )
-    except (OSError, TypeError, ValueError, TqqqPromotionEvidenceError):
-        print('{"status":"PARKED"}')
+    except (OSError, RuntimeError, TypeError, ValueError, TqqqPromotionEvidenceError) as error:
+        print(json.dumps(_failure_payload(error, stage=stage, replay_started=replay_started), sort_keys=True))
         return 2
     print(
         json.dumps(
