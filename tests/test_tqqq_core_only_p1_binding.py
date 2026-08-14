@@ -143,6 +143,36 @@ class _FakeHistoricalBarsProvider:
         return {"bars": [{"close": 100.0, "session": "2026-07-31"}]}
 
 
+class _OfficialCallbackShapeWrapper:
+    def __init__(self) -> None:
+        pass
+
+
+class _UnconnectedCallbackShapeClient:
+    def __init__(self, wrapper: object) -> None:
+        self.wrapper = wrapper
+        self.history_calls: list[tuple[object, ...]] = []
+
+    def isConnected(self) -> bool:
+        return False
+
+    def reqHistoricalData(self, *args: object) -> None:
+        self.history_calls.append(args)
+
+    def cancelHistoricalData(self, _request_id: int) -> None:
+        pass
+
+    def reqContractDetails(self, _request_id: int, _contract: object) -> None:
+        pass
+
+    def run(self) -> None:
+        pass
+
+
+class _CallbackShapeContract:
+    pass
+
+
 def _producer() -> dict[str, str]:
     return {
         "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
@@ -231,6 +261,28 @@ def test_cli_without_an_injected_provider_is_parked_without_publishing(tmp_path:
 
     assert capsys.readouterr().out == '{"status":"PARKED"}\n'
     assert not output.exists()
+
+
+def test_publisher_callback_boundary_matches_official_interface_and_stays_provider_zero() -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_UnconnectedCallbackShapeClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+    )
+
+    assert tuple(inspect.signature(type(app).error).parameters) == (
+        "self",
+        "reqId",
+        "errorTime",
+        "errorCode",
+        "errorString",
+        "advancedOrderRejectJson",
+    )
+    app.error(-1, 0, 2106, "synthetic", "")
+    app.historicalDataEnd(1, "", "")
+    assert app.isConnected() is False
+    assert app.history_calls == []
+    assert app.sanitized_lifecycle() == ()
 
 
 def test_data_only_publisher_has_no_order_or_p3_reachability() -> None:

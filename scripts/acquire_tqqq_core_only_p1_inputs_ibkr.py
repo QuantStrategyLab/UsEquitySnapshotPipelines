@@ -6,11 +6,17 @@ import argparse
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
+from us_equity_snapshot_pipelines.lifecycle.soxl_adjusted_last_acquisition import (
+    build_request_bound_ibkr_app,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
     TqqqCoreOnlyHistoricalBarsProvider,
     TqqqCoreOnlyP1BindingError,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     publish_tqqq_core_only_p1_inputs as _publish,
 )
 
@@ -31,6 +37,20 @@ def publish_tqqq_core_only_p1_inputs(
 ) -> dict[str, object]:
     """Run one four-call transaction through the only accepted injected provider port."""
     return _publish(provider, output_root=output_root, observed_at=observed_at, producer=producer)
+
+
+def build_tqqq_core_only_ibkr_callback_app(
+    *,
+    client_type: type[Any],
+    wrapper_type: type[Any],
+    contract_type: type[Any],
+) -> Any:
+    """Build the official IBKR callback boundary without connecting or requesting data."""
+    return build_request_bound_ibkr_app(
+        client_type=client_type,
+        wrapper_type=wrapper_type,
+        contract_type=contract_type,
+    )
 
 
 def main(
