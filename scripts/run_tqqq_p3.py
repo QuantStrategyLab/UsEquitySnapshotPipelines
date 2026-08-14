@@ -23,6 +23,7 @@ class _SanitizedParser(argparse.ArgumentParser):
 def _arguments(argv: list[str]) -> argparse.Namespace:
     parser = _SanitizedParser(add_help=False)
     parser.add_argument("--snapshot-root", required=True, type=Path)
+    parser.add_argument("--personal-attestation", type=Path)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--mandate-receipt-sha256", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -36,18 +37,23 @@ def _read_json(path: Path) -> object:
         raise ValueError("invalid immutable snapshot") from exc
 
 
-def _snapshot_payload(snapshot_root: Path) -> dict[str, object]:
-    return {
+def _snapshot_payload(
+    snapshot_root: Path, personal_attestation: Path | None
+) -> dict[str, object]:
+    payload = {
         "input_manifest": _read_json(snapshot_root / "input-manifest.json"),
         "bars": _read_json(snapshot_root / "bars.json"),
     }
+    if personal_attestation is not None:
+        payload["provenance"] = _read_json(personal_attestation)
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _arguments(list(sys.argv[1:] if argv is None else argv))
         result = run_tqqq_promotion_evidence(
-            input_payload=_snapshot_payload(args.snapshot_root),
+            input_payload=_snapshot_payload(args.snapshot_root, args.personal_attestation),
             config_payload=_read_json(args.config),
             mandate_receipt_sha256=args.mandate_receipt_sha256,
             output_dir=args.output_dir,

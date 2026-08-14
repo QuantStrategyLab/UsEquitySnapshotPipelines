@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from quant_platform_kit.data.research_input import (
     canonical_research_input_manifest_bytes,
+    research_input_manifest_sha256,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.risk.engine import build_risk_engine
@@ -206,6 +207,31 @@ def _input_payload() -> dict[str, object]:
         "input_manifest": manifest,
         "bars": bars,
     }
+
+
+def _personal_attestation(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": "personal_research_scope_retention.v1",
+        "assets": ["QQQ", "TQQQ", "QQQM", "BOXX"],
+        "attested_at": "2026-08-14T08:02:42.313883Z",
+        "authority_basis": "FRESH_HUMAN_CONFIRMATION",
+        "independent_legal_verification_claim": "NONE",
+        "input_root_sha256": research_input_manifest_sha256(
+            payload["input_manifest"]
+        ),
+        "redistribution": "PROHIBITED",
+        "retention_expires_at": (
+            datetime.now(UTC) + timedelta(days=1)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY",
+        "third_party_license_claim": "NONE",
+    }
+
+
+def _personal_attested_input_payload() -> dict[str, object]:
+    payload = _input_payload()
+    payload["provenance"] = _personal_attestation(payload)
+    return payload
 
 
 def _config() -> dict[str, object]:
@@ -543,6 +569,61 @@ def test_provider_observed_contract_rejects_boxx_backfill(tmp_path: Path) -> Non
             output_dir=tmp_path,
             mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
         )
+
+
+def test_personal_attestation_is_normalized_as_human_attested_input() -> None:
+    payload = _personal_attested_input_payload()
+
+    provenance, _, manifest_sha256 = evidence_module._validate_input(payload, _config())
+
+    assert provenance == {
+        "provider": "human_attested_personal_internal_research",
+        "provider_revision": "not_independently_verified",
+        "license": "human_attested_no_third_party_license_claim",
+        "usage_scope": "INTERNAL_PERSONAL_QUANTITATIVE_RESEARCH_ONLY_NO_REDISTRIBUTION",
+    }
+    assert manifest_sha256 == research_input_manifest_sha256(payload["input_manifest"])
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (lambda attestation, payload: attestation.update(input_root_sha256="0" * 64), "root"),
+        (
+            lambda attestation, payload: attestation.update(scope="EXTERNAL_REDISTRIBUTION"),
+            "scope",
+        ),
+        (
+            lambda attestation, payload: attestation.update(retention_expires_at="2000-01-01T00:00:00Z"),
+            "retention",
+        ),
+        (lambda attestation, payload: attestation.pop("redistribution"), "attestation"),
+        (
+            lambda attestation, payload: payload["input_manifest"].update(profile="tampered"),
+            "immutable input contract",
+        ),
+    ],
+)
+def test_personal_attestation_failures_stop_before_backtest_orchestrator(
+    tmp_path: Path, mutate, error: str
+) -> None:
+    payload = _personal_attested_input_payload()
+    mutate(payload["provenance"], payload)
+
+    with patch.object(
+        evidence_module,
+        "run_tqqq_promotion_research",
+        side_effect=AssertionError("BacktestOrchestrator must not run"),
+    ) as orchestrator, pytest.raises(TqqqPromotionEvidenceError, match=error):
+        run_tqqq_promotion_evidence(
+            input_payload=payload,
+            config_payload=_config(),
+            output_dir=tmp_path,
+            mandate_receipt_sha256=MANDATE_RECEIPT_SHA256,
+        )
+
+    orchestrator.assert_not_called()
+    assert not any(tmp_path.iterdir())
 
 
 def _episode_producer(sessions: tuple[date, ...]) -> _ImmutableReplayProducer:
