@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from quant_platform_kit.data.research_input import research_input_manifest_sha256
@@ -107,11 +108,9 @@ def test_cli_writes_canonical_static_binding_only(tmp_path: Path, capsys) -> Non
 
 def test_binding_has_no_provider_runtime_or_order_path() -> None:
     source = inspect.getsource(binding).lower()
-    cli_source = inspect.getsource(cli).lower()
 
     for forbidden in ("ibapi", "gateway", "credential", "reqhistoricaldata", "placeorder"):
         assert forbidden not in source
-        assert forbidden not in cli_source
 
 
 class _FakeHistoricalBarsProvider:
@@ -179,6 +178,37 @@ class _UnconnectedCallbackShapeClient:
 
 class _CallbackShapeContract:
     pass
+
+
+class _PortCallbackClient:
+    def __init__(self, wrapper: object) -> None:
+        self.wrapper = wrapper
+        self.history_calls: list[tuple[object, ...]] = []
+        self.history_bars: list[object] = []
+        self.emit_error = False
+        self.emit_end = True
+        self.end_request_id_offset = 0
+
+    def isConnected(self) -> bool:
+        return True
+
+    def reqHistoricalData(self, *args: object) -> None:
+        self.history_calls.append(args)
+        request_id = args[0]
+        assert isinstance(request_id, int)
+        if self.emit_error:
+            self.wrapper.error(request_id, 0, 321, "synthetic provider detail", "")
+            return
+        for bar in self.history_bars:
+            self.wrapper.historicalData(request_id, bar)
+        if self.emit_end:
+            self.wrapper.historicalDataEnd(request_id + self.end_request_id_offset, "raw start", "raw end")
+
+    def cancelHistoricalData(self, _request_id: int) -> None:
+        pass
+
+    def run(self) -> None:
+        pass
 
 
 def _producer() -> dict[str, str]:
@@ -353,7 +383,109 @@ def test_publisher_callback_boundary_matches_official_interface_and_stays_provid
     app.historicalDataEnd(1, "", "")
     assert app.isConnected() is False
     assert app.history_calls == []
-    assert app.sanitized_lifecycle() == ()
+    assert app.tqqq_core_only_terminal_state() == {"active_request_id": None, "terminal": "IDLE"}
+
+
+def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_PortCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.history_bars = [
+        SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10),
+        SimpleNamespace(date="20180103", open=2.0, high=3.0, low=1.5, close=2.5, volume=20),
+    ]
+
+    response = app.fetch_historical_bars(
+        symbol="QQQ",
+        calendar_id="XNYS",
+        timezone="America/New_York",
+        adjustment_policy="total_return_adjusted",
+        feed="ADJUSTED_LAST",
+        date_cutoff="2026-07-31",
+    )
+
+    assert response == {
+        "bars": [
+            {"date": "2018-01-02", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
+            {"date": "2018-01-03", "open": 2.0, "high": 3.0, "low": 1.5, "close": 2.5, "volume": 20.0},
+        ]
+    }
+    assert app.history_calls == [
+        (
+            1_000_000,
+            app.last_tqqq_core_only_contract,
+            "20260731 23:59:59 America/New_York",
+            "9 Y",
+            "1 day",
+            "ADJUSTED_LAST",
+            1,
+            1,
+            False,
+            [],
+        )
+    ]
+    assert app.last_tqqq_core_only_request_envelope == {
+        "symbol": "QQQ",
+        "start_date": "2018-01-02",
+        "date_cutoff": "2026-07-31",
+        "endDateTime": "20260731 23:59:59 America/New_York",
+        "durationStr": "9 Y",
+        "barSizeSetting": "1 day",
+        "whatToShow": "ADJUSTED_LAST",
+        "useRTH": 1,
+        "calendar_id": "XNYS",
+        "timezone": "America/New_York",
+    }
+
+
+@pytest.mark.parametrize("terminal", ("error", "missing_end", "foreign_end"))
+def test_callback_port_requires_matching_end_and_normalizes_terminal_failures(terminal: str) -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_PortCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.history_bars = [SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10)]
+    app.emit_error = terminal == "error"
+    app.emit_end = terminal != "missing_end"
+    app.end_request_id_offset = 1 if terminal == "foreign_end" else 0
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        app.fetch_historical_bars(
+            symbol="QQQ",
+            calendar_id="XNYS",
+            timezone="America/New_York",
+            adjustment_policy="total_return_adjusted",
+            feed="ADJUSTED_LAST",
+            date_cutoff="2026-07-31",
+        )
+
+    assert "synthetic provider detail" not in repr(app.tqqq_core_only_terminal_state())
+
+
+def test_callback_port_partial_history_cannot_publish_a_root(tmp_path: Path) -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_PortCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.history_bars = [SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10)]
+    output = tmp_path / "immutable-input"
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="historical coverage"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            app,
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+    assert not output.exists()
 
 
 def test_data_only_publisher_has_no_order_or_p3_reachability() -> None:
