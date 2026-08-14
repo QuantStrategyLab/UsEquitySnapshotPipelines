@@ -29,6 +29,7 @@ _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _HISTORICAL_DURATION = "1 Y"
 _HISTORICAL_BAR_SIZE = "1 day"
 _HISTORICAL_END_SUFFIX = "23:59:59 America/New_York"
+_INFORMATIONAL_FARM_NOTIFICATION_CODES = frozenset({2104, 2106, 2158})
 _FROZEN_LOGICAL_WINDOWS = {
     "QQQ": (
         ("2018-01-02", "2018-07-31"),
@@ -171,6 +172,8 @@ def build_tqqq_core_only_ibkr_callback_app(
             self._next_request_id = request_id_start
             self._active_request_id: int | None = None
             self._terminal = "IDLE"
+            self._matching_end_count = 0
+            self._informational_notification_count = 0
             self._bars: list[dict[str, object]] = []
             self.last_tqqq_core_only_contract: Any | None = None
             self.last_tqqq_core_only_request_envelope: dict[str, object] | None = None
@@ -242,15 +245,21 @@ def build_tqqq_core_only_ibkr_callback_app(
             errorString: str,
             advancedOrderRejectJson: str,
         ) -> None:
-            del errorTime, errorCode, errorString, advancedOrderRejectJson
+            del errorTime, errorString, advancedOrderRejectJson
             with self._condition:
+                if self._terminal != "PENDING":
+                    return
+                if reqId == -1 and errorCode in _INFORMATIONAL_FARM_NOTIFICATION_CODES:
+                    self._informational_notification_count += 1
+                    self._condition.notify_all()
+                    return
                 if self._active_request_id is not None and reqId in {-1, self._active_request_id}:
                     self._terminal = "PROVIDER_ERROR"
                     self._condition.notify_all()
 
         def connectionClosed(self) -> None:
             with self._condition:
-                if self._active_request_id is not None:
+                if self._active_request_id is not None and self._terminal == "PENDING":
                     self._terminal = "TRANSPORT_ERROR"
                     self._condition.notify_all()
 
@@ -274,6 +283,7 @@ def build_tqqq_core_only_ibkr_callback_app(
             del start, end
             with self._condition:
                 if reqId == self._active_request_id and self._terminal == "PENDING":
+                    self._matching_end_count += 1
                     self._terminal = "COMPLETED"
                     self._condition.notify_all()
 
@@ -282,6 +292,9 @@ def build_tqqq_core_only_ibkr_callback_app(
                 return {
                     "active_request_id": self._active_request_id,
                     "terminal": self._terminal,
+                    "terminal_class": self._terminal,
+                    "matching_end_count": self._matching_end_count,
+                    "informational_notification_count": self._informational_notification_count,
                 }
 
         def fetch_historical_bars(
@@ -327,6 +340,8 @@ def build_tqqq_core_only_ibkr_callback_app(
                         self._next_request_id += 1
                         self._active_request_id = request_id
                         self._terminal = "PENDING"
+                        self._matching_end_count = 0
+                        self._informational_notification_count = 0
                         self._bars = []
                         self.last_tqqq_core_only_contract = contract
                         self.last_tqqq_core_only_request_envelope = envelope
