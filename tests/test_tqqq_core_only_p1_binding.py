@@ -11,6 +11,7 @@ from quant_platform_kit.data.research_input import research_input_manifest_sha25
 from scripts import acquire_tqqq_core_only_p1_inputs_ibkr as acquisition_cli
 from scripts import bind_tqqq_core_only_p1_input as cli
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as binding
+from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
 
 
 def test_binding_freezes_new_candidate_source_and_data_identity() -> None:
@@ -114,9 +115,13 @@ def test_binding_has_no_provider_runtime_or_order_path() -> None:
 
 
 class _FakeHistoricalBarsProvider:
-    def __init__(self, *, fail_on: str | None = None) -> None:
+    def __init__(
+        self, *, fail_on: str | None = None, full_history: bool = False, partial_history: bool = False
+    ) -> None:
         self.calls: list[dict[str, str]] = []
         self.fail_on = fail_on
+        self.full_history = full_history
+        self.partial_history = partial_history
 
     def fetch_historical_bars(
         self,
@@ -140,7 +145,10 @@ class _FakeHistoricalBarsProvider:
         )
         if symbol == self.fail_on:
             raise RuntimeError("synthetic provider failure")
-        return {"bars": [{"close": 100.0, "session": "2026-07-31"}]}
+        bars = _bars_for(symbol)
+        if self.partial_history:
+            bars = bars[:-1]
+        return {"bars": bars if self.full_history else bars[-1:]}
 
 
 class _OfficialCallbackShapeWrapper:
@@ -183,9 +191,25 @@ def _producer() -> dict[str, str]:
     }
 
 
+def _bars_for(symbol: str) -> list[dict[str, object]]:
+    eligible_start = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
+    return [
+        {
+            "date": session.isoformat(),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1.0,
+        }
+        for session in tqqq_promotion_runner._FROZEN_XNYS_SESSIONS
+        if eligible_start is None or session.isoformat() >= eligible_start
+    ]
+
+
 def test_injected_four_input_provider_publishes_private_qpk_manifest(tmp_path: Path) -> None:
     output = tmp_path / "immutable-input"
-    provider = _FakeHistoricalBarsProvider()
+    provider = _FakeHistoricalBarsProvider(full_history=True)
 
     result = acquisition_cli.publish_tqqq_core_only_p1_inputs(
         provider,
@@ -212,10 +236,27 @@ def test_injected_four_input_provider_publishes_private_qpk_manifest(tmp_path: P
     assert binding.verify_tqqq_core_only_input_root(output) == result["manifest_sha256"]
 
 
+@pytest.mark.parametrize("full_history,partial_history", [(False, False), (True, True)])
+def test_incomplete_provider_is_rejected_without_publishing_a_root(
+    tmp_path: Path, full_history: bool, partial_history: bool
+) -> None:
+    output = tmp_path / "immutable-input"
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="historical coverage"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            _FakeHistoricalBarsProvider(full_history=full_history, partial_history=partial_history),
+            output_root=output,
+            observed_at="2026-08-14T00:00:00Z",
+            producer=_producer(),
+        )
+
+    assert not output.exists()
+
+
 def test_published_root_rejects_tampering_and_clobbering(tmp_path: Path) -> None:
     output = tmp_path / "immutable-input"
     acquisition_cli.publish_tqqq_core_only_p1_inputs(
-        _FakeHistoricalBarsProvider(),
+        _FakeHistoricalBarsProvider(full_history=True),
         output_root=output,
         observed_at="2026-08-14T00:00:00Z",
         producer=_producer(),
