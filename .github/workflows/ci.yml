@@ -57,7 +57,12 @@ jobs:
           from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
 
           assert distribution("us-equity-snapshot-pipelines").version
-          assert tqqq_promotion_runner._PROFILE == "tqqq_core_parity_v1"
+          assert tqqq_promotion_runner._PROFILE == "tqqq_core_only_p2_v1"
+          assert tqqq_promotion_runner._COST_SCENARIOS_BPS == (5, 10, 25)
+          assert (
+              tqqq_promotion_runner._LOCKED_OOS_START.isoformat(),
+              tqqq_promotion_runner._LOCKED_OOS_END.isoformat(),
+          ) == ("2025-08-01", "2026-07-31")
           '
       - name: Run tests
         run: python -m pytest -q
