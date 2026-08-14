@@ -69,6 +69,11 @@ class _SanitizedLifecycleProvider:
         self._completed = True
         return response
 
+    def close(self) -> None:
+        close = getattr(self._provider, "close", None)
+        if callable(close):
+            close()
+
     def failure_payload(self, producer: Mapping[str, object]) -> dict[str, object]:
         failure_class = "data_only_acquisition_failed"
         if failure_class not in _FAILURE_CLASSES:
@@ -106,7 +111,12 @@ def publish_tqqq_core_only_p1_inputs(
     producer: Mapping[str, object],
 ) -> dict[str, object]:
     """Run one four-call transaction through the only accepted injected provider port."""
-    return _publish(provider, output_root=output_root, observed_at=observed_at, producer=producer)
+    try:
+        return _publish(provider, output_root=output_root, observed_at=observed_at, producer=producer)
+    finally:
+        close = getattr(provider, "close", None)
+        if callable(close):
+            close()
 
 
 def build_tqqq_core_only_ibkr_callback_app(
@@ -141,12 +151,73 @@ def build_tqqq_core_only_ibkr_callback_app(
             wrapper_type.__init__(self)
             client_type.__init__(self, self)
             self._condition = threading.Condition()
+            self._handshake_observed = False
+            self._reader_thread: threading.Thread | None = None
+            self._reader_exited = False
             self._next_request_id = request_id_start
             self._active_request_id: int | None = None
             self._terminal = "IDLE"
             self._bars: list[dict[str, object]] = []
             self.last_tqqq_core_only_contract: Any | None = None
             self.last_tqqq_core_only_request_envelope: dict[str, object] | None = None
+
+        def nextValidId(self, orderId: int) -> None:
+            del orderId
+            with self._condition:
+                self._handshake_observed = True
+                self._condition.notify_all()
+
+        def _run_reader(self) -> None:
+            try:
+                client_type.run(self)
+            except Exception:  # noqa: BLE001 - provider details must remain private
+                pass
+            finally:
+                with self._condition:
+                    self._reader_exited = True
+                    if self._active_request_id is not None and self._terminal == "PENDING":
+                        self._terminal = "READER_EXIT"
+                    self._condition.notify_all()
+
+        def _start_reader(self) -> None:
+            with self._condition:
+                if self._reader_thread is not None:
+                    return
+                self._reader_exited = False
+                reader = threading.Thread(
+                    target=self._run_reader,
+                    name="tqqq-core-only-ibkr-reader",
+                    daemon=True,
+                )
+                self._reader_thread = reader
+            reader.start()
+
+        def _wait_for_handshake(self, deadline: float) -> bool:
+            with self._condition:
+                while not self._handshake_observed:
+                    if self._reader_exited:
+                        return False
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._condition.wait(remaining)
+                return not self._reader_exited
+
+        def close(self) -> None:
+            self._teardown_reader()
+
+        def _teardown_reader(self) -> None:
+            try:
+                if self.isConnected():
+                    self.disconnect()
+            except Exception:  # noqa: BLE001 - teardown must not expose provider details
+                pass
+            with self._condition:
+                reader = self._reader_thread
+            if reader is not None and reader is not threading.current_thread():
+                reader.join(timeout=history_watchdog_seconds)
+            with self._condition:
+                self._reader_thread = None
 
         def error(
             self,
@@ -219,6 +290,13 @@ def build_tqqq_core_only_ibkr_callback_app(
             try:
                 if not self.isConnected():
                     raise ValueError
+                with self._condition:
+                    reader_started = self._reader_thread is not None
+                if not reader_started:
+                    self._start_reader()
+                deadline = time.monotonic() + history_watchdog_seconds
+                if not self._wait_for_handshake(deadline):
+                    raise ValueError
                 contract = contract_type()
                 contract.symbol = symbol
                 contract.secType = "STK"
@@ -246,7 +324,6 @@ def build_tqqq_core_only_ibkr_callback_app(
                     False,
                     [],
                 )
-                deadline = time.monotonic() + history_watchdog_seconds
                 with self._condition:
                     while self._terminal == "PENDING":
                         remaining = deadline - time.monotonic()

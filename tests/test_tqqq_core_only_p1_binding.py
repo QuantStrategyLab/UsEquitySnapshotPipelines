@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from queue import Empty, Queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,14 +181,16 @@ class _CallbackShapeContract:
     pass
 
 
-class _PortCallbackClient:
+class _QueuedCallbackClient:
     def __init__(self, wrapper: object) -> None:
         self.wrapper = wrapper
         self.history_calls: list[tuple[object, ...]] = []
         self.history_bars: list[object] = []
-        self.emit_error = False
-        self.emit_end = True
-        self.end_request_id_offset = 0
+        self.behavior = "success"
+        self.run_calls = 0
+        self.disconnect_calls = 0
+        self._requests: Queue[int] = Queue()
+        self._reader_released = False
 
     def isConnected(self) -> bool:
         return True
@@ -196,19 +199,34 @@ class _PortCallbackClient:
         self.history_calls.append(args)
         request_id = args[0]
         assert isinstance(request_id, int)
-        if self.emit_error:
-            self.wrapper.error(request_id, 0, 321, "synthetic provider detail", "")
-            return
-        for bar in self.history_bars:
-            self.wrapper.historicalData(request_id, bar)
-        if self.emit_end:
-            self.wrapper.historicalDataEnd(request_id + self.end_request_id_offset, "raw start", "raw end")
+        self._requests.put(request_id)
 
     def cancelHistoricalData(self, _request_id: int) -> None:
         pass
 
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        self._reader_released = True
+
     def run(self) -> None:
-        pass
+        self.run_calls += 1
+        if self.behavior == "reader_exit":
+            return
+        if self.behavior != "no_handshake":
+            self.wrapper.nextValidId(1)
+        while not self._reader_released:
+            try:
+                request_id = self._requests.get(timeout=0.01)
+            except Empty:
+                continue
+            if self.behavior == "error":
+                self.wrapper.error(request_id, 0, 321, "synthetic provider detail", "")
+            elif self.behavior in {"success", "partial"}:
+                for bar in self.history_bars:
+                    self.wrapper.historicalData(request_id, bar)
+                self.wrapper.historicalDataEnd(request_id, "raw start", "raw end")
+            elif self.behavior == "foreign_end":
+                self.wrapper.historicalDataEnd(request_id + 1, "raw start", "raw end")
 
 
 def _producer() -> dict[str, str]:
@@ -386,19 +404,8 @@ def test_publisher_callback_boundary_matches_official_interface_and_stays_provid
     assert app.tqqq_core_only_terminal_state() == {"active_request_id": None, "terminal": "IDLE"}
 
 
-def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> None:
-    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
-        client_type=_PortCallbackClient,
-        wrapper_type=_OfficialCallbackShapeWrapper,
-        contract_type=_CallbackShapeContract,
-        history_watchdog_seconds=0.001,
-    )
-    app.history_bars = [
-        SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10),
-        SimpleNamespace(date="20180103", open=2.0, high=3.0, low=1.5, close=2.5, volume=20),
-    ]
-
-    response = app.fetch_historical_bars(
+def _fetch_tqqq_core_only_bars(app: object) -> dict[str, object]:
+    return app.fetch_historical_bars(
         symbol="QQQ",
         calendar_id="XNYS",
         timezone="America/New_York",
@@ -407,12 +414,49 @@ def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> Non
         date_cutoff="2026-07-31",
     )
 
+
+@pytest.mark.parametrize("behavior", ("no_handshake", "reader_exit"))
+def test_callback_port_requires_reader_and_handshake_before_request(behavior: str) -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.behavior = behavior
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        _fetch_tqqq_core_only_bars(app)
+    app.close()
+
+    assert app.run_calls == 1
+    assert app.history_calls == []
+    assert app.disconnect_calls == 1
+
+
+def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.1,
+    )
+    app.history_bars = [
+        SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10),
+        SimpleNamespace(date="20180103", open=2.0, high=3.0, low=1.5, close=2.5, volume=20),
+    ]
+
+    response = _fetch_tqqq_core_only_bars(app)
+    app.close()
+
     assert response == {
         "bars": [
             {"date": "2018-01-02", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
             {"date": "2018-01-03", "open": 2.0, "high": 3.0, "low": 1.5, "close": 2.5, "volume": 20.0},
         ]
     }
+    assert app.run_calls == 1
+    assert app.disconnect_calls == 1
     assert app.history_calls == [
         (
             1_000_000,
@@ -441,40 +485,51 @@ def test_callback_app_exposes_the_frozen_ibkr_port_and_request_envelope() -> Non
     }
 
 
-@pytest.mark.parametrize("terminal", ("error", "missing_end", "foreign_end"))
-def test_callback_port_requires_matching_end_and_normalizes_terminal_failures(terminal: str) -> None:
+@pytest.mark.parametrize("behavior", ("error", "timeout", "foreign_end"))
+def test_callback_port_fails_closed_on_error_or_timeout(behavior: str) -> None:
     app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
-        client_type=_PortCallbackClient,
+        client_type=_QueuedCallbackClient,
         wrapper_type=_OfficialCallbackShapeWrapper,
         contract_type=_CallbackShapeContract,
         history_watchdog_seconds=0.001,
     )
-    app.history_bars = [SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10)]
-    app.emit_error = terminal == "error"
-    app.emit_end = terminal != "missing_end"
-    app.end_request_id_offset = 1 if terminal == "foreign_end" else 0
+    app.behavior = behavior
 
     with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
-        app.fetch_historical_bars(
-            symbol="QQQ",
-            calendar_id="XNYS",
-            timezone="America/New_York",
-            adjustment_policy="total_return_adjusted",
-            feed="ADJUSTED_LAST",
-            date_cutoff="2026-07-31",
-        )
+        _fetch_tqqq_core_only_bars(app)
+    app.close()
 
+    assert len(app.history_calls) == 1
+    assert app.disconnect_calls == 1
     assert "synthetic provider detail" not in repr(app.tqqq_core_only_terminal_state())
+
+
+def test_callback_port_requires_matching_end_and_normalizes_terminal_failures() -> None:
+    app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
+        client_type=_QueuedCallbackClient,
+        wrapper_type=_OfficialCallbackShapeWrapper,
+        contract_type=_CallbackShapeContract,
+        history_watchdog_seconds=0.001,
+    )
+    app.behavior = "timeout"
+    app.history_bars = [SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10)]
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+        _fetch_tqqq_core_only_bars(app)
+    app.close()
+
+    assert app.disconnect_calls == 1
 
 
 def test_callback_port_partial_history_cannot_publish_a_root(tmp_path: Path) -> None:
     app = acquisition_cli.build_tqqq_core_only_ibkr_callback_app(
-        client_type=_PortCallbackClient,
+        client_type=_QueuedCallbackClient,
         wrapper_type=_OfficialCallbackShapeWrapper,
         contract_type=_CallbackShapeContract,
         history_watchdog_seconds=0.001,
     )
     app.history_bars = [SimpleNamespace(date="20180102", open=1.0, high=2.0, low=0.5, close=1.5, volume=10)]
+    app.behavior = "partial"
     output = tmp_path / "immutable-input"
 
     with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="historical coverage"):
@@ -492,6 +547,6 @@ def test_data_only_publisher_has_no_order_or_p3_reachability() -> None:
     source = inspect.getsource(acquisition_cli).lower()
     binding_source = inspect.getsource(binding).lower()
 
-    for forbidden in ("place_order", "placeorder", "promotion", "replay", "tqqq_r1", "v3"):
+    for forbidden in ("place_order", "placeorder", "promotion", "replay", "tqqq_r1", "p3", "v3"):
         assert forbidden not in source
         assert forbidden not in binding_source
