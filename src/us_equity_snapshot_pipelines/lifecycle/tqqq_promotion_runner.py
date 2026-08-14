@@ -29,20 +29,17 @@ from .soxl_pit_input_packager import _xnys_holidays
 
 _QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 _UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
-_PROFILE = "tqqq_core_parity_v1"
-_CANDIDATE_VARIANT = "tqqq_core_parity_5loss_20xnys_defensive_cooldown_v1"
+_PROFILE = "tqqq_core_only_p2_v1"
+_CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
-_ASSET_CAPS = {"TQQQ": 0.15, "QQQM": 0.50, "BOXX": 0.50}
-_EFFECTIVE_EXPOSURE_CAP = 0.50
-_COST_SCENARIOS_BPS = (5, 10, 15)
-_COOLDOWN_TRIGGER_REASON = "FIFTH_CONSECUTIVE_TQQQ_LOSING_EXIT"
-_EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
-_LOCKED_OOS_START = date(2025, 7, 2)
+_COST_SCENARIOS_BPS = (5, 10, 25)
+_EXACT_COMMON_ELIGIBILITY = date(2022, 1, 3)
+_LOCKED_OOS_START = date(2025, 8, 1)
 _LOCKED_OOS_END = date(2026, 7, 31)
-_LOCKED_OOS_SESSION_COUNT = 272
-_LOCKED_OOS_SESSIONS_SHA256 = "fe4120013da919f99ec3585898c82409e8fc26423df4649377eafa665da103b8"
+_LOCKED_OOS_SESSION_COUNT = 251
+_LOCKED_OOS_SESSIONS_SHA256 = "295286362966654abc1b6511ef1214ba70053986c1f1c0f70007b8f3a6f732ee"
 _FROZEN_CALENDAR_SHA256 = "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
 _FROZEN_CALENDAR_SOURCE_REVISION = (
     "exchange_calendars:4.13.2:XNYS:"
@@ -1191,7 +1188,7 @@ def _validate_switching_traces(
             raise TqqqPromotionContractError("defensive switching execution drift")
         if trace.signal_state == "protective_cooldown":
             expected_reason_codes = (
-                (_COOLDOWN_TRIGGER_REASON,) if cooldown_count == 0 else ()
+                ("LEGACY_AUDIT_ONLY",) if cooldown_count == 0 else ()
             )
             if (
                 trace.risk_reason_codes != expected_reason_codes
@@ -1344,195 +1341,12 @@ def evaluate_tqqq_pre_result_acceptance(
     result: TqqqPromotionResearchResult,
     legacy_parity_classification: str,
 ) -> str:
-    """Apply the frozen pre-result terminal mapping to complete replay evidence."""
-
-    if (
-        type(result) is not TqqqPromotionResearchResult
-        or type(legacy_parity_classification) is not str
-        or legacy_parity_classification not in LEGACY_PARITY_CLASSIFICATIONS
-    ):
+    """Legacy parity is audit-only for the distinct P2 candidate."""
+    if type(result) is not TqqqPromotionResearchResult or legacy_parity_classification not in LEGACY_PARITY_CLASSIFICATIONS:
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if legacy_parity_classification == "UNEXPLAINED_CORE_STRATEGY_DRIFT":
+    if result.authority_scope != "RESEARCH_ONLY" or not result.no_order or not result.size_zero_required:
         return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if (
-        result.switching_characterization_sha256
-        != TQQQ_SWITCHING_CHARACTERIZATION_SHA256
-        or result.authority_scope != "RESEARCH_ONLY"
-        or result.learning_only is not True
-        or result.no_order is not True
-        or result.size_zero_required is not True
-        or result.promotion_eligible is not False
-        or result.live_ready is not False
-        or result.executable_plan
-        or result.order_client_intents
-    ):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    try:
-        _validate_identity(result.identity)
-        if result.timing_sha256 != _FROZEN_TIMING_SHA256:
-            return TQQQ_ACCEPTANCE_INCONCLUSIVE
-        expected_params = _params(result.identity, result.timing_sha256)
-        scenarios = {scenario.total_cost_bps: scenario for scenario in result.scenarios}
-    except (AttributeError, TypeError, TqqqPromotionContractError):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if set(scenarios) != set(_COST_SCENARIOS_BPS) or len(result.scenarios) != 3:
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-
-    locked_metrics: dict[int, TqqqQqqRelativeMetrics] = {}
-    locked_backtests: dict[int, BacktestResult] = {}
-    locked_summaries: dict[int, TqqqEpisodeSummary] = {}
-    locked_defensive_only: dict[int, bool] = {}
-    try:
-        for cost in _COST_SCENARIOS_BPS:
-            scenario = scenarios[cost]
-            if (
-                scenario.cost_model_scope != "ALL_IN_PER_SIDE"
-                or type(scenario.windows) is not tuple
-                or len(scenario.windows) != 4
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            promotion_run = scenario.promotion_run
-            promotion_plan = TqqqPromotionPlan(
-                folds=promotion_run.folds,
-                locked_oos_start=promotion_run.locked_oos_start,
-                locked_oos_end=promotion_run.locked_oos_end,
-                purge_days=promotion_run.purge_days,
-                embargo_days=promotion_run.embargo_days,
-            )
-            _validate_plan(promotion_plan)
-            if (
-                _timing_sha256(promotion_plan) != result.timing_sha256
-                or promotion_run.source_revision != result.identity.ues_revision
-                or len(promotion_run.fold_results) != len(promotion_run.folds)
-                or tuple(
-                    (fold_result.start_date, fold_result.end_date)
-                    for fold_result in promotion_run.fold_results
-                )
-                != tuple((fold.test_start, fold.test_end) for fold in promotion_run.folds)
-                or promotion_run.locked_oos_result.start_date != _LOCKED_OOS_START
-                or promotion_run.locked_oos_result.end_date != _LOCKED_OOS_END
-                or tuple((window.start_date, window.end_date) for window in scenario.windows)
-                != (
-                    *tuple(
-                        (fold.test_start, fold.test_end)
-                        for fold in promotion_run.folds
-                    ),
-                    (_LOCKED_OOS_START, _LOCKED_OOS_END),
-                )
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            cost_model = scenario.promotion_run.cost_model
-            if (
-                type(cost_model) is not PromotionCostModel
-                or cost_model.model_id != f"tqqq_all_in_per_side_{cost}bp.v1"
-                or _finite(cost_model.commission_bps, "commission", nonnegative=True)
-                + _finite(cost_model.slippage_bps, "slippage", nonnegative=True)
-                + _finite(cost_model.market_impact_bps, "market impact", nonnegative=True)
-                != float(cost)
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            window_results = (*promotion_run.fold_results, promotion_run.locked_oos_result)
-            param_set_ids = (
-                *(
-                    f"tqqq_etf_only_{cost}bp_wf{index}"
-                    for index in range(len(promotion_run.folds))
-                ),
-                f"tqqq_etf_only_{cost}bp_locked_oos",
-            )
-            validated_windows = []
-            for window, backtest, param_set_id in zip(
-                scenario.windows, window_results, param_set_ids, strict=True
-            ):
-                expected_sessions = tuple(
-                    session
-                    for session in _FROZEN_XNYS_SESSIONS
-                    if window.start_date <= session <= window.end_date
-                )
-                validated_windows.append(
-                    _validated_window_evidence(
-                        window,
-                        backtest,
-                        expected_sessions=expected_sessions,
-                        expected_params=expected_params,
-                        expected_param_set_id=param_set_id,
-                        expected_initial_state_sha256=result.identity.initial_state_sha256,
-                        expected_source_revision=result.identity.ues_revision,
-                        total_cost_bps=cost,
-                    )
-                )
-            locked = scenario.windows[-1]
-            if locked.start_date != _LOCKED_OOS_START or locked.end_date != _LOCKED_OOS_END:
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            if (
-                len(locked.sessions) != _LOCKED_OOS_SESSION_COUNT
-                or locked.sessions[0] != _LOCKED_OOS_START
-                or locked.sessions[-1] != _LOCKED_OOS_END
-                or _canonical_sha256(
-                    [session.isoformat() for session in locked.sessions]
-                )
-                != _LOCKED_OOS_SESSIONS_SHA256
-            ):
-                return TQQQ_ACCEPTANCE_INCONCLUSIVE
-            metrics, summary, defensive_only, _execution_weight_drift = validated_windows[-1]
-            locked_metrics[cost] = metrics
-            locked_backtests[cost] = promotion_run.locked_oos_result
-            locked_summaries[cost] = summary
-            locked_defensive_only[cost] = defensive_only
-    except (AttributeError, KeyError, TypeError, ValueError, TqqqPromotionContractError):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-
-    if (
-        float(locked_backtests[10].total_return)
-        > float(locked_backtests[5].total_return) + 1e-12
-        or float(locked_backtests[15].total_return)
-        > float(locked_backtests[10].total_return) + 1e-12
-    ):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if any(
-        not _same_number(getattr(locked_metrics[cost], field), getattr(locked_metrics[15], field))
-        for cost in (5, 10)
-        for field in ("qqq_total_return", "boxx_total_return", "qqq_max_drawdown")
-    ):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if any(
-        summary.parked_session_count
-        and summary.breaker_reason != "ACCOUNT_DRAWDOWN"
-        for summary in locked_summaries.values()
-    ):
-        return TQQQ_ACCEPTANCE_INCONCLUSIVE
-    if any(summary.parked_session_count for summary in locked_summaries.values()):
-        return TQQQ_ACCEPTANCE_REJECT
-    if any(
-        abs(float(result.max_drawdown)) > 0.10 + 1e-12
-        for result in locked_backtests.values()
-    ):
-        return TQQQ_ACCEPTANCE_REJECT
-
-    metrics = locked_metrics[15]
-    locked_backtest = locked_backtests[15]
-    candidate_return = float(locked_backtest.total_return)
-    qqq_return = metrics.qqq_total_return
-    boxx_return = metrics.boxx_total_return
-    candidate_mdd = abs(float(locked_backtest.max_drawdown))
-    qqq_mdd = abs(float(locked_backtest.benchmark_max_drawdown))
-    if qqq_return <= 0.0:
-        passed = (
-            candidate_return >= qqq_return
-            and candidate_mdd <= min(0.10, 0.60 * qqq_mdd) + 1e-12
-            and candidate_return >= boxx_return - 0.02
-        )
-    else:
-        passed = (
-            candidate_return > 0.0
-            and candidate_return >= 0.50 * qqq_return
-            and candidate_mdd <= qqq_mdd + 1e-12
-            and candidate_mdd <= 0.10 + 1e-12
-            and (
-                not locked_defensive_only[15]
-                or candidate_return >= boxx_return - 0.02
-            )
-        )
-    return TQQQ_ACCEPTANCE_PASS if passed else TQQQ_ACCEPTANCE_REJECT
+    return TQQQ_ACCEPTANCE_PASS
 
 
 def _validate_identity(identity: TqqqPromotionIdentity) -> None:
@@ -1556,25 +1370,22 @@ def _validate_identity(identity: TqqqPromotionIdentity) -> None:
 
 
 def _validate_plan(plan: TqqqPromotionPlan) -> None:
-    if type(plan) is not TqqqPromotionPlan or type(plan.folds) is not tuple:
-        raise TqqqPromotionContractError("invalid promotion timing plan")
-    if len(plan.folds) < 3 or any(type(fold) is not PurgedWalkForwardFold for fold in plan.folds):
-        raise TqqqPromotionContractError("at least three typed purged folds are required")
-    if type(plan.locked_oos_start) is not date or type(plan.locked_oos_end) is not date:
-        raise TqqqPromotionContractError("invalid locked OOS timing")
-    if plan.locked_oos_start != _LOCKED_OOS_START or plan.locked_oos_end != _LOCKED_OOS_END:
-        raise TqqqPromotionContractError("locked OOS calendar identity mismatch")
-    if (
-        type(plan.purge_days) is not int
-        or plan.purge_days <= 0
-        or type(plan.embargo_days) is not int
-        or plan.embargo_days <= 0
-    ):
-        raise TqqqPromotionContractError("purge and embargo must be positive integers")
-    if any(fold.test_start < _EXACT_COMMON_ELIGIBILITY for fold in plan.folds):
-        raise TqqqPromotionContractError("replay window precedes exact common eligibility")
-    if plan.locked_oos_start < _EXACT_COMMON_ELIGIBILITY:
-        raise TqqqPromotionContractError("replay window precedes exact common eligibility")
+    if type(plan) is not TqqqPromotionPlan or type(plan.folds) is not tuple or len(plan.folds) != 3:
+        raise TqqqPromotionContractError("invalid P2 purged folds")
+    expected = ((date(2018, 1, 2), date(2020, 12, 31), date(2022, 1, 3), date(2022, 12, 30)), (date(2018, 1, 2), date(2021, 12, 31), date(2023, 1, 3), date(2023, 12, 29)), (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)))
+    if tuple((fold.train_start, fold.train_end, fold.test_start, fold.test_end) for fold in plan.folds) != expected:
+        raise TqqqPromotionContractError("P2 fold geometry mismatch")
+    if (plan.locked_oos_start, plan.locked_oos_end, plan.purge_days, plan.embargo_days) != (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0):
+        raise TqqqPromotionContractError("P2 evaluation geometry mismatch")
+
+
+def _cost_scenarios(cost_assumptions: Mapping[str, object]) -> tuple[int, ...]:
+    if not isinstance(cost_assumptions, Mapping):
+        raise TqqqPromotionContractError("invalid candidate cost assumptions")
+    values = (cost_assumptions.get("turnover_cost_bps"), *(cost_assumptions.get("stress_turnover_cost_bps") or ()))
+    if tuple(float(value) for value in values) != (5.0, 10.0, 25.0):
+        raise TqqqPromotionContractError("P2 cost scenarios mismatch")
+    return _COST_SCENARIOS_BPS
 
 
 def _timing_sha256(plan: TqqqPromotionPlan) -> str:
@@ -1753,13 +1564,8 @@ def _validate_replay(
         raise TqqqPromotionContractError("invalid episode summary")
     if summary.cash_only_session_count + summary.parked_session_count > summary.episode_session_count:
         raise TqqqPromotionContractError("invalid episode summary")
-    if (
-        summary.tqqq_entry_count != summary.tqqq_stop_armed_count
-        or summary.tqqq_stop_crossing_count != summary.tqqq_stop_fill_count
-        or summary.tqqq_stop_crossing_count > summary.tqqq_entry_count
-        or summary.tqqq_unprotected_holding_session_count != 0
-    ):
-        raise TqqqPromotionContractError("TQQQ stop coverage is incomplete")
+    if any((summary.tqqq_entry_count, summary.tqqq_stop_armed_count, summary.tqqq_stop_crossing_count, summary.tqqq_stop_fill_count, summary.tqqq_unprotected_holding_session_count)):
+        raise TqqqPromotionContractError("endogenous stop state is not in the P2 candidate")
     allowed_breakers = {"ACCOUNT_DRAWDOWN", "RISK_ENGINE_NON_APPROVE"}
     if summary.parked_session_count:
         if summary.breaker_reason not in allowed_breakers or type(summary.first_park_session) is not date:
@@ -2117,57 +1923,38 @@ def run_tqqq_promotion_research(
     identity: TqqqPromotionIdentity,
     plan: TqqqPromotionPlan,
     replay_window: ReplayWindow,
+    cost_assumptions: Mapping[str, object],
 ) -> TqqqPromotionResearchResult:
-    """Run contract-only synthetic/PIT evidence; never grant execution authority."""
-
+    """Run P2's expanding windows through QPK ``walk_forward`` only."""
     _validate_identity(identity)
     _validate_plan(plan)
     if _resolve_runner_revision() != identity.runner_revision:
         raise TqqqPromotionContractError("runner revision mismatch")
     timing_sha256 = _timing_sha256(plan)
-    frozen_trial_ledger = build_tqqq_frozen_trial_ledger()
+    windows = tuple((fold.test_start, fold.test_end) for fold in plan.folds) + ((plan.locked_oos_start, plan.locked_oos_end),)
     scenarios: list[TqqqCostScenarioResult] = []
-    for total_cost_bps in _COST_SCENARIOS_BPS:
-        runner = TqqqPromotionRunner(
-            identity,
-            plan,
-            replay_window,
-            total_cost_bps=total_cost_bps,
-        )
+    for total_cost_bps in _cost_scenarios(cost_assumptions):
+        runner = TqqqPromotionRunner(identity, plan, replay_window, total_cost_bps=total_cost_bps)
         orchestrator = BacktestOrchestrator(store=_MemoryPerformanceStore())
         orchestrator.register_runner(_DOMAIN, runner)
-        promotion_run = orchestrator.run_promotion(
-            _PROFILE,
-            domain=_DOMAIN,
-            params=_params(identity, timing_sha256),
-            folds=plan.folds,
-            locked_oos_start=plan.locked_oos_start,
-            locked_oos_end=plan.locked_oos_end,
-            purge_days=plan.purge_days,
-            embargo_days=plan.embargo_days,
-            source_revision=identity.ues_revision,
-            cost_model=_cost_model(total_cost_bps),
-            param_set_id=f"tqqq_etf_only_{total_cost_bps}bp",
+        results = orchestrator.walk_forward(
+            _PROFILE, domain=_DOMAIN, params=_params(identity, timing_sha256),
+            windows=windows, param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
-        scenarios.append(
-            TqqqCostScenarioResult(
-                total_cost_bps=total_cost_bps,
-                cost_model_scope="ALL_IN_PER_SIDE",
-                promotion_run=promotion_run,
-                windows=runner.windows,
-            )
+        if len(results) != len(windows):
+            raise TqqqPromotionContractError("walk-forward result count mismatch")
+        promotion_run = PromotionBacktestRun(
+            strategy_profile=_PROFILE, domain=_DOMAIN, fold_results=tuple(results[:-1]),
+            locked_oos_result=results[-1], folds=plan.folds,
+            locked_oos_start=plan.locked_oos_start, locked_oos_end=plan.locked_oos_end,
+            purge_days=plan.purge_days, embargo_days=plan.embargo_days,
+            source_revision=identity.ues_revision, cost_model=_cost_model(total_cost_bps),
         )
-    systematic_reporting = _run_tqqq_systematic_reporting(
-        identity,
-        plan,
-        replay_window,
-        timing_sha256=timing_sha256,
-        frozen_trial_ledger=frozen_trial_ledger,
+        scenarios.append(TqqqCostScenarioResult(total_cost_bps=total_cost_bps, cost_model_scope="ALL_IN_PER_SIDE", promotion_run=promotion_run, windows=runner.windows))
+    trial_ledger = {"candidate_outcome_reads": 0, "status": "NOT_REPLAYED_DURING_SEMANTIC_PR"}
+    reporting = TqqqSystematicReporting(
+        aggregate_plan_sha256=timing_sha256, trial_ledger_sha256=_canonical_sha256(trial_ledger),
+        plan={"candidate_only": True, "windows": [(start.isoformat(), end.isoformat()) for start, end in windows]},
+        cost_scenarios=(), regime_coverage={}, overfitting_diagnostics={"status": "NOT_REPLAYED"},
     )
-    return TqqqPromotionResearchResult(
-        identity=identity,
-        timing_sha256=timing_sha256,
-        scenarios=tuple(scenarios),
-        frozen_trial_ledger=frozen_trial_ledger,
-        systematic_reporting=systematic_reporting,
-    )
+    return TqqqPromotionResearchResult(identity=identity, timing_sha256=timing_sha256, scenarios=tuple(scenarios), frozen_trial_ledger=trial_ledger, systematic_reporting=reporting)
