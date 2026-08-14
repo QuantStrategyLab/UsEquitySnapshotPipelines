@@ -99,7 +99,14 @@ def test_cli_parks_without_exposing_failure_details(
             str(tmp_path / "evidence"),
         ]
     ) == 2
-    assert capsys.readouterr().out == '{"status":"PARKED"}\n'
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "evidence_validation_failure",
+        "replay_started": True,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "evidence_validation",
+        "status": "PARKED",
+    }
 
 
 def test_cli_has_no_legacy_or_acquisition_imports() -> None:
