@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 
 import pytest
+
+from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
+
 
 def _load_script_module():
     script = Path(__file__).parents[1] / "scripts" / "run_tqqq_p3.py"
@@ -15,17 +19,69 @@ def _load_script_module():
     return module
 
 
-def test_cli_passes_new_p1_root_to_evidence_consumer(
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _producer() -> dict[str, str]:
+    return {
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit_sha": "a" * 40,
+        "tree_sha": "b" * 40,
+        "tool": "tqqq_core_only_p1_alpaca_sip_acquisition",
+        "tool_version": "v1",
+    }
+
+
+def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
+    first_eligible = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
+    return {
+        "bars": [
+            {
+                "date": session.isoformat(),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 1.0,
+            }
+            for session in p1_binding._expected_xnys_sessions("2026-07-31")
+            if first_eligible is None or session.isoformat() >= first_eligible
+        ]
+    }
+
+
+def _write_canonical_snapshot(root: Path) -> dict[str, object]:
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    binding = p1_binding.build_tqqq_core_only_p1_binding()
+    bars = {
+        "schema_version": "tqqq_core_only_private_bars.v1",
+        "symbols": {symbol: _alpaca_symbol_payload(symbol) for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")},
+    }
+    bars_bytes = _canonical(bars)
+    manifest = p1_binding.build_tqqq_core_only_input_manifest(
+        binding,
+        observed_at="2026-08-15T00:00:00Z",
+        producer=_producer(),
+        member_bytes=bars_bytes,
+        source_content_sha256={
+            symbol: hashlib.sha256(_canonical(bars["symbols"][symbol])).hexdigest()
+            for symbol in bars["symbols"]
+        },
+    )
+    (root / "binding.json").write_bytes(p1_binding.canonical_binding_bytes(binding))
+    (root / "manifest.json").write_bytes(p1_binding.canonical_research_input_manifest_bytes(manifest))
+    (root / "bars.json").write_bytes(bars_bytes)
+    return {"binding": binding, "input_manifest": manifest, "bars": bars}
+
+
+def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     module = _load_script_module()
     snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    binding = {"binding": "identity"}
-    manifest = {"manifest": "identity"}
-    bars = {"bars": "private"}
-    for filename, value in (("binding.json", binding), ("manifest.json", manifest), ("bars.json", bars)):
-        (snapshot / filename).write_text(json.dumps(value), encoding="utf-8")
+    input_payload = _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     captured: dict[str, object] = {}
@@ -44,11 +100,7 @@ def test_cli_passes_new_p1_root_to_evidence_consumer(
             "--output-dir", str(tmp_path / "output"),
         ]
     ) == 0
-    assert captured["input_payload"] == {
-        "binding": binding,
-        "input_manifest": manifest,
-        "bars": bars,
-    }
+    assert captured["input_payload"] == input_payload
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "1" * 64,
         "status": "EVIDENCE_V2_COMPLETE",
@@ -56,20 +108,43 @@ def test_cli_passes_new_p1_root_to_evidence_consumer(
     }
 
 
-def test_cli_reads_new_p1_root_without_personal_attestation(tmp_path: Path) -> None:
+def test_cli_rejects_tampered_source_identity_before_evidence_replay(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
     module = _load_script_module()
     snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    binding = {"binding": "identity"}
-    manifest = {"manifest": "identity"}
-    bars = {"bars": "private"}
-    for filename, value in (("binding.json", binding), ("manifest.json", manifest), ("bars.json", bars)):
-        (snapshot / filename).write_text(json.dumps(value), encoding="utf-8")
+    input_payload = _write_canonical_snapshot(snapshot)
+    input_payload["input_manifest"]["sources"][0]["content_sha256"] = "0" * 64  # type: ignore[index]
+    (snapshot / "manifest.json").write_bytes(
+        p1_binding.canonical_research_input_manifest_bytes(input_payload["input_manifest"])
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    calls = 0
 
-    assert module._snapshot_payload(snapshot) == {
-        "binding": binding,
-        "input_manifest": manifest,
-        "bars": bars,
+    def run_evidence(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("canonical root verification must run first")
+
+    module.run_tqqq_promotion_evidence = run_evidence
+
+    assert module.main(
+        [
+            "--snapshot-root", str(snapshot),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--output-dir", str(tmp_path / "output"),
+        ]
+    ) == 2
+    assert calls == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "input_validation_failure",
+        "replay_started": False,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "input_validation",
+        "status": "PARKED",
     }
 
 
@@ -93,9 +168,7 @@ def test_cli_emits_allowlisted_sanitized_typed_failure(
 ) -> None:
     module = _load_script_module()
     snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    for filename in ("binding.json", "manifest.json", "bars.json"):
-        (snapshot / filename).write_text("{}", encoding="utf-8")
+    _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     private_detail = "private provider bars /secret/path"
