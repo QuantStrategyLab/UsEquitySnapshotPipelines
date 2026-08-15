@@ -26,7 +26,7 @@ from quant_platform_kit.data.research_input import (
 CANDIDATE_ID = "tqqq_core_only_p2_v1"
 CANDIDATE_CONFIG_SHA256 = "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69"
 UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
-INPUT_CONTRACT_ID = "tqqq_core_only_ibkr_adjusted_last.v1"
+INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -36,7 +36,7 @@ _FIRST_ELIGIBLE_SESSION = {"QQQM": date(2020, 10, 13), "BOXX": date(2022, 12, 28
 
 
 class TqqqCoreOnlyHistoricalBarsProvider(Protocol):
-    """Injected data-only port for one adjusted historical-bars request per symbol."""
+    """Injected data-only port for one canonical adjusted historical-bars request per symbol."""
 
     def fetch_historical_bars(
         self,
@@ -77,8 +77,8 @@ def build_tqqq_core_only_p1_binding() -> dict[str, object]:
             "revision": UES_REVISION,
         },
         "data_identity": {
-            "provider": "IBKR",
-            "feed": "ADJUSTED_LAST",
+            "provider": "ALPACA_MARKET_DATA",
+            "feed": "SIP",
             "calendar": {
                 "calendar_id": "XNYS",
                 "timezone": "America/New_York",
@@ -86,7 +86,7 @@ def build_tqqq_core_only_p1_binding() -> dict[str, object]:
             },
             "adjustment": {
                 "policy": "total_return_adjusted",
-                "source": "IBKR_ADJUSTED_LAST",
+                "source": "ALPACA_MARKET_DATA adjustment=all(split,dividend,spin-off)",
             },
             "universe": list(_UNIVERSE),
             "date_cutoff": "2026-07-31",
@@ -168,7 +168,7 @@ def build_tqqq_core_only_input_manifest(
             },
             "sources": [
                 {
-                    "source_id": f"ibkr_adjusted_last:{symbol}",
+                    "source_id": f"alpaca_sip_1day_adjustment_all:{symbol}",
                     "revision": binding_digest,
                     "observed_at": observed_at,
                     "content_sha256": source_content_sha256[symbol],
@@ -201,7 +201,7 @@ def validate_tqqq_core_only_input_manifest(
     identity = frozen["data_identity"]
     assert isinstance(identity, dict)
     binding_digest = binding_sha256(frozen)
-    expected_source_ids = {f"ibkr_adjusted_last:{symbol}" for symbol in _UNIVERSE}
+    expected_source_ids = {f"alpaca_sip_1day_adjustment_all:{symbol}" for symbol in _UNIVERSE}
     sources = validated["sources"]
     if (
         validated["research_input_contract_id"] != INPUT_CONTRACT_ID
@@ -490,7 +490,7 @@ def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
             raise ValueError
         source_hashes = {source["source_id"]: source["content_sha256"] for source in manifest["sources"]}
         if source_hashes != {
-            f"ibkr_adjusted_last:{symbol}": hashlib.sha256(_canonical(payload["symbols"][symbol])).hexdigest()
+            f"alpaca_sip_1day_adjustment_all:{symbol}": hashlib.sha256(_canonical(payload["symbols"][symbol])).hexdigest()
             for symbol in _UNIVERSE
         }:
             raise ValueError
