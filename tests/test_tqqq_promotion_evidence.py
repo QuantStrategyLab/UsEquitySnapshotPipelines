@@ -7,6 +7,7 @@ from copy import deepcopy
 import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
+from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
 
 
 def _digest(value: object) -> str:
@@ -75,3 +76,64 @@ def test_p1_binding_uses_the_authoritative_p2_digest() -> None:
     assert evidence.CANDIDATE_CONFIG_SHA256 == (
         "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69"
     )
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _canonical_alpaca_input_payload() -> dict[str, object]:
+    binding = p1_binding.build_tqqq_core_only_p1_binding()
+    symbols: dict[str, object] = {}
+    for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX"):
+        first_eligible = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
+        symbols[symbol] = {
+            "bars": [
+                {
+                    "date": session.isoformat(),
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 1.0,
+                }
+                for session in p1_binding._expected_xnys_sessions("2026-07-31")
+                if first_eligible is None or session.isoformat() >= first_eligible
+            ]
+        }
+    bars = {"schema_version": "tqqq_core_only_private_bars.v1", "symbols": symbols}
+    manifest = p1_binding.build_tqqq_core_only_input_manifest(
+        binding,
+        observed_at="2026-08-15T00:00:00Z",
+        producer={
+            "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+            "commit_sha": "a" * 40,
+            "tree_sha": "b" * 40,
+            "tool": "tqqq_core_only_p1_alpaca_sip_acquisition",
+            "tool_version": "v1",
+        },
+        member_bytes=_canonical(bars),
+        source_content_sha256={
+            symbol: hashlib.sha256(_canonical(value)).hexdigest()
+            for symbol, value in symbols.items()
+        },
+    )
+    return {"binding": binding, "input_manifest": manifest, "bars": bars}
+
+
+def test_static_consumer_accepts_canonical_alpaca_root() -> None:
+    provenance, bars, manifest_sha256 = evidence._validate_input(
+        _canonical_alpaca_input_payload(), {"candidate": _candidate()}
+    )
+
+    assert provenance["source"] == "ALPACA_MARKET_DATA"
+    assert set(bars) == {"QQQ", "TQQQ", "QQQM", "BOXX"}
+    assert isinstance(manifest_sha256, str) and len(manifest_sha256) == 64
+
+
+def test_static_consumer_rejects_tampered_or_mixed_source_identity() -> None:
+    payload = _canonical_alpaca_input_payload()
+    payload["input_manifest"]["sources"][0]["source_id"] = "ibkr_adjusted_last:BOXX"  # type: ignore[index]
+
+    with pytest.raises(evidence.TqqqPromotionEvidenceError, match="input binding"):
+        evidence._validate_input(payload, {"candidate": _candidate()})

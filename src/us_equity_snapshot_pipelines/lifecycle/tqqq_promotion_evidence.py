@@ -350,19 +350,24 @@ def _validate_input(
     ):
         raise TqqqPromotionEvidenceError("input identity mismatch")
     parsed: dict[str, tuple[_Bar, ...]] = {}
-    source_digests = {item["source_id"]: item["content_sha256"] for item in manifest["sources"]}
-    if set(source_digests) != {
-        "ibkr_adjusted_last:BOXX",
-        "ibkr_adjusted_last:QQQ",
-        "ibkr_adjusted_last:QQQM",
-        "ibkr_adjusted_last:TQQQ",
-    }:
+    sources = manifest["sources"]
+    expected_source_ids = {
+        "alpaca_sip_1day_adjustment_all:BOXX",
+        "alpaca_sip_1day_adjustment_all:QQQ",
+        "alpaca_sip_1day_adjustment_all:QQQM",
+        "alpaca_sip_1day_adjustment_all:TQQQ",
+    }
+    source_digests = {item["source_id"]: item["content_sha256"] for item in sources}
+    if len(sources) != len(expected_source_ids) or set(source_digests) != expected_source_ids:
         raise TqqqPromotionEvidenceError("invalid provider source identities")
     for symbol in ("BOXX", "QQQ", "QQQM", "TQQQ"):
-        rows = symbols[symbol]
+        symbol_payload = _exact_mapping(symbols[symbol], {"bars"}, "Alpaca bars")
+        rows = symbol_payload["bars"]
         if not isinstance(rows, list) or not rows:
             raise TqqqPromotionEvidenceError("missing immutable bars")
-        if source_digests[f"ibkr_adjusted_last:{symbol}"] != _sha256(_canonical(rows)):
+        if source_digests[f"alpaca_sip_1day_adjustment_all:{symbol}"] != _sha256(
+            _canonical(symbol_payload)
+        ):
             raise TqqqPromotionEvidenceError("input identity mismatch")
         values = tuple(_parse_bar(row) for row in rows)
         sessions = tuple(row.session for row in values)

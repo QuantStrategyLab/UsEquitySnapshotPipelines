@@ -8,6 +8,9 @@ import json
 import sys
 from pathlib import Path
 
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+    verify_tqqq_core_only_input_root,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
     TqqqPromotionEvidenceError,
     run_tqqq_promotion_evidence,
@@ -85,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     replay_started = False
     try:
         args = _arguments(list(sys.argv[1:] if argv is None else argv))
+        verify_tqqq_core_only_input_root(args.snapshot_root)
         input_payload = _snapshot_payload(args.snapshot_root)
         stage = "config_contract"
         config_payload = _read_json(args.config)
