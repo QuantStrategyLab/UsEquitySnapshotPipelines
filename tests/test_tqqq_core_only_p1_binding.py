@@ -156,3 +156,15 @@ def test_alpaca_slice_has_no_ibkr_fallback_or_credential_handling() -> None:
     for forbidden in ("ibkr", "gateway", "credential", "authorization", "retry", "pagination", "place_order", "placeorder", "replay", "p3"):
         assert forbidden not in source
     assert "ibkr" not in binding_source
+
+
+def test_binding_freezes_gcs_retention_identity_for_the_remote_nonlive_root() -> None:
+    assert binding.build_tqqq_core_only_p1_cloud_storage_binding() == {
+        "provider": "GOOGLE_CLOUD_STORAGE",
+        "bucket": "qsl-runtime-logs-shared",
+        "prefix": "tqqq-p1-p3",
+        "active_retention_days": 7,
+        "soft_delete_retention_days": 7,
+        "public_access_prevention": "enforced",
+    }
+    assert binding.build_tqqq_core_only_p1_binding()["cloud_storage"] == binding.build_tqqq_core_only_p1_cloud_storage_binding()

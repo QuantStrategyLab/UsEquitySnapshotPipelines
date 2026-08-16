@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
@@ -31,6 +33,33 @@ class AlpacaBarsTransport(Protocol):
     """Injected transport boundary; session construction stays outside this module."""
 
     def __call__(self, *, url: str, params: Mapping[str, str]) -> Mapping[str, object]: ...
+
+
+class AlpacaSipHttpTransport:
+    """One-shot HTTPS transport that confines Alpaca keys to request headers."""
+
+    def __init__(self, api_key_id: str, api_secret_key: str) -> None:
+        if not isinstance(api_key_id, str) or not api_key_id or not isinstance(api_secret_key, str) or not api_secret_key:
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+        self._headers = {
+            "APCA-API-KEY-ID": api_key_id,
+            "APCA-API-SECRET-KEY": api_secret_key,
+        }
+
+    def __call__(self, *, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
+        if url != _ALPACA_BARS_URL:
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+        request = Request(f"{url}?{urlencode(params)}", headers=self._headers, method="GET")
+        try:
+            with urlopen(request, timeout=60) as response:  # noqa: S310 - fixed HTTPS Alpaca endpoint
+                if response.status != 200:
+                    raise ValueError
+                payload = json.loads(response.read())
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+        if not isinstance(payload, Mapping):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+        return payload
 
 
 class AlpacaSipHistoricalBarsProvider:
