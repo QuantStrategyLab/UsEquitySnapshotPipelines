@@ -64,6 +64,18 @@ def _canonical(value: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def build_tqqq_core_only_p1_cloud_storage_binding() -> dict[str, object]:
+    """Return the fixed private remote retention identity for P1/P3 inputs."""
+    return {
+        "provider": "GOOGLE_CLOUD_STORAGE",
+        "bucket": "qsl-runtime-logs-shared",
+        "prefix": "tqqq-p1-p3",
+        "active_retention_days": 7,
+        "soft_delete_retention_days": 7,
+        "public_access_prevention": "enforced",
+    }
+
+
 def build_tqqq_core_only_p1_binding() -> dict[str, object]:
     """Return the frozen data-only identity; this function performs no acquisition."""
     return {
@@ -76,6 +88,7 @@ def build_tqqq_core_only_p1_binding() -> dict[str, object]:
             "repository": "QuantStrategyLab/UsEquityStrategies",
             "revision": UES_REVISION,
         },
+        "cloud_storage": build_tqqq_core_only_p1_cloud_storage_binding(),
         "data_identity": {
             "provider": "ALPACA_MARKET_DATA",
             "feed": "SIP",

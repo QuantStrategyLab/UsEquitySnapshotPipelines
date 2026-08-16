@@ -1,0 +1,165 @@
+name: TQQQ P1-P3 One Shot
+
+on:
+  workflow_dispatch:
+    inputs:
+      mandate_receipt_sha256:
+        description: Approved non-live mandate receipt SHA-256
+        required: true
+        type: string
+
+concurrency:
+  group: tqqq-p1-p3-nonlive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  p1:
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    outputs:
+      manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install package
+        run: python -m pip install --quiet . >/dev/null
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Acquire and verify P1 root
+        id: acquire
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p1-p3/p1-root"
+          mkdir -p "$(dirname "$root")"
+          manifest_sha256="$(ROOT="$root" python - <<'PY'
+          import os
+          import subprocess
+          from datetime import UTC, datetime
+          from scripts.acquire_tqqq_core_only_p1_inputs_alpaca import AlpacaSipHistoricalBarsProvider, AlpacaSipHttpTransport, publish_tqqq_core_only_p1_inputs
+
+          producer = {
+              "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "tree_sha": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "tool": "tqqq_core_only_p1_alpaca_sip_acquisition",
+              "tool_version": "v1",
+          }
+          provider = AlpacaSipHistoricalBarsProvider(
+              AlpacaSipHttpTransport(os.environ["ALPACA_API_KEY_ID"], os.environ["ALPACA_API_SECRET_KEY"])
+          )
+          result = publish_tqqq_core_only_p1_inputs(
+              provider,
+              output_root=os.environ["ROOT"],
+              observed_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              producer=producer,
+          )
+          print(result["manifest_sha256"])
+          PY
+          )"
+          ROOT="$root" MANIFEST_SHA256="$manifest_sha256" python - <<'PY'
+          import os
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_input_root
+
+          assert verify_tqqq_core_only_input_root(os.environ["ROOT"]) == os.environ["MANIFEST_SHA256"]
+          PY
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          printf 'P1_STATUS=P1_DATA_ONLY_INPUTS_PUBLISHED\nP1_MANIFEST_SHA256=%s\n' "$manifest_sha256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Create-only upload of verified P1 root
+        env:
+          MANIFEST_SHA256: ${{ steps.acquire.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p1-p3/p1-root"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          if gcloud storage ls "${destination}/" >/dev/null 2>&1; then
+            exit 1
+          fi
+          gcloud storage cp --quiet --no-clobber "$root/binding.json" "$root/bars.json" "$root/manifest.json" "${destination}/" >/dev/null
+          printf 'P1_UPLOAD_STATUS=CREATE_ONLY_COMPLETE\nP1_MANIFEST_SHA256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"
+
+  p3:
+    needs: p1
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install package
+        run: python -m pip install --quiet . >/dev/null
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Download and verify the P1 root
+        id: input
+        env:
+          MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p1-p3/p3-input"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
+          chmod 700 "$root"
+          ROOT="$root" MANIFEST_SHA256="$MANIFEST_SHA256" python - <<'PY'
+          import os
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_input_root
+
+          assert verify_tqqq_core_only_input_root(os.environ["ROOT"]) == os.environ["MANIFEST_SHA256"]
+          PY
+          printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
+          printf 'P3_INPUT_STATUS=VERIFIED\nP1_MANIFEST_SHA256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run one non-live P3 replay
+        env:
+          SNAPSHOT_ROOT: ${{ steps.input.outputs.root }}
+          MANDATE_RECEIPT_SHA256: ${{ inputs.mandate_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/tqqq-p1-p3/p3-result.json"
+          if ! python scripts/run_tqqq_p3.py \
+            --snapshot-root "$SNAPSHOT_ROOT" \
+            --config config/tqqq_core_only_p2_v1.json \
+            --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" \
+            --output-dir "${RUNNER_TEMP}/tqqq-p1-p3/p3-output" > "$result_path"; then
+            printf 'P3_STATUS=PARKED\n' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          RESULT_PATH="$result_path" python - <<'PY'
+          import json
+          import os
+
+          result = json.loads(open(os.environ["RESULT_PATH"], encoding="utf-8").read())
+          if set(result) != {"status", "evidence_sha256", "verdict"}:
+              raise SystemExit(1)
+          print(f"P3_STATUS={result['status']}")
+          print(f"P3_EVIDENCE_SHA256={result['evidence_sha256']}")
+          print(f"P3_VERDICT={result['verdict']}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"P3_STATUS={result['status']}\n")
+              summary.write(f"P3_EVIDENCE_SHA256={result['evidence_sha256']}\n")
+              summary.write(f"P3_VERDICT={result['verdict']}\n")
+          PY
