@@ -105,9 +105,40 @@ jobs:
           PY
           printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
           printf 'P1_STATUS=P1_DATA_ONLY_INPUTS_PUBLISHED\nP1_MANIFEST_SHA256=%s\n' "$manifest_sha256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build validated P1 completion marker
+        id: completion
+        env:
+          MANIFEST_SHA256: ${{ steps.acquire.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p1-p3/p1-root"
+          completion_path="${RUNNER_TEMP}/tqqq-p1-p3/p1-complete.json"
+          ROOT="$root" COMPLETION_PATH="$completion_path" MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              build_tqqq_core_only_p1_remote_completion,
+              canonical_tqqq_core_only_p1_remote_completion_bytes,
+              verify_tqqq_core_only_p1_remote_completion,
+          )
+
+          root = os.environ["ROOT"]
+          path = Path(os.environ["COMPLETION_PATH"])
+          marker = build_tqqq_core_only_p1_remote_completion(root)
+          if marker["manifest_sha256"] != os.environ["MANIFEST_SHA256"]:
+              raise SystemExit("P1 completion marker manifest mismatch")
+          path.write_bytes(canonical_tqqq_core_only_p1_remote_completion_bytes(marker))
+          path.chmod(0o600)
+          if verify_tqqq_core_only_p1_remote_completion(root, path) != os.environ["MANIFEST_SHA256"]:
+              raise SystemExit("P1 completion marker validation failed")
+          PY
+          printf 'path=%s\n' "$completion_path" >> "$GITHUB_OUTPUT"
+          printf 'P1_COMPLETION_STATUS=VALIDATED\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Create-only upload of verified P1 root
         env:
           MANIFEST_SHA256: ${{ steps.acquire.outputs.manifest_sha256 }}
+          COMPLETION_PATH: ${{ steps.completion.outputs.path }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/tqqq-p1-p3/p1-root"
@@ -116,6 +147,7 @@ jobs:
             exit 1
           fi
           gcloud storage cp --quiet --no-clobber "$root/binding.json" "$root/bars.json" "$root/manifest.json" "${destination}/" >/dev/null
+          gcloud storage cp --quiet --no-clobber "$COMPLETION_PATH" "${destination}/p1-complete.json" >/dev/null
           printf 'P1_UPLOAD_STATUS=CREATE_ONLY_COMPLETE\nP1_MANIFEST_SHA256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"
 
   p3:
@@ -171,16 +203,20 @@ jobs:
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/tqqq-p1-p3/p3-input"
+          completion_path="${RUNNER_TEMP}/tqqq-p1-p3/p1-complete.json"
           mkdir -p "$root"
           chmod 700 "$root"
           source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
           gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
+          gcloud storage cp --quiet "$source/p1-complete.json" "$completion_path" >/dev/null
           chmod 700 "$root"
-          ROOT="$root" MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
+          ROOT="$root" COMPLETION_PATH="$completion_path" MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
           import os
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_input_root
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_p1_remote_completion
 
-          assert verify_tqqq_core_only_input_root(os.environ["ROOT"]) == os.environ["MANIFEST_SHA256"]
+          assert verify_tqqq_core_only_p1_remote_completion(
+              os.environ["ROOT"], os.environ["COMPLETION_PATH"]
+          ) == os.environ["MANIFEST_SHA256"]
           PY
           printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
           printf 'P3_INPUT_STATUS=VERIFIED\nP1_MANIFEST_SHA256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"

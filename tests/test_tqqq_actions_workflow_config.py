@@ -49,6 +49,9 @@ def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -
     assert "--no-clobber" in workflow
     assert "gs://qsl-runtime-logs-shared/tqqq-p1-p3" in workflow
     assert "verify_tqqq_core_only_input_root" in workflow
+    assert "Build validated P1 completion marker" in workflow
+    assert "p1-complete.json" in workflow
+    assert "verify_tqqq_core_only_p1_remote_completion" in workflow
     assert "chmod 700" in workflow
     assert "scripts/run_tqqq_p3.py" in workflow
     assert "P3_FAILURE_CLASS=" in workflow

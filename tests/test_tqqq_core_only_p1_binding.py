@@ -127,6 +127,24 @@ def test_injected_alpaca_transport_uses_exact_single_request_envelopes_and_publi
     assert result["status"] == "P1_DATA_ONLY_INPUTS_PUBLISHED"
     assert binding.verify_tqqq_core_only_input_root(output) == result["manifest_sha256"]
 
+    completion = binding.build_tqqq_core_only_p1_remote_completion(output)
+    completion_path = tmp_path / binding.REMOTE_COMPLETION_FILENAME
+    completion_path.write_bytes(binding.canonical_tqqq_core_only_p1_remote_completion_bytes(completion))
+    assert binding.verify_tqqq_core_only_p1_remote_completion(output, completion_path) == result["manifest_sha256"]
+
+
+def test_remote_completion_marker_rejects_any_remote_member_drift(tmp_path: Path) -> None:
+    output = tmp_path / "immutable-input"
+    provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(_FakeAlpacaTransport())
+    acquisition_cli.publish_tqqq_core_only_p1_inputs(provider, output_root=output, observed_at="2026-08-15T00:00:00Z", producer=_producer())
+    completion = binding.build_tqqq_core_only_p1_remote_completion(output)
+    completion["members"]["bars.json"] = "0" * 64  # type: ignore[index]
+    completion_path = tmp_path / binding.REMOTE_COMPLETION_FILENAME
+    completion_path.write_bytes(binding.canonical_tqqq_core_only_p1_remote_completion_bytes(completion))
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="completion marker"):
+        binding.verify_tqqq_core_only_p1_remote_completion(output, completion_path)
+
 
 def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
     output = tmp_path / "immutable-input"

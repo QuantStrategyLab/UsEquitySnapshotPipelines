@@ -23,7 +23,13 @@ def _value() -> dict[str, object]:
         "scope": {
             "authority_scope": "P1_P3_RESEARCH_ONLY",
             "provider": "ALPACA_SIP",
-            "allowed_operations": ["p1_data_acquisition", "p3_historical_replay"],
+            "allowed_operations": [
+                "p1_data_acquisition",
+                "p1_private_root_create_only_upload",
+                "p3_historical_replay",
+                "p3_private_root_read",
+                "p3_private_evidence_index_create_only_upload",
+            ],
             "no_order": True,
             "no_paper": True,
             "no_shadow": True,

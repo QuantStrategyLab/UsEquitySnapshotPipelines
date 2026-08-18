@@ -60,9 +60,15 @@ the full P3 package, or a public GitHub Actions artifact.
 Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
 non-live scope record by identifier and records its canonical receipt digest in
 P3 provenance. It checks the same record again before P3. The record may cover
-only P1 data acquisition and P3 historical replay; it explicitly forbids
-paper, shadow, live, order, and capital actions. There is intentionally no
-active scope record in the repository.
+only P1 data acquisition, the associated private create-only root upload, P3
+read/replay, and the associated private evidence-index upload; it explicitly
+forbids paper, shadow, live, order, and capital actions. There is intentionally
+no active scope record in the repository.
+
+The three raw P1 files are uploaded before one separate create-only completion
+marker that binds their hashes and manifest digest. P3 requires that marker and
+verifies it against the downloaded root, so a partial remote upload fails closed
+instead of being treated as replayable evidence.
 
 The record narrows and makes a requested run reproducible, but is not itself
 human approval evidence. GitHub branch protection and the
