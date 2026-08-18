@@ -134,6 +134,7 @@ jobs:
           printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
           printf 'P3_INPUT_STATUS=VERIFIED\nP1_MANIFEST_SHA256=%s\n' "$MANIFEST_SHA256" >> "$GITHUB_STEP_SUMMARY"
       - name: Run one non-live P3 replay
+        id: replay
         env:
           SNAPSHOT_ROOT: ${{ steps.input.outputs.root }}
           MANDATE_RECEIPT_SHA256: ${{ inputs.mandate_receipt_sha256 }}
@@ -152,9 +153,12 @@ jobs:
           import json
           import os
 
-          result = json.loads(open(os.environ["RESULT_PATH"], encoding="utf-8").read())
-          if set(result) != {"status", "evidence_sha256", "verdict"}:
-              raise SystemExit(1)
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
+              validate_tqqq_p3_result,
+          )
+
+          with open(os.environ["RESULT_PATH"], encoding="utf-8") as handle:
+              result = validate_tqqq_p3_result(json.load(handle))
           print(f"P3_STATUS={result['status']}")
           print(f"P3_EVIDENCE_SHA256={result['evidence_sha256']}")
           print(f"P3_VERDICT={result['verdict']}")
@@ -162,4 +166,69 @@ jobs:
               summary.write(f"P3_STATUS={result['status']}\n")
               summary.write(f"P3_EVIDENCE_SHA256={result['evidence_sha256']}\n")
               summary.write(f"P3_VERDICT={result['verdict']}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in result.items():
+                  output.write(f"{key}={value}\n")
           PY
+      - name: Build validated P3 evidence index
+        id: evidence-index
+        env:
+          SNAPSHOT_ROOT: ${{ steps.input.outputs.root }}
+          P1_MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+          P3_EVIDENCE_SHA256: ${{ steps.replay.outputs.evidence_sha256 }}
+          P3_STATUS: ${{ steps.replay.outputs.status }}
+          P3_VERDICT: ${{ steps.replay.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          index_path="${RUNNER_TEMP}/tqqq-p1-p3/p3-evidence-index.json"
+          INDEX_PATH="$index_path" SNAPSHOT_ROOT="$SNAPSHOT_ROOT" P1_MANIFEST_SHA256="$P1_MANIFEST_SHA256" P3_EVIDENCE_SHA256="$P3_EVIDENCE_SHA256" P3_STATUS="$P3_STATUS" P3_VERDICT="$P3_VERDICT" python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
+              build_tqqq_p3_evidence_index,
+              canonical_tqqq_p3_evidence_index_bytes,
+          )
+
+          with open(Path(os.environ["SNAPSHOT_ROOT"]) / "manifest.json", encoding="utf-8") as handle:
+              input_manifest = json.load(handle)
+          index = build_tqqq_p3_evidence_index(
+              p1_manifest_sha256=os.environ["P1_MANIFEST_SHA256"],
+              p3_result={
+                  "evidence_sha256": os.environ["P3_EVIDENCE_SHA256"],
+                  "status": os.environ["P3_STATUS"],
+                  "verdict": os.environ["P3_VERDICT"],
+              },
+              input_producer=input_manifest["producer"],
+              producer={
+                  "repository": os.environ["GITHUB_REPOSITORY"],
+                  "commit_sha": os.environ["GITHUB_SHA"],
+                  "tree_sha": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                  "tool": "tqqq_p1_p3_nonlive_evidence_index",
+                  "tool_version": "v1",
+                  "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                  "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              },
+          )
+          path = Path(os.environ["INDEX_PATH"])
+          path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+          path.write_bytes(canonical_tqqq_p3_evidence_index_bytes(index))
+          path.chmod(0o600)
+          PY
+          printf 'path=%s\n' "$index_path" >> "$GITHUB_OUTPUT"
+          printf 'P3_EVIDENCE_INDEX_STATUS=VALIDATED\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Create-only upload of validated P3 evidence index
+        env:
+          P1_MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+          P3_EVIDENCE_SHA256: ${{ steps.replay.outputs.evidence_sha256 }}
+          INDEX_PATH: ${{ steps.evidence-index.outputs.path }}
+        run: |
+          set -euo pipefail
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${P1_MANIFEST_SHA256}/p3-evidence-index/${P3_EVIDENCE_SHA256}.json"
+          if gcloud storage ls "$destination" >/dev/null 2>&1; then
+            exit 1
+          fi
+          gcloud storage cp --quiet --no-clobber "$INDEX_PATH" "$destination" >/dev/null
+          printf 'P3_EVIDENCE_INDEX_UPLOAD_STATUS=CREATE_ONLY_COMPLETE\nP3_EVIDENCE_SHA256=%s\n' "$P3_EVIDENCE_SHA256" >> "$GITHUB_STEP_SUMMARY"

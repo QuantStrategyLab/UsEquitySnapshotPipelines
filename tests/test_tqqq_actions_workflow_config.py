@@ -42,6 +42,13 @@ def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -
     assert "verify_tqqq_core_only_input_root" in workflow
     assert "chmod 700" in workflow
     assert "scripts/run_tqqq_p3.py" in workflow
+    assert "Build validated P3 evidence index" in workflow
+    assert "Create-only upload of validated P3 evidence index" in workflow
+    assert "/p3-evidence-index/${P3_EVIDENCE_SHA256}.json" in workflow
+    assert "validate_tqqq_p3_result" in workflow
+    assert "build_tqqq_p3_evidence_index" in workflow
+    assert "gcloud storage cp --quiet --no-clobber \"$INDEX_PATH\" \"$destination\"" in workflow
+    assert "actions/upload-artifact" not in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
     assert "ALPACA_API_KEY_ID" not in p3_job
     assert "ALPACA_API_SECRET_KEY" not in p3_job

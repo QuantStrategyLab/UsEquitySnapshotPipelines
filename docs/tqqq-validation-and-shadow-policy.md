@@ -49,6 +49,20 @@ itself, does not activate a scheduler, and does not authorize paper, shadow,
 live, orders, or capital.  A completed replay remains research-only and needs
 a separate human promotion decision.
 
+## P1/P3 evidence index retention
+
+The manual P1/P3 workflow may retain one create-only, private GCS index after
+a successful P3 replay.  The index is canonical metadata only: frozen candidate
+identity, P1 manifest digest, P3 evidence digest and verdict, both producer
+identities, and research-only/no-order claims.  It never uploads Alpaca bars,
+the full P3 package, or a public GitHub Actions artifact.
+
+The supplied mandate-receipt digest remains a P3 input binding, not evidence of
+an authoritative human mandate source.  This workflow has no receipt registry
+or attestation lookup.  Binding that digest to an authoritative approval system
+is a separately scoped follow-up and must not grant paper, shadow, live, order,
+or capital authority to this index.
+
 ## Gaps and next gated slice
 
 The historical-diagnostics contract is still research-only.  Its trial
