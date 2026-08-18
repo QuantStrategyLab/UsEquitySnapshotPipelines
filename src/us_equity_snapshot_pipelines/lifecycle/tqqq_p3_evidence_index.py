@@ -201,6 +201,14 @@ def validate_tqqq_p3_evidence_index(value: Mapping[str, object]) -> dict[str, ob
     )
     if index["lifecycle_claims"] != _LIFECYCLE_CLAIMS:
         raise TqqqP3EvidenceIndexError("invalid lifecycle claims")
+    input_producer = _input_producer(index["input_producer"])
+    producer = _p3_producer(index["producer"])
+    if (
+        input_producer["repository"] != producer["repository"]
+        or input_producer["commit_sha"] != producer["commit_sha"]
+        or input_producer["tree_sha"] != producer["tree_sha"]
+    ):
+        raise TqqqP3EvidenceIndexError("P1 and P3 producer revisions must match")
     return {
         "schema_version": SCHEMA_VERSION,
         "candidate": candidate,
@@ -209,8 +217,8 @@ def validate_tqqq_p3_evidence_index(value: Mapping[str, object]) -> dict[str, ob
         "p3_evidence_sha256": result["evidence_sha256"],
         "status": result["status"],
         "verdict": result["verdict"],
-        "input_producer": _input_producer(index["input_producer"]),
-        "producer": _p3_producer(index["producer"]),
+        "input_producer": input_producer,
+        "producer": producer,
         "lifecycle_claims": copy.deepcopy(_LIFECYCLE_CLAIMS),
     }
 

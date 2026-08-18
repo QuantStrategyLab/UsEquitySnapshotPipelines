@@ -70,6 +70,11 @@ marker that binds their hashes and manifest digest. P3 requires that marker and
 verifies it against the downloaded root, so a partial remote upload fails closed
 instead of being treated as replayable evidence.
 
+The P1 input producer and P3 index producer must name the same repository
+commit and tree. This prevents an input captured by one code revision from
+being presented as a conclusion produced by another revision in the one-shot
+P1-to-P3 chain.
+
 The record narrows and makes a requested run reproducible, but is not itself
 human approval evidence. GitHub branch protection and the
 `tqqq-p1-p3-nonlive` environment must be configured externally with mandatory

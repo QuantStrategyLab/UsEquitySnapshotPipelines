@@ -20,8 +20,8 @@ def _input_producer() -> dict[str, str]:
 def _p3_producer() -> dict[str, str]:
     return {
         "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
-        "commit_sha": "c" * 40,
-        "tree_sha": "d" * 40,
+        "commit_sha": "a" * 40,
+        "tree_sha": "b" * 40,
         "tool": "tqqq_p1_p3_nonlive_evidence_index",
         "tool_version": "v1",
         "workflow_run_id": "123",
@@ -82,6 +82,7 @@ def test_builds_canonical_nonlive_index_with_only_bound_metadata() -> None:
         lambda value: value.update({"status": "PARKED"}),
         lambda value: value["nonlive_scope_record"].update({"receipt_sha256": "not-a-digest"}),
         lambda value: value["producer"].update({"workflow_run_id": "0"}),
+        lambda value: value["producer"].update({"commit_sha": "c" * 40}),
         lambda value: value["lifecycle_claims"].update({"live_ready": True}),
     ),
 )
