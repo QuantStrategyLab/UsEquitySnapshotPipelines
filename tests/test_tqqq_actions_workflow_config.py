@@ -26,6 +26,11 @@ def test_tqqq_workflow_is_manual_nonlive_and_pinned() -> None:
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
     assert "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" in workflow
     assert "google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f" in workflow
+    assert workflow.count("Install locked runtime") == 2
+    assert workflow.count("uv==0.11.19") == 2
+    assert workflow.count("uv sync --locked --no-dev --no-editable --python 3.11") == 2
+    assert "python -m pip install --quiet ." not in workflow
+    assert "uv run --no-sync python scripts/run_tqqq_p3.py" in workflow
 
 
 def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -> None:

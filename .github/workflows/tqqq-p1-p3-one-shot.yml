@@ -29,18 +29,20 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
-      - name: Install package
-        run: python -m pip install --quiet . >/dev/null
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
       - name: Resolve non-live scope record before P1 acquisition
         id: mandate
         env:
           MANDATE_ID: ${{ inputs.mandate_id }}
         run: |
           set -euo pipefail
-          mandate_result="$(python scripts/verify_tqqq_p1_p3_mandate.py \
+          mandate_result="$(uv run --no-sync python scripts/verify_tqqq_p1_p3_mandate.py \
             --mandates-root config/tqqq_p1_p3_mandates \
             --mandate-id "$MANDATE_ID")"
-          MANDATE_RESULT="$mandate_result" python - <<'PY'
+          MANDATE_RESULT="$mandate_result" uv run --no-sync python - <<'PY'
           import json
           import os
 
@@ -70,7 +72,7 @@ jobs:
           set -euo pipefail
           root="${RUNNER_TEMP}/tqqq-p1-p3/p1-root"
           mkdir -p "$(dirname "$root")"
-          manifest_sha256="$(ROOT="$root" python - <<'PY'
+          manifest_sha256="$(ROOT="$root" uv run --no-sync python - <<'PY'
           import os
           import subprocess
           from datetime import UTC, datetime
@@ -95,7 +97,7 @@ jobs:
           print(result["manifest_sha256"])
           PY
           )"
-          ROOT="$root" MANIFEST_SHA256="$manifest_sha256" python - <<'PY'
+          ROOT="$root" MANIFEST_SHA256="$manifest_sha256" uv run --no-sync python - <<'PY'
           import os
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_input_root
 
@@ -125,8 +127,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
-      - name: Install package
-        run: python -m pip install --quiet . >/dev/null
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
       - name: Re-verify non-live scope record
         id: mandate
         env:
@@ -134,10 +138,10 @@ jobs:
           EXPECTED_MANDATE_RECEIPT_SHA256: ${{ needs.p1.outputs.mandate_receipt_sha256 }}
         run: |
           set -euo pipefail
-          mandate_result="$(python scripts/verify_tqqq_p1_p3_mandate.py \
+          mandate_result="$(uv run --no-sync python scripts/verify_tqqq_p1_p3_mandate.py \
             --mandates-root config/tqqq_p1_p3_mandates \
             --mandate-id "$MANDATE_ID")"
-          MANDATE_RESULT="$mandate_result" EXPECTED_MANDATE_RECEIPT_SHA256="$EXPECTED_MANDATE_RECEIPT_SHA256" python - <<'PY'
+          MANDATE_RESULT="$mandate_result" EXPECTED_MANDATE_RECEIPT_SHA256="$EXPECTED_MANDATE_RECEIPT_SHA256" uv run --no-sync python - <<'PY'
           import json
           import os
 
@@ -172,7 +176,7 @@ jobs:
           source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
           gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
           chmod 700 "$root"
-          ROOT="$root" MANIFEST_SHA256="$MANIFEST_SHA256" python - <<'PY'
+          ROOT="$root" MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
           import os
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import verify_tqqq_core_only_input_root
 
@@ -188,12 +192,12 @@ jobs:
         run: |
           set -euo pipefail
           result_path="${RUNNER_TEMP}/tqqq-p1-p3/p3-result.json"
-          if ! python scripts/run_tqqq_p3.py \
+          if ! uv run --no-sync python scripts/run_tqqq_p3.py \
             --snapshot-root "$SNAPSHOT_ROOT" \
             --config config/tqqq_core_only_p2_v1.json \
             --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" \
             --output-dir "${RUNNER_TEMP}/tqqq-p1-p3/p3-output" > "$result_path"; then
-            RESULT_PATH="$result_path" python - <<'PY'
+            RESULT_PATH="$result_path" uv run --no-sync python - <<'PY'
             import json
             import os
 
@@ -226,7 +230,7 @@ jobs:
             PY
             exit 1
           fi
-          RESULT_PATH="$result_path" python - <<'PY'
+          RESULT_PATH="$result_path" uv run --no-sync python - <<'PY'
           import json
           import os
 
@@ -260,7 +264,7 @@ jobs:
         run: |
           set -euo pipefail
           index_path="${RUNNER_TEMP}/tqqq-p1-p3/p3-evidence-index.json"
-          INDEX_PATH="$index_path" SNAPSHOT_ROOT="$SNAPSHOT_ROOT" P1_MANIFEST_SHA256="$P1_MANIFEST_SHA256" P3_EVIDENCE_SHA256="$P3_EVIDENCE_SHA256" P3_STATUS="$P3_STATUS" P3_VERDICT="$P3_VERDICT" python - <<'PY'
+          INDEX_PATH="$index_path" SNAPSHOT_ROOT="$SNAPSHOT_ROOT" P1_MANIFEST_SHA256="$P1_MANIFEST_SHA256" P3_EVIDENCE_SHA256="$P3_EVIDENCE_SHA256" P3_STATUS="$P3_STATUS" P3_VERDICT="$P3_VERDICT" uv run --no-sync python - <<'PY'
           import json
           import os
           import subprocess
