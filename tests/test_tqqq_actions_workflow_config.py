@@ -31,8 +31,12 @@ def test_tqqq_workflow_is_manual_nonlive_and_pinned() -> None:
 def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "mandate_receipt_sha256:" in workflow
+    assert "mandate_id:" in workflow
     assert "required: true" in workflow
+    assert "Resolve non-live scope record before P1 acquisition" in workflow
+    assert "Re-verify non-live scope record" in workflow
+    assert workflow.index("Resolve non-live scope record before P1 acquisition") < workflow.index("Acquire and verify P1 root")
+    assert "inputs.mandate_receipt_sha256" not in workflow
     assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
     assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
     assert "--api-key" not in workflow
@@ -42,11 +46,16 @@ def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -
     assert "verify_tqqq_core_only_input_root" in workflow
     assert "chmod 700" in workflow
     assert "scripts/run_tqqq_p3.py" in workflow
+    assert "P3_FAILURE_CLASS=" in workflow
+    assert "P3_FAILURE_STAGE=" in workflow
+    assert "invalid sanitized P3 failure result" in workflow
     assert "Build validated P3 evidence index" in workflow
     assert "Create-only upload of validated P3 evidence index" in workflow
     assert "/p3-evidence-index/${P3_EVIDENCE_SHA256}.json" in workflow
     assert "validate_tqqq_p3_result" in workflow
     assert "build_tqqq_p3_evidence_index" in workflow
+    assert '"mandate_id": os.environ["MANDATE_ID"]' in workflow
+    assert "nonlive_scope_record=" in workflow
     assert "gcloud storage cp --quiet --no-clobber \"$INDEX_PATH\" \"$destination\"" in workflow
     assert "actions/upload-artifact" not in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]

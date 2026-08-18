@@ -57,11 +57,24 @@ identity, P1 manifest digest, P3 evidence digest and verdict, both producer
 identities, and research-only/no-order claims.  It never uploads Alpaca bars,
 the full P3 package, or a public GitHub Actions artifact.
 
-The supplied mandate-receipt digest remains a P3 input binding, not evidence of
-an authoritative human mandate source.  This workflow has no receipt registry
-or attestation lookup.  Binding that digest to an authoritative approval system
-is a separately scoped follow-up and must not grant paper, shadow, live, order,
-or capital authority to this index.
+Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
+non-live scope record by identifier and records its canonical receipt digest in
+P3 provenance. It checks the same record again before P3. The record may cover
+only P1 data acquisition and P3 historical replay; it explicitly forbids
+paper, shadow, live, order, and capital actions. There is intentionally no
+active scope record in the repository.
+
+The record narrows and makes a requested run reproducible, but is not itself
+human approval evidence. GitHub branch protection and the
+`tqqq-p1-p3-nonlive` environment must be configured externally with mandatory
+human approval before any record can be used. Until that configuration is
+verified, the workflow must remain undispatched. Neither the record nor its
+digest grants paper, shadow, live, order, capital, or P4–P6 promotion authority.
+
+If P3 parks, the GitHub Actions summary retains only the sanitized failure class,
+stage, and whether replay began. It does not retain raw provider data, paths,
+or exception details. This makes a later retry decision auditable without
+turning Actions logs into a research-data store.
 
 ## Gaps and next gated slice
 

@@ -20,6 +20,7 @@ _INDEX_FIELDS = frozenset(
     {
         "schema_version",
         "candidate",
+        "nonlive_scope_record",
         "p1_manifest_sha256",
         "p3_evidence_sha256",
         "status",
@@ -32,6 +33,8 @@ _INDEX_FIELDS = frozenset(
 _INPUT_PRODUCER_FIELDS = frozenset(
     {"repository", "commit_sha", "tree_sha", "tool", "tool_version"}
 )
+_MANDATE_FIELDS = frozenset({"mandate_id", "receipt_sha256"})
+_MANDATE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _P3_PRODUCER_FIELDS = _INPUT_PRODUCER_FIELDS | frozenset(
     {"workflow_run_id", "workflow_run_attempt"}
 )
@@ -125,6 +128,16 @@ def _p3_producer(value: object) -> dict[str, str]:
     }
 
 
+def _nonlive_scope_record(value: object) -> dict[str, str]:
+    mandate = _mapping(value, _MANDATE_FIELDS, "non-live scope record")
+    if not isinstance(mandate["mandate_id"], str) or not _MANDATE_ID.fullmatch(mandate["mandate_id"]):
+        raise TqqqP3EvidenceIndexError("invalid non-live scope record")
+    return {
+        "mandate_id": mandate["mandate_id"],
+        "receipt_sha256": _digest(mandate["receipt_sha256"], "non-live scope record receipt"),
+    }
+
+
 def validate_tqqq_p3_result(value: Mapping[str, object]) -> dict[str, str]:
     """Accept only the success summary emitted by ``run_tqqq_p3.py``."""
     result = _mapping(value, _P3_RESULT_FIELDS, "P3 result")
@@ -144,6 +157,7 @@ def validate_tqqq_p3_result(value: Mapping[str, object]) -> dict[str, str]:
 def build_tqqq_p3_evidence_index(
     *,
     p1_manifest_sha256: str,
+    nonlive_scope_record: Mapping[str, object],
     p3_result: Mapping[str, object],
     input_producer: Mapping[str, object],
     producer: Mapping[str, object],
@@ -157,6 +171,7 @@ def build_tqqq_p3_evidence_index(
                 "candidate_id": CANDIDATE_ID,
                 "config_sha256": CANDIDATE_CONFIG_SHA256,
             },
+            "nonlive_scope_record": nonlive_scope_record,
             "p1_manifest_sha256": p1_manifest_sha256,
             "p3_evidence_sha256": result["evidence_sha256"],
             "status": result["status"],
@@ -176,6 +191,7 @@ def validate_tqqq_p3_evidence_index(value: Mapping[str, object]) -> dict[str, ob
         raise TqqqP3EvidenceIndexError("invalid candidate")
     if index["schema_version"] != SCHEMA_VERSION:
         raise TqqqP3EvidenceIndexError("invalid evidence index schema")
+    nonlive_scope_record = _nonlive_scope_record(index["nonlive_scope_record"])
     result = validate_tqqq_p3_result(
         {
             "evidence_sha256": index["p3_evidence_sha256"],
@@ -188,6 +204,7 @@ def validate_tqqq_p3_evidence_index(value: Mapping[str, object]) -> dict[str, ob
     return {
         "schema_version": SCHEMA_VERSION,
         "candidate": candidate,
+        "nonlive_scope_record": nonlive_scope_record,
         "p1_manifest_sha256": _digest(index["p1_manifest_sha256"], "P1 manifest digest"),
         "p3_evidence_sha256": result["evidence_sha256"],
         "status": result["status"],
