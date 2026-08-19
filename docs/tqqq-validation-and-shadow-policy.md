@@ -51,11 +51,25 @@ a separate human promotion decision.
 
 ## P1/P3 evidence index retention
 
-The manual P1/P3 workflow may retain one create-only, private GCS index after
-a successful P3 replay.  The index is canonical metadata only: frozen candidate
+The manual P1/P3 workflow first places its raw P1 root in private cloud object
+storage so that P3 can verify and replay the exact same input.  This root
+includes the Alpaca bars, binding, manifest, and completion marker.  It is a
+short-term transfer/replay store, not a local-only snapshot or a long-term
+research archive: the current lifecycle has seven active days followed by a
+seven-day soft-delete window.
+
+This change does not extend that raw-data lifecycle.  Any extension, backup,
+or other long-term raw-data retention requires a separate Alpaca licence and
+retention decision.  Until then, raw P1 data remains private, short-lived, and
+non-redistributable.
+
+After a successful P3 replay, the workflow may retain a separate create-only,
+private evidence-metadata index.  Its bounded fields are the frozen candidate
 identity, P1 manifest digest, P3 evidence digest and verdict, both producer
-identities, and research-only/no-order claims.  It never uploads Alpaca bars,
-the full P3 package, or a public GitHub Actions artifact.
+identities, and research-only/no-order claims.  It never contains Alpaca bars,
+the full P3 package, or a public GitHub Actions artifact.  This separation
+makes the durable evidence claim auditable without representing raw-data
+retention as permanent.
 
 Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
 non-live scope record by identifier and records its canonical receipt digest in
