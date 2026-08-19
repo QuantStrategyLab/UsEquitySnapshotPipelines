@@ -134,6 +134,57 @@ def test_v4_candidate_extends_only_its_own_immutable_input_cutoff() -> None:
     assert binding.build_tqqq_core_only_p1_binding()["data_identity"]["date_cutoff"] == "2026-07-31"
 
 
+def test_v5_candidate_binds_a_completed_daily_cutoff_without_changing_v1_to_v4() -> None:
+    cutoff = "2026-08-18"
+    value = binding.build_tqqq_core_only_p1_binding_for_contract(
+        binding.P2_V5_CONTRACT, date_cutoff=cutoff
+    )
+
+    assert value["candidate"] == {
+        "candidate_id": "tqqq_core_only_p2_v5",
+        "config_sha256": "e6422cf7c3819734ec300a7bfa3d936d5273993c0ce865dfe0218d7b7f8426e2",
+    }
+    assert value["data_identity"]["date_cutoff"] == cutoff
+    assert (
+        binding.validate_tqqq_core_only_p1_binding_for_contract(
+            value, binding.P2_V5_CONTRACT
+        )
+        == value
+    )
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.build_tqqq_core_only_p1_binding_for_contract(binding.P2_V5_CONTRACT)
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.build_tqqq_core_only_p1_binding_for_contract(
+            binding.P2_V5_CONTRACT, date_cutoff="2026-08-16"
+        )
+
+
+def test_v5_generic_publisher_keeps_daily_cutoff_in_the_verified_root(tmp_path: Path) -> None:
+    cutoff = "2026-08-18"
+
+    class _CanonicalProvider:
+        def fetch_historical_bars(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["date_cutoff"] == cutoff
+            symbol = kwargs["symbol"]
+            assert isinstance(symbol, str)
+            return {"bars": _canonical_bars_for(symbol, date_cutoff=cutoff)}
+
+    root = tmp_path / "v5-root"
+    result = binding.publish_tqqq_core_only_p1_inputs_for_contract(
+        _CanonicalProvider(),
+        output_root=root,
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        contract=binding.P2_V5_CONTRACT,
+        date_cutoff=cutoff,
+    )
+
+    assert result["status"] == "P1_DATA_ONLY_INPUTS_PUBLISHED"
+    assert binding.verify_tqqq_core_only_input_root(
+        root, contract=binding.P2_V5_CONTRACT
+    ) == result["manifest_sha256"]
+
+
 def test_v4_input_root_uses_its_own_bound_coverage_cutoff(tmp_path: Path) -> None:
     contract = binding.P2_V4_CONTRACT
     value = binding.build_tqqq_core_only_p1_binding_for_contract(contract)

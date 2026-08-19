@@ -124,6 +124,28 @@ def test_v4_candidate_reuses_the_exact_public_research_adapter() -> None:
     assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
 
 
+def test_v5_candidate_keeps_the_public_adapter_and_derives_rolling_oos_from_binding() -> None:
+    candidate = json.loads(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v5.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert evidence._validate_config(candidate)["candidate"] == candidate
+    plan = evidence._plan_from_candidate(candidate, data_cutoff="2026-08-18")
+    callable_, identity = evidence._tqqq_replay_callable_and_identity(
+        p1_binding.P2_V5_CONTRACT
+    )
+
+    assert plan.locked_oos_end.isoformat() == "2026-08-18"
+    assert plan.locked_oos_start < plan.locked_oos_end
+    assert identity == {
+        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+        "ues_revision": p1_binding.P2_V5_UES_REVISION,
+    }
+    assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
+
+
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 

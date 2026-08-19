@@ -33,6 +33,9 @@ P2_V2_UES_REVISION = "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
 P2_V4_CANDIDATE_ID = "tqqq_core_only_p2_v4"
 P2_V4_CANDIDATE_CONFIG_SHA256 = "b20335a16d0c5001dc28d3a1555dc1d46e6331fc714ca489a952d779de3279f1"
 P2_V4_UES_REVISION = P2_V2_UES_REVISION
+P2_V5_CANDIDATE_ID = "tqqq_core_only_p2_v5"
+P2_V5_CANDIDATE_CONFIG_SHA256 = "e6422cf7c3819734ec300a7bfa3d936d5273993c0ce865dfe0218d7b7f8426e2"
+P2_V5_UES_REVISION = P2_V2_UES_REVISION
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
@@ -42,6 +45,7 @@ _REMOTE_COMPLETION_SCHEMA = "qsl.tqqq-p1-p3-remote-completion.v1"
 REMOTE_COMPLETION_FILENAME = "p1-complete.json"
 _P2_EARLIEST_TRAIN_SESSION = date(2018, 1, 2)
 _FIRST_ELIGIBLE_SESSION = {"QQQM": date(2020, 10, 13), "BOXX": date(2022, 12, 28)}
+_P2_V5_MINIMUM_DATE_CUTOFF = "2026-08-04"
 
 
 @dataclass(frozen=True)
@@ -72,10 +76,17 @@ P2_V4_CONTRACT = TqqqCoreOnlyCandidateContract(
     ues_revision=P2_V4_UES_REVISION,
     qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
 )
+P2_V5_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V5_CANDIDATE_ID,
+    config_sha256=P2_V5_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V5_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
 _SUPPORTED_CONTRACTS = {
     _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
     P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
     P2_V4_CONTRACT.candidate_id: P2_V4_CONTRACT,
+    P2_V5_CONTRACT.candidate_id: P2_V5_CONTRACT,
 }
 
 
@@ -163,9 +174,24 @@ def _require_contract(
 
 def build_tqqq_core_only_p1_binding_for_contract(
     contract: TqqqCoreOnlyCandidateContract,
+    *,
+    date_cutoff: str | None = None,
 ) -> dict[str, object]:
-    """Return a frozen data-only identity; this function performs no acquisition."""
+    """Return a data-only identity; this function performs no acquisition.
+
+    v1--v4 retain their exact historical cutoffs.  v5 alone binds a caller
+    supplied, completed XNYS date into each immutable daily input root.  The
+    cutoff is an input identity, never a mutable strategy parameter.
+    """
     frozen_contract = _require_contract(contract)
+    if frozen_contract == P2_V5_CONTRACT:
+        resolved_date_cutoff = _validate_p2_v5_date_cutoff(date_cutoff)
+    elif date_cutoff is not None:
+        raise TqqqCoreOnlyP1BindingError("unexpected TQQQ core-only date cutoff")
+    else:
+        resolved_date_cutoff = (
+            "2026-08-04" if frozen_contract == P2_V4_CONTRACT else "2026-07-31"
+        )
     return {
         "schema_version": _INPUT_SCHEMA,
         "candidate": {
@@ -190,11 +216,7 @@ def build_tqqq_core_only_p1_binding_for_contract(
                 "source": "ALPACA_MARKET_DATA adjustment=all(split,dividend,spin-off)",
             },
             "universe": list(_UNIVERSE),
-            "date_cutoff": (
-                "2026-08-04"
-                if frozen_contract == P2_V4_CONTRACT
-                else "2026-07-31"
-            ),
+            "date_cutoff": resolved_date_cutoff,
             "cost_assumptions": {
                 "turnover_cost_bps": 5.0,
                 "stress_turnover_cost_bps": [10.0, 25.0],
@@ -236,7 +258,19 @@ def validate_tqqq_core_only_p1_binding_for_contract(
     contract: TqqqCoreOnlyCandidateContract,
 ) -> dict[str, object]:
     """Reject a binding that is not exact for its immutable candidate identity."""
-    expected = build_tqqq_core_only_p1_binding_for_contract(contract)
+    frozen_contract = _require_contract(contract)
+    date_cutoff: str | None = None
+    if frozen_contract == P2_V5_CONTRACT:
+        try:
+            identity = value["data_identity"]
+            if not isinstance(identity, Mapping):
+                raise TypeError
+            date_cutoff = identity["date_cutoff"]
+        except (KeyError, TypeError):
+            raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only P1 binding") from None
+    expected = build_tqqq_core_only_p1_binding_for_contract(
+        frozen_contract, date_cutoff=date_cutoff
+    )
     if not isinstance(value, Mapping) or dict(value) != expected:
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only P1 binding")
     return expected
@@ -484,8 +518,25 @@ def _expected_xnys_sessions(date_cutoff: str) -> tuple[date, ...]:
     return tuple(sessions)
 
 
+def _validate_p2_v5_date_cutoff(value: object) -> str:
+    """Accept only a completed XNYS session within v5's fixed research policy."""
+    if not isinstance(value, str):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff")
+    try:
+        cutoff = date.fromisoformat(value)
+        minimum = date.fromisoformat(_P2_V5_MINIMUM_DATE_CUTOFF)
+    except ValueError as exc:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff") from exc
+    sessions = _expected_xnys_sessions(value)
+    if cutoff < minimum or not sessions or sessions[-1] != cutoff:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff")
+    return value
+
+
 def expected_tqqq_core_only_sessions_for_contract(
     contract: TqqqCoreOnlyCandidateContract,
+    *,
+    date_cutoff: str | None = None,
 ) -> dict[str, tuple[date, ...]]:
     """Return the exact expected session sequence for one frozen TQQQ input contract.
 
@@ -494,7 +545,9 @@ def expected_tqqq_core_only_sessions_for_contract(
     any market data.
     """
     frozen_contract = _require_contract(contract)
-    binding = build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
+    binding = build_tqqq_core_only_p1_binding_for_contract(
+        frozen_contract, date_cutoff=date_cutoff
+    )
     identity = binding["data_identity"]
     assert isinstance(identity, Mapping)
     expected = _expected_xnys_sessions(str(identity["date_cutoff"]))
@@ -535,7 +588,15 @@ def _validate_frozen_historical_coverage(
     except TqqqCoreOnlyP1BindingError:
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage") from None
     sessions = {symbol: _response_sessions(symbols[symbol]) for symbol in _UNIVERSE}
-    expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(contract)
+    identity = binding.get("data_identity")
+    if not isinstance(identity, Mapping):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
+    expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(
+        contract,
+        date_cutoff=identity.get("date_cutoff")
+        if contract == P2_V5_CONTRACT
+        else None,
+    )
     for symbol in _UNIVERSE:
         if sessions[symbol] != expected_by_symbol[symbol]:
             raise TqqqCoreOnlyP1BindingError("incomplete TQQQ core-only historical coverage")
@@ -585,8 +646,35 @@ def publish_tqqq_core_only_p1_inputs(
     producer: Mapping[str, object],
 ) -> dict[str, object]:
     """Acquire exactly the frozen four inputs and atomically publish one private input root."""
+    return publish_tqqq_core_only_p1_inputs_for_contract(
+        provider,
+        output_root=output_root,
+        observed_at=observed_at,
+        producer=producer,
+        contract=_P2_V1_CONTRACT,
+    )
+
+
+def publish_tqqq_core_only_p1_inputs_for_contract(
+    provider: TqqqCoreOnlyHistoricalBarsProvider,
+    *,
+    output_root: str | Path,
+    observed_at: str,
+    producer: Mapping[str, object],
+    contract: TqqqCoreOnlyCandidateContract,
+    date_cutoff: str | None = None,
+) -> dict[str, object]:
+    """Publish one candidate-bound immutable input root without provider fallback.
+
+    The caller may supply a cutoff only for P2 v5.  That cutoff is validated
+    and written into the binding before any provider request, so all four
+    symbol responses, the manifest, and later P3 evidence share one identity.
+    """
     destination = _require_new_private_output_root(output_root)
-    binding = build_tqqq_core_only_p1_binding()
+    frozen_contract = _require_contract(contract)
+    binding = build_tqqq_core_only_p1_binding_for_contract(
+        frozen_contract, date_cutoff=date_cutoff
+    )
     symbols, source_content_sha256 = _collect_frozen_four_inputs(provider, binding)
     _validate_frozen_historical_coverage(symbols, binding)
     try:
@@ -602,6 +690,7 @@ def publish_tqqq_core_only_p1_inputs(
             producer=producer,
             member_bytes=bars_bytes,
             source_content_sha256=source_content_sha256,
+            contract=frozen_contract,
         )
         manifest_bytes = canonical_research_input_manifest_bytes(manifest)
     except (TypeError, ValueError):
@@ -609,10 +698,16 @@ def publish_tqqq_core_only_p1_inputs(
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
     try:
         temporary.chmod(0o700)
-        (temporary / "binding.json").write_bytes(canonical_binding_bytes(binding))
+        (temporary / "binding.json").write_bytes(
+            canonical_tqqq_core_only_p1_binding_bytes_for_contract(
+                binding, frozen_contract
+            )
+        )
         (temporary / "bars.json").write_bytes(bars_bytes)
         (temporary / "manifest.json").write_bytes(manifest_bytes)
-        manifest_sha256 = verify_tqqq_core_only_input_root(temporary)
+        manifest_sha256 = verify_tqqq_core_only_input_root(
+            temporary, contract=frozen_contract
+        )
         _publish_noreplace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)

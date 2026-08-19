@@ -57,19 +57,23 @@ def _alpaca_symbol_payload(symbol: str, date_cutoff: str) -> dict[str, object]:
 def _write_canonical_snapshot(
     root: Path,
     contract: p1_binding.TqqqCoreOnlyCandidateContract | None = None,
+    *,
+    date_cutoff: str | None = None,
 ) -> dict[str, object]:
     root.mkdir(mode=0o700)
     root.chmod(0o700)
     frozen_contract = contract or p1_binding.resolve_tqqq_core_only_candidate_contract(
         "tqqq_core_only_p2_v1"
     )
-    binding = p1_binding.build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
-    date_cutoff = binding["data_identity"]["date_cutoff"]
-    assert isinstance(date_cutoff, str)
+    binding = p1_binding.build_tqqq_core_only_p1_binding_for_contract(
+        frozen_contract, date_cutoff=date_cutoff
+    )
+    bound_cutoff = binding["data_identity"]["date_cutoff"]
+    assert isinstance(bound_cutoff, str)
     bars = {
         "schema_version": "tqqq_core_only_private_bars.v1",
         "symbols": {
-            symbol: _alpaca_symbol_payload(symbol, date_cutoff)
+            symbol: _alpaca_symbol_payload(symbol, bound_cutoff)
             for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
         },
     }
@@ -373,6 +377,59 @@ def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
     assert terminal["no_order"] is True
     assert terminal["size_zero_required"] is True
     assert not (output / "bars.json").exists()
+
+
+def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 v5 extends only the verified cutoff; it remains offline and no-order."""
+    module = _load_script_module()
+    snapshot = tmp_path / "synthetic-v5-snapshot"
+    _write_canonical_snapshot(
+        snapshot, p1_binding.P2_V5_CONTRACT, date_cutoff="2026-08-18"
+    )
+    config_path = tmp_path / "p2-v5.json"
+    config_path.write_bytes(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v5.json").read_bytes()
+    )
+    public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
+    calls = 0
+
+    @wraps(public_adapter)
+    def tracked_public_adapter(context):
+        nonlocal calls
+        calls += 1
+        return public_adapter(context)
+
+    monkeypatch.setattr(
+        evidence,
+        "build_tqqq_core_only_p2_v2_research_decision",
+        tracked_public_adapter,
+    )
+    monkeypatch.setattr(evidence, "_resolve_runner_revision", lambda: "a" * 40)
+    monkeypatch.setattr(promotion_runner, "_resolve_runner_revision", lambda: "a" * 40)
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(snapshot),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(tmp_path / "evidence"),
+        ]
+    ) == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert calls > 0
+    assert summary["status"] == "EVIDENCE_V2_COMPLETE"
+    assert summary["verdict"] in {
+        "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
+        "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
+        "INCONCLUSIVE_DATA_OR_EXECUTION",
+    }
 
 
 @pytest.mark.parametrize(

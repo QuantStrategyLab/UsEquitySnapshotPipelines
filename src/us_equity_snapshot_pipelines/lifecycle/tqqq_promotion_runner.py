@@ -34,6 +34,7 @@ _PROFILE = "tqqq_core_only_p2_v1"
 _CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
 _P2_V2_PROFILE = "tqqq_core_only_p2_v2"
 _P2_V4_PROFILE = "tqqq_core_only_p2_v4"
+_P2_V5_PROFILE = "tqqq_core_only_p2_v5"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -46,6 +47,8 @@ _LOCKED_OOS_SESSION_COUNT = 251
 _LOCKED_OOS_SESSIONS_SHA256 = "295286362966654abc1b6511ef1214ba70053986c1f1c0f70007b8f3a6f732ee"
 _P2_V4_LOCKED_OOS_START = date(2025, 8, 4)
 _P2_V4_LOCKED_OOS_END = date(2026, 8, 4)
+_P2_V5_MINIMUM_DATE_CUTOFF = date(2026, 8, 4)
+_P2_V5_TRAILING_OOS_SESSION_COUNT = 252
 _FROZEN_CALENDAR_SHA256 = "448b47dd408817e2e413036d6281f0ec5334531aff6a23b65fe1a3dd96af71fa"
 _FROZEN_CALENDAR_SOURCE_REVISION = (
     "exchange_calendars:4.13.2:XNYS:"
@@ -396,6 +399,37 @@ _FROZEN_XNYS_SESSIONS = _frozen_xnys_sessions()
 _FROZEN_XNYS_SESSION_INDEX = {
     session: index for index, session in enumerate(_FROZEN_XNYS_SESSIONS)
 }
+
+
+def _p2_v5_calendar_sessions(end: date) -> tuple[date, ...]:
+    """Return the binding-compatible calendar for a v5 daily evidence run."""
+    if type(end) is not date:
+        raise TqqqPromotionContractError("invalid rolling P2 OOS end")
+    from .tqqq_core_only_p1_binding import _expected_xnys_sessions
+
+    sessions = _expected_xnys_sessions(end.isoformat())
+    if not sessions or sessions[-1] != end:
+        raise TqqqPromotionContractError("invalid rolling P2 OOS end")
+    return sessions
+
+
+def _p2_v5_oos_bounds(end: date) -> tuple[date, date]:
+    if end < _P2_V5_MINIMUM_DATE_CUTOFF:
+        raise TqqqPromotionContractError("invalid rolling P2 OOS end")
+    sessions = _p2_v5_calendar_sessions(end)
+    if len(sessions) < _P2_V5_TRAILING_OOS_SESSION_COUNT:
+        raise TqqqPromotionContractError("insufficient rolling P2 OOS history")
+    return sessions[-_P2_V5_TRAILING_OOS_SESSION_COUNT], end
+
+
+def _candidate_calendar_sessions(
+    candidate_profile: str, end: date
+) -> tuple[date, ...]:
+    return (
+        _p2_v5_calendar_sessions(end)
+        if candidate_profile == _P2_V5_PROFILE
+        else _FROZEN_XNYS_SESSIONS
+    )
 
 
 def _candidate_identity_fields(
@@ -1091,6 +1125,7 @@ def _validate_switching_traces(
     sessions: tuple[date, ...],
     decision_count: int,
     total_cost_bps: int,
+    calendar_sessions: tuple[date, ...] = _FROZEN_XNYS_SESSIONS,
 ) -> bool:
     if (
         type(traces) is not tuple
@@ -1099,6 +1134,7 @@ def _validate_switching_traces(
     ):
         raise TqqqPromotionContractError("complete switching traces are required")
     execution_sessions: list[date] = []
+    calendar_index = {session: index for index, session in enumerate(calendar_sessions)}
     approved_count = 0
     cooldown_count = 0
     cooldown_last_execution: date | None = None
@@ -1120,8 +1156,8 @@ def _validate_switching_traces(
     for trace in traces:
         if type(trace) is not TqqqSwitchingTrace:
             raise TqqqPromotionContractError("invalid switching trace")
-        signal_index = _FROZEN_XNYS_SESSION_INDEX.get(trace.signal_session)
-        execution_index = _FROZEN_XNYS_SESSION_INDEX.get(trace.execution_session)
+        signal_index = calendar_index.get(trace.signal_session)
+        execution_index = calendar_index.get(trace.execution_session)
         if (
             type(trace.signal_session) is not date
             or type(trace.execution_session) is not date
@@ -1287,6 +1323,9 @@ def _validated_window_evidence(
         sessions=window.sessions,
         decision_count=window.decision_count,
         total_cost_bps=total_cost_bps,
+        calendar_sessions=_candidate_calendar_sessions(
+            identity.candidate_profile, window.end_date
+        ),
     )
     metrics = window.relative_metrics
     summary = window.episode_summary
@@ -1450,6 +1489,11 @@ def _validate_plan(
             (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
             (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
         ),
+        _P2_V5_PROFILE: (
+            (date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+            (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+            (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+        ),
     }
     expected = expected_by_candidate.get(candidate_profile)
     if expected is None:
@@ -1457,7 +1501,9 @@ def _validate_plan(
     if tuple((fold.train_start, fold.train_end, fold.test_start, fold.test_end) for fold in plan.folds) != expected:
         raise TqqqPromotionContractError("P2 fold geometry mismatch")
     expected_evaluation = (
-        (_P2_V4_LOCKED_OOS_START, _P2_V4_LOCKED_OOS_END, 1, 1)
+        (*_p2_v5_oos_bounds(plan.locked_oos_end), 1, 1)
+        if candidate_profile == _P2_V5_PROFILE
+        else (_P2_V4_LOCKED_OOS_START, _P2_V4_LOCKED_OOS_END, 1, 1)
         if candidate_profile == _P2_V4_PROFILE
         else (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0)
     )
@@ -1480,7 +1526,7 @@ def _cost_scenarios(
     values = (cost_assumptions.get("turnover_cost_bps"), *(cost_assumptions.get("stress_turnover_cost_bps") or ()))
     expected = (
         (5.0, 10.0, 15.0)
-        if candidate_profile == _P2_V4_PROFILE
+        if candidate_profile in {_P2_V4_PROFILE, _P2_V5_PROFILE}
         else (5.0, 10.0, 25.0)
     )
     if tuple(float(value) for value in values) != expected:
@@ -1605,6 +1651,7 @@ def _validate_replay(
     end_date: date,
     prior_state_sha256: str,
     total_cost_bps: int,
+    candidate_profile: str = _PROFILE,
 ) -> None:
     if type(replay) is not TqqqWindowReplay:
         raise TqqqPromotionContractError("invalid replay material")
@@ -1707,10 +1754,9 @@ def _validate_replay(
         or replay.sessions[-1] != end_date
     ):
         raise TqqqPromotionContractError("replay session identity mismatch")
+    calendar_sessions = _candidate_calendar_sessions(candidate_profile, end_date)
     expected_sessions = tuple(
-        session
-        for session in _FROZEN_XNYS_SESSIONS
-        if start_date <= session <= end_date
+        session for session in calendar_sessions if start_date <= session <= end_date
     )
     if replay.sessions != expected_sessions:
         raise TqqqPromotionContractError("replay session identity mismatch")
@@ -1724,6 +1770,7 @@ def _validate_replay(
         sessions=replay.sessions,
         decision_count=replay.decision_count,
         total_cost_bps=total_cost_bps,
+        calendar_sessions=calendar_sessions,
     )
     if (
         sum(trace.risk_disposition == "PARK" for trace in replay.switching_traces)
@@ -1960,6 +2007,7 @@ class TqqqPromotionRunner:
             end_date=end_date,
             prior_state_sha256=self.identity.initial_state_sha256,
             total_cost_bps=self.total_cost_bps,
+            candidate_profile=self.identity.candidate_profile,
         )
         metrics = _relative_metrics(replay)
         window = TqqqWindowEvidence(

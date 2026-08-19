@@ -7,14 +7,27 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_data_health import
 )
 
 
-def _payload() -> dict[str, object]:
-    expected = binding.expected_tqqq_core_only_sessions_for_contract(binding.P2_V4_CONTRACT)
+def _payload(
+    contract: binding.TqqqCoreOnlyCandidateContract = binding.P2_V4_CONTRACT,
+    *,
+    date_cutoff: str | None = None,
+) -> dict[str, object]:
+    expected = binding.expected_tqqq_core_only_sessions_for_contract(
+        contract, date_cutoff=date_cutoff
+    )
     return {
         "schema_version": "tqqq_core_only_private_bars.v1",
         "symbols": {
             symbol: {
                 "bars": [
-                    {"t": f"{session.isoformat()}T00:00:00Z", "c": 100.0}
+                    {
+                        "date": session.isoformat(),
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.0,
+                        "volume": 1.0,
+                    }
                     for session in sessions
                 ]
             }
@@ -86,3 +99,28 @@ def test_provider_unavailable_is_deferred_without_erasing_prior_snapshot_state()
     assert result["reason_codes"] == ["INPUT_UNAVAILABLE"]
     assert result["bars_payload_sha256"] is None
     assert result["coverage"] == {}
+
+
+def test_v5_health_binds_the_daily_cutoff_and_canonical_bar_shape() -> None:
+    cutoff = "2026-08-18"
+    result = assess_tqqq_core_only_p1_input_health(
+        _payload(binding.P2_V5_CONTRACT, date_cutoff=cutoff),
+        observed_at="2026-08-19T00:00:00Z",
+        contract=binding.P2_V5_CONTRACT,
+        date_cutoff=cutoff,
+    )
+
+    assert result["status"] == "ACCEPTED"
+    assert result["candidate"]["candidate_id"] == "tqqq_core_only_p2_v5"
+
+
+def test_health_rejects_raw_alpaca_timestamp_shape_before_p3() -> None:
+    payload = _payload()
+    payload["symbols"]["QQQ"]["bars"][0] = {"t": "2018-01-02T00:00:00Z"}
+
+    result = assess_tqqq_core_only_p1_input_health(
+        payload, observed_at="2026-08-19T00:00:00Z"
+    )
+
+    assert result["status"] == "QUARANTINED"
+    assert result["reason_codes"] == ["MALFORMED_BARS"]
