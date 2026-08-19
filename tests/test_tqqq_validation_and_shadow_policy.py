@@ -42,7 +42,7 @@ def test_removed_forward_collector_has_no_remaining_entrypoint_or_source() -> No
         assert not (ROOT / removed).exists()
 
 
-def test_p1_p3_reliability_semantics_do_not_require_human_environment_approval() -> None:
+def test_p1_p3_reliability_semantics_separate_current_v5_from_legacy_v1() -> None:
     policy = POLICY.read_text(encoding="utf-8")
     mandate_readme = MANDATE_README.read_text(encoding="utf-8")
 
@@ -50,12 +50,13 @@ def test_p1_p3_reliability_semantics_do_not_require_human_environment_approval()
         "`INPUT_UNAVAILABLE`, therefore\n  `INCONCLUSIVE` and `PARKED`",
         "must not alter the\n  frozen data identity",
         "or reset the\n  locked historical OOS span",
+        "### Current P2 v5 scheduled research path",
+        "There is no\nper-run mandate or reviewer",
+        "`DEFERRED` or `QUARANTINED` and skips P3",
+        "P4 paper, P5 shadow, broker orders, capital, and\nP6 live remain unavailable",
+        "### Legacy manual v1 compatibility path",
         "no-order technical scope record",
-        "Future unattended P1 requires a\n"
-        "separately defined, externally verified, non-execution data-acquisition\n"
-        "authorization",
-        "That authorization is not active",
-        "does not read, verify, or inject it today",
+        "does\nnot govern the P2 v5 scheduled controller",
     ):
         assert required in policy
     for required in (
