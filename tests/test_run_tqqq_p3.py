@@ -11,6 +11,9 @@ import pytest
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
+from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_strategy_performance import (
+    build_tqqq_p3_strategy_performance,
+)
 
 
 def _load_script_module():
@@ -392,6 +395,7 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
     config_path.write_bytes(
         (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v5.json").read_bytes()
     )
+    output = tmp_path / "evidence-v5"
     public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
     calls = 0
 
@@ -418,7 +422,7 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
             "--mandate-receipt-sha256",
             "2" * 64,
             "--output-dir",
-            str(tmp_path / "evidence"),
+            str(output),
         ]
     ) == 0
 
@@ -429,6 +433,20 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
         "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
         "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
         "INCONCLUSIVE_DATA_OR_EXECUTION",
+    }
+    performance = build_tqqq_p3_strategy_performance(
+        evidence_package=json.loads(
+            (output / "strategy-evidence-package.v2.json").read_text(encoding="utf-8")
+        ),
+        expected_evidence_sha256=summary["evidence_sha256"],
+        producer_revision="f" * 40,
+        computed_at="2026-08-19T04:00:00Z",
+    )
+    assert performance["strategy_profile"] == "tqqq_core_only_p2_v5"
+    assert performance["authority"] == {
+        "research_only": True,
+        "no_order": True,
+        "p4_p5_p6_authorized": False,
     }
 
 
