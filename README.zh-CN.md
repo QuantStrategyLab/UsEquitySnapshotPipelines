@@ -40,6 +40,8 @@ UsEquityStrategies 和美股执行平台只消费已经提升的产物和 runtim
 
 Snapshot artifact 的作用是让策略判断可复现：包括 ranking 输入、feature snapshot、manifest、validation summary 和提升证据。它们不是宣传式收益承诺。下游仓库提升 profile 前，应在适用场景下检查最新短、中、长周期产物。
 
+定时 TQQQ P1/P3 研究流程只有在 P3 已终态验证后，才会发布受限的 `strategy_performance.v2.json` GitHub Actions artifact。它只含可比较的研究指标和证据摘要，不含原始 bars、券商凭据、账户、订单或提升权限。下游 AI Watcher 必须比较两个已验证观察值后才可创建研究任务；该任务在 P3 前始终是无订单、未激活候选。
+
 ## 仓库结构
 
 - `src/`：库代码和运行时代码。
@@ -68,6 +70,7 @@ python -m pytest -q
 - [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
+- [`docs/tqqq-p3-strategy-performance-contract.md`](docs/tqqq-p3-strategy-performance-contract.md)
 - [`docs/tecl-xlk-optimization-research.zh-CN.md`](docs/tecl-xlk-optimization-research.zh-CN.md)（[English](docs/tecl-xlk-optimization-research.md)）
 - [`docs/tqqq-validation-and-shadow-policy.md`](docs/tqqq-validation-and-shadow-policy.md)
 

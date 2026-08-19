@@ -40,6 +40,8 @@ UsEquityStrategies and US execution platforms consume only promoted artifacts an
 
 Snapshot artifacts are used to make strategy decisions reproducible: ranking inputs, feature snapshots, manifests, validation summaries, and promotion evidence. They are not marketing claims. Before a downstream repository promotes a profile, review the latest artifacts across short, medium, and long windows where applicable.
 
+For the scheduled TQQQ P1/P3 research flow, a terminal, P3-verified run also publishes a bounded `strategy_performance.v2.json` GitHub Actions artifact. It contains only comparable research metrics and evidence digests; it contains no raw bars, broker credentials, accounts, orders, or promotion authority. A downstream AI watcher must compare two verified observations before it may create a research task, and that task remains no-order and inactive through P3.
+
 ## Repository layout
 
 - `src/`: library and runtime code.
@@ -68,6 +70,7 @@ python -m pytest -q
 - [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
+- [`docs/tqqq-p3-strategy-performance-contract.md`](docs/tqqq-p3-strategy-performance-contract.md)
 - [`docs/tecl-xlk-optimization-research.md`](docs/tecl-xlk-optimization-research.md) ([简体中文](docs/tecl-xlk-optimization-research.zh-CN.md))
 - [`docs/tqqq-validation-and-shadow-policy.md`](docs/tqqq-validation-and-shadow-policy.md)
 

@@ -341,6 +341,29 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}/daily-research-status.json"
           gcloud storage cp --quiet --no-clobber "$status_path" "$destination" >/dev/null
           printf 'P3_DAILY_STATUS_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Build sanitized P3 research performance observation
+        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        env:
+          P3_EVIDENCE_SHA256: ${{ steps.terminal.outputs.evidence_sha256 }}
+        run: |
+          set -euo pipefail
+          output_path="${RUNNER_TEMP}/tqqq-daily-research/strategy_performance.v2.json"
+          uv run --no-sync python scripts/build_tqqq_p3_strategy_performance.py \
+            --evidence-package "${RUNNER_TEMP}/tqqq-daily-research/p3-output/strategy-evidence-package.v2.json" \
+            --expected-evidence-sha256 "$P3_EVIDENCE_SHA256" \
+            --producer-revision "$GITHUB_SHA" \
+            --computed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$output_path"
+          python -m json.tool "$output_path"
+          printf 'P3_RESEARCH_PERFORMANCE=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized P3 research performance observation
+        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-p3-research-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tqqq-daily-research/strategy_performance.v2.json
+          if-no-files-found: error
+          retention-days: 35
 
   publish-control-plane:
     needs: [p1, p3]
