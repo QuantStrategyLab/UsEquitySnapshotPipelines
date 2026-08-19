@@ -341,6 +341,63 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}/daily-research-status.json"
           gcloud storage cp --quiet --no-clobber "$status_path" "$destination" >/dev/null
           printf 'P3_DAILY_STATUS_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Build a bound P5 forward observation
+        id: forward_observation
+        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        env:
+          MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p3-input"
+          status_path="${RUNNER_TEMP}/tqqq-daily-research/daily-research-status.json"
+          output_path="${RUNNER_TEMP}/tqqq-daily-research/p5-forward-observation.v1.json"
+          result_path="${RUNNER_TEMP}/tqqq-daily-research/p5-forward-observation-result.json"
+          uv run --no-sync python scripts/build_tqqq_p5_forward_observation.py \
+            --snapshot-root "$root" \
+            --config config/tqqq_core_only_p2_v5.json \
+            --daily-research-status "$status_path" \
+            --producer-revision "$GITHUB_SHA" \
+            --produced-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$output_path" > "$result_path"
+          OUTPUT_PATH="$output_path" RESULT_PATH="$result_path" uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p5_forward_observation import (
+              validate_tqqq_p5_forward_observation,
+          )
+
+          result = json.loads(open(os.environ['RESULT_PATH'], encoding='utf-8').read())
+          observation = validate_tqqq_p5_forward_observation(
+              json.loads(open(os.environ['OUTPUT_PATH'], encoding='utf-8').read())
+          )
+          if result != {
+              'forward_observation_sha256': observation['forward_observation_sha256'],
+              'status': 'FORWARD_OBSERVATION_RECORDED',
+          }:
+              raise SystemExit('invalid forward observation result')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('status=FORWARD_OBSERVATION_RECORDED\n')
+              output.write(f'forward_observation_sha256={observation["forward_observation_sha256"]}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('P5_FORWARD_OBSERVATION_STATUS=RECORDED\n')
+              summary.write(f'P5_FORWARD_OBSERVATION_SHA256={observation["forward_observation_sha256"]}\n')
+          PY
+      - name: Create-only upload of bound P5 forward observation
+        if: steps.forward_observation.outputs.status == 'FORWARD_OBSERVATION_RECORDED'
+        env:
+          DATE_CUTOFF: ${{ needs.p1.outputs.date_cutoff }}
+          FORWARD_OBSERVATION_SHA256: ${{ steps.forward_observation.outputs.forward_observation_sha256 }}
+        run: |
+          set -euo pipefail
+          observation_path="${RUNNER_TEMP}/tqqq-daily-research/p5-forward-observation.v1.json"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/forward-observations/v1/${DATE_CUTOFF}.json"
+          if gcloud storage ls "$destination" >/dev/null 2>&1; then
+            exit 1
+          fi
+          gcloud storage cp --quiet --no-clobber "$observation_path" "$destination" >/dev/null
+          printf 'P5_FORWARD_OBSERVATION_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+          printf 'P5_FORWARD_OBSERVATION_SHA256=%s\n' "$FORWARD_OBSERVATION_SHA256" >> "$GITHUB_STEP_SUMMARY"
       - name: Build sanitized P3 research performance observation
         if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
         env:

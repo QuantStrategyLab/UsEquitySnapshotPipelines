@@ -19,7 +19,9 @@ This candidate is deliberately bounded as follows:
   not substitute a provider, fill a gap, change a strategy parameter, or
   invalidate prior roots.
 - P4 paper, P5 shadow, broker orders, capital allocation, and P6 live remain
-  outside this contract.  They require separately implemented policies; P6 is
+  outside this daily-controller contract. This says nothing about deployments
+  of the same frozen strategy on other platforms: each strategy-version,
+  platform, and execution-lane tuple has its own evidence and authority. P6 is
   explicitly user-activated.
 
 The initial P2/P3 foundation was deliberately pure and synthetic. The current
@@ -41,8 +43,17 @@ activation step.  A failure to acquire or validate input produces a visible
 
 For an accepted run, the four-bar input root, daily health record, and a
 sanitized P3 terminal-status record are create-only objects under the same
-short-term private snapshot prefix.  No raw bars are copied into GitHub
-artifacts and the controller does not extend the configured retention period.
+short-term private snapshot prefix.  When P3 has complete evidence, that same
+P3 runner also produces one digest-bound, sanitized forward observation in a
+separate `forward-observations` child prefix keyed by its completed session.
+It contains only the frozen candidate identity, evidence digests, the
+next-session virtual allocation, and its own digest; it contains no bars,
+credentials, account data, order, or capital instruction.  This separation
+lets a later P5 identity read the exact observation without access to the raw
+P1-root prefix.  The publication is a P3-derived input for a later
+independently-authorized P5 scheduler, not P5 execution or permission.  No raw
+bars are copied into GitHub artifacts and the controller does not extend the
+configured retention period.
 
 ## 全局控制台来源快照
 

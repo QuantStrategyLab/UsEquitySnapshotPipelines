@@ -10,7 +10,8 @@ def test_validation_policy_distinguishes_current_daily_v5_from_legacy_manual_v1(
     assert "### Current P2 v5 scheduled research path" in policy
     assert "### Legacy manual v1 compatibility path" in policy
     assert "P4 paper, P5 shadow, broker orders, capital, and" in policy
-    assert "P6 live remain unavailable." in policy
+    assert "P6 live remain unavailable from this controller." in policy
+    assert "evidence is platform- and lane-specific" in policy
     assert "P4--P6 authority" in policy
     assert "current\nmain branch now adds the separately reviewed daily controller" in contract
     assert ".github/workflows/tqqq-p1-p3-daily-research.yml" in contract
