@@ -60,7 +60,7 @@ _FROZEN_TIMING_SHA256 = (
     "72973ff51aa0b99524e67352c67f4b98cb3c6ca5d62f9585c4d26c82221d17f1"
 )
 TQQQ_SWITCHING_CHARACTERIZATION_SHA256 = (
-    "1d92933226e8481698b242f5f073224e34ee4a739e27daea477d0e7c8e577c41"
+    "82a24c62c512fdc6a9657c0eb40b5b8409b6ef8f1706a3b584de3b183e394904"
 )
 
 LEGACY_PARITY_CLASSIFICATIONS = frozenset(
@@ -134,6 +134,8 @@ class TqqqPromotionIdentity:
     input_manifest_sha256: str
     mandate_receipt_sha256: str
     initial_state_sha256: str
+    candidate_profile: str = _PROFILE
+    candidate_variant: str = _CANDIDATE_VARIANT
 
 
 @dataclass(frozen=True)
@@ -390,13 +392,25 @@ _FROZEN_XNYS_SESSION_INDEX = {
 }
 
 
-def build_tqqq_switching_characterization_contract() -> dict[str, object]:
+def _candidate_identity_fields(
+    identity: TqqqPromotionIdentity | None,
+) -> tuple[str, str]:
+    if identity is None:
+        return _PROFILE, _CANDIDATE_VARIANT
+    _validate_identity(identity)
+    return identity.candidate_profile, identity.candidate_variant
+
+
+def build_tqqq_switching_characterization_contract(
+    identity: TqqqPromotionIdentity | None = None,
+) -> dict[str, object]:
     """Return the frozen, quota-free deterministic switching contract."""
 
+    candidate_profile, candidate_variant = _candidate_identity_fields(identity)
     material: dict[str, object] = {
         "schema_version": "tqqq_switching_characterization.v1",
-        "candidate_profile": _PROFILE,
-        "candidate_variant": _CANDIDATE_VARIANT,
+        "candidate_profile": candidate_profile,
+        "candidate_variant": candidate_variant,
         "timing": "completed_close_t_to_open_t_plus_1",
         "cases": (
             "RISK_ON_TQQQ_OR_QQQM",
@@ -423,9 +437,10 @@ def build_tqqq_switching_characterization_contract() -> dict[str, object]:
         "minimum_risk_asset_occupancy": None,
         "minimum_trade_count": None,
     }
-    if _canonical_sha256(material) != TQQQ_SWITCHING_CHARACTERIZATION_SHA256:
+    sha256 = _canonical_sha256(material)
+    if identity is None and sha256 != TQQQ_SWITCHING_CHARACTERIZATION_SHA256:
         raise TqqqPromotionContractError("switching characterization identity mismatch")
-    return {**material, "sha256": TQQQ_SWITCHING_CHARACTERIZATION_SHA256}
+    return {**material, "sha256": sha256}
 
 
 def build_tqqq_development_robustness_plan(
@@ -517,24 +532,27 @@ def build_tqqq_development_robustness_plan(
     }
 
 
-def build_tqqq_frozen_trial_ledger() -> dict[str, object]:
+def build_tqqq_frozen_trial_ledger(
+    identity: TqqqPromotionIdentity | None = None,
+) -> dict[str, object]:
     """Return the complete pre-replay TQQQ-only trial ledger.
 
     The frozen scope contains one candidate only.  Cost scenarios and rolling
     windows are reporting dimensions, never additional candidate trials.
     """
 
+    candidate_profile, candidate_variant = _candidate_identity_fields(identity)
     material: dict[str, object] = {
         "schema_version": "tqqq_frozen_trial_ledger.v1",
-        "candidate_profile": _PROFILE,
-        "candidate_variant": _CANDIDATE_VARIANT,
+        "candidate_profile": candidate_profile,
+        "candidate_variant": candidate_variant,
         "scope": "TQQQ_ONLY_HISTORICAL_DIAGNOSTICS",
         "complete_before_replay": True,
         "trial_count": 1,
         "entries": [
             {
                 "trial_id": "tqqq_core_parity_v1",
-                "candidate_variant": _CANDIDATE_VARIANT,
+                "candidate_variant": candidate_variant,
                 "selection_status": "FROZEN_BEFORE_REPLAY",
                 "historical_execution": "REQUIRED",
                 "include_in_overfitting_diagnostics": True,
@@ -644,7 +662,7 @@ def _run_tqqq_systematic_reporting(
             )
             start = len(runner.windows)
             results = orchestrator.walk_forward(
-                _PROFILE,
+                identity.candidate_profile,
                 domain=_DOMAIN,
                 params=_params(identity, timing_sha256),
                 param_set_id=f"tqqq_etf_only_{total_cost_bps}bp_systematic_{horizon_months}m",
@@ -1219,6 +1237,7 @@ def _validated_window_evidence(
     window: TqqqWindowEvidence,
     backtest: BacktestResult,
     *,
+    identity: TqqqPromotionIdentity,
     expected_sessions: tuple[date, ...],
     expected_params: Mapping[str, object],
     expected_param_set_id: str,
@@ -1226,6 +1245,7 @@ def _validated_window_evidence(
     expected_source_revision: str,
     total_cost_bps: int,
 ) -> tuple[TqqqQqqRelativeMetrics, TqqqEpisodeSummary, bool, bool]:
+    _validate_identity(identity)
     if (
         type(window) is not TqqqWindowEvidence
         or type(backtest) is not BacktestResult
@@ -1235,7 +1255,7 @@ def _validated_window_evidence(
         or type(window.sessions) is not tuple
         or window.sessions != tuple(sorted(set(window.sessions)))
         or backtest.observation_count != len(expected_sessions) + 1
-        or backtest.strategy_profile != _PROFILE
+        or backtest.strategy_profile != identity.candidate_profile
         or backtest.domain != _DOMAIN
         or backtest.param_set_id != expected_param_set_id
         or dict(backtest.params) != expected_params
@@ -1352,10 +1372,26 @@ def evaluate_tqqq_pre_result_acceptance(
 def _validate_identity(identity: TqqqPromotionIdentity) -> None:
     if type(identity) is not TqqqPromotionIdentity:
         raise TqqqPromotionContractError("invalid immutable identity")
-    if identity.qpk_revision != _QPK_REVISION:
+    if identity.candidate_profile != identity.candidate_variant:
+        raise TqqqPromotionContractError("candidate profile/variant mismatch")
+    default_candidate = (
+        identity.candidate_profile == _PROFILE
+        and identity.candidate_variant == _CANDIDATE_VARIANT
+    )
+    if default_candidate and identity.qpk_revision != _QPK_REVISION:
         raise TqqqPromotionContractError("QPK revision mismatch")
-    if identity.ues_revision != _UES_REVISION:
+    if not _is_hex(identity.qpk_revision, 40):
+        raise TqqqPromotionContractError("invalid QPK revision")
+    if default_candidate and identity.ues_revision != _UES_REVISION:
         raise TqqqPromotionContractError("UES revision mismatch")
+    if not _is_hex(identity.ues_revision, 40):
+        raise TqqqPromotionContractError("invalid UES revision")
+    for label, value in (
+        ("candidate profile", identity.candidate_profile),
+        ("candidate variant", identity.candidate_variant),
+    ):
+        if not _is_tqqq_candidate_id(value):
+            raise TqqqPromotionContractError(f"invalid {label}")
     for label, value in (("runner revision", identity.runner_revision),):
         if not _is_hex(value, 40):
             raise TqqqPromotionContractError(f"invalid {label}")
@@ -1367,6 +1403,22 @@ def _validate_identity(identity: TqqqPromotionIdentity) -> None:
     ):
         if not _is_hex(value, 64):
             raise TqqqPromotionContractError(f"invalid {label} identity")
+
+
+def _is_tqqq_candidate_id(value: object) -> bool:
+    if type(value) is not str or not 8 <= len(value) <= 128:
+        return False
+    parts = value.split("_")
+    version = parts[-1]
+    return (
+        len(parts) >= 3
+        and parts[0] == "tqqq"
+        and all(part.isascii() and part.isalnum() and part == part.lower() for part in parts)
+        and len(version) > 1
+        and version[0] == "v"
+        and version[1:].isdigit()
+        and version[1] != "0"
+    )
 
 
 def _validate_plan(plan: TqqqPromotionPlan) -> None:
@@ -1833,7 +1885,10 @@ class TqqqPromotionRunner:
         end_date: date,
         cost_model: PromotionCostModel,
     ) -> BacktestResult:
-        if strategy_profile != _PROFILE or dict(params) != _params(self.identity, _timing_sha256(self.plan)):
+        if (
+            strategy_profile != self.identity.candidate_profile
+            or dict(params) != _params(self.identity, _timing_sha256(self.plan))
+        ):
             raise TqqqPromotionContractError("candidate-bound parameters mismatch")
         total_cost = _finite(cost_model.commission_bps, "commission", nonnegative=True)
         total_cost += _finite(cost_model.slippage_bps, "slippage", nonnegative=True)
@@ -1868,7 +1923,7 @@ class TqqqPromotionRunner:
         )
         self._windows.append(window)
         return BacktestResult(
-            strategy_profile=_PROFILE,
+            strategy_profile=self.identity.candidate_profile,
             domain=_DOMAIN,
             param_set_id=f"tqqq_etf_only_{self.total_cost_bps}bp",
             params={},
@@ -1899,7 +1954,7 @@ class TqqqPromotionRunner:
 def _params(identity: TqqqPromotionIdentity, timing_sha256: str) -> dict[str, object]:
     return {
         "authority_scope": "RESEARCH_ONLY",
-        "candidate_variant": _CANDIDATE_VARIANT,
+        "candidate_variant": identity.candidate_variant,
         "config_sha256": identity.config_sha256,
         "input_manifest_sha256": identity.input_manifest_sha256,
         "mandate_receipt_sha256": identity.mandate_receipt_sha256,
@@ -1938,13 +1993,17 @@ def run_tqqq_promotion_research(
         orchestrator = BacktestOrchestrator(store=_MemoryPerformanceStore())
         orchestrator.register_runner(_DOMAIN, runner)
         results = orchestrator.walk_forward(
-            _PROFILE, domain=_DOMAIN, params=_params(identity, timing_sha256),
+            identity.candidate_profile,
+            domain=_DOMAIN,
+            params=_params(identity, timing_sha256),
             windows=windows, param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
         if len(results) != len(windows):
             raise TqqqPromotionContractError("walk-forward result count mismatch")
         promotion_run = PromotionBacktestRun(
-            strategy_profile=_PROFILE, domain=_DOMAIN, fold_results=tuple(results[:-1]),
+            strategy_profile=identity.candidate_profile,
+            domain=_DOMAIN,
+            fold_results=tuple(results[:-1]),
             locked_oos_result=results[-1], folds=plan.folds,
             locked_oos_start=plan.locked_oos_start, locked_oos_end=plan.locked_oos_end,
             purge_days=plan.purge_days, embargo_days=plan.embargo_days,
@@ -1957,4 +2016,12 @@ def run_tqqq_promotion_research(
         plan={"candidate_only": True, "windows": [(start.isoformat(), end.isoformat()) for start, end in windows]},
         cost_scenarios=(), regime_coverage={}, overfitting_diagnostics={"status": "NOT_REPLAYED"},
     )
-    return TqqqPromotionResearchResult(identity=identity, timing_sha256=timing_sha256, scenarios=tuple(scenarios), frozen_trial_ledger=trial_ledger, systematic_reporting=reporting)
+    characterization = build_tqqq_switching_characterization_contract(identity)
+    return TqqqPromotionResearchResult(
+        identity=identity,
+        timing_sha256=timing_sha256,
+        scenarios=tuple(scenarios),
+        frozen_trial_ledger=trial_ledger,
+        systematic_reporting=reporting,
+        switching_characterization_sha256=str(characterization["sha256"]),
+    )
