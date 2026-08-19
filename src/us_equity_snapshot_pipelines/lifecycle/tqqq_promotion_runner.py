@@ -31,11 +31,13 @@ _QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
 _UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 _PROFILE = "tqqq_core_only_p2_v1"
 _CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
+_P2_V2_PROFILE = "tqqq_core_only_p2_v2"
+_P2_V3_PROFILE = "tqqq_core_only_p2_v3"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _COST_SCENARIOS_BPS = (5, 10, 25)
-_EXACT_COMMON_ELIGIBILITY = date(2022, 1, 3)
+_EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 8, 1)
 _LOCKED_OOS_END = date(2026, 7, 31)
 _LOCKED_OOS_SESSION_COUNT = 251
@@ -1421,10 +1423,33 @@ def _is_tqqq_candidate_id(value: object) -> bool:
     )
 
 
-def _validate_plan(plan: TqqqPromotionPlan) -> None:
+def _validate_plan(
+    plan: TqqqPromotionPlan,
+    *,
+    candidate_profile: str = _PROFILE,
+) -> None:
     if type(plan) is not TqqqPromotionPlan or type(plan.folds) is not tuple or len(plan.folds) != 3:
         raise TqqqPromotionContractError("invalid P2 purged folds")
-    expected = ((date(2018, 1, 2), date(2020, 12, 31), date(2022, 1, 3), date(2022, 12, 30)), (date(2018, 1, 2), date(2021, 12, 31), date(2023, 1, 3), date(2023, 12, 29)), (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)))
+    expected_by_candidate = {
+        _PROFILE: (
+            (date(2018, 1, 2), date(2020, 12, 31), date(2022, 1, 3), date(2022, 12, 30)),
+            (date(2018, 1, 2), date(2021, 12, 31), date(2023, 1, 3), date(2023, 12, 29)),
+            (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
+        ),
+        _P2_V2_PROFILE: (
+            (date(2018, 1, 2), date(2020, 12, 31), date(2022, 1, 3), date(2022, 12, 30)),
+            (date(2018, 1, 2), date(2021, 12, 31), date(2023, 1, 3), date(2023, 12, 29)),
+            (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
+        ),
+        _P2_V3_PROFILE: (
+            (date(2018, 1, 2), date(2020, 12, 31), date(2023, 1, 3), date(2023, 6, 30)),
+            (date(2018, 1, 2), date(2021, 12, 31), date(2023, 7, 3), date(2023, 12, 29)),
+            (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
+        ),
+    }
+    expected = expected_by_candidate.get(candidate_profile)
+    if expected is None:
+        raise TqqqPromotionContractError("unknown TQQQ candidate geometry")
     if tuple((fold.train_start, fold.train_end, fold.test_start, fold.test_end) for fold in plan.folds) != expected:
         raise TqqqPromotionContractError("P2 fold geometry mismatch")
     if (plan.locked_oos_start, plan.locked_oos_end, plan.purge_days, plan.embargo_days) != (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0):
@@ -1802,7 +1827,7 @@ class TqqqPromotionRunner:
         total_cost_bps: int,
     ) -> None:
         _validate_identity(identity)
-        _validate_plan(plan)
+        _validate_plan(plan, candidate_profile=identity.candidate_profile)
         if type(total_cost_bps) is not int or total_cost_bps not in _COST_SCENARIOS_BPS:
             raise TqqqPromotionContractError("invalid frozen cost scenario")
         if not callable(replay_window):
@@ -1982,7 +2007,7 @@ def run_tqqq_promotion_research(
 ) -> TqqqPromotionResearchResult:
     """Run P2's expanding windows through QPK ``walk_forward`` only."""
     _validate_identity(identity)
-    _validate_plan(plan)
+    _validate_plan(plan, candidate_profile=identity.candidate_profile)
     if _resolve_runner_revision() != identity.runner_revision:
         raise TqqqPromotionContractError("runner revision mismatch")
     timing_sha256 = _timing_sha256(plan)

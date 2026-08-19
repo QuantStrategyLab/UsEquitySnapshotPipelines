@@ -285,16 +285,16 @@ def test_cli_rejects_a_v1_snapshot_for_the_v2_candidate_before_replay(
     assert json.loads(capsys.readouterr().out)["stage"] == "input_validation"
 
 
-def test_cli_runs_complete_v2_p3_evidence_from_synthetic_input(
+def test_cli_runs_complete_v3_p3_evidence_from_synthetic_input(
     capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise the complete v2 P3 path without provider access or real bars."""
+    """Exercise the complete v3 P3 path without provider access or real bars."""
     module = _load_script_module()
     snapshot = tmp_path / "synthetic-snapshot"
-    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V2_CONTRACT)
-    config_path = tmp_path / "p2-v2.json"
+    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V3_CONTRACT)
+    config_path = tmp_path / "p2-v3.json"
     config_path.write_bytes(
-        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v2.json").read_bytes()
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v3.json").read_bytes()
     )
     output = tmp_path / "evidence"
     calls = 0
@@ -339,19 +339,19 @@ def test_cli_runs_complete_v2_p3_evidence_from_synthetic_input(
     expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
         input_payload["input_manifest"],
         input_payload["binding"],
-        contract=p1_binding.P2_V2_CONTRACT,
+        contract=p1_binding.P2_V3_CONTRACT,
     )
 
     assert summary["status"] == "EVIDENCE_V2_COMPLETE"
     assert evidence_package["strategy"] == {
-        "profile": "tqqq_core_only_p2_v2",
+        "profile": "tqqq_core_only_p2_v3",
         "domain": "us_equity",
-        "source_revision": p1_binding.P2_V2_UES_REVISION,
+        "source_revision": p1_binding.P2_V3_UES_REVISION,
     }
     assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
     assert backtest["strategy_execution"] == {
         "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
-        "ues_revision": p1_binding.P2_V2_UES_REVISION,
+        "ues_revision": p1_binding.P2_V3_UES_REVISION,
     }
     assert terminal["status"] == "EVIDENCE_V2_COMPLETE"
     assert terminal["authority_scope"] == "RESEARCH_ONLY"

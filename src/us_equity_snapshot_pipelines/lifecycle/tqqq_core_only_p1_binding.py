@@ -30,6 +30,9 @@ UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 P2_V2_CANDIDATE_ID = "tqqq_core_only_p2_v2"
 P2_V2_CANDIDATE_CONFIG_SHA256 = "f1d6e4cf8aa0f7ab818768fb6a6e9c86bcd03cc567e5a5a844024a446a43bd31"
 P2_V2_UES_REVISION = "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
+P2_V3_CANDIDATE_ID = "tqqq_core_only_p2_v3"
+P2_V3_CANDIDATE_CONFIG_SHA256 = "ed93e646782e290d3455da4acf240f22137f4e13b1d2e71b6d71d6860e72897f"
+P2_V3_UES_REVISION = P2_V2_UES_REVISION
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
@@ -63,9 +66,16 @@ P2_V2_CONTRACT = TqqqCoreOnlyCandidateContract(
     ues_revision=P2_V2_UES_REVISION,
     qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
 )
+P2_V3_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V3_CANDIDATE_ID,
+    config_sha256=P2_V3_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V3_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
 _SUPPORTED_CONTRACTS = {
     _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
     P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
+    P2_V3_CONTRACT.candidate_id: P2_V3_CONTRACT,
 }
 
 

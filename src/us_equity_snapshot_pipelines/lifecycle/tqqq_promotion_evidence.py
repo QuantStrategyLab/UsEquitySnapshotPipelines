@@ -37,6 +37,8 @@ from .tqqq_core_only_p1_binding import (
     CANDIDATE_CONFIG_SHA256,
     P2_V2_CONTRACT,
     P2_V2_UES_REVISION,
+    P2_V3_CONTRACT,
+    P2_V3_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
     resolve_tqqq_core_only_candidate_contract,
     tqqq_core_only_p1_binding_sha256_for_contract,
@@ -66,6 +68,7 @@ _DOMAIN = "us_equity"
 _INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
 _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
+_P2_V3_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v3"
 _COST_SCENARIOS = (5, 10, 25)
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -222,7 +225,11 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     """Bind the complete injected P2 candidate, never a copied field subset."""
     if not isinstance(value, Mapping):
         raise TqqqPromotionEvidenceError("invalid config payload")
-    if value.get("schema_version") in {_CONFIG_SCHEMA, _P2_V2_CONFIG_SCHEMA}:
+    if value.get("schema_version") in {
+        _CONFIG_SCHEMA,
+        _P2_V2_CONFIG_SCHEMA,
+        _P2_V3_CONFIG_SCHEMA,
+    }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
         risk_standard_sha256 = _candidate_contract(candidate).config_sha256
@@ -264,20 +271,27 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         contract = resolve_tqqq_core_only_candidate_contract(candidate_id)
     except ValueError as exc:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate") from exc
-    expected_schema = (
-        _CONFIG_SCHEMA if contract.candidate_id == _PROFILE else _P2_V2_CONFIG_SCHEMA
-    )
+    expected_schema = {
+        _PROFILE: _CONFIG_SCHEMA,
+        P2_V2_CONTRACT.candidate_id: _P2_V2_CONFIG_SCHEMA,
+        P2_V3_CONTRACT.candidate_id: _P2_V3_CONFIG_SCHEMA,
+    }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract == P2_V2_CONTRACT:
+    if contract in {P2_V2_CONTRACT, P2_V3_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
             or source.get("repository") != "QuantStrategyLab/UsEquityStrategies"
-            or source.get("revision") != P2_V2_UES_REVISION
+            or source.get("revision")
+            != (
+                P2_V2_UES_REVISION
+                if contract == P2_V2_CONTRACT
+                else P2_V3_UES_REVISION
+            )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):
-            raise TqqqPromotionEvidenceError("invalid P2 v2 public research adapter")
+            raise TqqqPromotionEvidenceError("invalid public research adapter")
     return contract
 
 
@@ -342,6 +356,7 @@ def _parse_bar(value: object) -> _Bar:
 
 
 def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
+    contract = _candidate_contract(candidate)
     plan = candidate.get("evaluation_plan")
     if not isinstance(plan, Mapping):
         raise TqqqPromotionEvidenceError("missing candidate evaluation plan")
@@ -368,7 +383,7 @@ def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
         raise TqqqPromotionEvidenceError("invalid candidate evaluation plan") from exc
     from .tqqq_promotion_runner import _validate_plan
     try:
-        _validate_plan(result)
+        _validate_plan(result, candidate_profile=contract.candidate_id)
     except ValueError as exc:
         raise TqqqPromotionEvidenceError("invalid candidate evaluation plan") from exc
     return result
