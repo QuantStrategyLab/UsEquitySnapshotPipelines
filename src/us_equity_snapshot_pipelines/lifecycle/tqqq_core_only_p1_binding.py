@@ -56,6 +56,10 @@ class TqqqCoreOnlyP1BindingError(ValueError):
     """Sanitized failure for an invalid static P1 binding."""
 
 
+class TqqqCoreOnlyP1InputUnavailableError(TqqqCoreOnlyP1BindingError):
+    """The fixed P1 provider cannot currently supply a usable frozen input."""
+
+
 def _canonical(value: Mapping[str, object]) -> bytes:
     return json.dumps(
         value,
@@ -426,6 +430,8 @@ def _collect_frozen_four_inputs(
                 feed=str(identity["feed"]),
                 date_cutoff=str(identity["date_cutoff"]),
             )
+        except TqqqCoreOnlyP1InputUnavailableError:
+            raise
         except Exception:
             raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
         if not isinstance(response, Mapping):

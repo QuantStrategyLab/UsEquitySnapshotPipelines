@@ -151,10 +151,29 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
     transport = _FakeAlpacaTransport(fail_on="TQQQ")
     provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(transport)
 
-    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+    with pytest.raises(acquisition_cli.P1InputUnavailableError, match="data-only acquisition failed"):
         acquisition_cli.publish_tqqq_core_only_p1_inputs(provider, output_root=output, observed_at="2026-08-15T00:00:00Z", producer=_producer())
 
     assert [call["params"]["symbols"] for call in transport.calls] == ["QQQ", "TQQQ"]
+    assert not output.exists()
+
+
+def test_cli_classifies_temporary_provider_unavailability_as_inconclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "immutable-input"
+    provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(_FakeAlpacaTransport(fail_on="TQQQ"))
+
+    assert acquisition_cli.main(
+        ["--output-root", str(output), "--observed-at", "2026-08-15T00:00:00Z"],
+        provider=provider,
+        producer=_producer(),
+    ) == 2
+
+    assert capsys.readouterr().out == (
+        '{"candidate_id": "tqqq_core_only_p2_v1", "reason": "INPUT_UNAVAILABLE", '
+        '"status": "PARKED", "verdict": "INCONCLUSIVE"}\n'
+    )
     assert not output.exists()
 
 
