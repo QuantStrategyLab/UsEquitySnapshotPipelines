@@ -97,7 +97,10 @@ sanitized prefix, never the raw P1-root prefix. An
 unavailable or invalid input records `DEFERRED` or `QUARANTINED` and skips P3;
 it never fills a gap, substitutes a provider, retries with changed inputs, or
 changes a strategy parameter. P4 paper, P5 shadow, broker orders, capital, and
-P6 live remain unavailable.
+P6 live remain unavailable from this controller. This is not a claim that the
+same strategy has no Paper, Shadow, or Live evidence on another platform; that
+evidence is platform- and lane-specific and does not grant this controller a
+new execution authority.
 
 ### Legacy manual v1 compatibility path
 

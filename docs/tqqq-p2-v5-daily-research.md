@@ -19,7 +19,9 @@ This candidate is deliberately bounded as follows:
   not substitute a provider, fill a gap, change a strategy parameter, or
   invalidate prior roots.
 - P4 paper, P5 shadow, broker orders, capital allocation, and P6 live remain
-  outside this contract.  They require separately implemented policies; P6 is
+  outside this daily-controller contract. This says nothing about deployments
+  of the same frozen strategy on other platforms: each strategy-version,
+  platform, and execution-lane tuple has its own evidence and authority. P6 is
   explicitly user-activated.
 
 The initial P2/P3 foundation was deliberately pure and synthetic. The current
