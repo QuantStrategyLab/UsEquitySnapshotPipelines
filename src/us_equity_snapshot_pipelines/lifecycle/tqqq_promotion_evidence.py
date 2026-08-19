@@ -68,6 +68,9 @@ _COST_SCENARIOS = (5, 10, 25)
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
+_TQQQ_REPLAY_CALLABLE = (
+    "us_equity_strategies.entrypoints._build_tqqq_growth_income_decision"
+)
 
 _CORE_FIELDS = (
     "schema_version",
@@ -252,6 +255,20 @@ def _runtime_config(candidate: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(runtime, Mapping):
         raise TqqqPromotionEvidenceError("missing frozen runtime config")
     return copy.deepcopy(dict(runtime))
+
+
+def _tqqq_replay_callable_identity() -> dict[str, str]:
+    """Return the actual UES callable invoked by the P3 replay, not a config label."""
+    observed = (
+        f"{_build_tqqq_growth_income_decision.__module__}."
+        f"{_build_tqqq_growth_income_decision.__qualname__}"
+    )
+    if observed != _TQQQ_REPLAY_CALLABLE:
+        raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable")
+    return {
+        "callable": observed,
+        "ues_revision": _P1_UES_REVISION,
+    }
 
 
 def _parse_bar(value: object) -> _Bar:
@@ -931,6 +948,7 @@ def _result_artifacts(
             _canonical(
                 {
                     "schema_version": "tqqq_etf_only_promotion_backtest.v1",
+                    "strategy_execution": _tqqq_replay_callable_identity(),
                     "switching_characterization": build_tqqq_switching_characterization_contract(),
                     "development_robustness_plan": result.systematic_reporting.plan,
                     "frozen_trial_ledger": result.frozen_trial_ledger,

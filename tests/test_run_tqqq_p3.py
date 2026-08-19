@@ -76,6 +76,16 @@ def _write_canonical_snapshot(root: Path) -> dict[str, object]:
     return {"binding": binding, "input_manifest": manifest, "bars": bars}
 
 
+def _completed_evidence_result(input_manifest_sha256: str) -> dict[str, str]:
+    return {
+        "evidence_sha256": "1" * 64,
+        "promotion_result_sha256": "2" * 64,
+        "candidate_identity_sha256": "3" * 64,
+        "input_manifest_sha256": input_manifest_sha256,
+        "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
+    }
+
+
 def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
@@ -88,7 +98,11 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
 
     def run_evidence(**kwargs):
         captured.update(kwargs)
-        return {"evidence_sha256": "1" * 64, "verdict": "INCONCLUSIVE"}
+        return _completed_evidence_result(
+            p1_binding.validate_tqqq_core_only_input_manifest(
+                input_payload["input_manifest"], input_payload["binding"]
+            )
+        )
 
     module.run_tqqq_promotion_evidence = run_evidence
 
@@ -104,7 +118,86 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "1" * 64,
         "status": "EVIDENCE_V2_COMPLETE",
-        "verdict": "INCONCLUSIVE",
+        "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
+    }
+
+
+def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    snapshot = tmp_path / "snapshot"
+    _write_canonical_snapshot(snapshot)
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    calls = 0
+
+    def run_evidence(**_kwargs: object) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return _completed_evidence_result("f" * 64)
+
+    module.run_tqqq_promotion_evidence = run_evidence
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(snapshot),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(tmp_path / "output"),
+        ]
+    ) == 2
+    assert calls == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "orchestrator_contract_failure",
+        "replay_started": True,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "orchestrator_contract",
+        "status": "PARKED",
+    }
+
+
+def test_cli_sanitizes_unexpected_replay_failure_as_runtime_park(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    snapshot = tmp_path / "snapshot"
+    _write_canonical_snapshot(snapshot)
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    private_detail = "private provider bars /secret/path"
+
+    def run_evidence(**_kwargs: object) -> object:
+        raise KeyError(private_detail)
+
+    module.run_tqqq_promotion_evidence = run_evidence
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(snapshot),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(tmp_path / "output"),
+        ]
+    ) == 2
+    output = capsys.readouterr().out
+    assert private_detail not in output
+    assert json.loads(output) == {
+        "complete_evidence": False,
+        "failure_class": "runtime_internal_failure",
+        "replay_started": True,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "orchestrator_contract",
+        "status": "PARKED",
     }
 
 

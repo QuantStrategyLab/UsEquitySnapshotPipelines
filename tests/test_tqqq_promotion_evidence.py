@@ -72,6 +72,13 @@ def test_full_runtime_config_is_propagated_without_overlay() -> None:
     assert evidence._runtime_config(candidate)["dual_drive_macro_risk_governor_enabled"] is False
 
 
+def test_replay_evidence_names_the_actual_private_ues_callable() -> None:
+    assert evidence._tqqq_replay_callable_identity() == {
+        "callable": "us_equity_strategies.entrypoints._build_tqqq_growth_income_decision",
+        "ues_revision": "8b6b418bac74318f8054c5951521c9b62391de3e",
+    }
+
+
 def test_p1_binding_uses_the_authoritative_p2_digest() -> None:
     assert evidence.CANDIDATE_CONFIG_SHA256 == (
         "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69"

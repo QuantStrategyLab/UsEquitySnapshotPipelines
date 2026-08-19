@@ -68,6 +68,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
     tmp_path: Path,
 ) -> None:
     snapshot = _write_snapshot(tmp_path / "snapshot")
+    manifest_sha256 = p1_binding.verify_tqqq_core_only_input_root(snapshot)
     config = tmp_path / "config.json"
     config.write_text('{"config":"frozen"}')
     captured: dict[str, object] = {}
@@ -78,7 +79,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
             "evidence_sha256": "a" * 64,
             "promotion_result_sha256": "b" * 64,
             "candidate_identity_sha256": "c" * 64,
-            "input_manifest_sha256": "d" * 64,
+            "input_manifest_sha256": manifest_sha256,
             "verdict": "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
         }
 
