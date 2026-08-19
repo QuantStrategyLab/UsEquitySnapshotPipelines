@@ -61,7 +61,7 @@ class _FakeAlpacaTransport:
         symbol = params["symbols"]
         if symbol == self.fail_on:
             raise RuntimeError("synthetic transport failure")
-        return {"bars": {symbol: _bars_for(symbol)}}
+        return {"bars": {symbol: _bars_for(symbol, date_cutoff=params["end"])}}
 
 
 def test_binding_freezes_alpaca_sip_total_return_identity() -> None:
@@ -183,6 +183,25 @@ def test_v5_generic_publisher_keeps_daily_cutoff_in_the_verified_root(tmp_path: 
     assert binding.verify_tqqq_core_only_input_root(
         root, contract=binding.P2_V5_CONTRACT
     ) == result["manifest_sha256"]
+
+
+def test_alpaca_adapter_allows_only_its_bound_v5_daily_cutoff(tmp_path: Path) -> None:
+    cutoff = "2026-08-18"
+    transport = _FakeAlpacaTransport()
+    provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(
+        transport, date_cutoff=cutoff
+    )
+
+    result = acquisition_cli.publish_tqqq_core_only_p1_inputs_for_contract(
+        provider,
+        output_root=tmp_path / "v5-alpaca-root",
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        date_cutoff=cutoff,
+    )
+
+    assert result["status"] == "P1_DATA_ONLY_INPUTS_PUBLISHED"
+    assert {call["params"]["end"] for call in transport.calls} == {cutoff}
 
 
 def test_v4_input_root_uses_its_own_bound_coverage_cutoff(tmp_path: Path) -> None:
