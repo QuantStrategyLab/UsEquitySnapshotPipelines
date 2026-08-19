@@ -56,6 +56,10 @@ class TqqqCoreOnlyP1BindingError(ValueError):
     """Sanitized failure for an invalid static P1 binding."""
 
 
+class TqqqCoreOnlyP1InputUnavailableError(TqqqCoreOnlyP1BindingError):
+    """The fixed P1 provider cannot currently supply a usable frozen input."""
+
+
 def _canonical(value: Mapping[str, object]) -> bytes:
     return json.dumps(
         value,
@@ -67,14 +71,30 @@ def _canonical(value: Mapping[str, object]) -> bytes:
 
 
 def build_tqqq_core_only_p1_cloud_storage_binding() -> dict[str, object]:
-    """Return the fixed private remote retention identity for P1/P3 inputs."""
+    """Return the bounded private-cloud retention contract for P1/P3 inputs.
+
+    This is a storage *boundary*, not a bucket locator.  It intentionally keeps
+    the concrete object-store address out of the immutable research binding.
+    """
     return {
         "provider": "GOOGLE_CLOUD_STORAGE",
-        "bucket": "qsl-runtime-logs-shared",
-        "prefix": "tqqq-p1-p3",
-        "active_retention_days": 7,
-        "soft_delete_retention_days": 7,
+        "access_scope": "PRIVATE",
         "public_access_prevention": "enforced",
+        "raw_snapshot_lifecycle": {
+            "policy": "SHORT_TERM_PRIVATE_CLOUD_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
+            "active_lifecycle_days": 7,
+            "soft_delete_lifecycle_days": 7,
+            "retention_extension_authorized": False,
+            "retention_decision": "PENDING_LICENSE_AND_RETENTION_REVIEW",
+        },
+        "evidence_metadata_boundary": {
+            "logical_separation_from_raw_snapshot": True,
+            "shares_raw_snapshot_lifecycle": True,
+            "separate_or_long_term_retention_authorized": False,
+            "write_mode": "CREATE_ONLY",
+            "raw_bars_included": False,
+            "content": "DIGESTS_AND_NON_SENSITIVE_RESEARCH_PROVENANCE_ONLY",
+        },
     }
 
 
@@ -113,8 +133,9 @@ def build_tqqq_core_only_p1_binding() -> dict[str, object]:
                 "execution_timing": "next_complete_trading_session_after_signal_effective_date",
             },
             "retention": {
-                "policy": "PRIVATE_LOCAL_ENCRYPTED_RESEARCH_SNAPSHOT_NO_BACKUP_NO_REDISTRIBUTION",
+                "policy": "PRIVATE_CLOUD_SHORT_TERM_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
                 "redistribution_allowed": False,
+                "long_term_retention_authorized": False,
             },
         },
     }
@@ -409,6 +430,8 @@ def _collect_frozen_four_inputs(
                 feed=str(identity["feed"]),
                 date_cutoff=str(identity["date_cutoff"]),
             )
+        except TqqqCoreOnlyP1InputUnavailableError:
+            raise
         except Exception:
             raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
         if not isinstance(response, Mapping):

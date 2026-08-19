@@ -151,10 +151,29 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
     transport = _FakeAlpacaTransport(fail_on="TQQQ")
     provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(transport)
 
-    with pytest.raises(binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"):
+    with pytest.raises(acquisition_cli.P1InputUnavailableError, match="data-only acquisition failed"):
         acquisition_cli.publish_tqqq_core_only_p1_inputs(provider, output_root=output, observed_at="2026-08-15T00:00:00Z", producer=_producer())
 
     assert [call["params"]["symbols"] for call in transport.calls] == ["QQQ", "TQQQ"]
+    assert not output.exists()
+
+
+def test_cli_classifies_temporary_provider_unavailability_as_inconclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "immutable-input"
+    provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(_FakeAlpacaTransport(fail_on="TQQQ"))
+
+    assert acquisition_cli.main(
+        ["--output-root", str(output), "--observed-at", "2026-08-15T00:00:00Z"],
+        provider=provider,
+        producer=_producer(),
+    ) == 2
+
+    assert capsys.readouterr().out == (
+        '{"candidate_id": "tqqq_core_only_p2_v1", "reason": "INPUT_UNAVAILABLE", '
+        '"status": "PARKED", "verdict": "INCONCLUSIVE"}\n'
+    )
     assert not output.exists()
 
 
@@ -176,13 +195,50 @@ def test_alpaca_slice_has_no_ibkr_fallback_or_credential_handling() -> None:
     assert "ibkr" not in binding_source
 
 
-def test_binding_freezes_gcs_retention_identity_for_the_remote_nonlive_root() -> None:
-    assert binding.build_tqqq_core_only_p1_cloud_storage_binding() == {
+def test_binding_freezes_private_short_term_cloud_storage_and_shared_metadata_lifecycle() -> None:
+    storage = binding.build_tqqq_core_only_p1_cloud_storage_binding()
+
+    assert storage == {
         "provider": "GOOGLE_CLOUD_STORAGE",
-        "bucket": "qsl-runtime-logs-shared",
-        "prefix": "tqqq-p1-p3",
-        "active_retention_days": 7,
-        "soft_delete_retention_days": 7,
+        "access_scope": "PRIVATE",
         "public_access_prevention": "enforced",
+        "raw_snapshot_lifecycle": {
+            "policy": "SHORT_TERM_PRIVATE_CLOUD_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
+            "active_lifecycle_days": 7,
+            "soft_delete_lifecycle_days": 7,
+            "retention_extension_authorized": False,
+            "retention_decision": "PENDING_LICENSE_AND_RETENTION_REVIEW",
+        },
+        "evidence_metadata_boundary": {
+            "logical_separation_from_raw_snapshot": True,
+            "shares_raw_snapshot_lifecycle": True,
+            "separate_or_long_term_retention_authorized": False,
+            "write_mode": "CREATE_ONLY",
+            "raw_bars_included": False,
+            "content": "DIGESTS_AND_NON_SENSITIVE_RESEARCH_PROVENANCE_ONLY",
+        },
     }
-    assert binding.build_tqqq_core_only_p1_binding()["cloud_storage"] == binding.build_tqqq_core_only_p1_cloud_storage_binding()
+    assert "bucket" not in storage
+    assert "prefix" not in storage
+    assert binding.build_tqqq_core_only_p1_binding()["cloud_storage"] == storage
+    assert binding.build_tqqq_core_only_p1_binding()["data_identity"]["retention"] == {
+        "policy": "PRIVATE_CLOUD_SHORT_TERM_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
+        "redistribution_allowed": False,
+        "long_term_retention_authorized": False,
+    }
+
+
+def test_binding_rejects_raw_retention_extension_and_contains_no_object_store_url() -> None:
+    value = binding.build_tqqq_core_only_p1_binding()
+    assert b"gs://" not in binding.canonical_binding_bytes(value)
+
+    value["cloud_storage"]["raw_snapshot_lifecycle"]["retention_extension_authorized"] = True
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.validate_tqqq_core_only_p1_binding(value)
+
+    value = binding.build_tqqq_core_only_p1_binding()
+    value["cloud_storage"]["evidence_metadata_boundary"]["shares_raw_snapshot_lifecycle"] = False
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.validate_tqqq_core_only_p1_binding(value)

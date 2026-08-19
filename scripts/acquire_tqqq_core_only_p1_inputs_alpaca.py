@@ -16,6 +16,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
     TqqqCoreOnlyHistoricalBarsProvider,
     TqqqCoreOnlyP1BindingError,
+    TqqqCoreOnlyP1InputUnavailableError,
     publish_tqqq_core_only_p1_inputs as _publish,
 )
 
@@ -27,6 +28,15 @@ _START_DATES = {
     "BOXX": "2022-12-28",
 }
 _DATE_CUTOFF = "2026-07-31"
+
+
+class P1InputUnavailableError(TqqqCoreOnlyP1InputUnavailableError):
+    """The frozen P1 input cannot currently be acquired from its configured source.
+
+    This is an availability outcome, not a finding about the frozen strategy.
+    Callers must park the attempt as inconclusive rather than substitute a
+    provider, alter the data identity, or treat it as a strategy failure.
+    """
 
 
 class AlpacaBarsTransport(Protocol):
@@ -56,9 +66,9 @@ class AlpacaSipHttpTransport:
                     raise ValueError
                 payload = json.loads(response.read())
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+            raise P1InputUnavailableError("data-only acquisition failed") from None
         if not isinstance(payload, Mapping):
-            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+            raise P1InputUnavailableError("data-only acquisition failed")
         return payload
 
 
@@ -105,7 +115,7 @@ class AlpacaSipHistoricalBarsProvider:
         except TqqqCoreOnlyP1BindingError:
             raise
         except Exception:
-            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+            raise P1InputUnavailableError("data-only acquisition failed") from None
 
 
 def _normalize_bars(response: Mapping[str, object], symbol: str) -> list[dict[str, object]]:
@@ -130,7 +140,7 @@ def _normalize_bars(response: Mapping[str, object], symbol: str) -> list[dict[st
             normalized.append(bar)
         return normalized
     except (KeyError, TypeError, ValueError):
-        raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+        raise P1InputUnavailableError("data-only acquisition failed") from None
 
 
 def publish_tqqq_core_only_p1_inputs(
@@ -164,6 +174,19 @@ def main(
     try:
         print(json.dumps(publish_tqqq_core_only_p1_inputs(provider, output_root=args.output_root, observed_at=args.observed_at, producer=producer), sort_keys=True))
         return 0
+    except P1InputUnavailableError:
+        print(
+            json.dumps(
+                {
+                    "candidate_id": CANDIDATE_ID,
+                    "reason": "INPUT_UNAVAILABLE",
+                    "status": "PARKED",
+                    "verdict": "INCONCLUSIVE",
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
     except TqqqCoreOnlyP1BindingError:
         print(json.dumps({"candidate_id": CANDIDATE_ID, "status": "PARKED"}, sort_keys=True))
         return 2

@@ -51,7 +51,7 @@ _MAX_VALIDITY = timedelta(days=31)
 
 
 class TqqqP1P3MandateError(ValueError):
-    """Fail closed when a non-live run is not covered by a current scoped mandate."""
+    """Fail closed when a non-live run is not covered by a current scoped record."""
 
 
 def _mapping(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
@@ -84,11 +84,12 @@ def validate_tqqq_p1_p3_mandate(
     *,
     now_utc: datetime | None = None,
 ) -> dict[str, object]:
-    """Validate the one bounded authorization for non-live P1 acquisition and P3 replay.
+    """Validate one bounded non-live technical scope record for P1 and P3.
 
-    This record is a narrow, expiring, no-order scope control.  It is not, by
-    itself, evidence of human approval; that requires external GitHub branch
-    and environment protection to be configured and independently verified.
+    This record is a narrow, expiring, no-order technical scope control. It is
+    not, by itself, a pre-authorized autonomous policy or evidence that a
+    non-execution data-acquisition authorization is active. That separately
+    defined external authorization remains outside this repository.
     """
     mandate = _mapping(value, _TOP_LEVEL_FIELDS, "TQQQ P1/P3 mandate")
     if mandate["schema_version"] != SCHEMA_VERSION:

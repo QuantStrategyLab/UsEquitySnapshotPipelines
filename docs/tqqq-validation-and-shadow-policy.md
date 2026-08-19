@@ -16,7 +16,11 @@ wait for a new year of calendar time before the first meaningful result.
 - Evaluate 5/10/15 bp per-side cost scenarios against QQQ and BOXX, while reporting TQQQ,
   QQQM, BOXX, cash, and operational PARK separately.
 - Report the frozen trial ledger and pre-specified overfitting diagnostics.
-  A provider or execution failure is `INCONCLUSIVE`, not a strategy failure.
+  A temporary provider or Gateway failure is `INPUT_UNAVAILABLE`, therefore
+  `INCONCLUSIVE` and `PARKED`, not a strategy failure. It must not alter the
+  frozen data identity, cause a fallback-provider substitution, or reset the
+  locked historical OOS span. A later acquisition is a new, separately
+  identified input attempt.
 
 ## Existing runner coverage
 
@@ -46,16 +50,33 @@ results.  TQQQ signal, allocation, RiskEngine, and runtime logic remain in
 
 This is historical replay coverage only.  It does not make a provider call by
 itself, does not activate a scheduler, and does not authorize paper, shadow,
-live, orders, or capital.  A completed replay remains research-only and needs
-a separate human promotion decision.
+live, orders, or capital. A completed replay remains research-only. Any future
+P4+ authority requires its own separately defined autonomous policy. It must
+not be inferred from the P1/P3 scope record.
 
 ## P1/P3 evidence index retention
 
-The manual P1/P3 workflow may retain one create-only, private GCS index after
-a successful P3 replay.  The index is canonical metadata only: frozen candidate
-identity, P1 manifest digest, P3 evidence digest and verdict, both producer
-identities, and research-only/no-order claims.  It never uploads Alpaca bars,
-the full P3 package, or a public GitHub Actions artifact.
+The manual P1/P3 workflow first places its raw P1 root in private cloud object
+storage so that P3 can verify and replay the exact same input.  This root
+includes the Alpaca bars, binding, manifest, and completion marker.  It is a
+short-term transfer/replay store, not a local-only snapshot or a long-term
+research archive: the current lifecycle has seven active days followed by a
+seven-day soft-delete window.
+
+This change does not extend that raw-data lifecycle.  Any extension, backup,
+or other long-term raw-data retention requires a separate Alpaca licence and
+retention decision.  Until then, raw P1 data remains private, short-lived, and
+non-redistributable.
+
+After a successful P3 replay, the workflow may retain a logically separate,
+create-only private evidence-metadata index.  It is in the same short-term
+private storage scope as the raw P1 root and therefore shares its lifecycle;
+it is not currently a separately retained or durable audit store.  Its bounded
+fields are the frozen candidate identity, P1 manifest digest, P3 evidence
+digest and verdict, both producer identities, and research-only/no-order
+claims.  It never contains Alpaca bars, the full P3 package, or a public
+GitHub Actions artifact.  Any separate or long-term evidence-metadata
+retention also requires a separate licence and retention decision.
 
 Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
 non-live scope record by identifier and records its canonical receipt digest in
@@ -75,12 +96,14 @@ commit and tree. This prevents an input captured by one code revision from
 being presented as a conclusion produced by another revision in the one-shot
 P1-to-P3 chain.
 
-The record narrows and makes a requested run reproducible, but is not itself
-human approval evidence. GitHub branch protection and the
-`tqqq-p1-p3-nonlive` environment must be configured externally with mandatory
-human approval before any record can be used. Until that configuration is
-verified, the workflow must remain undispatched. Neither the record nor its
-digest grants paper, shadow, live, order, capital, or P4–P6 promotion authority.
+The record narrows and makes a requested run reproducible, but is only a
+no-order technical scope record. It is not a pre-authorized autonomous policy,
+and it is not evidence that one is active. Future unattended P1 requires a
+separately defined, externally verified, non-execution data-acquisition
+authorization for the exact P1/P3 scope. That authorization is not active and
+this repository does not read, verify, or inject it today; until it exists, the
+workflow must remain undispatched. Neither the record nor its digest grants
+paper, shadow, live, order, capital, or P4–P6 promotion authority.
 
 If P3 parks, the GitHub Actions summary retains only the sanitized failure class,
 stage, and whether replay began. It does not retain raw provider data, paths,
@@ -91,8 +114,8 @@ turning Actions logs into a research-data store.
 
 The historical-diagnostics contract is still research-only.  Its trial
 ledger and PBO/Deflated-Sharpe statuses are reporting controls, not promotion
-acceptance.  A structural evidence package cannot be treated as human
-promotion authority.
+acceptance. A structural evidence package cannot be treated as P4+ promotion
+authority.
 
 Any future expansion must remain TQQQ-only and tests-first, without a generic
 diagnostics framework, provider call, credential read, scheduler activation,
