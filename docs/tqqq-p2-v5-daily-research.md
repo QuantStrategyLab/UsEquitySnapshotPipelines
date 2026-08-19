@@ -43,3 +43,18 @@ For an accepted run, the four-bar input root, daily health record, and a
 sanitized P3 terminal-status record are create-only objects under the same
 short-term private snapshot prefix.  No raw bars are copied into GitHub
 artifacts and the controller does not extend the configured retention period.
+
+## 全局控制台来源快照
+
+P1/P3 结束后，同一 scheduled workflow 会生成一份
+`qsl_control_plane_source_snapshot.v1` 并提交给 Settings Worker。它只包含：
+
+- 固定来源 ID `uesp.tqqq_daily_research` 与 workflow revision；
+- 单个候选的 P1/P3 阶段、脱敏状态和数据新鲜度；
+- P1 manifest、冻结 P2 config、P3 evidence 的 digest（如已产生）。
+
+不会发送 bars、GCS 路径、Alpaca 凭证、账户、订单、资金或 P4–P6 权限。
+`DEFERRED`、`QUARANTINED`、`PARKED` 也会如实发布，因此控制台不会将一次
+provider 故障误显示为成功。发布只使用此 Environment 的
+`CONTROL_PLANE_SYNC_TOKEN` 与 `QSL_CONTROL_PLANE_SYNC_URL`，两者缺失时该
+发布 job 失败可见，但不会回写、重跑或篡改已经完成的 P1/P3 数据动作。
