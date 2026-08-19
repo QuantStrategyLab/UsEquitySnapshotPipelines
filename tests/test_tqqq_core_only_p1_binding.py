@@ -21,7 +21,7 @@ def _producer() -> dict[str, str]:
     }
 
 
-def _bars_for(symbol: str) -> list[dict[str, object]]:
+def _bars_for(symbol: str, *, date_cutoff: str = "2026-07-31") -> list[dict[str, object]]:
     eligible_start = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
     return [
         {
@@ -32,8 +32,22 @@ def _bars_for(symbol: str) -> list[dict[str, object]]:
             "c": 100.0,
             "v": 1.0,
         }
-        for session in binding._expected_xnys_sessions("2026-07-31")
+        for session in binding._expected_xnys_sessions(date_cutoff)
         if eligible_start is None or session.isoformat() >= eligible_start
+    ]
+
+
+def _canonical_bars_for(symbol: str, *, date_cutoff: str) -> list[dict[str, object]]:
+    return [
+        {
+            "date": str(bar["t"])[:10],
+            "open": bar["o"],
+            "high": bar["h"],
+            "low": bar["l"],
+            "close": bar["c"],
+            "volume": bar["v"],
+        }
+        for bar in _bars_for(symbol, date_cutoff=date_cutoff)
     ]
 
 
@@ -118,6 +132,44 @@ def test_v4_candidate_extends_only_its_own_immutable_input_cutoff() -> None:
     assert value["source"]["revision"] == binding.P2_V2_UES_REVISION
     assert value["data_identity"]["date_cutoff"] == "2026-08-04"
     assert binding.build_tqqq_core_only_p1_binding()["data_identity"]["date_cutoff"] == "2026-07-31"
+
+
+def test_v4_input_root_uses_its_own_bound_coverage_cutoff(tmp_path: Path) -> None:
+    contract = binding.P2_V4_CONTRACT
+    value = binding.build_tqqq_core_only_p1_binding_for_contract(contract)
+    cutoff = value["data_identity"]["date_cutoff"]
+    assert isinstance(cutoff, str)
+    bars = {
+        "schema_version": "tqqq_core_only_private_bars.v1",
+        "symbols": {
+            symbol: {"bars": _canonical_bars_for(symbol, date_cutoff=cutoff)}
+            for symbol in value["data_identity"]["universe"]
+        },
+    }
+    bars_bytes = binding._canonical(bars)
+    manifest = binding.build_tqqq_core_only_input_manifest(
+        value,
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        member_bytes=bars_bytes,
+        source_content_sha256={
+            symbol: hashlib.sha256(binding._canonical(bars["symbols"][symbol])).hexdigest()
+            for symbol in value["data_identity"]["universe"]
+        },
+        contract=contract,
+    )
+    root = tmp_path / "v4-input-root"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    (root / "binding.json").write_bytes(
+        binding.canonical_tqqq_core_only_p1_binding_bytes_for_contract(value, contract)
+    )
+    (root / "manifest.json").write_bytes(binding.canonical_research_input_manifest_bytes(manifest))
+    (root / "bars.json").write_bytes(bars_bytes)
+
+    assert binding.verify_tqqq_core_only_input_root(
+        root, contract=contract
+    ) == binding.research_input_manifest_sha256(manifest)
 
 
 def test_manifest_uses_qpk_canonical_policy_and_preserves_alpaca_source_recipe() -> None:

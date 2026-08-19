@@ -484,6 +484,30 @@ def _expected_xnys_sessions(date_cutoff: str) -> tuple[date, ...]:
     return tuple(sessions)
 
 
+def expected_tqqq_core_only_sessions_for_contract(
+    contract: TqqqCoreOnlyCandidateContract,
+) -> dict[str, tuple[date, ...]]:
+    """Return the exact expected session sequence for one frozen TQQQ input contract.
+
+    This is a pure calendar helper shared by acquisition validation and the
+    non-network input-health contract.  It does not acquire, retain, or publish
+    any market data.
+    """
+    frozen_contract = _require_contract(contract)
+    binding = build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
+    identity = binding["data_identity"]
+    assert isinstance(identity, Mapping)
+    expected = _expected_xnys_sessions(str(identity["date_cutoff"]))
+    return {
+        symbol: tuple(
+            session
+            for session in expected
+            if session >= _FIRST_ELIGIBLE_SESSION.get(symbol, _P2_EARLIEST_TRAIN_SESSION)
+        )
+        for symbol in _UNIVERSE
+    }
+
+
 def _response_sessions(value: object) -> tuple[date, ...]:
     if not isinstance(value, Mapping) or not isinstance(value.get("bars"), list):
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
@@ -501,16 +525,19 @@ def _response_sessions(value: object) -> tuple[date, ...]:
 def _validate_frozen_historical_coverage(
     symbols: Mapping[str, object], binding: Mapping[str, object]
 ) -> None:
-    identity = binding["data_identity"]
-    assert isinstance(identity, Mapping)
-    expected = _expected_xnys_sessions(str(identity["date_cutoff"]))
     if set(symbols) != set(_UNIVERSE):
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
+    candidate = binding.get("candidate")
+    if not isinstance(candidate, Mapping):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage")
+    try:
+        contract = resolve_tqqq_core_only_candidate_contract(candidate.get("candidate_id"))
+    except TqqqCoreOnlyP1BindingError:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only historical coverage") from None
     sessions = {symbol: _response_sessions(symbols[symbol]) for symbol in _UNIVERSE}
-    if sessions["QQQ"] != expected or sessions["TQQQ"] != expected:
-        raise TqqqCoreOnlyP1BindingError("incomplete TQQQ core-only historical coverage")
-    for symbol, first_eligible in _FIRST_ELIGIBLE_SESSION.items():
-        if sessions[symbol] != tuple(session for session in expected if session >= first_eligible):
+    expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(contract)
+    for symbol in _UNIVERSE:
+        if sessions[symbol] != expected_by_symbol[symbol]:
             raise TqqqCoreOnlyP1BindingError("incomplete TQQQ core-only historical coverage")
 
 
