@@ -48,11 +48,20 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "build_tqqq_p3_strategy_performance.py" in workflow
     assert "Upload sanitized P3 research performance observation" in workflow
     assert "retention-days: 35" in workflow
+    assert "Build a bound P5 forward observation" in workflow
+    assert "build_tqqq_p5_forward_observation.py" in workflow
+    assert "p5-forward-observation.v1.json" in workflow
+    assert "tqqq-p1-p3/forward-observations/v1/${DATE_CUTOFF}.json" in workflow
+    assert "Create-only upload of bound P5 forward observation" in workflow
+    assert "P5_FORWARD_OBSERVATION_STATUS=RECORDED" in workflow
+    assert "validate_tqqq_p5_forward_observation" in workflow
     assert '"$root/bars.json"' in workflow
     assert '"$destination"' in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
     assert "ALPACA_API_KEY_ID" not in p3_job
     assert "ALPACA_API_SECRET_KEY" not in p3_job
+    assert "broker" not in p3_job.lower()
+    assert "placeorder" not in p3_job.lower()
     publisher_job = workflow.split("  publish-control-plane:", maxsplit=1)[1]
     assert "ALPACA_API_KEY_ID" not in publisher_job
     assert "ALPACA_API_SECRET_KEY" not in publisher_job

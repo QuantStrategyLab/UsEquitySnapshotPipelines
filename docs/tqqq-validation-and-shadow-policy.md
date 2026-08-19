@@ -87,7 +87,13 @@ digest is carried into P3 as the no-order research receipt. There is no
 per-run mandate or reviewer.
 
 The controller is limited to Alpaca SIP acquisition, input-health assessment,
-short-term private create-only root/status storage, and offline P3 replay. An
+short-term private create-only root/status storage, offline P3 replay, and,
+after a complete P3 result, publication of one digest-bound sanitized forward
+observation under a separate session-keyed prefix. The observation is not a P5
+run: it is an input artifact for a separate future P5 scheduler and carries
+neither a policy receipt nor any broker, credential, order, capital, paper,
+shadow, or live authority. A future P5 identity must be limited to that
+sanitized prefix, never the raw P1-root prefix. An
 unavailable or invalid input records `DEFERRED` or `QUARANTINED` and skips P3;
 it never fills a gap, substitutes a provider, retries with changed inputs, or
 changes a strategy parameter. P4 paper, P5 shadow, broker orders, capital, and
