@@ -84,7 +84,9 @@ def build_tqqq_core_only_p1_cloud_storage_binding() -> dict[str, object]:
             "retention_decision": "PENDING_LICENSE_AND_RETENTION_REVIEW",
         },
         "evidence_metadata_boundary": {
-            "stored_separately_from_raw_snapshot": True,
+            "logical_separation_from_raw_snapshot": True,
+            "shares_raw_snapshot_lifecycle": True,
+            "separate_or_long_term_retention_authorized": False,
             "write_mode": "CREATE_ONLY",
             "raw_bars_included": False,
             "content": "DIGESTS_AND_NON_SENSITIVE_RESEARCH_PROVENANCE_ONLY",

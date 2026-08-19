@@ -176,7 +176,7 @@ def test_alpaca_slice_has_no_ibkr_fallback_or_credential_handling() -> None:
     assert "ibkr" not in binding_source
 
 
-def test_binding_freezes_private_short_term_cloud_storage_and_metadata_boundary() -> None:
+def test_binding_freezes_private_short_term_cloud_storage_and_shared_metadata_lifecycle() -> None:
     storage = binding.build_tqqq_core_only_p1_cloud_storage_binding()
 
     assert storage == {
@@ -191,7 +191,9 @@ def test_binding_freezes_private_short_term_cloud_storage_and_metadata_boundary(
             "retention_decision": "PENDING_LICENSE_AND_RETENTION_REVIEW",
         },
         "evidence_metadata_boundary": {
-            "stored_separately_from_raw_snapshot": True,
+            "logical_separation_from_raw_snapshot": True,
+            "shares_raw_snapshot_lifecycle": True,
+            "separate_or_long_term_retention_authorized": False,
             "write_mode": "CREATE_ONLY",
             "raw_bars_included": False,
             "content": "DIGESTS_AND_NON_SENSITIVE_RESEARCH_PROVENANCE_ONLY",
@@ -212,6 +214,12 @@ def test_binding_rejects_raw_retention_extension_and_contains_no_object_store_ur
     assert b"gs://" not in binding.canonical_binding_bytes(value)
 
     value["cloud_storage"]["raw_snapshot_lifecycle"]["retention_extension_authorized"] = True
+
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.validate_tqqq_core_only_p1_binding(value)
+
+    value = binding.build_tqqq_core_only_p1_binding()
+    value["cloud_storage"]["evidence_metadata_boundary"]["shares_raw_snapshot_lifecycle"] = False
 
     with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
         binding.validate_tqqq_core_only_p1_binding(value)

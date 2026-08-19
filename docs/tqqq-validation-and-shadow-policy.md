@@ -63,13 +63,15 @@ or other long-term raw-data retention requires a separate Alpaca licence and
 retention decision.  Until then, raw P1 data remains private, short-lived, and
 non-redistributable.
 
-After a successful P3 replay, the workflow may retain a separate create-only,
-private evidence-metadata index.  Its bounded fields are the frozen candidate
-identity, P1 manifest digest, P3 evidence digest and verdict, both producer
-identities, and research-only/no-order claims.  It never contains Alpaca bars,
-the full P3 package, or a public GitHub Actions artifact.  This separation
-makes the durable evidence claim auditable without representing raw-data
-retention as permanent.
+After a successful P3 replay, the workflow may retain a logically separate,
+create-only private evidence-metadata index.  It is in the same short-term
+private storage scope as the raw P1 root and therefore shares its lifecycle;
+it is not currently a separately retained or durable audit store.  Its bounded
+fields are the frozen candidate identity, P1 manifest digest, P3 evidence
+digest and verdict, both producer identities, and research-only/no-order
+claims.  It never contains Alpaca bars, the full P3 package, or a public
+GitHub Actions artifact.  Any separate or long-term evidence-metadata
+retention also requires a separate licence and retention decision.
 
 Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
 non-live scope record by identifier and records its canonical receipt digest in
