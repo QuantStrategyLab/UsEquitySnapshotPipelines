@@ -31,6 +31,8 @@ _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _OUTPUT_FILENAMES = frozenset({"bars.json", "binding.json", "manifest.json"})
+_REMOTE_COMPLETION_SCHEMA = "qsl.tqqq-p1-p3-remote-completion.v1"
+REMOTE_COMPLETION_FILENAME = "p1-complete.json"
 _P2_EARLIEST_TRAIN_SESSION = date(2018, 1, 2)
 _FIRST_ELIGIBLE_SESSION = {"QQQM": date(2020, 10, 13), "BOXX": date(2022, 12, 28)}
 
@@ -510,3 +512,61 @@ def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
         return manifest_sha256
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input root") from None
+
+
+def build_tqqq_core_only_p1_remote_completion(output_root: str | Path) -> dict[str, object]:
+    """Bind the three verified P1 files before publishing a remote completion marker."""
+    root = Path(output_root)
+    manifest_sha256 = verify_tqqq_core_only_input_root(root)
+    try:
+        return {
+            "schema_version": _REMOTE_COMPLETION_SCHEMA,
+            "manifest_sha256": manifest_sha256,
+            "members": {
+                filename: hashlib.sha256((root / filename).read_bytes()).hexdigest()
+                for filename in sorted(_OUTPUT_FILENAMES)
+            },
+        }
+    except OSError:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input root") from None
+
+
+def canonical_tqqq_core_only_p1_remote_completion_bytes(value: Mapping[str, object]) -> bytes:
+    """Validate and canonically encode a remote P1 completion marker."""
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema_version", "manifest_sha256", "members"}
+        or value.get("schema_version") != _REMOTE_COMPLETION_SCHEMA
+        or not isinstance(value.get("manifest_sha256"), str)
+        or not _DIGEST.fullmatch(value["manifest_sha256"])
+        or not isinstance(value.get("members"), Mapping)
+        or set(value["members"]) != _OUTPUT_FILENAMES
+        or any(
+            not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+            for digest in value["members"].values()
+        )
+    ):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only completion marker")
+    return _canonical(
+        {
+            "schema_version": _REMOTE_COMPLETION_SCHEMA,
+            "manifest_sha256": value["manifest_sha256"],
+            "members": {filename: value["members"][filename] for filename in sorted(_OUTPUT_FILENAMES)},
+        }
+    )
+
+
+def verify_tqqq_core_only_p1_remote_completion(
+    output_root: str | Path,
+    completion_path: str | Path,
+) -> str:
+    """Accept a remote P1 root only when its create-only completion marker matches it."""
+    expected = build_tqqq_core_only_p1_remote_completion(output_root)
+    try:
+        marker_bytes = Path(completion_path).read_bytes()
+        marker = json.loads(marker_bytes)
+        if marker_bytes != canonical_tqqq_core_only_p1_remote_completion_bytes(marker) or marker != expected:
+            raise ValueError
+        return str(expected["manifest_sha256"])
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only completion marker") from None

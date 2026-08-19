@@ -49,6 +49,44 @@ itself, does not activate a scheduler, and does not authorize paper, shadow,
 live, orders, or capital.  A completed replay remains research-only and needs
 a separate human promotion decision.
 
+## P1/P3 evidence index retention
+
+The manual P1/P3 workflow may retain one create-only, private GCS index after
+a successful P3 replay.  The index is canonical metadata only: frozen candidate
+identity, P1 manifest digest, P3 evidence digest and verdict, both producer
+identities, and research-only/no-order claims.  It never uploads Alpaca bars,
+the full P3 package, or a public GitHub Actions artifact.
+
+Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
+non-live scope record by identifier and records its canonical receipt digest in
+P3 provenance. It checks the same record again before P3. The record may cover
+only P1 data acquisition, the associated private create-only root upload, P3
+read/replay, and the associated private evidence-index upload; it explicitly
+forbids paper, shadow, live, order, and capital actions. There is intentionally
+no active scope record in the repository.
+
+The three raw P1 files are uploaded before one separate create-only completion
+marker that binds their hashes and manifest digest. P3 requires that marker and
+verifies it against the downloaded root, so a partial remote upload fails closed
+instead of being treated as replayable evidence.
+
+The P1 input producer and P3 index producer must name the same repository
+commit and tree. This prevents an input captured by one code revision from
+being presented as a conclusion produced by another revision in the one-shot
+P1-to-P3 chain.
+
+The record narrows and makes a requested run reproducible, but is not itself
+human approval evidence. GitHub branch protection and the
+`tqqq-p1-p3-nonlive` environment must be configured externally with mandatory
+human approval before any record can be used. Until that configuration is
+verified, the workflow must remain undispatched. Neither the record nor its
+digest grants paper, shadow, live, order, capital, or P4–P6 promotion authority.
+
+If P3 parks, the GitHub Actions summary retains only the sanitized failure class,
+stage, and whether replay began. It does not retain raw provider data, paths,
+or exception details. This makes a later retry decision auditable without
+turning Actions logs into a research-data store.
+
 ## Gaps and next gated slice
 
 The historical-diagnostics contract is still research-only.  Its trial
