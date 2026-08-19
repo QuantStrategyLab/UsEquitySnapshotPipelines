@@ -36,6 +36,20 @@ def _plan() -> TqqqPromotionPlan:
     )
 
 
+def _v4_plan() -> TqqqPromotionPlan:
+    return TqqqPromotionPlan(
+        folds=(
+            PurgedWalkForwardFold(date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+            PurgedWalkForwardFold(date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+            PurgedWalkForwardFold(date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+        ),
+        locked_oos_start=date(2025, 8, 4),
+        locked_oos_end=date(2026, 8, 4),
+        purge_days=1,
+        embargo_days=1,
+    )
+
+
 def _identity(**overrides: str) -> TqqqPromotionIdentity:
     values = {
         "qpk_revision": "730ad9f3983bd90cd75adecb67fcf483ffb96736",
@@ -73,6 +87,16 @@ def test_exact_core_only_plan_and_costs_are_accepted() -> None:
     assert _cost_scenarios({"turnover_cost_bps": 5.0, "stress_turnover_cost_bps": [10.0, 25.0]}) == (5, 10, 25)
 
 
+def test_v4_plan_is_chronological_and_uses_fixed_strategy_cost_stress() -> None:
+    _validate_plan(_v4_plan(), candidate_profile="tqqq_core_only_p2_v4")
+    assert _cost_scenarios(
+        {"turnover_cost_bps": 5.0, "stress_turnover_cost_bps": [10.0, 15.0]},
+        candidate_profile="tqqq_core_only_p2_v4",
+    ) == (5, 10, 15)
+    with pytest.raises(TqqqPromotionContractError, match="unknown TQQQ candidate geometry"):
+        _validate_plan(_v4_plan(), candidate_profile="tqqq_core_only_p2_v3")
+
+
 @pytest.mark.parametrize("bad", [
     TqqqPromotionPlan(_plan().folds, date(2025, 7, 2), date(2026, 7, 31), 252, 0),
     TqqqPromotionPlan(_plan().folds, date(2025, 8, 1), date(2026, 7, 31), 20, 20),
@@ -82,13 +106,14 @@ def test_old_oos_or_purge_plan_is_rejected(bad: TqqqPromotionPlan) -> None:
         _validate_plan(bad)
 
 
-def test_active_runner_uses_qpk_walk_forward_not_promotion_api() -> None:
+def test_active_runner_uses_qpk_evidence_runner_not_any_execution_api() -> None:
     import inspect
     import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as runner
 
     source = inspect.getsource(runner.run_tqqq_promotion_research)
-    assert ".walk_forward(" in source
-    assert ".run_promotion(" not in source
+    assert ".run_promotion(" in source
+    assert "order_client" not in source
+    assert "broker" not in source
 
 
 def test_default_candidate_identity_keeps_v1_contract_output() -> None:

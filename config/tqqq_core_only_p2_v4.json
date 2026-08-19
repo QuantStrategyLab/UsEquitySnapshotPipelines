@@ -1,0 +1,174 @@
+{
+  "acceptance": {
+    "automatic_promotion": false,
+    "failure_behavior": "Any missing binding, unavailable required asset, incomplete input, look-ahead indication, non-determinism, or non-untouched OOS status is INCONCLUSIVE/PARK. No fallback provider, synthetic market-data substitution, parameter change, or rerun is permitted.",
+    "human_acceptance": null,
+    "live_ready": false,
+    "promotion_eligible": false,
+    "required_evidence": [
+      "immutable input identity",
+      "source/config/runtime binding",
+      "all-assets common availability",
+      "three chronological no-tuning evidence windows",
+      "locked OOS >=12 calendar months",
+      "5/10/15bps all-in cost stress",
+      "RiskEngine assessment evidence"
+    ]
+  },
+  "candidate_id": "tqqq_core_only_p2_v4",
+  "classification": {
+    "execution_authorized": false,
+    "legacy_execution_artifacts": "MISSING",
+    "legacy_fallback_allowed": false,
+    "legacy_parity_status": "NOT_COMPARABLE",
+    "no_order": true,
+    "research_only": true,
+    "size_zero_required": true
+  },
+  "cost_assumptions": {
+    "borrow_cost_bps": 0,
+    "cash_yield_assumption": 0,
+    "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+    "fill_model": "close_to-next-session target-weight simulation only; no broker-fill or live claim",
+    "stress_turnover_cost_bps": [10, 15],
+    "turnover_cost_bps": 5
+  },
+  "evaluation_plan": {
+    "all_assets_common_availability": {
+      "first_session": "2022-12-28",
+      "required_assets": ["TQQQ", "QQQM", "BOXX"],
+      "rule": "Every replay session must have an observed bar for every tradable asset. No pre-inception proxy, carried price, cash substitution, or synthetic market-data row is permitted."
+    },
+    "embargo_days": 1,
+    "locked_oos": {
+      "end": "2026-08-04",
+      "minimum_duration_months": 12,
+      "start": "2025-08-04",
+      "status_at_freeze": "not_acquired_or_replayed_in_this_goal"
+    },
+    "parameter_selection": "This is a source-frozen behavior verification, not a fitted or searched model. No parameter may be selected, retuned, or replaced from any development or OOS outcome.",
+    "purge_sessions": 1,
+    "purge_rationale": "One calendar day separates each train/evidence boundary. A 252-session purge is not meaningful here because P3 trains no model and performs no parameter search; retaining it would make three chronological evidence windows impossible before the independent OOS period.",
+    "purged_folds": [
+      {
+        "evaluation": ["2023-07-03", "2023-12-29"],
+        "id": "sequential_evidence_fold_1",
+        "purge_sessions_after_train": 1,
+        "train": ["2022-12-28", "2023-06-30"]
+      },
+      {
+        "evaluation": ["2024-07-01", "2024-12-31"],
+        "id": "sequential_evidence_fold_2",
+        "purge_sessions_after_train": 1,
+        "train": ["2024-01-02", "2024-06-28"]
+      },
+      {
+        "evaluation": ["2025-03-03", "2025-07-31"],
+        "id": "sequential_evidence_fold_3",
+        "purge_sessions_after_train": 1,
+        "train": ["2025-01-02", "2025-02-28"]
+      }
+    ],
+    "seen_window_policy": "The historic v1 artifact is retained as context only. It cannot select or retune this source-frozen candidate because P3 has no tuning path; no historical outcome is read by this candidate definition.",
+    "v3_disposition": "SUPERSEDED_BEFORE_EVIDENCE: v3 correctly removed pre-BOXX sessions but retained parameter-search-shaped 252-session purge geometry that the fixed-strategy P3 does not use. v4 is a distinct candidate and never relabels v3 evidence."
+  },
+  "explicitly_not_in_candidate": {
+    "ai_extensions": {"status": "disabled"},
+    "cooldown": {"reason": "No cooldown state, trigger, or reset behavior is admitted.", "status": "not_in_candidate"},
+    "crisis": {"enforced_by": "dual_drive_crisis_defense_enabled=false and market_regime_control_enabled=false", "status": "disabled"},
+    "income_layer": {"status": "disabled"},
+    "macro": {"enforced_by": "dual_drive_macro_risk_governor_enabled=false and market_regime_control_enabled=false", "status": "disabled"},
+    "option_overlays": {"status": "disabled"},
+    "retention": {"enforced_by": "dual_drive_volatility_delever_retention_mode=none and ratio=0", "status": "disabled"},
+    "stop": {"reason": "No endogenous price-stop parameter is frozen. This does not waive a separate RiskEngine/risk-mandate control for any later research.", "status": "not_in_candidate"}
+  },
+  "frozen_at": "2026-08-19T09:00:00Z",
+  "phase": "P2",
+  "p1_entry": {
+    "eligible_now": false,
+    "prohibited_until_gate": ["provider connection", "Gateway use", "credential access", "acquisition", "replay", "parameter tuning", "paper/shadow/live"],
+    "reason": "This configuration permits only synthetic/offline P3 contract verification. A separate bounded P1 authority is required before any observed-market acquisition or replay.",
+    "unique_next_gate": "FRESH_P1_ADAPTER_BINDING_AND_AUTHORITY_FOR_TQQQ_CORE_ONLY_P2_V4"
+  },
+  "required_inputs": {
+    "excluded_assets": ["QQQ", "SCHD", "DGRO", "SGOV", "SPYI", "QQQI"],
+    "signal_history": {"frequency": "1d", "minimum_lookback_sessions": 252, "symbol": "QQQ"},
+    "source_mix_allowed": false,
+    "tradable_assets": ["TQQQ", "QQQM", "BOXX"]
+  },
+  "runtime_config": {
+    "ai_extensions": {"enabled": false},
+    "attack_allocation_mode": "fixed_qqq_tqqq_pullback",
+    "benchmark_symbol": "QQQ",
+    "cash_reserve_floor_usd": 0,
+    "cash_reserve_ratio": 0.02,
+    "dual_drive_allow_pullback": true,
+    "dual_drive_cash_reserve_ratio": 0.02,
+    "dual_drive_crisis_defense_enabled": false,
+    "dual_drive_macro_risk_governor_enabled": false,
+    "dual_drive_pullback_rebound_threshold": 0,
+    "dual_drive_pullback_rebound_threshold_mode": "volatility_scaled",
+    "dual_drive_pullback_rebound_volatility_multiplier": 2,
+    "dual_drive_pullback_rebound_window": 20,
+    "dual_drive_qqq_weight": 0.45,
+    "dual_drive_require_ma20_slope": true,
+    "dual_drive_tqqq_weight": 0.45,
+    "dual_drive_unlevered_symbol": "QQQM",
+    "dual_drive_volatility_delever_dynamic_cap": 0.36,
+    "dual_drive_volatility_delever_dynamic_floor": 0.24,
+    "dual_drive_volatility_delever_dynamic_lookback": 252,
+    "dual_drive_volatility_delever_dynamic_min_periods": 126,
+    "dual_drive_volatility_delever_dynamic_percentile": 0.9,
+    "dual_drive_volatility_delever_enabled": true,
+    "dual_drive_volatility_delever_exit_threshold": 0.28,
+    "dual_drive_volatility_delever_retention_context_required": true,
+    "dual_drive_volatility_delever_retention_mode": "none",
+    "dual_drive_volatility_delever_retention_ratio": 0,
+    "dual_drive_volatility_delever_taco_veto_enabled": false,
+    "dual_drive_volatility_delever_threshold": 0.28,
+    "dual_drive_volatility_delever_threshold_mode": "rolling_percentile",
+    "dual_drive_volatility_delever_window": 5,
+    "income_layer_enabled": false,
+    "managed_symbols": ["TQQQ", "QQQM", "BOXX"],
+    "market_regime_control_enabled": false,
+    "option_growth_overlay_enabled": false,
+    "option_income_overlay_enabled": false,
+    "option_overlay_enabled": false,
+    "rebalance_threshold_ratio": 0.01,
+    "signal_effective_after_trading_days": 1
+  },
+  "schema_version": "qsl.tqqq-core-only-p2-candidate.v4",
+  "source": {
+    "builder": "us_equity_strategies.strategies.tqqq_growth_income.build_rebalance_plan",
+    "dependency_lock": {
+      "file": "uv.lock",
+      "python_requires": ">=3.11",
+      "quant_platform_kit_revision": "730ad9f3983bd90cd75adecb67fcf483ffb96736",
+      "sha256": "bdef32ac932573f00b332f7533479a275a5828778894e6e7db8a6a5da63a2004",
+      "static_import_verified": true,
+      "validation_runtime": "CPython 3.12.13"
+    },
+    "entrypoint": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+    "repository": "QuantStrategyLab/UsEquityStrategies",
+    "revision": "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81",
+    "selection_reason": "P2 v4 changes only the research-evidence geometry and cost-stress expression required for a fixed source behavior. It reuses the frozen QPK-730 public core-only adapter and exact source revision; it changes no strategy rule, dependency, mandate, sizing, order, or market-data behavior.",
+    "strategy_logic_disposition": "UNCHANGED_FROM_P2_V2"
+  },
+  "supersedes": {
+    "candidate_id": "tqqq_core_only_p2_v3",
+    "reason": "v3 removed pre-BOXX sessions but retained a 252-session purge designed for parameter searches. P2 v4 has no tuning path, so it uses chronological one-day-separated evidence windows and a true 12-month OOS boundary.",
+    "v3_config_sha256": "ed93e646782e290d3455da4acf240f22137f4e13b1d2e71b6d71d6860e72897f"
+  },
+  "target_mapping": {
+    "risk_off": {"BOXX": 0.98, "QQQM": 0, "TQQQ": 0, "cash": 0.02},
+    "risk_on_high_5d_realized_volatility": {"BOXX": 0.08, "QQQM": 0.9, "TQQQ": 0, "cash": 0.02},
+    "risk_on_normal": {"BOXX": 0.08, "QQQM": 0.45, "TQQQ": 0.45, "cash": 0.02}
+  },
+  "trial_ledger": {
+    "candidate_local_outcome_reads": 0,
+    "global_unseen_assertion": "UNVERIFIED",
+    "parameters_derived_from": ["documented rule description", "source-code configuration and signatures"],
+    "parameters_not_derived_from": ["historical returns", "prior locked OOS returns", "prior legacy execution artifacts"],
+    "p1_preflight_rule": "Before any future acquisition, compare the frozen windows against the durable trial ledger. If the locked-OOS outcome was previously accessed or the ledger is incomplete, label OOS NOT_UNTOUCHED and PARK acceptance; do not change parameters or windows."
+  }
+}

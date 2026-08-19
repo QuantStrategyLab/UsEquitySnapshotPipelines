@@ -105,6 +105,25 @@ def test_v2_candidate_selects_the_public_research_adapter() -> None:
     assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
 
 
+def test_v4_candidate_reuses_the_exact_public_research_adapter() -> None:
+    candidate = json.loads(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v4.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert evidence._validate_config(candidate)["candidate"] == candidate
+    callable_, identity = evidence._tqqq_replay_callable_and_identity(
+        p1_binding.P2_V4_CONTRACT
+    )
+
+    assert identity == {
+        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+        "ues_revision": "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81",
+    }
+    assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
+
+
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 

@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+from functools import wraps
 from pathlib import Path
 
 import pytest
 
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
 
 
@@ -33,7 +36,7 @@ def _producer() -> dict[str, str]:
     }
 
 
-def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
+def _alpaca_symbol_payload(symbol: str, date_cutoff: str) -> dict[str, object]:
     first_eligible = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
     return {
         "bars": [
@@ -45,7 +48,7 @@ def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
                 "close": 100.0,
                 "volume": 1.0,
             }
-            for session in p1_binding._expected_xnys_sessions("2026-07-31")
+            for session in p1_binding._expected_xnys_sessions(date_cutoff)
             if first_eligible is None or session.isoformat() >= first_eligible
         ]
     }
@@ -61,9 +64,14 @@ def _write_canonical_snapshot(
         "tqqq_core_only_p2_v1"
     )
     binding = p1_binding.build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
+    date_cutoff = binding["data_identity"]["date_cutoff"]
+    assert isinstance(date_cutoff, str)
     bars = {
         "schema_version": "tqqq_core_only_private_bars.v1",
-        "symbols": {symbol: _alpaca_symbol_payload(symbol) for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")},
+        "symbols": {
+            symbol: _alpaca_symbol_payload(symbol, date_cutoff)
+            for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
+        },
     }
     bars_bytes = _canonical(bars)
     manifest = p1_binding.build_tqqq_core_only_input_manifest(
@@ -281,6 +289,90 @@ def test_cli_rejects_a_v1_snapshot_for_the_v2_candidate_before_replay(
     ) == 2
     assert calls == 0
     assert json.loads(capsys.readouterr().out)["stage"] == "input_validation"
+
+
+def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the complete v4 P3 path without provider access or real bars."""
+    module = _load_script_module()
+    snapshot = tmp_path / "synthetic-snapshot"
+    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V4_CONTRACT)
+    config_path = tmp_path / "p2-v4.json"
+    config_path.write_bytes(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v4.json").read_bytes()
+    )
+    output = tmp_path / "evidence"
+    calls = 0
+    public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
+
+    @wraps(public_adapter)
+    def tracked_public_adapter(context):
+        nonlocal calls
+        calls += 1
+        return public_adapter(context)
+
+    monkeypatch.setattr(
+        evidence,
+        "build_tqqq_core_only_p2_v2_research_decision",
+        tracked_public_adapter,
+    )
+    # This fixture verifies only the synthetic replay contract.  A preceding
+    # test must not make that result depend on the checkout cleanliness guard.
+    monkeypatch.setattr(evidence, "_resolve_runner_revision", lambda: "a" * 40)
+    monkeypatch.setattr(promotion_runner, "_resolve_runner_revision", lambda: "a" * 40)
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(snapshot),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(output),
+        ]
+    ) == 0
+
+    assert calls > 0
+    summary = json.loads(capsys.readouterr().out)
+    evidence_package = json.loads(
+        (output / "strategy-evidence-package.v2.json").read_text(encoding="utf-8")
+    )
+    backtest = json.loads(
+        (output / "artifacts" / "backtest.json").read_text(encoding="utf-8")
+    )
+    frozen_config = json.loads(
+        (output / "artifacts" / "config.json").read_text(encoding="utf-8")
+    )
+    terminal = json.loads(
+        (output / "promotion-research-result.v1.json").read_text(encoding="utf-8")
+    )
+    expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
+        input_payload["input_manifest"],
+        input_payload["binding"],
+        contract=p1_binding.P2_V4_CONTRACT,
+    )
+
+    assert summary["status"] == "EVIDENCE_V2_COMPLETE"
+    assert evidence_package["strategy"] == {
+        "profile": "tqqq_core_only_p2_v4",
+        "domain": "us_equity",
+        "source_revision": p1_binding.P2_V4_UES_REVISION,
+    }
+    assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
+    assert frozen_config["candidate"] == json.loads(config_path.read_text(encoding="utf-8"))
+    assert backtest["strategy_execution"] == {
+        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+        "ues_revision": p1_binding.P2_V4_UES_REVISION,
+    }
+    assert terminal["status"] == "EVIDENCE_V2_COMPLETE"
+    assert terminal["authority_scope"] == "RESEARCH_ONLY"
+    assert terminal["human_acceptance"] is None
+    assert terminal["no_order"] is True
+    assert terminal["size_zero_required"] is True
+    assert not (output / "bars.json").exists()
 
 
 @pytest.mark.parametrize(
