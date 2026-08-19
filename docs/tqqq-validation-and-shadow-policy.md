@@ -26,10 +26,9 @@ wait for a new year of calendar time before the first meaningful result.
 
 `lifecycle.tqqq_promotion_runner.run_tqqq_promotion_research` already runs
 caller-supplied immutable replay material through `BacktestOrchestrator`.  Its
-frozen plan has three typed chronological `PurgedWalkForwardFold` windows,
-20-calendar-day purge and 20-calendar-day embargo settings (not 20 XNYS
-sessions), and a locked XNYS OOS from
-2025-07-02 through 2026-07-31 (272 sessions, more than 12 calendar months).
+frozen plan has three typed chronological `PurgedWalkForwardFold` windows, a
+252-session post-training purge and zero embargo, and a locked XNYS OOS from
+2025-08-01 through 2026-07-31 (251 sessions).
 It runs the 5/10/15 bp scenarios, preserves fresh episode state per window,
 and emits relative return, Sharpe, drawdown, VaR/CVaR, information coefficient,
 turnover, trade-count, allocation, and PARK evidence.  The evidence producer

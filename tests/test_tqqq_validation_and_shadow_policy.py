@@ -15,9 +15,8 @@ def test_policy_records_p3_runner_coverage_gaps_and_p4_boundary() -> None:
     for required in (
         "## Existing runner coverage",
         "BacktestOrchestrator",
-        "2025-07-02 through 2026-07-31",
-        "20-calendar-day purge and 20-calendar-day embargo",
-        "not 20 XNYS sessions",
+        "2025-08-01 through 2026-07-31",
+        "252-session post-training purge and zero embargo",
         "5/10/15 bp per-side",
         "executes every deterministic 3/6/12/24-month",
         "TQQQ signal, allocation, RiskEngine, and runtime logic remain in",
