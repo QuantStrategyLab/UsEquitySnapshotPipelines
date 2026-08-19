@@ -129,6 +129,19 @@ def test_v3_candidate_has_a_distinct_binding_without_changing_strategy_source() 
         )
 
 
+def test_v4_candidate_extends_only_its_own_immutable_input_cutoff() -> None:
+    contract = binding.P2_V4_CONTRACT
+    value = binding.build_tqqq_core_only_p1_binding_for_contract(contract)
+
+    assert value["candidate"] == {
+        "candidate_id": "tqqq_core_only_p2_v4",
+        "config_sha256": "b20335a16d0c5001dc28d3a1555dc1d46e6331fc714ca489a952d779de3279f1",
+    }
+    assert value["source"]["revision"] == binding.P2_V2_UES_REVISION
+    assert value["data_identity"]["date_cutoff"] == "2026-08-04"
+    assert binding.build_tqqq_core_only_p1_binding()["data_identity"]["date_cutoff"] == "2026-07-31"
+
+
 def test_manifest_uses_qpk_canonical_policy_and_preserves_alpaca_source_recipe() -> None:
     value = binding.build_tqqq_core_only_p1_binding()
     manifest = binding.build_tqqq_core_only_input_manifest(

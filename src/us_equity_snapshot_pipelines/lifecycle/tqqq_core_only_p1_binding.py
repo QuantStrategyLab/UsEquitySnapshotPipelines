@@ -33,6 +33,9 @@ P2_V2_UES_REVISION = "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
 P2_V3_CANDIDATE_ID = "tqqq_core_only_p2_v3"
 P2_V3_CANDIDATE_CONFIG_SHA256 = "ed93e646782e290d3455da4acf240f22137f4e13b1d2e71b6d71d6860e72897f"
 P2_V3_UES_REVISION = P2_V2_UES_REVISION
+P2_V4_CANDIDATE_ID = "tqqq_core_only_p2_v4"
+P2_V4_CANDIDATE_CONFIG_SHA256 = "b20335a16d0c5001dc28d3a1555dc1d46e6331fc714ca489a952d779de3279f1"
+P2_V4_UES_REVISION = P2_V2_UES_REVISION
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
@@ -72,10 +75,17 @@ P2_V3_CONTRACT = TqqqCoreOnlyCandidateContract(
     ues_revision=P2_V3_UES_REVISION,
     qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
 )
+P2_V4_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V4_CANDIDATE_ID,
+    config_sha256=P2_V4_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V4_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
 _SUPPORTED_CONTRACTS = {
     _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
     P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
     P2_V3_CONTRACT.candidate_id: P2_V3_CONTRACT,
+    P2_V4_CONTRACT.candidate_id: P2_V4_CONTRACT,
 }
 
 
@@ -190,7 +200,11 @@ def build_tqqq_core_only_p1_binding_for_contract(
                 "source": "ALPACA_MARKET_DATA adjustment=all(split,dividend,spin-off)",
             },
             "universe": list(_UNIVERSE),
-            "date_cutoff": "2026-07-31",
+            "date_cutoff": (
+                "2026-08-04"
+                if frozen_contract == P2_V4_CONTRACT
+                else "2026-07-31"
+            ),
             "cost_assumptions": {
                 "turnover_cost_bps": 5.0,
                 "stress_turnover_cost_bps": [10.0, 25.0],

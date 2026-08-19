@@ -35,7 +35,7 @@ def _producer() -> dict[str, str]:
     }
 
 
-def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
+def _alpaca_symbol_payload(symbol: str, date_cutoff: str) -> dict[str, object]:
     first_eligible = {"QQQM": "2020-10-13", "BOXX": "2022-12-28"}.get(symbol)
     return {
         "bars": [
@@ -47,7 +47,7 @@ def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
                 "close": 100.0,
                 "volume": 1.0,
             }
-            for session in p1_binding._expected_xnys_sessions("2026-07-31")
+            for session in p1_binding._expected_xnys_sessions(date_cutoff)
             if first_eligible is None or session.isoformat() >= first_eligible
         ]
     }
@@ -63,9 +63,14 @@ def _write_canonical_snapshot(
         "tqqq_core_only_p2_v1"
     )
     binding = p1_binding.build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
+    date_cutoff = binding["data_identity"]["date_cutoff"]
+    assert isinstance(date_cutoff, str)
     bars = {
         "schema_version": "tqqq_core_only_private_bars.v1",
-        "symbols": {symbol: _alpaca_symbol_payload(symbol) for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")},
+        "symbols": {
+            symbol: _alpaca_symbol_payload(symbol, date_cutoff)
+            for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
+        },
     }
     bars_bytes = _canonical(bars)
     manifest = p1_binding.build_tqqq_core_only_input_manifest(
@@ -285,16 +290,16 @@ def test_cli_rejects_a_v1_snapshot_for_the_v2_candidate_before_replay(
     assert json.loads(capsys.readouterr().out)["stage"] == "input_validation"
 
 
-def test_cli_runs_complete_v3_p3_evidence_from_synthetic_input(
+def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
     capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise the complete v3 P3 path without provider access or real bars."""
+    """Exercise the complete v4 P3 path without provider access or real bars."""
     module = _load_script_module()
     snapshot = tmp_path / "synthetic-snapshot"
-    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V3_CONTRACT)
-    config_path = tmp_path / "p2-v3.json"
+    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V4_CONTRACT)
+    config_path = tmp_path / "p2-v4.json"
     config_path.write_bytes(
-        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v3.json").read_bytes()
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v4.json").read_bytes()
     )
     output = tmp_path / "evidence"
     calls = 0
@@ -333,28 +338,33 @@ def test_cli_runs_complete_v3_p3_evidence_from_synthetic_input(
     backtest = json.loads(
         (output / "artifacts" / "backtest.json").read_text(encoding="utf-8")
     )
+    frozen_config = json.loads(
+        (output / "artifacts" / "config.json").read_text(encoding="utf-8")
+    )
     terminal = json.loads(
         (output / "promotion-research-result.v1.json").read_text(encoding="utf-8")
     )
     expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
         input_payload["input_manifest"],
         input_payload["binding"],
-        contract=p1_binding.P2_V3_CONTRACT,
+        contract=p1_binding.P2_V4_CONTRACT,
     )
 
     assert summary["status"] == "EVIDENCE_V2_COMPLETE"
     assert evidence_package["strategy"] == {
-        "profile": "tqqq_core_only_p2_v3",
+        "profile": "tqqq_core_only_p2_v4",
         "domain": "us_equity",
-        "source_revision": p1_binding.P2_V3_UES_REVISION,
+        "source_revision": p1_binding.P2_V4_UES_REVISION,
     }
     assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
+    assert frozen_config["candidate"] == json.loads(config_path.read_text(encoding="utf-8"))
     assert backtest["strategy_execution"] == {
         "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
-        "ues_revision": p1_binding.P2_V3_UES_REVISION,
+        "ues_revision": p1_binding.P2_V4_UES_REVISION,
     }
     assert terminal["status"] == "EVIDENCE_V2_COMPLETE"
     assert terminal["authority_scope"] == "RESEARCH_ONLY"
+    assert terminal["human_acceptance"] is None
     assert terminal["no_order"] is True
     assert terminal["size_zero_required"] is True
     assert not (output / "bars.json").exists()

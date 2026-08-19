@@ -39,7 +39,10 @@ from .tqqq_core_only_p1_binding import (
     P2_V2_UES_REVISION,
     P2_V3_CONTRACT,
     P2_V3_UES_REVISION,
+    P2_V4_CONTRACT,
+    P2_V4_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
+    _expected_xnys_sessions,
     resolve_tqqq_core_only_candidate_contract,
     tqqq_core_only_p1_binding_sha256_for_contract,
     validate_tqqq_core_only_input_manifest,
@@ -47,10 +50,6 @@ from .tqqq_core_only_p1_binding import (
 )
 from .tqqq_promotion_runner import (
     _EXACT_COMMON_ELIGIBILITY,
-    _LOCKED_OOS_END,
-    _LOCKED_OOS_SESSION_COUNT,
-    _LOCKED_OOS_SESSIONS_SHA256,
-    _LOCKED_OOS_START,
     TqqqEpisodeSummary,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
@@ -69,7 +68,8 @@ _INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
 _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
 _P2_V3_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v3"
-_COST_SCENARIOS = (5, 10, 25)
+_P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
+_ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
@@ -229,6 +229,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         _CONFIG_SCHEMA,
         _P2_V2_CONFIG_SCHEMA,
         _P2_V3_CONFIG_SCHEMA,
+        _P2_V4_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
@@ -275,10 +276,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         _PROFILE: _CONFIG_SCHEMA,
         P2_V2_CONTRACT.candidate_id: _P2_V2_CONFIG_SCHEMA,
         P2_V3_CONTRACT.candidate_id: _P2_V3_CONFIG_SCHEMA,
+        P2_V4_CONTRACT.candidate_id: _P2_V4_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V3_CONTRACT}:
+    if contract in {P2_V2_CONTRACT, P2_V3_CONTRACT, P2_V4_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -287,7 +289,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
             != (
                 P2_V2_UES_REVISION
                 if contract == P2_V2_CONTRACT
-                else P2_V3_UES_REVISION
+                else (
+                    P2_V3_UES_REVISION
+                    if contract == P2_V3_CONTRACT
+                    else P2_V4_UES_REVISION
+                )
             )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):
@@ -361,6 +367,9 @@ def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
     if not isinstance(plan, Mapping):
         raise TqqqPromotionEvidenceError("missing candidate evaluation plan")
     try:
+        purge_days = plan["purge_sessions"]
+        if type(purge_days) is not int:
+            raise TypeError("invalid purge days")
         folds = tuple(
             PurgedWalkForwardFold(
                 train_start=date.fromisoformat(fold["train"][0]),
@@ -369,15 +378,16 @@ def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
                 test_end=date.fromisoformat(fold["evaluation"][1]),
             )
             for fold in plan["purged_folds"]
-            if isinstance(fold, Mapping) and fold.get("purge_sessions_after_train") == 252
+            if isinstance(fold, Mapping)
+            and fold.get("purge_sessions_after_train") == purge_days
         )
         locked = plan["locked_oos"]
         result = TqqqPromotionPlan(
             folds=folds,
             locked_oos_start=date.fromisoformat(locked["start"]),
             locked_oos_end=date.fromisoformat(locked["end"]),
-            purge_days=plan["purge_sessions"],
-            embargo_days=0,
+            purge_days=purge_days,
+            embargo_days=plan.get("embargo_days", 0),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise TqqqPromotionEvidenceError("invalid candidate evaluation plan") from exc
@@ -487,15 +497,17 @@ def _validate_input(
         or sum(session < plan.folds[0].test_start for session in qqq_sessions) < 257
     ):
         raise TqqqPromotionEvidenceError("immutable input coverage mismatch")
-    locked_sessions = tuple(
-        session.isoformat()
-        for session in qqq_sessions
-        if _LOCKED_OOS_START <= session <= _LOCKED_OOS_END
+    expected_locked_sessions = tuple(
+        session
+        for session in _expected_xnys_sessions(plan.locked_oos_end.isoformat())
+        if plan.locked_oos_start <= session <= plan.locked_oos_end
     )
-    if (
-        len(locked_sessions) != _LOCKED_OOS_SESSION_COUNT
-        or _sha256(_canonical(list(locked_sessions))) != _LOCKED_OOS_SESSIONS_SHA256
-    ):
+    observed_locked_sessions = tuple(
+        session
+        for session in qqq_sessions
+        if plan.locked_oos_start <= session <= plan.locked_oos_end
+    )
+    if observed_locked_sessions != expected_locked_sessions:
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
     return provenance, parsed, manifest_sha256
 
@@ -592,7 +604,7 @@ class _ImmutableReplayProducer:
         return tuple(self._switching_traces)
 
     def _reset(self, scenario: int, prior_state_sha256: str) -> None:
-        if scenario not in _COST_SCENARIOS:
+        if scenario not in _ALLOWED_COST_SCENARIOS:
             raise TqqqPromotionEvidenceError("invalid cost scenario")
         if prior_state_sha256 != self.identity.initial_state_sha256:
             raise TqqqPromotionEvidenceError("initial state identity mismatch")
@@ -838,9 +850,15 @@ class _ImmutableReplayProducer:
         intended = self._allocation(targets)
         approved = assessment.action == "approve"
         executed = intended if approved else self._allocation({})
+        if approved:
+            signal_state = "entry" if targets["TQQQ"] or targets["QQQM"] else "idle"
+            signal_regime = "RISK_ON" if signal_state == "entry" else "DEFENSIVE"
+        else:
+            signal_state = "risk_engine_non_approve"
+            signal_regime = "DEFENSIVE"
         self._switching_traces.append(TqqqSwitchingTrace(
             signal_session=signal_session, execution_session=execution_session,
-            signal_state="candidate_signal", signal_regime="RISK_ON" if targets["TQQQ"] or targets["QQQM"] else "DEFENSIVE",
+            signal_state=signal_state, signal_regime=signal_regime,
             intended_allocation=intended, risk_disposition="APPROVE" if approved else "REJECT",
             risk_reason_codes=() if approved else (assessment.reason,), replay_target_allocation=executed, executed_allocation=executed,
         ))
@@ -1073,7 +1091,9 @@ def _result_artifacts(
                 {
                     "schema_version": "tqqq_all_in_per_side_cost.v1",
                     "method": "adverse_open_fill",
-                    "scenarios_bps": list(_COST_SCENARIOS),
+                    "scenarios_bps": [
+                        scenario.total_cost_bps for scenario in result.scenarios
+                    ],
                 }
             ),
         ),
@@ -1261,8 +1281,11 @@ def run_tqqq_promotion_evidence(
         },
         "cost_stress": {
             "scenarios": [
-                {"multiplier": index, "total_cost_bps": float(cost)}
-                for index, cost in enumerate(_COST_SCENARIOS, start=1)
+                {
+                    "multiplier": index,
+                    "total_cost_bps": float(scenario.total_cost_bps),
+                }
+                for index, scenario in enumerate(result.scenarios, start=1)
             ],
             "status": "PASS",
         },

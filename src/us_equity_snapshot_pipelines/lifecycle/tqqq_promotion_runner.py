@@ -20,6 +20,7 @@ from pathlib import Path
 from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestOrchestrator
 from quant_platform_kit.strategy_lifecycle.contracts import (
     BacktestResult,
+    BacktestValidationIdentity,
     PromotionBacktestRun,
     PromotionCostModel,
     PurgedWalkForwardFold,
@@ -33,19 +34,22 @@ _PROFILE = "tqqq_core_only_p2_v1"
 _CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
 _P2_V2_PROFILE = "tqqq_core_only_p2_v2"
 _P2_V3_PROFILE = "tqqq_core_only_p2_v3"
+_P2_V4_PROFILE = "tqqq_core_only_p2_v4"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
-_COST_SCENARIOS_BPS = (5, 10, 25)
+_COST_SCENARIOS_BPS = (5, 10, 15, 25)
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 8, 1)
 _LOCKED_OOS_END = date(2026, 7, 31)
 _LOCKED_OOS_SESSION_COUNT = 251
 _LOCKED_OOS_SESSIONS_SHA256 = "295286362966654abc1b6511ef1214ba70053986c1f1c0f70007b8f3a6f732ee"
-_FROZEN_CALENDAR_SHA256 = "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+_P2_V4_LOCKED_OOS_START = date(2025, 8, 4)
+_P2_V4_LOCKED_OOS_END = date(2026, 8, 4)
+_FROZEN_CALENDAR_SHA256 = "448b47dd408817e2e413036d6281f0ec5334531aff6a23b65fe1a3dd96af71fa"
 _FROZEN_CALENDAR_SOURCE_REVISION = (
     "exchange_calendars:4.13.2:XNYS:"
-    "18b12a992cfb245e6aec7145797e5f0b7b2b03eed880961896ba370d8a7d5380"
+    "448b47dd408817e2e413036d6281f0ec5334531aff6a23b65fe1a3dd96af71fa"
 )
 _SYSTEMATIC_WINDOW_SHA256 = {
     3: "877136166f09def7019ba2fe7616c8c820bae3c13212f3b485cfe001b455d66f",
@@ -362,11 +366,11 @@ def _canonical_sha256(material: object) -> str:
 def _frozen_xnys_sessions() -> tuple[date, ...]:
     start = date(2018, 1, 2)
     holidays = set().union(
-        *(_xnys_holidays(year) for year in range(start.year, _LOCKED_OOS_END.year + 1))
+        *(_xnys_holidays(year) for year in range(start.year, _P2_V4_LOCKED_OOS_END.year + 1))
     )
     sessions: list[date] = []
     current = start
-    while current <= _LOCKED_OOS_END:
+    while current <= _P2_V4_LOCKED_OOS_END:
         if current.weekday() < 5 and current not in holidays:
             sessions.append(current)
         current += timedelta(days=1)
@@ -1446,23 +1450,47 @@ def _validate_plan(
             (date(2018, 1, 2), date(2021, 12, 31), date(2023, 7, 3), date(2023, 12, 29)),
             (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
         ),
+        _P2_V4_PROFILE: (
+            (date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+            (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+            (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+        ),
     }
     expected = expected_by_candidate.get(candidate_profile)
     if expected is None:
         raise TqqqPromotionContractError("unknown TQQQ candidate geometry")
     if tuple((fold.train_start, fold.train_end, fold.test_start, fold.test_end) for fold in plan.folds) != expected:
         raise TqqqPromotionContractError("P2 fold geometry mismatch")
-    if (plan.locked_oos_start, plan.locked_oos_end, plan.purge_days, plan.embargo_days) != (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0):
+    expected_evaluation = (
+        (_P2_V4_LOCKED_OOS_START, _P2_V4_LOCKED_OOS_END, 1, 1)
+        if candidate_profile == _P2_V4_PROFILE
+        else (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0)
+    )
+    if (
+        plan.locked_oos_start,
+        plan.locked_oos_end,
+        plan.purge_days,
+        plan.embargo_days,
+    ) != expected_evaluation:
         raise TqqqPromotionContractError("P2 evaluation geometry mismatch")
 
 
-def _cost_scenarios(cost_assumptions: Mapping[str, object]) -> tuple[int, ...]:
+def _cost_scenarios(
+    cost_assumptions: Mapping[str, object],
+    *,
+    candidate_profile: str = _PROFILE,
+) -> tuple[int, ...]:
     if not isinstance(cost_assumptions, Mapping):
         raise TqqqPromotionContractError("invalid candidate cost assumptions")
     values = (cost_assumptions.get("turnover_cost_bps"), *(cost_assumptions.get("stress_turnover_cost_bps") or ()))
-    if tuple(float(value) for value in values) != (5.0, 10.0, 25.0):
+    expected = (
+        (5.0, 10.0, 15.0)
+        if candidate_profile == _P2_V4_PROFILE
+        else (5.0, 10.0, 25.0)
+    )
+    if tuple(float(value) for value in values) != expected:
         raise TqqqPromotionContractError("P2 cost scenarios mismatch")
-    return _COST_SCENARIOS_BPS
+    return tuple(int(value) for value in expected)
 
 
 def _timing_sha256(plan: TqqqPromotionPlan) -> str:
@@ -1947,6 +1975,27 @@ class TqqqPromotionRunner:
             switching_traces=replay.switching_traces,
         )
         self._windows.append(window)
+        matching_fold = next(
+            (
+                fold
+                for fold in self.plan.folds
+                if (fold.test_start, fold.test_end) == (start_date, end_date)
+            ),
+            None,
+        )
+        validation_identity = BacktestValidationIdentity(
+            protocol="purged_walk_forward.v1",
+            fold_id=f"tqqq_etf_only_{self.total_cost_bps}bp",
+            fold_role="test" if matching_fold is not None else "locked_oos",
+            train_start=matching_fold.train_start if matching_fold is not None else None,
+            train_end=matching_fold.train_end if matching_fold is not None else None,
+            test_start=start_date,
+            test_end=end_date,
+            locked_oos_start=self.plan.locked_oos_start,
+            locked_oos_end=self.plan.locked_oos_end,
+            purge_days=self.plan.purge_days,
+            embargo_days=self.plan.embargo_days,
+        )
         return BacktestResult(
             strategy_profile=self.identity.candidate_profile,
             domain=_DOMAIN,
@@ -1973,6 +2022,14 @@ class TqqqPromotionRunner:
             walk_forward_stability=1.0,
             run_duration_seconds=0.0,
             source_script=_window_acceptance_source(window, self.total_cost_bps),
+            source_revision=self.identity.ues_revision,
+            cost_model=cost_model.model_id,
+            validation_identity=validation_identity,
+            cost_inputs={
+                "commission_bps": cost_model.commission_bps,
+                "slippage_bps": cost_model.slippage_bps,
+                "market_impact_bps": cost_model.market_impact_bps,
+            },
         )
 
 
@@ -2005,40 +2062,51 @@ def run_tqqq_promotion_research(
     replay_window: ReplayWindow,
     cost_assumptions: Mapping[str, object],
 ) -> TqqqPromotionResearchResult:
-    """Run P2's expanding windows through QPK ``walk_forward`` only."""
+    """Run one offline, no-order P3 evidence plan through QPK's evidence runner."""
     _validate_identity(identity)
     _validate_plan(plan, candidate_profile=identity.candidate_profile)
     if _resolve_runner_revision() != identity.runner_revision:
         raise TqqqPromotionContractError("runner revision mismatch")
     timing_sha256 = _timing_sha256(plan)
-    windows = tuple((fold.test_start, fold.test_end) for fold in plan.folds) + ((plan.locked_oos_start, plan.locked_oos_end),)
     scenarios: list[TqqqCostScenarioResult] = []
-    for total_cost_bps in _cost_scenarios(cost_assumptions):
+    for total_cost_bps in _cost_scenarios(
+        cost_assumptions, candidate_profile=identity.candidate_profile
+    ):
         runner = TqqqPromotionRunner(identity, plan, replay_window, total_cost_bps=total_cost_bps)
         orchestrator = BacktestOrchestrator(store=_MemoryPerformanceStore())
         orchestrator.register_runner(_DOMAIN, runner)
-        results = orchestrator.walk_forward(
+        promotion_run = orchestrator.run_promotion(
             identity.candidate_profile,
             domain=_DOMAIN,
             params=_params(identity, timing_sha256),
-            windows=windows, param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
+            folds=plan.folds,
+            locked_oos_start=plan.locked_oos_start,
+            locked_oos_end=plan.locked_oos_end,
+            purge_days=plan.purge_days,
+            embargo_days=plan.embargo_days,
+            source_revision=identity.ues_revision,
+            cost_model=_cost_model(total_cost_bps),
+            param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
-        if len(results) != len(windows):
-            raise TqqqPromotionContractError("walk-forward result count mismatch")
-        promotion_run = PromotionBacktestRun(
-            strategy_profile=identity.candidate_profile,
-            domain=_DOMAIN,
-            fold_results=tuple(results[:-1]),
-            locked_oos_result=results[-1], folds=plan.folds,
-            locked_oos_start=plan.locked_oos_start, locked_oos_end=plan.locked_oos_end,
-            purge_days=plan.purge_days, embargo_days=plan.embargo_days,
-            source_revision=identity.ues_revision, cost_model=_cost_model(total_cost_bps),
+        scenarios.append(
+            TqqqCostScenarioResult(
+                total_cost_bps=total_cost_bps,
+                cost_model_scope="ALL_IN_PER_SIDE",
+                promotion_run=promotion_run,
+                windows=runner.windows,
+            )
         )
-        scenarios.append(TqqqCostScenarioResult(total_cost_bps=total_cost_bps, cost_model_scope="ALL_IN_PER_SIDE", promotion_run=promotion_run, windows=runner.windows))
     trial_ledger = {"candidate_outcome_reads": 0, "status": "NOT_REPLAYED_DURING_SEMANTIC_PR"}
     reporting = TqqqSystematicReporting(
         aggregate_plan_sha256=timing_sha256, trial_ledger_sha256=_canonical_sha256(trial_ledger),
-        plan={"candidate_only": True, "windows": [(start.isoformat(), end.isoformat()) for start, end in windows]},
+        plan={
+            "candidate_only": True,
+            "windows": [
+                (fold.test_start.isoformat(), fold.test_end.isoformat())
+                for fold in plan.folds
+            ]
+            + [(plan.locked_oos_start.isoformat(), plan.locked_oos_end.isoformat())],
+        },
         cost_scenarios=(), regime_coverage={}, overfitting_diagnostics={"status": "NOT_REPLAYED"},
     )
     characterization = build_tqqq_switching_characterization_contract(identity)
