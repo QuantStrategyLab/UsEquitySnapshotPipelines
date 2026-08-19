@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -83,6 +84,25 @@ def test_p1_binding_uses_the_authoritative_p2_digest() -> None:
     assert evidence.CANDIDATE_CONFIG_SHA256 == (
         "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69"
     )
+
+
+def test_v2_candidate_selects_the_public_research_adapter() -> None:
+    candidate = json.loads(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert evidence._validate_config(candidate)["candidate"] == candidate
+    callable_, identity = evidence._tqqq_replay_callable_and_identity(
+        p1_binding.P2_V2_CONTRACT
+    )
+
+    assert identity == {
+        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+        "ues_revision": "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81",
+    }
+    assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
 
 
 def _canonical(value: object) -> bytes:

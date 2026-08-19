@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from quant_platform_kit.common.models import PortfolioSnapshot, Position
@@ -30,16 +30,18 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
 )
 from us_equity_strategies.entrypoints import (
     _build_tqqq_growth_income_decision,
+    build_tqqq_core_only_p2_v2_research_decision,
 )
 
 from .tqqq_core_only_p1_binding import (
     CANDIDATE_CONFIG_SHA256,
-    binding_sha256,
+    P2_V2_CONTRACT,
+    P2_V2_UES_REVISION,
+    TqqqCoreOnlyCandidateContract,
+    resolve_tqqq_core_only_candidate_contract,
+    tqqq_core_only_p1_binding_sha256_for_contract,
     validate_tqqq_core_only_input_manifest,
-    validate_tqqq_core_only_p1_binding,
-)
-from .tqqq_core_only_p1_binding import (
-    UES_REVISION as _P1_UES_REVISION,
+    validate_tqqq_core_only_p1_binding_for_contract,
 )
 from .tqqq_promotion_runner import (
     _EXACT_COMMON_ELIGIBILITY,
@@ -47,7 +49,6 @@ from .tqqq_promotion_runner import (
     _LOCKED_OOS_SESSION_COUNT,
     _LOCKED_OOS_SESSIONS_SHA256,
     _LOCKED_OOS_START,
-    _QPK_REVISION,
     TqqqEpisodeSummary,
     TqqqPromotionIdentity,
     TqqqPromotionPlan,
@@ -64,12 +65,16 @@ _PROFILE = "tqqq_core_only_p2_v1"
 _DOMAIN = "us_equity"
 _INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
+_P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
 _COST_SCENARIOS = (5, 10, 25)
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
 _TQQQ_REPLAY_CALLABLE = (
     "us_equity_strategies.entrypoints._build_tqqq_growth_income_decision"
+)
+_P2_V2_REPLAY_CALLABLE = (
+    "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision"
 )
 
 _CORE_FIELDS = (
@@ -217,10 +222,10 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     """Bind the complete injected P2 candidate, never a copied field subset."""
     if not isinstance(value, Mapping):
         raise TqqqPromotionEvidenceError("invalid config payload")
-    if value.get("schema_version") == "qsl.tqqq-core-only-p2-candidate.v1":
+    if value.get("schema_version") in {_CONFIG_SCHEMA, _P2_V2_CONFIG_SCHEMA}:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
-        risk_standard_sha256 = CANDIDATE_CONFIG_SHA256
+        risk_standard_sha256 = _candidate_contract(candidate).config_sha256
     else:
         config = _exact_mapping(
             value,
@@ -233,12 +238,15 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(candidate, Mapping):
             raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
         candidate = copy.deepcopy(dict(candidate))
-    if _digest(candidate) != CANDIDATE_CONFIG_SHA256:
+    contract = _candidate_contract(candidate)
+    expected_config_sha256 = (
+        CANDIDATE_CONFIG_SHA256
+        if contract.candidate_id == _PROFILE
+        else contract.config_sha256
+    )
+    if _digest(candidate) != expected_config_sha256:
         raise TqqqPromotionEvidenceError("candidate config digest mismatch")
-    if (
-        candidate.get("candidate_id") != "tqqq_core_only_p2_v1"
-        or not isinstance(candidate.get("runtime_config"), Mapping)
-    ):
+    if not isinstance(candidate.get("runtime_config"), Mapping):
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
     _digest_text(risk_standard_sha256, 64, "risk standard digest")
     if not isinstance(risk_standard_id, str) or not risk_standard_id:
@@ -250,6 +258,29 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateContract:
+    candidate_id = candidate.get("candidate_id")
+    try:
+        contract = resolve_tqqq_core_only_candidate_contract(candidate_id)
+    except ValueError as exc:
+        raise TqqqPromotionEvidenceError("invalid frozen P2 candidate") from exc
+    expected_schema = (
+        _CONFIG_SCHEMA if contract.candidate_id == _PROFILE else _P2_V2_CONFIG_SCHEMA
+    )
+    if candidate.get("schema_version") != expected_schema:
+        raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
+    if contract == P2_V2_CONTRACT:
+        source = candidate.get("source")
+        if (
+            not isinstance(source, Mapping)
+            or source.get("repository") != "QuantStrategyLab/UsEquityStrategies"
+            or source.get("revision") != P2_V2_UES_REVISION
+            or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
+        ):
+            raise TqqqPromotionEvidenceError("invalid P2 v2 public research adapter")
+    return contract
+
+
 def _runtime_config(candidate: Mapping[str, Any]) -> dict[str, Any]:
     runtime = candidate.get("runtime_config")
     if not isinstance(runtime, Mapping):
@@ -257,18 +288,37 @@ def _runtime_config(candidate: Mapping[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(dict(runtime))
 
 
-def _tqqq_replay_callable_identity() -> dict[str, str]:
-    """Return the actual UES callable invoked by the P3 replay, not a config label."""
-    observed = (
-        f"{_build_tqqq_growth_income_decision.__module__}."
-        f"{_build_tqqq_growth_income_decision.__qualname__}"
-    )
-    if observed != _TQQQ_REPLAY_CALLABLE:
+def _tqqq_replay_callable_and_identity(
+    contract: TqqqCoreOnlyCandidateContract,
+) -> tuple[Callable[[StrategyContext], StrategyDecision], dict[str, str]]:
+    """Return the exact, contract-selected UES callable used by the P3 replay."""
+    try:
+        frozen_contract = resolve_tqqq_core_only_candidate_contract(contract.candidate_id)
+    except ValueError as exc:
+        raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable") from exc
+    if frozen_contract != contract:
         raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable")
-    return {
-        "callable": observed,
-        "ues_revision": _P1_UES_REVISION,
-    }
+    callable_ = (
+        _build_tqqq_growth_income_decision
+        if frozen_contract.candidate_id == _PROFILE
+        else build_tqqq_core_only_p2_v2_research_decision
+    )
+    expected_callable = (
+        _TQQQ_REPLAY_CALLABLE
+        if frozen_contract.candidate_id == _PROFILE
+        else _P2_V2_REPLAY_CALLABLE
+    )
+    observed = f"{callable_.__module__}.{callable_.__qualname__}"
+    if observed != expected_callable:
+        raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable")
+    return callable_, {"callable": observed, "ues_revision": frozen_contract.ues_revision}
+
+
+def _tqqq_replay_callable_identity() -> dict[str, str]:
+    """Return the actual v1 callable for its preserved compatibility artifact."""
+    return _tqqq_replay_callable_and_identity(
+        resolve_tqqq_core_only_candidate_contract(_PROFILE)
+    )[1]
 
 
 def _parse_bar(value: object) -> _Bar:
@@ -330,12 +380,15 @@ def _validate_input(
     candidate = config.get("candidate")
     if not isinstance(candidate, Mapping):
         raise TqqqPromotionEvidenceError("missing frozen candidate")
+    contract = _candidate_contract(candidate)
     plan = _plan_from_candidate(candidate)
     payload = _exact_mapping(value, {"binding", "input_manifest", "bars"}, "input payload")
     try:
-        binding = validate_tqqq_core_only_p1_binding(payload["binding"])
+        binding = validate_tqqq_core_only_p1_binding_for_contract(
+            payload["binding"], contract
+        )
         manifest_sha256 = validate_tqqq_core_only_input_manifest(
-            payload["input_manifest"], binding
+            payload["input_manifest"], binding, contract=contract
         )
         manifest = validate_research_input_manifest(payload["input_manifest"])
     except (InvalidResearchInputEvidence, ValueError):
@@ -346,7 +399,9 @@ def _validate_input(
     assert isinstance(retention, dict)
     provenance = {
         "source": identity["provider"],
-        "source_revision": binding_sha256(binding),
+        "source_revision": tqqq_core_only_p1_binding_sha256_for_contract(
+            binding, contract
+        ),
         "license": "P1_FROZEN_BINDING_RETENTION_ONLY_NO_LICENSE_CLAIM",
         "usage_scope": retention["policy"],
     }
@@ -495,10 +550,12 @@ class _ImmutableReplayProducer:
         config: Mapping[str, Any],
         candidate: CandidateRiskIdentity,
         identity: TqqqPromotionIdentity,
+        replay_callable: Callable[[StrategyContext], StrategyDecision],
     ) -> None:
         self.config = config
         self.candidate = candidate
         self.identity = identity
+        self._replay_callable = replay_callable
         self.qqq = bars["QQQ"]
         self.prices = {
             symbol: {row.session: row for row in bars[symbol]}
@@ -756,7 +813,7 @@ class _ImmutableReplayProducer:
             market_data={"benchmark_history": tuple({"date": row.session.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close, "volume": row.volume} for row in self.qqq[:signal_index + 1]), "signal_session": signal_session.isoformat(), "next_execution_session": execution_session.isoformat()},
             runtime_config=_runtime_config(self.config),
         )
-        decision = _build_tqqq_growth_income_decision(context)
+        decision = self._replay_callable(context)
         targets = self._decision_weights(decision, equity)
         assessment = build_risk_engine().assess(StrategyDecision(positions=tuple(PositionTarget(symbol=symbol, target_weight=weight) for symbol, weight in sorted(targets.items()) if weight > 0.0)), portfolio, market_data=context.market_data)
         state.decision_count += 1
@@ -931,6 +988,7 @@ def _result_artifacts(
     root: Path,
     config: Mapping[str, Any],
     manifest: Mapping[str, Any],
+    strategy_execution: Mapping[str, str],
 ) -> dict[str, dict[str, str]]:
     artifacts = root / "artifacts"
     _private_directory(artifacts)
@@ -948,8 +1006,10 @@ def _result_artifacts(
             _canonical(
                 {
                     "schema_version": "tqqq_etf_only_promotion_backtest.v1",
-                    "strategy_execution": _tqqq_replay_callable_identity(),
-                    "switching_characterization": build_tqqq_switching_characterization_contract(),
+                    "strategy_execution": strategy_execution,
+                    "switching_characterization": build_tqqq_switching_characterization_contract(
+                        result.identity
+                    ),
                     "development_robustness_plan": result.systematic_reporting.plan,
                     "frozen_trial_ledger": result.frozen_trial_ledger,
                     "systematic_reporting": result.systematic_reporting,
@@ -1020,6 +1080,7 @@ def _run_tqqq_promotion_replay(
     CandidateRiskIdentity,
     _ImmutableReplayProducer,
     TqqqPromotionResearchResult,
+    dict[str, str],
 ]:
     mandate_receipt_sha256 = _digest_text(
         mandate_receipt_sha256, 64, "mandate receipt"
@@ -1027,33 +1088,49 @@ def _run_tqqq_promotion_replay(
     config = _validate_config(config_payload)
     candidate_config = config["candidate"]
     assert isinstance(candidate_config, Mapping)
+    contract = _candidate_contract(candidate_config)
     plan = _plan_from_candidate(candidate_config)
     provenance, bars, manifest_sha256 = _validate_input(input_payload, config)
     manifest = validate_research_input_manifest(input_payload["input_manifest"])
     runner_revision = _resolve_runner_revision()
-    config_sha256 = CANDIDATE_CONFIG_SHA256
+    replay_callable, strategy_execution = _tqqq_replay_callable_and_identity(contract)
+    config_sha256 = contract.config_sha256
     initial_state_sha256 = _digest(_initial_state_projection())
     candidate = CandidateRiskIdentity(
-        strategy_profile=str(candidate_config["candidate_id"]),
+        strategy_profile=contract.candidate_id,
         account_mode="single_strategy_account_v1",
-        strategy_revision=_P1_UES_REVISION,
+        strategy_revision=contract.ues_revision,
         runner_revision=runner_revision,
         config_sha256=config_sha256,
         input_manifest_sha256=manifest_sha256,
         authority_receipt_sha256=mandate_receipt_sha256,
     )
     identity = TqqqPromotionIdentity(
-        qpk_revision=_QPK_REVISION,
-        ues_revision=_P1_UES_REVISION,
+        qpk_revision=contract.qpk_revision,
+        ues_revision=contract.ues_revision,
         runner_revision=runner_revision,
         config_sha256=config_sha256,
         input_manifest_sha256=manifest_sha256,
         mandate_receipt_sha256=mandate_receipt_sha256,
         initial_state_sha256=initial_state_sha256,
+        candidate_profile=contract.candidate_id,
+        candidate_variant=contract.candidate_id,
     )
-    replay = _ImmutableReplayProducer(bars, candidate_config, candidate, identity)
+    replay = _ImmutableReplayProducer(
+        bars, candidate_config, candidate, identity, replay_callable
+    )
     result = run_tqqq_promotion_research(identity, plan, replay, candidate_config["cost_assumptions"])
-    return config, provenance, bars, manifest, manifest_sha256, candidate, replay, result
+    return (
+        config,
+        provenance,
+        bars,
+        manifest,
+        manifest_sha256,
+        candidate,
+        replay,
+        result,
+        strategy_execution,
+    )
 
 
 def run_tqqq_promotion_diagnostic(
@@ -1083,7 +1160,17 @@ def run_tqqq_promotion_evidence(
     output_root = Path(output_dir)
     if output_root.exists() and any(output_root.iterdir()):
         raise TqqqPromotionEvidenceError("output directory must be empty")
-    config, provenance, bars, manifest, manifest_sha256, candidate, replay, result = (
+    (
+        config,
+        provenance,
+        bars,
+        manifest,
+        manifest_sha256,
+        candidate,
+        replay,
+        result,
+        strategy_execution,
+    ) = (
         _run_tqqq_promotion_replay(
             input_payload=input_payload,
             config_payload=config_payload,
@@ -1097,6 +1184,7 @@ def run_tqqq_promotion_evidence(
         root=output_root,
         config=config,
         manifest=manifest,
+        strategy_execution=strategy_execution,
     )
     base = result.scenarios[0]
     locked = base.windows[-1]
@@ -1109,9 +1197,9 @@ def run_tqqq_promotion_evidence(
         "generated_at": generated,
         "requested_stage": "research_backtest_only",
         "strategy": {
-            "profile": _PROFILE,
+            "profile": candidate.strategy_profile,
             "domain": _DOMAIN,
-            "source_revision": _P1_UES_REVISION,
+            "source_revision": candidate.strategy_revision,
         },
         "input_provenance": {
             "source": provenance["source"],

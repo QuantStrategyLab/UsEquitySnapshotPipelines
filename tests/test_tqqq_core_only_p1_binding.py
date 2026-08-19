@@ -76,6 +76,32 @@ def test_binding_freezes_alpaca_sip_total_return_identity() -> None:
     assert value["data_identity"]["date_cutoff"] == "2026-07-31"
 
 
+def test_v2_candidate_requires_its_own_source_config_and_input_profile() -> None:
+    contract = binding.P2_V2_CONTRACT
+    value = binding.build_tqqq_core_only_p1_binding_for_contract(contract)
+    member_bytes = b'{"schema_version":"tqqq_core_only_private_bars.v1","symbols":{}}'
+    manifest = binding.build_tqqq_core_only_input_manifest(
+        value,
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        member_bytes=member_bytes,
+        source_content_sha256={
+            symbol: hashlib.sha256(symbol.encode()).hexdigest()
+            for symbol in value["data_identity"]["universe"]
+        },
+        contract=contract,
+    )
+
+    assert value["candidate"] == {
+        "candidate_id": "tqqq_core_only_p2_v2",
+        "config_sha256": "f1d6e4cf8aa0f7ab818768fb6a6e9c86bcd03cc567e5a5a844024a446a43bd31",
+    }
+    assert value["source"]["revision"] == "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
+    assert manifest["profile"] == "tqqq_core_only_p2_v2"
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.validate_tqqq_core_only_p1_binding(value)
+
+
 def test_manifest_uses_qpk_canonical_policy_and_preserves_alpaca_source_recipe() -> None:
     value = binding.build_tqqq_core_only_p1_binding()
     manifest = binding.build_tqqq_core_only_input_manifest(

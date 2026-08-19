@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -26,6 +27,9 @@ from quant_platform_kit.data.research_input import (
 CANDIDATE_ID = "tqqq_core_only_p2_v1"
 CANDIDATE_CONFIG_SHA256 = "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69"
 UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
+P2_V2_CANDIDATE_ID = "tqqq_core_only_p2_v2"
+P2_V2_CANDIDATE_CONFIG_SHA256 = "f1d6e4cf8aa0f7ab818768fb6a6e9c86bcd03cc567e5a5a844024a446a43bd31"
+P2_V2_UES_REVISION = "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
@@ -35,6 +39,34 @@ _REMOTE_COMPLETION_SCHEMA = "qsl.tqqq-p1-p3-remote-completion.v1"
 REMOTE_COMPLETION_FILENAME = "p1-complete.json"
 _P2_EARLIEST_TRAIN_SESSION = date(2018, 1, 2)
 _FIRST_ELIGIBLE_SESSION = {"QQQM": date(2020, 10, 13), "BOXX": date(2022, 12, 28)}
+
+
+@dataclass(frozen=True)
+class TqqqCoreOnlyCandidateContract:
+    """One frozen TQQQ candidate's source/config identity for private inputs."""
+
+    candidate_id: str
+    config_sha256: str
+    ues_revision: str
+    qpk_revision: str
+
+
+_P2_V1_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=CANDIDATE_ID,
+    config_sha256=CANDIDATE_CONFIG_SHA256,
+    ues_revision=UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
+P2_V2_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V2_CANDIDATE_ID,
+    config_sha256=P2_V2_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V2_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
+_SUPPORTED_CONTRACTS = {
+    _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
+    P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
+}
 
 
 class TqqqCoreOnlyHistoricalBarsProvider(Protocol):
@@ -98,17 +130,41 @@ def build_tqqq_core_only_p1_cloud_storage_binding() -> dict[str, object]:
     }
 
 
-def build_tqqq_core_only_p1_binding() -> dict[str, object]:
-    """Return the frozen data-only identity; this function performs no acquisition."""
+def resolve_tqqq_core_only_candidate_contract(candidate_id: object) -> TqqqCoreOnlyCandidateContract:
+    """Return a known frozen candidate identity without authorizing acquisition."""
+    if not isinstance(candidate_id, str):
+        raise TqqqCoreOnlyP1BindingError("unknown TQQQ core-only candidate")
+    try:
+        return _SUPPORTED_CONTRACTS[candidate_id]
+    except KeyError as exc:
+        raise TqqqCoreOnlyP1BindingError("unknown TQQQ core-only candidate") from exc
+
+
+def _require_contract(
+    contract: TqqqCoreOnlyCandidateContract,
+) -> TqqqCoreOnlyCandidateContract:
+    if (
+        type(contract) is not TqqqCoreOnlyCandidateContract
+        or _SUPPORTED_CONTRACTS.get(contract.candidate_id) != contract
+    ):
+        raise TqqqCoreOnlyP1BindingError("unknown TQQQ core-only candidate")
+    return contract
+
+
+def build_tqqq_core_only_p1_binding_for_contract(
+    contract: TqqqCoreOnlyCandidateContract,
+) -> dict[str, object]:
+    """Return a frozen data-only identity; this function performs no acquisition."""
+    frozen_contract = _require_contract(contract)
     return {
         "schema_version": _INPUT_SCHEMA,
         "candidate": {
-            "candidate_id": CANDIDATE_ID,
-            "config_sha256": CANDIDATE_CONFIG_SHA256,
+            "candidate_id": frozen_contract.candidate_id,
+            "config_sha256": frozen_contract.config_sha256,
         },
         "source": {
             "repository": "QuantStrategyLab/UsEquityStrategies",
-            "revision": UES_REVISION,
+            "revision": frozen_contract.ues_revision,
         },
         "cloud_storage": build_tqqq_core_only_p1_cloud_storage_binding(),
         "data_identity": {
@@ -141,6 +197,11 @@ def build_tqqq_core_only_p1_binding() -> dict[str, object]:
     }
 
 
+def build_tqqq_core_only_p1_binding() -> dict[str, object]:
+    """Return the original frozen v1 data-only identity."""
+    return build_tqqq_core_only_p1_binding_for_contract(_P2_V1_CONTRACT)
+
+
 def canonical_binding_bytes(value: Mapping[str, object]) -> bytes:
     """Validate and encode one exact binding in canonical form."""
     validated = validate_tqqq_core_only_p1_binding(value)
@@ -152,11 +213,35 @@ def binding_sha256(value: Mapping[str, object]) -> str:
 
 
 def validate_tqqq_core_only_p1_binding(value: Mapping[str, object]) -> dict[str, object]:
-    """Reject any binding other than the P2-frozen source/config/data identity."""
-    expected = build_tqqq_core_only_p1_binding()
+    """Reject any binding other than the original P2 v1 source/config/data identity."""
+    return validate_tqqq_core_only_p1_binding_for_contract(value, _P2_V1_CONTRACT)
+
+
+def validate_tqqq_core_only_p1_binding_for_contract(
+    value: Mapping[str, object],
+    contract: TqqqCoreOnlyCandidateContract,
+) -> dict[str, object]:
+    """Reject a binding that is not exact for its immutable candidate identity."""
+    expected = build_tqqq_core_only_p1_binding_for_contract(contract)
     if not isinstance(value, Mapping) or dict(value) != expected:
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only P1 binding")
     return expected
+
+
+def canonical_tqqq_core_only_p1_binding_bytes_for_contract(
+    value: Mapping[str, object],
+    contract: TqqqCoreOnlyCandidateContract,
+) -> bytes:
+    return _canonical(validate_tqqq_core_only_p1_binding_for_contract(value, contract))
+
+
+def tqqq_core_only_p1_binding_sha256_for_contract(
+    value: Mapping[str, object],
+    contract: TqqqCoreOnlyCandidateContract,
+) -> str:
+    return hashlib.sha256(
+        canonical_tqqq_core_only_p1_binding_bytes_for_contract(value, contract)
+    ).hexdigest()
 
 
 def build_tqqq_core_only_input_manifest(
@@ -166,9 +251,11 @@ def build_tqqq_core_only_input_manifest(
     producer: Mapping[str, object],
     member_bytes: bytes,
     source_content_sha256: Mapping[str, str],
+    contract: TqqqCoreOnlyCandidateContract = _P2_V1_CONTRACT,
 ) -> dict[str, object]:
     """Build the future immutable-input manifest from one already-collected member."""
-    frozen = validate_tqqq_core_only_p1_binding(binding)
+    frozen_contract = _require_contract(contract)
+    frozen = validate_tqqq_core_only_p1_binding_for_contract(binding, frozen_contract)
     if (
         not isinstance(member_bytes, bytes)
         or set(source_content_sha256) != set(_UNIVERSE)
@@ -180,14 +267,14 @@ def build_tqqq_core_only_input_manifest(
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input member")
     identity = frozen["data_identity"]
     assert isinstance(identity, dict)
-    binding_digest = binding_sha256(frozen)
+    binding_digest = tqqq_core_only_p1_binding_sha256_for_contract(frozen, frozen_contract)
     manifest = validate_research_input_manifest(
         {
             "schema_version": "research_input_manifest.v1",
             "manifest_id": f"tqqq-core-only-{binding_digest[:24]}-{hashlib.sha256(member_bytes).hexdigest()[:24]}",
             "research_input_contract_id": INPUT_CONTRACT_ID,
             "domain": "us_equity",
-            "profile": CANDIDATE_ID,
+            "profile": frozen_contract.candidate_id,
             "artifact_type": "immutable_adjusted_ohlcv_etf_only",
             "observed_at": observed_at,
             "effective_at": observed_at,
@@ -221,28 +308,32 @@ def build_tqqq_core_only_input_manifest(
             ],
         }
     )
-    validate_tqqq_core_only_input_manifest(manifest, frozen)
+    validate_tqqq_core_only_input_manifest(manifest, frozen, contract=frozen_contract)
     return manifest
 
 
 def validate_tqqq_core_only_input_manifest(
-    manifest: Mapping[str, object], binding: Mapping[str, object]
+    manifest: Mapping[str, object],
+    binding: Mapping[str, object],
+    *,
+    contract: TqqqCoreOnlyCandidateContract = _P2_V1_CONTRACT,
 ) -> str:
     """Validate a QPK immutable-input manifest against the frozen static binding."""
-    frozen = validate_tqqq_core_only_p1_binding(binding)
+    frozen_contract = _require_contract(contract)
+    frozen = validate_tqqq_core_only_p1_binding_for_contract(binding, frozen_contract)
     try:
         validated = validate_research_input_manifest(manifest)
     except ValueError as exc:
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input manifest") from exc
     identity = frozen["data_identity"]
     assert isinstance(identity, dict)
-    binding_digest = binding_sha256(frozen)
+    binding_digest = tqqq_core_only_p1_binding_sha256_for_contract(frozen, frozen_contract)
     expected_source_ids = {f"alpaca_sip_1day_adjustment_all:{symbol}" for symbol in _UNIVERSE}
     sources = validated["sources"]
     if (
         validated["research_input_contract_id"] != INPUT_CONTRACT_ID
         or validated["domain"] != "us_equity"
-        or validated["profile"] != CANDIDATE_ID
+        or validated["profile"] != frozen_contract.candidate_id
         or validated["artifact_type"] != "immutable_adjusted_ohlcv_etf_only"
         or validated["calendar"]
         != {
@@ -488,8 +579,13 @@ def publish_tqqq_core_only_p1_inputs(
     return {"manifest_sha256": manifest_sha256, "status": "P1_DATA_ONLY_INPUTS_PUBLISHED"}
 
 
-def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
+def verify_tqqq_core_only_input_root(
+    output_root: str | Path,
+    *,
+    contract: TqqqCoreOnlyCandidateContract = _P2_V1_CONTRACT,
+) -> str:
     """Verify the complete QPK-compatible immutable root without provider access."""
+    frozen_contract = _require_contract(contract)
     root = Path(output_root)
     try:
         root_stat = root.lstat()
@@ -503,12 +599,16 @@ def verify_tqqq_core_only_input_root(output_root: str | Path) -> str:
         bars_bytes = (root / "bars.json").read_bytes()
         manifest_bytes = (root / "manifest.json").read_bytes()
         binding = json.loads(binding_bytes)
-        if binding_bytes != canonical_binding_bytes(binding):
+        if binding_bytes != canonical_tqqq_core_only_p1_binding_bytes_for_contract(
+            binding, frozen_contract
+        ):
             raise ValueError
         manifest = json.loads(manifest_bytes)
         if manifest_bytes != canonical_research_input_manifest_bytes(manifest):
             raise ValueError
-        manifest_sha256 = validate_tqqq_core_only_input_manifest(manifest, binding)
+        manifest_sha256 = validate_tqqq_core_only_input_manifest(
+            manifest, binding, contract=frozen_contract
+        )
         payload = json.loads(bars_bytes)
         if (
             not isinstance(payload, dict)

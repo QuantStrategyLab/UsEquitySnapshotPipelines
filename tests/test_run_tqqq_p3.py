@@ -51,10 +51,16 @@ def _alpaca_symbol_payload(symbol: str) -> dict[str, object]:
     }
 
 
-def _write_canonical_snapshot(root: Path) -> dict[str, object]:
+def _write_canonical_snapshot(
+    root: Path,
+    contract: p1_binding.TqqqCoreOnlyCandidateContract | None = None,
+) -> dict[str, object]:
     root.mkdir(mode=0o700)
     root.chmod(0o700)
-    binding = p1_binding.build_tqqq_core_only_p1_binding()
+    frozen_contract = contract or p1_binding.resolve_tqqq_core_only_candidate_contract(
+        "tqqq_core_only_p2_v1"
+    )
+    binding = p1_binding.build_tqqq_core_only_p1_binding_for_contract(frozen_contract)
     bars = {
         "schema_version": "tqqq_core_only_private_bars.v1",
         "symbols": {symbol: _alpaca_symbol_payload(symbol) for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")},
@@ -69,8 +75,13 @@ def _write_canonical_snapshot(root: Path) -> dict[str, object]:
             symbol: hashlib.sha256(_canonical(bars["symbols"][symbol])).hexdigest()
             for symbol in bars["symbols"]
         },
+        contract=frozen_contract,
     )
-    (root / "binding.json").write_bytes(p1_binding.canonical_binding_bytes(binding))
+    (root / "binding.json").write_bytes(
+        p1_binding.canonical_tqqq_core_only_p1_binding_bytes_for_contract(
+            binding, frozen_contract
+        )
+    )
     (root / "manifest.json").write_bytes(p1_binding.canonical_research_input_manifest_bytes(manifest))
     (root / "bars.json").write_bytes(bars_bytes)
     return {"binding": binding, "input_manifest": manifest, "bars": bars}
@@ -93,7 +104,7 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     snapshot = tmp_path / "snapshot"
     input_payload = _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
     captured: dict[str, object] = {}
 
     def run_evidence(**kwargs):
@@ -129,7 +140,7 @@ def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding
     snapshot = tmp_path / "snapshot"
     _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
     calls = 0
 
     def run_evidence(**_kwargs: object) -> dict[str, str]:
@@ -169,7 +180,7 @@ def test_cli_sanitizes_unexpected_replay_failure_as_runtime_park(
     snapshot = tmp_path / "snapshot"
     _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
     private_detail = "private provider bars /secret/path"
 
     def run_evidence(**_kwargs: object) -> object:
@@ -212,7 +223,7 @@ def test_cli_rejects_tampered_source_identity_before_evidence_replay(
         p1_binding.canonical_research_input_manifest_bytes(input_payload["input_manifest"])
     )
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
     calls = 0
 
     def run_evidence(**_kwargs: object) -> object:
@@ -241,6 +252,37 @@ def test_cli_rejects_tampered_source_identity_before_evidence_replay(
     }
 
 
+def test_cli_rejects_a_v1_snapshot_for_the_v2_candidate_before_replay(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    snapshot = tmp_path / "snapshot"
+    _write_canonical_snapshot(snapshot)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"candidate_id":"tqqq_core_only_p2_v2"}', encoding="utf-8"
+    )
+    calls = 0
+
+    def run_evidence(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("candidate-bound root verification must run first")
+
+    module.run_tqqq_promotion_evidence = run_evidence
+
+    assert module.main(
+        [
+            "--snapshot-root", str(snapshot),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--output-dir", str(tmp_path / "output"),
+        ]
+    ) == 2
+    assert calls == 0
+    assert json.loads(capsys.readouterr().out)["stage"] == "input_validation"
+
+
 @pytest.mark.parametrize(
     ("error_name", "failure_class", "stage"),
     (
@@ -263,7 +305,7 @@ def test_cli_emits_allowlisted_sanitized_typed_failure(
     snapshot = tmp_path / "snapshot"
     _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
     private_detail = "private provider bars /secret/path"
     error_type = type(error_name, (ValueError,), {})
     calls = 0
