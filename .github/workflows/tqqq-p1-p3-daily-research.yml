@@ -1,0 +1,332 @@
+name: TQQQ Daily P1-P3 Research
+
+on:
+  schedule:
+    # Tue--Sat UTC, after the preceding XNYS weekday close.  The controller
+    # derives the most recent completed XNYS session and therefore also parks
+    # cleanly across US market holidays.
+    - cron: '35 2 * * 2-6'
+
+concurrency:
+  group: tqqq-p1-p3-daily-research-v5
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  p1:
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    outputs:
+      date_cutoff: ${{ steps.binding.outputs.date_cutoff }}
+      manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
+      p1_health_sha256: ${{ steps.acquire.outputs.p1_health_sha256 }}
+      policy_receipt_sha256: ${{ steps.binding.outputs.policy_receipt_sha256 }}
+      status: ${{ steps.acquire.outputs.status }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Resolve frozen P2 v5 daily binding
+        id: binding
+        run: |
+          set -euo pipefail
+          uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          from datetime import UTC, datetime, timedelta
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              P2_V5_CONTRACT,
+              _expected_xnys_sessions,
+              build_tqqq_core_only_p1_binding_for_contract,
+          )
+
+          with open('config/tqqq_core_only_p2_v5.json', encoding='utf-8') as handle:
+              candidate = json.load(handle)
+          canonical = json.dumps(
+              candidate, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False
+          ).encode('utf-8')
+          policy_receipt = hashlib.sha256(canonical).hexdigest()
+          if policy_receipt != P2_V5_CONTRACT.config_sha256:
+              raise SystemExit('unexpected P2 v5 candidate policy')
+          reference_day = datetime.now(UTC).date() - timedelta(days=1)
+          date_cutoff = _expected_xnys_sessions(reference_day.isoformat())[-1].isoformat()
+          build_tqqq_core_only_p1_binding_for_contract(
+              P2_V5_CONTRACT, date_cutoff=date_cutoff
+          )
+          with open(__import__('os').environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'date_cutoff={date_cutoff}\n')
+              output.write(f'policy_receipt_sha256={policy_receipt}\n')
+          with open(__import__('os').environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('DAILY_RESEARCH_POLICY=P2_V5_FROZEN_RESEARCH_ONLY\n')
+              summary.write(f'DATE_CUTOFF={date_cutoff}\n')
+              summary.write('P4_P5_P6=NOT_AUTHORIZED\n')
+          PY
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Acquire and assess one daily P1 root
+        id: acquire
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATE_CUTOFF: ${{ steps.binding.outputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p1-root"
+          health_path="${RUNNER_TEMP}/tqqq-daily-research/p1-health.json"
+          mkdir -p "$(dirname "$root")"
+          ROOT="$root" HEALTH_PATH="$health_path" uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          from scripts.acquire_tqqq_core_only_p1_inputs_alpaca import (
+              AlpacaSipHistoricalBarsProvider,
+              AlpacaSipHttpTransport,
+              P1InputUnavailableError,
+              publish_tqqq_core_only_p1_inputs_for_contract,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              P2_V5_CONTRACT,
+              TqqqCoreOnlyP1BindingError,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_data_health import (
+              assess_tqqq_core_only_p1_input_health,
+              build_tqqq_core_only_p1_input_unavailable_health,
+          )
+
+          observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+          cutoff = os.environ['DATE_CUTOFF']
+          root = Path(os.environ['ROOT'])
+          health_path = Path(os.environ['HEALTH_PATH'])
+          status = 'PARKED'
+          manifest_sha256 = ''
+          try:
+              provider = AlpacaSipHistoricalBarsProvider(
+                  AlpacaSipHttpTransport(
+                      os.environ['ALPACA_API_KEY_ID'], os.environ['ALPACA_API_SECRET_KEY']
+                  ),
+                  date_cutoff=cutoff,
+              )
+              producer = {
+                  'repository': 'QuantStrategyLab/UsEquitySnapshotPipelines',
+                  'commit_sha': os.environ['GITHUB_SHA'],
+                  'tree_sha': subprocess.check_output(
+                      ['git', 'rev-parse', 'HEAD^{tree}'], text=True
+                  ).strip(),
+                  'tool': 'tqqq_core_only_p1_alpaca_sip_daily_acquisition',
+                  'tool_version': 'v5',
+              }
+              published = publish_tqqq_core_only_p1_inputs_for_contract(
+                  provider,
+                  output_root=root,
+                  observed_at=observed_at,
+                  producer=producer,
+                  contract=P2_V5_CONTRACT,
+                  date_cutoff=cutoff,
+              )
+              payload = json.loads((root / 'bars.json').read_bytes())
+              health = assess_tqqq_core_only_p1_input_health(
+                  payload,
+                  observed_at=observed_at,
+                  contract=P2_V5_CONTRACT,
+                  date_cutoff=cutoff,
+              )
+              if health['status'] != 'ACCEPTED':
+                  raise TqqqCoreOnlyP1BindingError('daily P1 health not accepted')
+              status = 'ACCEPTED'
+              manifest_sha256 = published['manifest_sha256']
+          except P1InputUnavailableError:
+              health = build_tqqq_core_only_p1_input_unavailable_health(
+                  observed_at=observed_at,
+                  contract=P2_V5_CONTRACT,
+                  date_cutoff=cutoff,
+              )
+              status = 'DEFERRED'
+          except TqqqCoreOnlyP1BindingError:
+              health = {
+                  'schema_version': 'qsl.tqqq_core_only_p1_input_health.v1',
+                  'status': 'QUARANTINED',
+                  'verdict': 'REJECTED',
+                  'reason_codes': ['P1_CONTRACT_FAILURE'],
+              }
+          health_bytes = json.dumps(
+              health, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False
+          ).encode('utf-8')
+          health_path.write_bytes(health_bytes)
+          health_path.chmod(0o600)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'status={status}\n')
+              output.write(f'p1_health_sha256={hashlib.sha256(health_bytes).hexdigest()}\n')
+              if manifest_sha256:
+                  output.write(f'manifest_sha256={manifest_sha256}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f'P1_DAILY_STATUS={status}\n')
+              summary.write(f'P1_HEALTH_STATUS={health["status"]}\n')
+              summary.write(f'P1_HEALTH_SHA256={hashlib.sha256(health_bytes).hexdigest()}\n')
+              if manifest_sha256:
+                  summary.write(f'P1_MANIFEST_SHA256={manifest_sha256}\n')
+          PY
+      - name: Create-only upload of accepted P1 root and health record
+        if: steps.acquire.outputs.status == 'ACCEPTED'
+        env:
+          MANIFEST_SHA256: ${{ steps.acquire.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p1-root"
+          health_path="${RUNNER_TEMP}/tqqq-daily-research/p1-health.json"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          if gcloud storage ls "${destination}/" >/dev/null 2>&1; then
+            exit 1
+          fi
+          gcloud storage cp --quiet --no-clobber "$root/binding.json" "$root/bars.json" "$root/manifest.json" "${destination}/" >/dev/null
+          gcloud storage cp --quiet --no-clobber "$health_path" "${destination}/daily-health.json" >/dev/null
+          printf 'P1_UPLOAD_STATUS=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+
+  p3:
+    needs: p1
+    if: needs.p1.outputs.status == 'ACCEPTED'
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Download and verify the daily P1 root
+        env:
+          MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p3-input"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
+          chmod 700 "$root"
+          ROOT="$root" uv run --no-sync python - <<'PY'
+          import os
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              P2_V5_CONTRACT,
+              verify_tqqq_core_only_input_root,
+          )
+
+          verify_tqqq_core_only_input_root(os.environ['ROOT'], contract=P2_V5_CONTRACT)
+          PY
+      - name: Run daily offline P3 and record its terminal status
+        env:
+          DATE_CUTOFF: ${{ needs.p1.outputs.date_cutoff }}
+          MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+          P1_HEALTH_SHA256: ${{ needs.p1.outputs.p1_health_sha256 }}
+          POLICY_RECEIPT_SHA256: ${{ needs.p1.outputs.policy_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p3-input"
+          result_path="${RUNNER_TEMP}/tqqq-daily-research/p3-result.json"
+          status_path="${RUNNER_TEMP}/tqqq-daily-research/daily-research-status.json"
+          p3_exit=0
+          uv run --no-sync python scripts/run_tqqq_p3.py \
+            --snapshot-root "$root" \
+            --config config/tqqq_core_only_p2_v5.json \
+            --mandate-receipt-sha256 "$POLICY_RECEIPT_SHA256" \
+            --output-dir "${RUNNER_TEMP}/tqqq-daily-research/p3-output" > "$result_path" || p3_exit=$?
+          RESULT_PATH="$result_path" STATUS_PATH="$status_path" P3_EXIT="$p3_exit" uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
+              validate_tqqq_p3_result,
+          )
+
+          with open(os.environ['RESULT_PATH'], encoding='utf-8') as handle:
+              result = json.load(handle)
+          if os.environ['P3_EXIT'] == '0':
+              terminal = validate_tqqq_p3_result(result)
+          else:
+              expected = {
+                  'complete_evidence', 'failure_class', 'replay_started',
+                  'source_commit', 'stage', 'status',
+              }
+              allowed_failures = {
+                  'input_validation_failure', 'config_contract_failure',
+                  'orchestrator_contract_failure', 'risk_contract_failure',
+                  'evidence_validation_failure', 'runtime_internal_failure',
+              }
+              if (
+                  set(result) != expected
+                  or result.get('status') != 'PARKED'
+                  or result.get('complete_evidence') is not False
+                  or result.get('failure_class') not in allowed_failures
+                  or not isinstance(result.get('replay_started'), bool)
+              ):
+                  raise SystemExit('invalid sanitized daily P3 failure')
+              terminal = result
+          status = {
+              'schema_version': 'qsl.tqqq-daily-research-status.v1',
+              'candidate': {
+                  'candidate_id': 'tqqq_core_only_p2_v5',
+                  'config_sha256': os.environ['POLICY_RECEIPT_SHA256'],
+              },
+              'date_cutoff': os.environ['DATE_CUTOFF'],
+              'input_manifest_sha256': os.environ['MANIFEST_SHA256'],
+              'p1_health_sha256': os.environ['P1_HEALTH_SHA256'],
+              'p3_terminal': terminal,
+          }
+          encoded = json.dumps(
+              status, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False
+          ).encode('utf-8')
+          with open(os.environ['STATUS_PATH'], 'wb') as handle:
+              handle.write(encoded)
+          print(f'DAILY_P3_STATUS={terminal["status"]}')
+          print(f'DAILY_STATUS_SHA256={hashlib.sha256(encoded).hexdigest()}')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f'P3_DAILY_STATUS={terminal["status"]}\n')
+              if terminal['status'] == 'EVIDENCE_V2_COMPLETE':
+                  summary.write(f'P3_EVIDENCE_SHA256={terminal["evidence_sha256"]}\n')
+                  summary.write(f'P3_VERDICT={terminal["verdict"]}\n')
+              else:
+                  summary.write(f'P3_FAILURE_CLASS={terminal["failure_class"]}\n')
+                  summary.write(f'P3_FAILURE_STAGE={terminal["stage"]}\n')
+          PY
+          printf 'P3_DAILY_TERMINAL_RECORDED=true\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Create-only upload of daily P3 status
+        env:
+          MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          status_path="${RUNNER_TEMP}/tqqq-daily-research/daily-research-status.json"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}/daily-research-status.json"
+          gcloud storage cp --quiet --no-clobber "$status_path" "$destination" >/dev/null
+          printf 'P3_DAILY_STATUS_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"

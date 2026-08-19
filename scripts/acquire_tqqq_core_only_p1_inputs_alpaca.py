@@ -14,10 +14,13 @@ from urllib.request import Request, urlopen
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     CANDIDATE_ID,
+    P2_V5_CONTRACT,
+    TqqqCoreOnlyCandidateContract,
     TqqqCoreOnlyHistoricalBarsProvider,
     TqqqCoreOnlyP1BindingError,
     TqqqCoreOnlyP1InputUnavailableError,
     publish_tqqq_core_only_p1_inputs as _publish,
+    publish_tqqq_core_only_p1_inputs_for_contract as _publish_for_contract,
 )
 
 _ALPACA_BARS_URL = "https://data.alpaca.markets/v2/stocks/bars"
@@ -73,10 +76,20 @@ class AlpacaSipHttpTransport:
 
 
 class AlpacaSipHistoricalBarsProvider:
-    """Concrete one-request-per-symbol Alpaca SIP adapter."""
+    """Concrete one-request-per-symbol Alpaca SIP adapter.
 
-    def __init__(self, transport: AlpacaBarsTransport) -> None:
+    The default preserves the v1 fixed cutoff.  A caller may supply one
+    candidate-bound cutoff for v5 daily research; the binding later validates
+    that it is a completed XNYS session before any root is published.
+    """
+
+    def __init__(
+        self, transport: AlpacaBarsTransport, *, date_cutoff: str = _DATE_CUTOFF
+    ) -> None:
+        if not isinstance(date_cutoff, str):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
         self._transport = transport
+        self._date_cutoff = date_cutoff
 
     def fetch_historical_bars(
         self,
@@ -94,7 +107,7 @@ class AlpacaSipHistoricalBarsProvider:
             or timezone != "America/New_York"
             or adjustment_policy != "total_return_adjusted"
             or feed != "SIP"
-            or date_cutoff != _DATE_CUTOFF
+            or date_cutoff != self._date_cutoff
         ):
             raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
         try:
@@ -104,7 +117,7 @@ class AlpacaSipHistoricalBarsProvider:
                     "symbols": symbol,
                     "timeframe": "1Day",
                     "start": _START_DATES[symbol],
-                    "end": _DATE_CUTOFF,
+                    "end": self._date_cutoff,
                     "adjustment": "all",
                     "feed": "sip",
                     "sort": "asc",
@@ -152,6 +165,26 @@ def publish_tqqq_core_only_p1_inputs(
 ) -> dict[str, object]:
     """Publish one immutable four-symbol root through the injected Alpaca provider."""
     return _publish(provider, output_root=output_root, observed_at=observed_at, producer=producer)
+
+
+def publish_tqqq_core_only_p1_inputs_for_contract(
+    provider: TqqqCoreOnlyHistoricalBarsProvider,
+    *,
+    output_root: str | Path,
+    observed_at: str,
+    producer: Mapping[str, object],
+    contract: TqqqCoreOnlyCandidateContract = P2_V5_CONTRACT,
+    date_cutoff: str,
+) -> dict[str, object]:
+    """Publish one P2 v5 daily root through the same narrow Alpaca SIP port."""
+    return _publish_for_contract(
+        provider,
+        output_root=output_root,
+        observed_at=observed_at,
+        producer=producer,
+        contract=contract,
+        date_cutoff=date_cutoff,
+    )
 
 
 def _arguments(argv: list[str] | None) -> argparse.Namespace:

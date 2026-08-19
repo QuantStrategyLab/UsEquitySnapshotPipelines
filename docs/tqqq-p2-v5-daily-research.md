@@ -26,3 +26,21 @@ This change provides the testable P2/P3 foundation only.  It does **not** add a
 schedule, read credentials, contact Alpaca, write GCS, or start any workflow.
 The next delivery wires a separately reviewed GitHub Actions daily controller
 to this contract and records its health/evidence status.
+
+## Daily controller
+
+The controller is `.github/workflows/tqqq-p1-p3-daily-research.yml`.  It runs
+at 02:35 UTC from Tuesday through Saturday, after the preceding XNYS weekday
+close.  At runtime it derives the latest completed XNYS session rather than
+assuming that every calendar day is tradable.
+
+The frozen P2 v5 candidate itself is the checked-in personal automation
+policy: its canonical digest is carried into P3 as the no-order research
+receipt.  There is no per-run mandate, reviewer, paper, shadow, order, or live
+activation step.  A failure to acquire or validate input produces a visible
+`DEFERRED` or `QUARANTINED` status and stops the P3 branch for that day.
+
+For an accepted run, the four-bar input root, daily health record, and a
+sanitized P3 terminal-status record are create-only objects under the same
+short-term private snapshot prefix.  No raw bars are copied into GitHub
+artifacts and the controller does not extend the configured retention period.
