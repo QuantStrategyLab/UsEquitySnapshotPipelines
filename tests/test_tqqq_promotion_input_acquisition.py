@@ -70,7 +70,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
     snapshot = _write_snapshot(tmp_path / "snapshot")
     manifest_sha256 = p1_binding.verify_tqqq_core_only_input_root(snapshot)
     config = tmp_path / "config.json"
-    config.write_text('{"config":"frozen"}')
+    config.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}')
     captured: dict[str, object] = {}
 
     def write_evidence(**kwargs: object) -> dict[str, str]:
@@ -103,7 +103,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
             "input_manifest": json.loads((snapshot / "manifest.json").read_bytes()),
             "bars": json.loads((snapshot / "bars.json").read_bytes()),
         },
-        "config_payload": {"config": "frozen"},
+        "config_payload": {"candidate_id": "tqqq_core_only_p2_v1"},
         "mandate_receipt_sha256": "e" * 64,
         "output_dir": tmp_path / "evidence",
     }
@@ -121,7 +121,7 @@ def test_cli_parks_without_exposing_failure_details(
 ) -> None:
     snapshot = _write_snapshot(tmp_path / "snapshot")
     config = tmp_path / "config.json"
-    config.write_text("{}")
+    config.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}')
     monkeypatch.setattr(
         cli,
         "run_tqqq_promotion_evidence",

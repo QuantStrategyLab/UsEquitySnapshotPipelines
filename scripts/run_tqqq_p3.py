@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+    resolve_tqqq_core_only_candidate_contract,
     verify_tqqq_core_only_input_root,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
@@ -80,6 +81,12 @@ def _snapshot_payload(snapshot_root: Path) -> dict[str, object]:
     }
 
 
+def _candidate_contract(config_payload: object):
+    if not isinstance(config_payload, Mapping):
+        raise ValueError("invalid frozen candidate")
+    return resolve_tqqq_core_only_candidate_contract(config_payload.get("candidate_id"))
+
+
 def _completed_evidence_summary(
     value: object, *, expected_input_manifest_sha256: str
 ) -> dict[str, str]:
@@ -139,10 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     replay_started = False
     try:
         args = _arguments(list(sys.argv[1:] if argv is None else argv))
-        manifest_sha256 = verify_tqqq_core_only_input_root(args.snapshot_root)
-        input_payload = _snapshot_payload(args.snapshot_root)
         stage = "config_contract"
         config_payload = _read_json(args.config)
+        contract = _candidate_contract(config_payload)
+        stage = "input_validation"
+        manifest_sha256 = verify_tqqq_core_only_input_root(
+            args.snapshot_root, contract=contract
+        )
+        input_payload = _snapshot_payload(args.snapshot_root)
         stage = "orchestrator_contract"
         replay_started = True
         result = _completed_evidence_summary(
