@@ -22,10 +22,9 @@ This candidate is deliberately bounded as follows:
   outside this contract.  They require separately implemented policies; P6 is
   explicitly user-activated.
 
-This change provides the testable P2/P3 foundation only.  It does **not** add a
-schedule, read credentials, contact Alpaca, write GCS, or start any workflow.
-The next delivery wires a separately reviewed GitHub Actions daily controller
-to this contract and records its health/evidence status.
+The initial P2/P3 foundation was deliberately pure and synthetic. The current
+main branch now adds the separately reviewed daily controller described below;
+the candidate itself remains frozen and research-only.
 
 ## Daily controller
 
