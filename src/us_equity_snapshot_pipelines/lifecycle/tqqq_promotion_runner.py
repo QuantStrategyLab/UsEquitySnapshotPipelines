@@ -33,12 +33,12 @@ _UES_REVISION = "8b6b418bac74318f8054c5951521c9b62391de3e"
 _PROFILE = "tqqq_core_only_p2_v1"
 _CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
 _P2_V2_PROFILE = "tqqq_core_only_p2_v2"
-_P2_V3_PROFILE = "tqqq_core_only_p2_v3"
 _P2_V4_PROFILE = "tqqq_core_only_p2_v4"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
-_COST_SCENARIOS_BPS = (5, 10, 15, 25)
+_COST_SCENARIOS_BPS = (5, 10, 25)
+_SUPPORTED_COST_SCENARIOS_BPS = frozenset((*_COST_SCENARIOS_BPS, 15))
 _EXACT_COMMON_ELIGIBILITY = date(2022, 12, 28)
 _LOCKED_OOS_START = date(2025, 8, 1)
 _LOCKED_OOS_END = date(2026, 7, 31)
@@ -1095,7 +1095,7 @@ def _validate_switching_traces(
     if (
         type(traces) is not tuple
         or len(traces) != len(sessions)
-        or total_cost_bps not in _COST_SCENARIOS_BPS
+            or total_cost_bps not in _SUPPORTED_COST_SCENARIOS_BPS
     ):
         raise TqqqPromotionContractError("complete switching traces are required")
     execution_sessions: list[date] = []
@@ -1443,11 +1443,6 @@ def _validate_plan(
         _P2_V2_PROFILE: (
             (date(2018, 1, 2), date(2020, 12, 31), date(2022, 1, 3), date(2022, 12, 30)),
             (date(2018, 1, 2), date(2021, 12, 31), date(2023, 1, 3), date(2023, 12, 29)),
-            (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
-        ),
-        _P2_V3_PROFILE: (
-            (date(2018, 1, 2), date(2020, 12, 31), date(2023, 1, 3), date(2023, 6, 30)),
-            (date(2018, 1, 2), date(2021, 12, 31), date(2023, 7, 3), date(2023, 12, 29)),
             (date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
         ),
         _P2_V4_PROFILE: (
@@ -1842,8 +1837,10 @@ def _relative_metrics(replay: TqqqWindowReplay) -> TqqqQqqRelativeMetrics:
 
 
 class TqqqPromotionRunner:
-    """Explicit real-runner protocol over an injected immutable replay function."""
+    """QPK evidence-runner protocol over an injected immutable replay function."""
 
+    # QPK's evidence protocol requires this structural marker.  This runner
+    # remains offline: its injected replay has no provider, broker, or order port.
     runner_kind = "real"
 
     def __init__(
@@ -1856,7 +1853,10 @@ class TqqqPromotionRunner:
     ) -> None:
         _validate_identity(identity)
         _validate_plan(plan, candidate_profile=identity.candidate_profile)
-        if type(total_cost_bps) is not int or total_cost_bps not in _COST_SCENARIOS_BPS:
+        if (
+            type(total_cost_bps) is not int
+            or total_cost_bps not in _SUPPORTED_COST_SCENARIOS_BPS
+        ):
             raise TqqqPromotionContractError("invalid frozen cost scenario")
         if not callable(replay_window):
             raise TqqqPromotionContractError("replay function is required")

@@ -37,8 +37,6 @@ from .tqqq_core_only_p1_binding import (
     CANDIDATE_CONFIG_SHA256,
     P2_V2_CONTRACT,
     P2_V2_UES_REVISION,
-    P2_V3_CONTRACT,
-    P2_V3_UES_REVISION,
     P2_V4_CONTRACT,
     P2_V4_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
@@ -67,7 +65,6 @@ _DOMAIN = "us_equity"
 _INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
 _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
-_P2_V3_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v3"
 _P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
@@ -228,7 +225,6 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if value.get("schema_version") in {
         _CONFIG_SCHEMA,
         _P2_V2_CONFIG_SCHEMA,
-        _P2_V3_CONFIG_SCHEMA,
         _P2_V4_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
@@ -275,12 +271,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
     expected_schema = {
         _PROFILE: _CONFIG_SCHEMA,
         P2_V2_CONTRACT.candidate_id: _P2_V2_CONFIG_SCHEMA,
-        P2_V3_CONTRACT.candidate_id: _P2_V3_CONFIG_SCHEMA,
         P2_V4_CONTRACT.candidate_id: _P2_V4_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V3_CONTRACT, P2_V4_CONTRACT}:
+    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -289,11 +284,7 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
             != (
                 P2_V2_UES_REVISION
                 if contract == P2_V2_CONTRACT
-                else (
-                    P2_V3_UES_REVISION
-                    if contract == P2_V3_CONTRACT
-                    else P2_V4_UES_REVISION
-                )
+                else P2_V4_UES_REVISION
             )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):

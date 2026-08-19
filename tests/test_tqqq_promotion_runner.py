@@ -36,20 +36,6 @@ def _plan() -> TqqqPromotionPlan:
     )
 
 
-def _v3_plan() -> TqqqPromotionPlan:
-    return TqqqPromotionPlan(
-        folds=(
-            PurgedWalkForwardFold(date(2018, 1, 2), date(2020, 12, 31), date(2023, 1, 3), date(2023, 6, 30)),
-            PurgedWalkForwardFold(date(2018, 1, 2), date(2021, 12, 31), date(2023, 7, 3), date(2023, 12, 29)),
-            PurgedWalkForwardFold(date(2018, 1, 2), date(2022, 12, 30), date(2024, 1, 2), date(2024, 6, 28)),
-        ),
-        locked_oos_start=date(2025, 8, 1),
-        locked_oos_end=date(2026, 7, 31),
-        purge_days=252,
-        embargo_days=0,
-    )
-
-
 def _v4_plan() -> TqqqPromotionPlan:
     return TqqqPromotionPlan(
         folds=(
@@ -101,19 +87,13 @@ def test_exact_core_only_plan_and_costs_are_accepted() -> None:
     assert _cost_scenarios({"turnover_cost_bps": 5.0, "stress_turnover_cost_bps": [10.0, 25.0]}) == (5, 10, 25)
 
 
-def test_v3_plan_starts_after_all_assets_common_availability() -> None:
-    _validate_plan(_v3_plan(), candidate_profile="tqqq_core_only_p2_v3")
-    with pytest.raises(TqqqPromotionContractError, match="P2 fold geometry mismatch"):
-        _validate_plan(_plan(), candidate_profile="tqqq_core_only_p2_v3")
-
-
 def test_v4_plan_is_chronological_and_uses_fixed_strategy_cost_stress() -> None:
     _validate_plan(_v4_plan(), candidate_profile="tqqq_core_only_p2_v4")
     assert _cost_scenarios(
         {"turnover_cost_bps": 5.0, "stress_turnover_cost_bps": [10.0, 15.0]},
         candidate_profile="tqqq_core_only_p2_v4",
     ) == (5, 10, 15)
-    with pytest.raises(TqqqPromotionContractError, match="P2 .* geometry mismatch"):
+    with pytest.raises(TqqqPromotionContractError, match="unknown TQQQ candidate geometry"):
         _validate_plan(_v4_plan(), candidate_profile="tqqq_core_only_p2_v3")
 
 

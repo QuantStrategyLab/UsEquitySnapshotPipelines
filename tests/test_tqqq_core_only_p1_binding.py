@@ -102,31 +102,9 @@ def test_v2_candidate_requires_its_own_source_config_and_input_profile() -> None
         binding.validate_tqqq_core_only_p1_binding(value)
 
 
-def test_v3_candidate_has_a_distinct_binding_without_changing_strategy_source() -> None:
-    contract = binding.P2_V3_CONTRACT
-    value = binding.build_tqqq_core_only_p1_binding_for_contract(contract)
-    manifest = binding.build_tqqq_core_only_input_manifest(
-        value,
-        observed_at="2026-08-19T00:00:00Z",
-        producer=_producer(),
-        member_bytes=b'{"schema_version":"tqqq_core_only_private_bars.v1","symbols":{}}',
-        source_content_sha256={
-            symbol: hashlib.sha256(symbol.encode()).hexdigest()
-            for symbol in value["data_identity"]["universe"]
-        },
-        contract=contract,
-    )
-
-    assert value["candidate"] == {
-        "candidate_id": "tqqq_core_only_p2_v3",
-        "config_sha256": "ed93e646782e290d3455da4acf240f22137f4e13b1d2e71b6d71d6860e72897f",
-    }
-    assert value["source"]["revision"] == binding.P2_V2_UES_REVISION
-    assert manifest["profile"] == "tqqq_core_only_p2_v3"
+def test_superseded_v3_candidate_cannot_bind_new_input() -> None:
     with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
-        binding.validate_tqqq_core_only_p1_binding_for_contract(
-            value, binding.P2_V2_CONTRACT
-        )
+        binding.resolve_tqqq_core_only_candidate_contract("tqqq_core_only_p2_v3")
 
 
 def test_v4_candidate_extends_only_its_own_immutable_input_cutoff() -> None:

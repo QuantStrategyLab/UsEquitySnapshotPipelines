@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
 
 
@@ -316,6 +317,10 @@ def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
         "build_tqqq_core_only_p2_v2_research_decision",
         tracked_public_adapter,
     )
+    # This fixture verifies only the synthetic replay contract.  A preceding
+    # test must not make that result depend on the checkout cleanliness guard.
+    monkeypatch.setattr(evidence, "_resolve_runner_revision", lambda: "a" * 40)
+    monkeypatch.setattr(promotion_runner, "_resolve_runner_revision", lambda: "a" * 40)
 
     assert module.main(
         [
