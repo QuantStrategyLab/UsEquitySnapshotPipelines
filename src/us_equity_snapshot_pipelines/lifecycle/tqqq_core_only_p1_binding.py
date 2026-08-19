@@ -533,6 +533,28 @@ def _validate_p2_v5_date_cutoff(value: object) -> str:
     return value
 
 
+def next_tqqq_core_only_xnys_session_after(value: object) -> date:
+    """Return the first scheduled XNYS session after a verified P2 v5 cutoff.
+
+    This is a calendar-only helper.  It neither fetches data nor grants an
+    execution lane; the forward-observation producer uses it solely to label
+    when a decision derived from a completed session becomes effective.
+    """
+    try:
+        completed_session = date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError as exc:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff") from exc
+    if completed_session is None:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff")
+    known_sessions = _expected_xnys_sessions(completed_session.isoformat())
+    if not known_sessions or known_sessions[-1] != completed_session:
+        raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only date cutoff")
+    candidate = completed_session + timedelta(days=1)
+    while candidate.weekday() >= 5 or candidate in _xnys_holidays(candidate.year):
+        candidate += timedelta(days=1)
+    return candidate
+
+
 def expected_tqqq_core_only_sessions_for_contract(
     contract: TqqqCoreOnlyCandidateContract,
     *,
