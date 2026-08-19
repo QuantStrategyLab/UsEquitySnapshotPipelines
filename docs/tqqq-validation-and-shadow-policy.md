@@ -47,13 +47,13 @@ digests.  UESP only orchestrates and reports caller-supplied historical replay
 results.  TQQQ signal, allocation, RiskEngine, and runtime logic remain in
 `UsEquityStrategies`.
 
-This is historical replay coverage only.  It does not make a provider call by
-itself, does not activate a scheduler, and does not authorize paper, shadow,
-live, orders, or capital. A completed replay remains research-only. Any future
-P4+ authority requires its own separately defined autonomous policy. It must
-not be inferred from the P1/P3 scope record.
+The core runner is historical replay only: it has no provider, scheduler,
+broker, order, or capital port.  The separate P2 v5 daily controller may call
+that runner only after it has verified a candidate-bound P1 root.  A completed
+replay remains research-only. Any P4+ authority requires its own separately
+defined autonomous policy; it cannot be inferred from P1/P3 evidence.
 
-## P1/P3 evidence index retention
+## P1/P3 retention and execution paths
 
 The manual P1/P3 workflow first places its raw P1 root in private cloud object
 storage so that P3 can verify and replay the exact same input.  This root
@@ -67,23 +67,39 @@ or other long-term raw-data retention requires a separate Alpaca licence and
 retention decision.  Until then, raw P1 data remains private, short-lived, and
 non-redistributable.
 
-After a successful P3 replay, the workflow may retain a logically separate,
-create-only private evidence-metadata index.  It is in the same short-term
-private storage scope as the raw P1 root and therefore shares its lifecycle;
-it is not currently a separately retained or durable audit store.  Its bounded
-fields are the frozen candidate identity, P1 manifest digest, P3 evidence
-digest and verdict, both producer identities, and research-only/no-order
-claims.  It never contains Alpaca bars, the full P3 package, or a public
-GitHub Actions artifact.  Any separate or long-term evidence-metadata
-retention also requires a separate licence and retention decision.
+After a successful P3 replay, the controller may retain a logically separate,
+create-only private metadata record.  It is in the same short-term private
+storage scope as the raw P1 root and therefore shares its lifecycle; it is not
+a separately retained or durable audit store. Its bounded fields are the
+frozen candidate identity, P1 manifest digest, input-health digest, P3 evidence
+digest/verdict or sanitized PARK details, and research-only/no-order claims.
+It never contains Alpaca bars, the full P3 package, or a public GitHub Actions
+artifact. Any separate or long-term evidence-metadata retention requires a
+separate licence and retention decision.
 
-Before P1 can read Alpaca, the workflow resolves an expiring, checked-in
-non-live scope record by identifier and records its canonical receipt digest in
-P3 provenance. It checks the same record again before P3. The record may cover
-only P1 data acquisition, the associated private create-only root upload, P3
-read/replay, and the associated private evidence-index upload; it explicitly
-forbids paper, shadow, live, order, and capital actions. There is intentionally
-no active scope record in the repository.
+### Current P2 v5 scheduled research path
+
+`.github/workflows/tqqq-p1-p3-daily-research.yml` is the current personal,
+unattended P1/P3 path. It runs after the XNYS close on scheduled weekdays and
+derives the latest completed XNYS session at run time. The checked-in,
+immutable P2 v5 candidate is its personal research policy: its canonical
+digest is carried into P3 as the no-order research receipt. There is no
+per-run mandate or reviewer.
+
+The controller is limited to Alpaca SIP acquisition, input-health assessment,
+short-term private create-only root/status storage, and offline P3 replay. An
+unavailable or invalid input records `DEFERRED` or `QUARANTINED` and skips P3;
+it never fills a gap, substitutes a provider, retries with changed inputs, or
+changes a strategy parameter. P4 paper, P5 shadow, broker orders, capital, and
+P6 live remain unavailable.
+
+### Legacy manual v1 compatibility path
+
+The older `tqqq-p1-p3-one-shot.yml` compatibility workflow is manual v1 only.
+It resolves an expiring checked-in non-live scope record by identifier before
+reading Alpaca and records that receipt in P3 provenance. No active legacy v1
+scope record is checked in, so this legacy path remains undispatched. It does
+not govern the P2 v5 scheduled controller.
 
 The three raw P1 files are uploaded before one separate create-only completion
 marker that binds their hashes and manifest digest. P3 requires that marker and
@@ -95,14 +111,9 @@ commit and tree. This prevents an input captured by one code revision from
 being presented as a conclusion produced by another revision in the one-shot
 P1-to-P3 chain.
 
-The record narrows and makes a requested run reproducible, but is only a
-no-order technical scope record. It is not a pre-authorized autonomous policy,
-and it is not evidence that one is active. Future unattended P1 requires a
-separately defined, externally verified, non-execution data-acquisition
-authorization for the exact P1/P3 scope. That authorization is not active and
-this repository does not read, verify, or inject it today; until it exists, the
-workflow must remain undispatched. Neither the record nor its digest grants
-paper, shadow, live, order, capital, or P4–P6 promotion authority.
+The legacy record is only a no-order technical scope record, not an autonomous
+policy. Its constraints and digest do not grant paper, shadow, live, order,
+capital, or P4--P6 authority.
 
 If P3 parks, the GitHub Actions summary retains only the sanitized failure class,
 stage, and whether replay began. It does not retain raw provider data, paths,
@@ -116,9 +127,9 @@ ledger and PBO/Deflated-Sharpe statuses are reporting controls, not promotion
 acceptance. A structural evidence package cannot be treated as P4+ promotion
 authority.
 
-Any future expansion must remain TQQQ-only and tests-first, without a generic
-diagnostics framework, provider call, credential read, scheduler activation,
-or paper/shadow/live/order/capital path.
+Any P4+ expansion must remain TQQQ-only and tests-first. It must not reuse the
+P1/P3 credentials, data authority, scheduler, or research receipt as paper,
+shadow, order, capital, or live authority.
 
 ## P4 optional forward observation
 
@@ -128,9 +139,9 @@ evidence, not the only valid P3 backtest route and not a substitute for P3
 performance evidence.
 
 P4 does not require a research laptop or Gateway to stay online for a year.
-Daily collection may be introduced later as a bounded adapter only when its
-operational value is demonstrated.  A missed daily run cannot retroactively
-invalidate historical P3 evidence or reset an unrelated holdout clock.
+The current daily P1/P3 collector is a bounded observed-data adapter, not a
+P4 collector. A missed daily run cannot retroactively invalidate historical P3
+evidence or reset an unrelated holdout clock.
 
 The removed daily forward collector and LaunchAgent were never activated.  Any
 future paper/shadow collector must be freshly scoped at P4 and must not inherit
