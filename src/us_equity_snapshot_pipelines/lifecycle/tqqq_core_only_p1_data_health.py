@@ -43,10 +43,13 @@ def _base_result(
     contract: TqqqCoreOnlyCandidateContract,
     *,
     observed_at: str,
+    date_cutoff: str | None = None,
 ) -> dict[str, object]:
     if not isinstance(observed_at, str) or not observed_at:
         raise ValueError("observed_at must be a non-empty string")
-    binding = build_tqqq_core_only_p1_binding_for_contract(contract)
+    binding = build_tqqq_core_only_p1_binding_for_contract(
+        contract, date_cutoff=date_cutoff
+    )
     candidate = binding["candidate"]
     assert isinstance(candidate, Mapping)
     return {
@@ -82,12 +85,9 @@ def _parse_sessions(value: object) -> tuple[date, ...] | None:
     sessions: list[date] = []
     try:
         for bar in value["bars"]:
-            if not isinstance(bar, Mapping) or not isinstance(bar.get("t"), str):
+            if not isinstance(bar, Mapping) or not isinstance(bar.get("date"), str):
                 return None
-            timestamp = bar["t"]
-            if len(timestamp) < 10:
-                return None
-            sessions.append(date.fromisoformat(timestamp[:10]))
+            sessions.append(date.fromisoformat(bar["date"]))
     except ValueError:
         return None
     return tuple(sessions)
@@ -97,9 +97,10 @@ def build_tqqq_core_only_p1_input_unavailable_health(
     *,
     observed_at: str,
     contract: TqqqCoreOnlyCandidateContract = P2_V4_CONTRACT,
+    date_cutoff: str | None = None,
 ) -> dict[str, object]:
     """Record a temporary provider outage without invalidating prior snapshots."""
-    result = _base_result(contract, observed_at=observed_at)
+    result = _base_result(contract, observed_at=observed_at, date_cutoff=date_cutoff)
     result.update(
         {
             "status": "DEFERRED",
@@ -117,6 +118,7 @@ def assess_tqqq_core_only_p1_input_health(
     *,
     observed_at: str,
     contract: TqqqCoreOnlyCandidateContract = P2_V4_CONTRACT,
+    date_cutoff: str | None = None,
 ) -> dict[str, object]:
     """Assess an already-acquired payload without network, storage, or side effects.
 
@@ -125,7 +127,7 @@ def assess_tqqq_core_only_p1_input_health(
     about prior snapshots, strategy quality, or any later P3/P4/P5/P6 stage.
     Malformed, duplicate, non-monotonic, or unexpected sessions are quarantined.
     """
-    result = _base_result(contract, observed_at=observed_at)
+    result = _base_result(contract, observed_at=observed_at, date_cutoff=date_cutoff)
     result["bars_payload_sha256"] = _canonical_sha256(payload)
     if (
         not isinstance(payload, Mapping)
@@ -145,7 +147,9 @@ def assess_tqqq_core_only_p1_input_health(
 
     symbols = payload["symbols"]
     assert isinstance(symbols, Mapping)
-    expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(contract)
+    expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(
+        contract, date_cutoff=date_cutoff
+    )
     coverage: dict[str, object] = {}
     reason_codes: set[str] = set()
     has_missing = False

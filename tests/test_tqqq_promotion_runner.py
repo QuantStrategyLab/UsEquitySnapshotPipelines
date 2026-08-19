@@ -17,6 +17,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     _cost_scenarios,
     _canonical_sha256,
     _params,
+    _p2_v5_oos_bounds,
     _timing_sha256,
     _validate_identity,
     _validate_plan,
@@ -95,6 +96,34 @@ def test_v4_plan_is_chronological_and_uses_fixed_strategy_cost_stress() -> None:
     ) == (5, 10, 15)
     with pytest.raises(TqqqPromotionContractError, match="unknown TQQQ candidate geometry"):
         _validate_plan(_v4_plan(), candidate_profile="tqqq_core_only_p2_v3")
+
+
+def test_v5_plan_uses_only_a_binding_derived_trailing_oos_window() -> None:
+    oos_start, oos_end = _p2_v5_oos_bounds(date(2026, 8, 18))
+    plan = TqqqPromotionPlan(
+        folds=_v4_plan().folds,
+        locked_oos_start=oos_start,
+        locked_oos_end=oos_end,
+        purge_days=1,
+        embargo_days=1,
+    )
+
+    _validate_plan(plan, candidate_profile="tqqq_core_only_p2_v5")
+    assert _cost_scenarios(
+        {"turnover_cost_bps": 5.0, "stress_turnover_cost_bps": [10.0, 15.0]},
+        candidate_profile="tqqq_core_only_p2_v5",
+    ) == (5, 10, 15)
+    with pytest.raises(TqqqPromotionContractError):
+        _validate_plan(
+            TqqqPromotionPlan(
+                folds=plan.folds,
+                locked_oos_start=oos_start,
+                locked_oos_end=date(2026, 8, 16),
+                purge_days=1,
+                embargo_days=1,
+            ),
+            candidate_profile="tqqq_core_only_p2_v5",
+        )
 
 
 @pytest.mark.parametrize("bad", [

@@ -39,6 +39,8 @@ from .tqqq_core_only_p1_binding import (
     P2_V2_UES_REVISION,
     P2_V4_CONTRACT,
     P2_V4_UES_REVISION,
+    P2_V5_CONTRACT,
+    P2_V5_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
     _expected_xnys_sessions,
     resolve_tqqq_core_only_candidate_contract,
@@ -66,6 +68,7 @@ _INPUT_SCHEMA = "tqqq_core_only_private_bars.v1"
 _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
 _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
 _P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
+_P2_V5_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v5"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -226,6 +229,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         _CONFIG_SCHEMA,
         _P2_V2_CONFIG_SCHEMA,
         _P2_V4_CONFIG_SCHEMA,
+        _P2_V5_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
@@ -272,10 +276,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         _PROFILE: _CONFIG_SCHEMA,
         P2_V2_CONTRACT.candidate_id: _P2_V2_CONFIG_SCHEMA,
         P2_V4_CONTRACT.candidate_id: _P2_V4_CONFIG_SCHEMA,
+        P2_V5_CONTRACT.candidate_id: _P2_V5_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT}:
+    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -285,6 +290,8 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
                 P2_V2_UES_REVISION
                 if contract == P2_V2_CONTRACT
                 else P2_V4_UES_REVISION
+                if contract == P2_V4_CONTRACT
+                else P2_V5_UES_REVISION
             )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):
@@ -352,7 +359,15 @@ def _parse_bar(value: object) -> _Bar:
     return _Bar(session, open_price, high, low, close, volume)
 
 
-def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
+def _plan_from_candidate(
+    candidate: Mapping[str, Any], *, data_cutoff: str | None = None
+) -> TqqqPromotionPlan:
+    """Build a candidate plan without giving evidence outcomes any tuning path.
+
+    P2 v5 is the only rolling candidate.  Its frozen configuration fixes the
+    folds, cost model, and trailing OOS session count; the verified P1 binding
+    contributes only the completed data cutoff that anchors that OOS window.
+    """
     contract = _candidate_contract(candidate)
     plan = candidate.get("evaluation_plan")
     if not isinstance(plan, Mapping):
@@ -372,11 +387,45 @@ def _plan_from_candidate(candidate: Mapping[str, Any]) -> TqqqPromotionPlan:
             if isinstance(fold, Mapping)
             and fold.get("purge_sessions_after_train") == purge_days
         )
-        locked = plan["locked_oos"]
+        if contract == P2_V5_CONTRACT:
+            rolling = plan["rolling_locked_oos"]
+            if (
+                not isinstance(rolling, Mapping)
+                or set(rolling)
+                != {
+                    "anchor",
+                    "minimum_date_cutoff",
+                    "rule",
+                    "trailing_xnys_sessions",
+                }
+                or rolling["anchor"] != "VERIFIED_P1_DATE_CUTOFF"
+                or rolling["minimum_date_cutoff"] != "2026-08-04"
+                or rolling["trailing_xnys_sessions"] != 252
+                or not isinstance(rolling["rule"], str)
+                or not isinstance(data_cutoff, str)
+            ):
+                raise ValueError
+            cutoff = date.fromisoformat(data_cutoff)
+            sessions = _expected_xnys_sessions(data_cutoff)
+            if (
+                cutoff < date(2026, 8, 4)
+                or not sessions
+                or sessions[-1] != cutoff
+                or len(sessions) < 252
+            ):
+                raise ValueError
+            locked_start = sessions[-252]
+            locked_end = cutoff
+        else:
+            if data_cutoff is not None:
+                raise ValueError
+            locked = plan["locked_oos"]
+            locked_start = date.fromisoformat(locked["start"])
+            locked_end = date.fromisoformat(locked["end"])
         result = TqqqPromotionPlan(
             folds=folds,
-            locked_oos_start=date.fromisoformat(locked["start"]),
-            locked_oos_end=date.fromisoformat(locked["end"]),
+            locked_oos_start=locked_start,
+            locked_oos_end=locked_end,
             purge_days=purge_days,
             embargo_days=plan.get("embargo_days", 0),
         )
@@ -397,7 +446,6 @@ def _validate_input(
     if not isinstance(candidate, Mapping):
         raise TqqqPromotionEvidenceError("missing frozen candidate")
     contract = _candidate_contract(candidate)
-    plan = _plan_from_candidate(candidate)
     payload = _exact_mapping(value, {"binding", "input_manifest", "bars"}, "input payload")
     try:
         binding = validate_tqqq_core_only_p1_binding_for_contract(
@@ -411,6 +459,14 @@ def _validate_input(
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
     identity = binding["data_identity"]
     assert isinstance(identity, dict)
+    try:
+        plan = _plan_from_candidate(
+            candidate, data_cutoff=str(identity["date_cutoff"])
+            if contract == P2_V5_CONTRACT
+            else None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TqqqPromotionEvidenceError("invalid candidate evaluation plan") from exc
     retention = identity["retention"]
     assert isinstance(retention, dict)
     provenance = {
@@ -501,6 +557,27 @@ def _validate_input(
     if observed_locked_sessions != expected_locked_sessions:
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
     return provenance, parsed, manifest_sha256
+
+
+def _bound_data_cutoff(
+    input_payload: Mapping[str, Any], contract: TqqqCoreOnlyCandidateContract
+) -> str | None:
+    """Read the cutoff only after exact candidate-bound binding validation."""
+    try:
+        binding = validate_tqqq_core_only_p1_binding_for_contract(
+            input_payload["binding"], contract
+        )
+        identity = binding["data_identity"]
+        if not isinstance(identity, Mapping):
+            raise TypeError
+        cutoff = identity["date_cutoff"]
+    except (KeyError, TypeError, ValueError):
+        raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
+    if contract == P2_V5_CONTRACT:
+        if not isinstance(cutoff, str):
+            raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding")
+        return cutoff
+    return None
 
 
 def _initial_state_projection() -> dict[str, Any]:
@@ -1115,8 +1192,11 @@ def _run_tqqq_promotion_replay(
     candidate_config = config["candidate"]
     assert isinstance(candidate_config, Mapping)
     contract = _candidate_contract(candidate_config)
-    plan = _plan_from_candidate(candidate_config)
     provenance, bars, manifest_sha256 = _validate_input(input_payload, config)
+    plan = _plan_from_candidate(
+        candidate_config,
+        data_cutoff=_bound_data_cutoff(input_payload, contract),
+    )
     manifest = validate_research_input_manifest(input_payload["input_manifest"])
     runner_revision = _resolve_runner_revision()
     replay_callable, strategy_execution = _tqqq_replay_callable_and_identity(contract)
