@@ -32,12 +32,11 @@ def test_catalogue_describes_tqqq_as_daily_and_soxl_as_unactivated_migration() -
     assert SOXL_MIGRATION_ROUTE.research_identity_id == P2_V2_CONTRACT.candidate_id
     assert SOXL_MIGRATION_ROUTE.input_contract_id == FUTURE_INPUT_CONTRACT_ID
     assert SOXL_MIGRATION_ROUTE.p2_config_sha256 == P2_V2_CONTRACT.config_sha256
-    assert SOXL_MIGRATION_ROUTE.p3_replay_entrypoint == "PENDING:soxl_core_only_p3_verifier"
+    assert SOXL_MIGRATION_ROUTE.p3_replay_entrypoint == "scripts/run_soxl_core_only_p3_evidence.py"
     assert SOXL_MIGRATION_ROUTE.state == MIGRATION_REQUIRED
     assert SOXL_MIGRATION_ROUTE.migration_blockers == (
         "daily_p1_publisher_not_implemented",
-        "fixed_window_p3_evidence_verifier_not_implemented",
-        "nonlive_research_scheduler_not_implemented",
+        "nonlive_scheduler_and_sanitized_evidence_persistence_not_implemented",
     )
     assert catalogue["routes"][0]["authority"] == {
         "research_only": True,

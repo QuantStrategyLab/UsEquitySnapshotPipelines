@@ -28,10 +28,10 @@ and the frozen 252-session 95th-percentile volatility threshold bounded to
 provider timestamps or broker fills.  The isolated runner remains responsible
 for next-complete-session execution timing.
 
-This change does **not** fetch Alpaca data, validate complete XNYS holiday
-coverage, publish a P1 root, run the strategy, create P3 evidence folds,
-write storage, schedule work, access credentials, place paper/shadow/live
-orders, or authorize promotion.  A future P1 publisher must verify complete
-XNYS coverage.  A later P3 evidence verifier must select the frozen folds and
-trailing OOS window, execute all 5/10/15 bps scenarios, package only
-non-sensitive evidence, and fail closed.
+This module does **not** fetch Alpaca data, validate complete XNYS holiday
+coverage, publish a P1 root, write storage, schedule work, access credentials,
+place paper/shadow/live orders, or authorize promotion.  The local P3 facade
+now selects the frozen folds and trailing OOS window, executes all 5/10/15 bps
+scenarios through the isolated runtime, and packages metrics-and-hashes only.
+A future P1 publisher must still verify complete XNYS coverage; a later
+non-live scheduler must persist only that sanitized evidence and fail closed.
