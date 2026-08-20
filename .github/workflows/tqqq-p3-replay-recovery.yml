@@ -1,0 +1,270 @@
+name: TQQQ P3 Replay Recovery
+
+on:
+  schedule:
+    # Runs after the daily P1/P3 controller. It is intentionally not manually
+    # dispatchable: all eligibility comes from checked, sanitized metadata.
+    - cron: '5 5 * * 2-6'
+
+concurrency:
+  group: tqqq-p3-replay-recovery-v5
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    outputs:
+      status: ${{ steps.select.outputs.status }}
+      manifest_sha256: ${{ steps.select.outputs.manifest_sha256 }}
+      date_cutoff: ${{ steps.select.outputs.date_cutoff }}
+      daily_status_sha256: ${{ steps.select.outputs.daily_status_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Select one eligible metadata-bound P3 recovery
+        id: select
+        run: |
+          set -euo pipefail
+          metadata_root="${RUNNER_TEMP}/tqqq-p3-recovery/metadata"
+          mkdir -p "$metadata_root"
+          chmod 700 "$metadata_root"
+          all_objects="$metadata_root/objects.txt"
+          status_objects="$metadata_root/status-objects.txt"
+          candidate_plans="$metadata_root/candidate-plans.txt"
+          gcloud storage ls --recursive gs://qsl-runtime-logs-shared/tqqq-p1-p3 > "$all_objects"
+          awk '/\/daily-research-status\.json$/' "$all_objects" > "$status_objects"
+          : > "$candidate_plans"
+          while IFS= read -r status_object; do
+            [ -n "$status_object" ] || continue
+            root="${status_object%/daily-research-status.json}"
+            manifest_sha256="${root##*/}"
+            status_path="$metadata_root/${manifest_sha256}-daily-status.json"
+            plan_path="$metadata_root/${manifest_sha256}-plan.json"
+            gcloud storage cp --quiet "$status_object" "$status_path" >/dev/null
+            record_exists=false
+            if gcloud storage ls "${root}/p3-recovery-record.v1.json" >/dev/null 2>&1; then
+              record_exists=true
+            fi
+            uv run --no-sync python scripts/plan_tqqq_p3_recovery.py \
+              --daily-research-status "$status_path" \
+              --recovery-record-exists "$record_exists" \
+              --output "$plan_path" >/dev/null
+            PLAN_PATH="$plan_path" uv run --no-sync python - <<'PY' >> "$candidate_plans"
+          import json
+          import os
+
+          plan = json.loads(open(os.environ['PLAN_PATH'], encoding='utf-8').read())
+          if plan['status'] == 'REPLAY_ONCE':
+              print(json.dumps({
+                  'daily_status_sha256': plan['daily_status_sha256'],
+                  'date_cutoff': plan['date_cutoff'],
+                  'manifest_sha256': plan['input_manifest_sha256'],
+                  'plan_path': os.environ['PLAN_PATH'],
+              }, sort_keys=True, separators=(',', ':')))
+          PY
+          done < "$status_objects"
+          SELECTED="$metadata_root/selected.json" CANDIDATE_PLANS="$candidate_plans" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          candidates = [json.loads(line) for line in Path(os.environ['CANDIDATE_PLANS']).read_text(encoding='utf-8').splitlines() if line]
+          selected = max(candidates, key=lambda value: (value['date_cutoff'], value['manifest_sha256'])) if candidates else None
+          Path(os.environ['SELECTED']).write_text(json.dumps(selected, sort_keys=True, separators=(',', ':')), encoding='utf-8')
+          PY
+          selected="$metadata_root/selected.json"
+          SELECTED="$selected" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          selected = json.loads(open(os.environ['SELECTED'], encoding='utf-8').read())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              if selected is None:
+                  output.write('status=NO_ELIGIBLE_ROOT\n')
+              else:
+                  output.write('status=REPLAY_ONCE\n')
+                  for field in ('manifest_sha256', 'date_cutoff', 'daily_status_sha256'):
+                      output.write(f'{field}={selected[field]}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              if selected is None:
+                  summary.write('P3_RECOVERY_STATUS=NO_ELIGIBLE_ROOT\n')
+              else:
+                  summary.write('P3_RECOVERY_STATUS=REPLAY_ONCE\n')
+                  summary.write(f'P1_MANIFEST_SHA256={selected["manifest_sha256"]}\n')
+                  summary.write(f'DATE_CUTOFF={selected["date_cutoff"]}\n')
+          PY
+
+  recover:
+    needs: plan
+    if: needs.plan.outputs.status == 'REPLAY_ONCE'
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    outputs:
+      p3_status: ${{ steps.record.outputs.p3_status }}
+      evidence_sha256: ${{ steps.record.outputs.evidence_sha256 }}
+      failure_class: ${{ steps.record.outputs.failure_class }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Download and verify the selected immutable P1 root
+        env:
+          MANIFEST_SHA256: ${{ needs.plan.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p3-recovery/p3-input"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
+          ROOT="$root" EXPECTED_MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
+          import os
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              P2_V5_CONTRACT,
+              verify_tqqq_core_only_input_root,
+          )
+
+          if verify_tqqq_core_only_input_root(os.environ['ROOT'], contract=P2_V5_CONTRACT) != os.environ['EXPECTED_MANIFEST_SHA256']:
+              raise SystemExit('recovery root does not match selected manifest')
+          PY
+      - name: Replay once and create the terminal recovery record
+        id: record
+        env:
+          DATE_CUTOFF: ${{ needs.plan.outputs.date_cutoff }}
+          MANIFEST_SHA256: ${{ needs.plan.outputs.manifest_sha256 }}
+          DAILY_STATUS_SHA256: ${{ needs.plan.outputs.daily_status_sha256 }}
+        run: |
+          set -euo pipefail
+          recovery_root="${RUNNER_TEMP}/tqqq-p3-recovery"
+          snapshot_root="$recovery_root/p3-input"
+          plan_path="$recovery_root/plan.json"
+          result_path="$recovery_root/p3-result.json"
+          record_path="$recovery_root/p3-recovery-record.v1.json"
+          mkdir -p "$recovery_root"
+          PLAN_PATH="$plan_path" MANIFEST_SHA256="$MANIFEST_SHA256" DATE_CUTOFF="$DATE_CUTOFF" DAILY_STATUS_SHA256="$DAILY_STATUS_SHA256" uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          plan = {
+              'schema_version': 'qsl.tqqq-p3-recovery-plan.v1',
+              'status': 'REPLAY_ONCE',
+              'reason_code': 'RUNTIME_REPLAY_RECOVERY',
+              'candidate': {
+                  'candidate_id': 'tqqq_core_only_p2_v5',
+                  'config_sha256': '',
+              },
+              'date_cutoff': os.environ['DATE_CUTOFF'],
+              'input_manifest_sha256': os.environ['MANIFEST_SHA256'],
+              'daily_status_sha256': os.environ['DAILY_STATUS_SHA256'],
+              'recovery_attempt_limit': 1,
+          }
+          # Importing the contract prevents a stale workflow literal from granting a replay.
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT
+          plan['candidate']['config_sha256'] = P2_V5_CONTRACT.config_sha256
+          with open(os.environ['PLAN_PATH'], 'x', encoding='utf-8') as handle:
+              json.dump(plan, handle, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+          PY
+          p3_exit=0
+          uv run --no-sync python scripts/run_tqqq_p3.py \
+            --snapshot-root "$snapshot_root" \
+            --config config/tqqq_core_only_p2_v5.json \
+            --mandate-receipt-sha256 "$(uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('config/tqqq_core_only_p2_v5.json').read_text(encoding='utf-8'))
+          print(hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest())
+          PY
+          )" \
+            --output-dir "$recovery_root/p3-output" > "$result_path" || p3_exit=$?
+          uv run --no-sync python scripts/build_tqqq_p3_recovery_record.py \
+            --plan "$plan_path" \
+            --p3-result "$result_path" \
+            --p3-exit-code "$p3_exit" \
+            --produced-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$record_path" > "$recovery_root/recovery-result.json"
+          RECORD_PATH="$record_path" GITHUB_OUTPUT="$GITHUB_OUTPUT" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          record = json.loads(open(os.environ['RECORD_PATH'], encoding='utf-8').read())
+          terminal = record['p3_terminal']
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'p3_status={terminal["status"]}\n')
+              if terminal['status'] == 'EVIDENCE_V2_COMPLETE':
+                  output.write(f'evidence_sha256={terminal["evidence_sha256"]}\n')
+              else:
+                  output.write(f'failure_class={terminal["failure_class"]}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('P3_RECOVERY_STATUS=TERMINAL_RECORDED\n')
+              summary.write(f'P3_STATUS={terminal["status"]}\n')
+              if terminal['status'] == 'EVIDENCE_V2_COMPLETE':
+                  summary.write(f'P3_EVIDENCE_SHA256={terminal["evidence_sha256"]}\n')
+              else:
+                  summary.write(f'P3_FAILURE_CLASS={terminal["failure_class"]}\n')
+          PY
+      - name: Create-only upload of the terminal recovery record
+        env:
+          MANIFEST_SHA256: ${{ needs.plan.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          source_path="${RUNNER_TEMP}/tqqq-p3-recovery/p3-recovery-record.v1.json"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}/p3-recovery-record.v1.json"
+          gcloud storage cp --quiet --no-clobber "$source_path" "$destination" >/dev/null
+          printf 'P3_RECOVERY_RECORD_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Build sanitized P3 research performance observation
+        if: steps.record.outputs.p3_status == 'EVIDENCE_V2_COMPLETE'
+        env:
+          P3_EVIDENCE_SHA256: ${{ steps.record.outputs.evidence_sha256 }}
+        run: |
+          set -euo pipefail
+          output_path="${RUNNER_TEMP}/tqqq-p3-recovery/strategy_performance.v2.json"
+          uv run --no-sync python scripts/build_tqqq_p3_strategy_performance.py \
+            --evidence-package "${RUNNER_TEMP}/tqqq-p3-recovery/p3-output/strategy-evidence-package.v2.json" \
+            --expected-evidence-sha256 "$P3_EVIDENCE_SHA256" \
+            --producer-revision "$GITHUB_SHA" \
+            --computed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$output_path"
+          printf 'P3_RECOVERY_RESEARCH_PERFORMANCE=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized P3 research performance observation
+        if: steps.record.outputs.p3_status == 'EVIDENCE_V2_COMPLETE'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-p3-recovery-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tqqq-p3-recovery/strategy_performance.v2.json
+          if-no-files-found: error
+          retention-days: 35

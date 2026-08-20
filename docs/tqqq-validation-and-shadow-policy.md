@@ -102,6 +102,14 @@ same strategy has no Paper, Shadow, or Live evidence on another platform; that
 evidence is platform- and lane-specific and does not grant this controller a
 new execution authority.
 
+A separate recovery controller may inspect only sanitized daily status metadata
+and, only for a `runtime_internal_failure` after P3 replay began, make one
+offline replay attempt against the same verified P1 manifest. It records a
+create-only, digest-bound terminal outcome and never invokes Alpaca, changes
+the P1 root, substitutes data, or loops. It does not publish a delayed P5
+forward observation: an old replay is historical P3 evidence, not a timely
+forward allocation signal.
+
 ### Legacy manual v1 compatibility path
 
 The older `tqqq-p1-p3-one-shot.yml` compatibility workflow is manual v1 only.
