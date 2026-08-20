@@ -412,6 +412,72 @@ jobs:
           gcloud storage cp --quiet --no-clobber "$observation_path" "$destination" >/dev/null
           printf 'P5_FORWARD_OBSERVATION_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
           printf 'P5_FORWARD_OBSERVATION_SHA256=%s\n' "$FORWARD_OBSERVATION_SHA256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build bounded P2 v6 plugin observation
+        id: plugin_observation
+        if: steps.forward_observation.outputs.status == 'FORWARD_OBSERVATION_RECORDED'
+        env:
+          QSP_REVISION: 0d5b48ce4f9dd56491d6a6b51fdf5b0aa4cb256c
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-daily-research/p3-input"
+          status_path="${RUNNER_TEMP}/tqqq-daily-research/daily-research-status.json"
+          forward_path="${RUNNER_TEMP}/tqqq-daily-research/p5-forward-observation.v1.json"
+          output_path="${RUNNER_TEMP}/tqqq-daily-research/p2-v6-plugin-observation.v1.json"
+          result_path="${RUNNER_TEMP}/tqqq-daily-research/p2-v6-plugin-observation-result.json"
+          observation_exit=0
+          uv run --no-sync python scripts/build_tqqq_p2_v6_daily_observation.py \
+            --snapshot-root "$root" \
+            --daily-research-status "$status_path" \
+            --forward-observation "$forward_path" \
+            --qsp-revision "$QSP_REVISION" \
+            --produced-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "$output_path" > "$result_path" || observation_exit=$?
+          OUTPUT_PATH="$output_path" RESULT_PATH="$result_path" OBSERVATION_EXIT="$observation_exit" \
+            uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p2_v6_daily_observation import (
+              validate_tqqq_p2_v6_daily_observation,
+          )
+
+          result = json.loads(open(os.environ['RESULT_PATH'], encoding='utf-8').read())
+          if os.environ['OBSERVATION_EXIT'] == '0':
+              observation = validate_tqqq_p2_v6_daily_observation(
+                  json.loads(open(os.environ['OUTPUT_PATH'], encoding='utf-8').read())
+              )
+              if result != {
+                  'observation_sha256': observation['observation_sha256'],
+                  'status': 'OBSERVATION_RECORDED',
+              }:
+                  raise SystemExit('invalid v6 plugin observation result')
+              status = 'OBSERVATION_RECORDED'
+              observation_sha256 = observation['observation_sha256']
+          elif os.environ['OBSERVATION_EXIT'] == '2' and result == {
+              'stage': 'v6_plugin_observation',
+              'status': 'PARKED',
+          }:
+              status = 'PARKED'
+              observation_sha256 = ''
+          else:
+              raise SystemExit('invalid v6 plugin observation failure')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'status={status}\n')
+              if observation_sha256:
+                  output.write(f'observation_sha256={observation_sha256}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f'P2_V6_PLUGIN_OBSERVATION_STATUS={status}\n')
+              if observation_sha256:
+                  summary.write(f'P2_V6_PLUGIN_OBSERVATION_SHA256={observation_sha256}\n')
+          PY
+      - name: Upload bounded P2 v6 plugin observation
+        if: steps.plugin_observation.outputs.status == 'OBSERVATION_RECORDED'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-p2-v6-plugin-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tqqq-daily-research/p2-v6-plugin-observation.v1.json
+          if-no-files-found: error
+          retention-days: 35
       - name: Build sanitized P3 research performance observation
         if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
         env:

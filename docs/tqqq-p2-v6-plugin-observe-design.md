@@ -1,10 +1,12 @@
 # TQQQ P2 v6 Plugin Observe Contract (design-only)
 
-Status: `DESIGN_ONLY_NOT_RUNTIME`
+Status: `DAILY_OBSERVATION_ONLY_NOT_STRATEGY_RUNTIME`
 
-This is a small, local P2/P3 validation contract around the active
-`tqqq_core_only_p2_v5` candidate.  It does not register a new active
-candidate, modify v5/P3 callers, change strategy targets, or add a workflow.
+This is a small P2/P3 observation contract around the active
+`tqqq_core_only_p2_v5` candidate. The daily P1/P3 research workflow invokes
+it only after the same v5 P3 evidence is complete and a bound v5 forward
+observation exists. It does not register a new active candidate or change
+strategy targets.
 
 For a supplied P1 identity, P2 v6 binds exactly:
 
@@ -28,12 +30,18 @@ execution instructions.
 
 Any missing or mismatched P1 reference, envelope/provenance or recomputation
 mismatch, AI field, action/target field, or invalid contract returns `PARKED`.
-No fallback, resolver, `latest` artifact, P4/P5/P6 path, workflow, storage
-write, or automatic retry is part of this design.
+No fallback, resolver, `latest` artifact, strategy-consumption path, or
+automatic retry is part of this design.
 
-`tqqq_p2_v6_qqq_price_regime_root` adds the only permitted bridge from a local
+`tqqq_p2_v6_qqq_price_regime_root` is the only permitted bridge from a local
 P1 root: it verifies the unchanged v5 root before extracting QQQ bars, derives
 an identity from all verified root members, then calls the strict recomputation
-seam. It returns no bars or signal payload and writes nothing. A future daily
-controller may use this local bridge only after its durable observation
-retention boundary is separately decided; this PR does not modify a workflow.
+seam. It returns no bars or signal payload. The existing daily controller
+writes only the resulting redacted record as a GitHub Actions artifact retained
+for 35 days. It does not upload the v6 record to GCS, publish it to the control
+plane, or grant durable/long-term retention.
+
+The v6 record is emitted only if independently recomputing the signal from the
+verified P1 root succeeds and the exact v5 forward targets match. A v6 failure
+is summarized as `PARKED`; it does not alter or fail the completed v5 research
+record. No strategy consumes the signal, and no P4/P5/P6 action is enabled.
