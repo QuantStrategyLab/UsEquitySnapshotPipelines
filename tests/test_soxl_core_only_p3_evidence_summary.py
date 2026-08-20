@@ -6,7 +6,7 @@ import json
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p3_evidence_summary as summary
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
     MATERIALIZED_INPUT_SCHEMA,
 )
@@ -39,8 +39,8 @@ def _plan() -> dict[str, object]:
         "schema_version": "qsl.soxl-soxx-core-only-p3-evidence-plan.v1",
         "p1_identity": {"input_manifest_sha256": "a" * 64},
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "materialized_input_sha256": "c" * 64,
         "execution_timing": "next_complete_trading_session_after_signal_effective_date",
@@ -81,8 +81,8 @@ def _isolated_result(cost_bps: int) -> dict[str, object]:
         "status": "SUCCESS",
         "execution_identity": {"repository": "QuantStrategyLab/UsEquityStrategies", "revision": "d" * 40},
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "replay": replay,
     }

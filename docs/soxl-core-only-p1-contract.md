@@ -1,7 +1,7 @@
 # SOXL/SOXX Core-only P1 Input Contract
 
 This is the data-identity half of the SOXL/SOXX core-only research route. It
-binds exactly the frozen P2 v2 candidate, its UsEquityStrategies revision, and
+binds exactly the frozen P2 v3 candidate, its UsEquityStrategies revision, and
 three observed daily-bar inputs: `SOXL`, `SOXX`, and `BOXX`.
 
 The contract requires SIP, total-return-adjusted daily data on the XNYS

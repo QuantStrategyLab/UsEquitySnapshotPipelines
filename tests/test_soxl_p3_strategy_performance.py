@@ -6,7 +6,7 @@ import json
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import soxl_p3_strategy_performance as performance
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 
 NOW = "2026-08-21T03:00:00Z"
 PRODUCER_REVISION = "a" * 40
@@ -29,8 +29,8 @@ def _summary() -> dict[str, object]:
             "date_cutoff": "2026-08-20",
         },
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "materialized_input_sha256": "f" * 64,
         "evidence_plan_sha256": "1" * 64,
@@ -86,7 +86,7 @@ def test_projects_only_the_predeclared_trailing_oos_10bps_metrics() -> None:
         "schema_version": "strategy_performance.v2",
         "metrics_kind": "performance",
         "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
-        "strategy_profile": "soxl_soxx_core_only_p2_v2",
+        "strategy_profile": "soxl_soxx_core_only_p2_v3",
         "candidate_kind": "individual",
         "domain": "us_equity",
         "generated_at": NOW,
@@ -100,7 +100,7 @@ def test_projects_only_the_predeclared_trailing_oos_10bps_metrics() -> None:
         },
         "evidence": {
             "p1_input_digest": MANIFEST,
-            "p2_config_digest": P2_V2_CONTRACT.config_sha256,
+            "p2_config_digest": P2_V3_CONTRACT.config_sha256,
             "p3_evidence_id": _summary()["evidence_summary_sha256"],
             "strategy_revision": STRATEGY_REVISION,
             "producer_revision": PRODUCER_REVISION,

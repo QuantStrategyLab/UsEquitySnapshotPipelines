@@ -1,4 +1,4 @@
-"""Execute the frozen SOXL core-only P2 v2 adapter in its exact UES runtime.
+"""Execute the frozen SOXL core-only P2 v3 candidate in its exact UES runtime.
 
 This is a P3 execution primitive, not a P3 evidence verifier.  It accepts an
 already materialized research context, validates a local UES checkout against
@@ -22,12 +22,11 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
-
 P2_UES_REVISION = "7756fe32585e85cf1d09a163203a02e3eee39fe1"
 P2_QPK_REVISION = "3acab1923a97b805b077c85c6c19657be0143bac"
 P2_UES_UV_LOCK_SHA256 = "6c12df9b3412681829295f15de7e2ce7fc5b708d1de815f72d654fc16b7848e6"
-P2_CANDIDATE_ID = "soxl_soxx_core_only_p2_v2"
-P2_CONFIG_SHA256 = "c63c6d96057644a3c3cfc506a93d61c14836a5f7aa164bd629fa03ca234ff140"
+P2_CANDIDATE_ID = "soxl_soxx_core_only_p2_v3"
+P2_CONFIG_SHA256 = "ff8fa0acf4f175a7c40c3e1e6a3304ea2748b6b81c3797342085a4df3810ab4d"
 INPUT_SCHEMA = "qsl.soxl-core-only-p3-strategy-context.v1"
 DECISION_SCHEMA = "qsl.soxl-core-only-p3-decision.v1"
 ISOLATED_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-result.v1"
@@ -111,7 +110,7 @@ def _timestamp(value: object) -> datetime:
     if not isinstance(value, str):
         _fail()
     try:
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        result = datetime.fromisoformat(value)
     except ValueError:
         _fail()
     if result.tzinfo is None or result.utcoffset() is None:
@@ -780,7 +779,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except SoxlCoreOnlyP3IsolatedRunnerError:
         result = _parked("isolated_runtime_or_context_invalid")
-    except Exception:  # pragma: no cover - defensive boundary for changed source code
+    except Exception:  # noqa: BLE001 - defensive boundary for changed source code
         result = _parked("isolated_source_internal_failure")
     print(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False))
     return 0

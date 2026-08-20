@@ -14,9 +14,8 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
-from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from .soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from .soxl_core_only_p3_input_materializer import MATERIALIZED_INPUT_SCHEMA
-
 
 EVIDENCE_PLAN_SCHEMA = "qsl.soxl-soxx-core-only-p3-evidence-plan.v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -101,7 +100,7 @@ def _session_dates(materialized: Mapping[str, object]) -> tuple[tuple[str, ...],
         _digest(p1[key])
     cutoff = _date(p1["date_cutoff"])
     p2 = _mapping(payload["p2_identity"])
-    if p2 != {"candidate_id": P2_V2_CONTRACT.candidate_id, "config_sha256": P2_V2_CONTRACT.config_sha256}:
+    if p2 != {"candidate_id": P2_V3_CONTRACT.candidate_id, "config_sha256": P2_V3_CONTRACT.config_sha256}:
         _fail()
     indicator_spec = _mapping(payload["indicator_spec"])
     if indicator_spec.get("id") != "soxl-soxx-core-only-close-indicators.v1":
@@ -168,8 +167,8 @@ def build_soxl_core_only_p3_evidence_plan(materialized: Mapping[str, object]) ->
         "schema_version": EVIDENCE_PLAN_SCHEMA,
         "p1_identity": _mapping(materialized)["p1_identity"],
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "materialized_input_sha256": materialized_input_sha256,
         "execution_timing": "next_complete_trading_session_after_signal_effective_date",

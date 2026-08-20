@@ -93,7 +93,7 @@ def test_materializer_binds_canonical_p1_bars_and_derives_runner_sessions() -> N
 
     assert result["schema_version"] == materializer.MATERIALIZED_INPUT_SCHEMA
     assert result["p1_identity"]["date_cutoff"] == binding["data_identity"]["date_cutoff"]
-    assert result["p2_identity"]["candidate_id"] == "soxl_soxx_core_only_p2_v2"
+    assert result["p2_identity"]["candidate_id"] == "soxl_soxx_core_only_p2_v3"
     assert result["sessions"][0]["as_of"].endswith("T00:00:00+00:00")
     assert result["sessions"][0]["as_of"] == f"{_dates()[251]}T00:00:00+00:00"
     assert _dates()[120] < _dates()[251]
