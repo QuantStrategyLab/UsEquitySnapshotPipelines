@@ -36,8 +36,8 @@ def test_catalogue_describes_tqqq_as_daily_and_soxl_as_unactivated_migration() -
     assert SOXL_MIGRATION_ROUTE.state == MIGRATION_REQUIRED
     assert SOXL_MIGRATION_ROUTE.migration_blockers == (
         "daily_p1_publisher_not_implemented",
-        "dedicated_p3_verifier_not_implemented",
-        "ues_dependency_upgrade_required_before_p1_or_p3",
+        "fixed_window_p3_evidence_verifier_not_implemented",
+        "nonlive_research_scheduler_not_implemented",
     )
     assert catalogue["routes"][0]["authority"] == {
         "research_only": True,
