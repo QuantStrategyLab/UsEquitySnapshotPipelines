@@ -36,6 +36,9 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "date_cutoff=cutoff" in workflow
     assert "assess_tqqq_core_only_p1_input_health" in workflow
     assert "build_tqqq_core_only_p1_input_unavailable_health" in workflow
+    assert "P1_REASON_CODE" in workflow
+    assert "INPUT_UNAVAILABLE" in workflow
+    assert "MISSING_SESSIONS" in workflow
     assert "publish_tqqq_core_only_p1_inputs_for_contract" in workflow
     assert "verify_tqqq_core_only_input_root" in workflow
     assert "--config config/tqqq_core_only_p2_v5.json" in workflow

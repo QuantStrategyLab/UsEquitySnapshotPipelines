@@ -25,6 +25,7 @@ jobs:
       p1_health_sha256: ${{ steps.acquire.outputs.p1_health_sha256 }}
       policy_receipt_sha256: ${{ steps.binding.outputs.policy_receipt_sha256 }}
       status: ${{ steps.acquire.outputs.status }}
+      reason_code: ${{ steps.acquire.outputs.reason_code }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -118,6 +119,7 @@ jobs:
           root = Path(os.environ['ROOT'])
           health_path = Path(os.environ['HEALTH_PATH'])
           status = 'PARKED'
+          reason_code = ''
           manifest_sha256 = ''
           try:
               provider = AlpacaSipHistoricalBarsProvider(
@@ -150,10 +152,17 @@ jobs:
                   contract=P2_V5_CONTRACT,
                   date_cutoff=cutoff,
               )
-              if health['status'] != 'ACCEPTED':
-                  raise TqqqCoreOnlyP1BindingError('daily P1 health not accepted')
-              status = 'ACCEPTED'
-              manifest_sha256 = published['manifest_sha256']
+              if health['status'] == 'ACCEPTED':
+                  status = 'ACCEPTED'
+                  manifest_sha256 = published['manifest_sha256']
+              elif health['status'] == 'DEFERRED':
+                  status = 'DEFERRED'
+                  reason_code = 'MISSING_SESSIONS'
+              elif health['status'] == 'QUARANTINED':
+                  status = 'QUARANTINED'
+                  reason_code = 'P1_CONTRACT_FAILURE'
+              else:
+                  raise TqqqCoreOnlyP1BindingError('unexpected daily P1 health status')
           except P1InputUnavailableError:
               health = build_tqqq_core_only_p1_input_unavailable_health(
                   observed_at=observed_at,
@@ -161,6 +170,7 @@ jobs:
                   date_cutoff=cutoff,
               )
               status = 'DEFERRED'
+              reason_code = 'INPUT_UNAVAILABLE'
           except TqqqCoreOnlyP1BindingError:
               health = {
                   'schema_version': 'qsl.tqqq_core_only_p1_input_health.v1',
@@ -175,12 +185,16 @@ jobs:
           health_path.chmod(0o600)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'status={status}\n')
+              if reason_code:
+                  output.write(f'reason_code={reason_code}\n')
               output.write(f'p1_health_sha256={hashlib.sha256(health_bytes).hexdigest()}\n')
               if manifest_sha256:
                   output.write(f'manifest_sha256={manifest_sha256}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
               summary.write(f'P1_DAILY_STATUS={status}\n')
               summary.write(f'P1_HEALTH_STATUS={health["status"]}\n')
+              if reason_code:
+                  summary.write(f'P1_REASON_CODE={reason_code}\n')
               summary.write(f'P1_HEALTH_SHA256={hashlib.sha256(health_bytes).hexdigest()}\n')
               if manifest_sha256:
                   summary.write(f'P1_MANIFEST_SHA256={manifest_sha256}\n')
@@ -442,6 +456,7 @@ jobs:
         env:
           P1_JOB_RESULT: ${{ needs.p1.result }}
           P1_STATUS: ${{ needs.p1.outputs.status }}
+          P1_REASON_CODE: ${{ needs.p1.outputs.reason_code }}
           P1_MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
           P3_JOB_RESULT: ${{ needs.p3.result }}
           P3_STATUS: ${{ needs.p3.outputs.terminal_status }}
@@ -469,9 +484,11 @@ jobs:
           PY
           )"
           p1_status="$P1_STATUS"
+          p1_reason_code="$P1_REASON_CODE"
           p1_manifest_sha256="$P1_MANIFEST_SHA256"
           if [ "$P1_JOB_RESULT" != 'success' ]; then
             p1_status=''
+            p1_reason_code=''
             p1_manifest_sha256=''
           fi
           p3_status="$P3_STATUS"
@@ -487,6 +504,7 @@ jobs:
             --computed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --source-revision "$GITHUB_SHA" \
             --p1-status "$p1_status" \
+            --p1-reason-code "$p1_reason_code" \
             --p1-manifest-sha256 "$p1_manifest_sha256" \
             --p2-config-sha256 "$policy_receipt_sha256" \
             --p3-status "$p3_status" \
