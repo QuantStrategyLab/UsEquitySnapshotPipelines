@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 from quant_platform_kit.data.research_input import validate_research_input_manifest
@@ -317,11 +318,67 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
     transport = _FakeAlpacaTransport(fail_on="TQQQ")
     provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(transport)
 
-    with pytest.raises(acquisition_cli.P1InputUnavailableError, match="data-only acquisition failed"):
-        acquisition_cli.publish_tqqq_core_only_p1_inputs(provider, output_root=output, observed_at="2026-08-15T00:00:00Z", producer=_producer())
+    with pytest.raises(acquisition_cli.P1InputUnavailableError, match="INPUT_UNAVAILABLE"):
+        acquisition_cli.publish_tqqq_core_only_p1_inputs(
+            provider,
+            output_root=output,
+            observed_at="2026-08-15T00:00:00Z",
+            producer=_producer(),
+        )
 
     assert [call["params"]["symbols"] for call in transport.calls] == ["QQQ", "TQQQ"]
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "reason_code"),
+    [
+        (401, "ALPACA_AUTH_OR_ENTITLEMENT"),
+        (403, "ALPACA_AUTH_OR_ENTITLEMENT"),
+        (429, "ALPACA_RATE_LIMITED"),
+        (503, "ALPACA_SERVICE_UNAVAILABLE"),
+        (400, "ALPACA_REQUEST_REJECTED"),
+    ],
+)
+def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
+    monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str
+) -> None:
+    def _raise_http_error(*_args: object, **_kwargs: object) -> object:
+        raise HTTPError(
+            "https://data.alpaca.markets/v2/stocks/bars", status, "hidden", None, None
+        )
+
+    monkeypatch.setattr(acquisition_cli, "urlopen", _raise_http_error)
+    transport = acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret")
+
+    with pytest.raises(acquisition_cli.P1InputUnavailableError) as error:
+        transport(
+            url="https://data.alpaca.markets/v2/stocks/bars",
+            params={"symbols": "TQQQ"},
+        )
+
+    assert str(error.value) == reason_code
+    assert error.value.reason_code == reason_code
+
+
+def test_malformed_provider_payload_is_a_contract_failure_not_a_retryable_outage() -> None:
+    provider = acquisition_cli.AlpacaSipHistoricalBarsProvider(
+        lambda **_kwargs: {
+            "bars": {"TQQQ": [{"t": "2026-08-19T00:00:00Z"}]}
+        }
+    )
+
+    with pytest.raises(
+        binding.TqqqCoreOnlyP1BindingError, match="data-only acquisition failed"
+    ):
+        provider.fetch_historical_bars(
+            symbol="TQQQ",
+            calendar_id="XNYS",
+            timezone="America/New_York",
+            adjustment_policy="total_return_adjusted",
+            feed="SIP",
+            date_cutoff="2026-07-31",
+        )
 
 
 def test_cli_classifies_temporary_provider_unavailability_as_inconclusive(

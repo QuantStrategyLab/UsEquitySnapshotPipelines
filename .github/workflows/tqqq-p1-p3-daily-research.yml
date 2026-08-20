@@ -163,14 +163,14 @@ jobs:
                   reason_code = 'P1_CONTRACT_FAILURE'
               else:
                   raise TqqqCoreOnlyP1BindingError('unexpected daily P1 health status')
-          except P1InputUnavailableError:
+          except P1InputUnavailableError as exc:
               health = build_tqqq_core_only_p1_input_unavailable_health(
                   observed_at=observed_at,
                   contract=P2_V5_CONTRACT,
                   date_cutoff=cutoff,
               )
               status = 'DEFERRED'
-              reason_code = 'INPUT_UNAVAILABLE'
+              reason_code = exc.reason_code
           except TqqqCoreOnlyP1BindingError:
               health = {
                   'schema_version': 'qsl.tqqq_core_only_p1_input_health.v1',
