@@ -143,8 +143,8 @@ SOXL_MIGRATION_ROUTE = ResearchDriverRoute(
     state=MIGRATION_REQUIRED,
     migration_blockers=(
         "daily_p1_publisher_not_implemented",
-        "dedicated_p3_verifier_not_implemented",
-        "ues_dependency_upgrade_required_before_p1_or_p3",
+        "fixed_window_p3_evidence_verifier_not_implemented",
+        "nonlive_research_scheduler_not_implemented",
     ),
 )
 
