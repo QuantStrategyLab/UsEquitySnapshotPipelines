@@ -19,7 +19,20 @@ SOURCE_SCHEMA_VERSION = "qsl_control_plane_source_snapshot.v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _P1_STATUSES = frozenset({"ACCEPTED", "DEFERRED", "QUARANTINED"})
-_P1_DEFERRED_REASON_CODES = frozenset({"INPUT_UNAVAILABLE", "MISSING_SESSIONS"})
+_P1_DEFERRED_REASON_CODES = frozenset(
+    {
+        "INPUT_UNAVAILABLE",
+        "MISSING_SESSIONS",
+        "ALPACA_RATE_LIMITED",
+        "ALPACA_SERVICE_UNAVAILABLE",
+        "ALPACA_TRANSPORT_UNAVAILABLE",
+        "ALPACA_AUTH_OR_ENTITLEMENT",
+        "ALPACA_REQUEST_REJECTED",
+    }
+)
+_P1_OPERATOR_ATTENTION_REASON_CODES = frozenset(
+    {"ALPACA_AUTH_OR_ENTITLEMENT", "ALPACA_REQUEST_REJECTED"}
+)
 _P1_QUARANTINED_REASON_CODES = frozenset({"P1_CONTRACT_FAILURE"})
 _P3_FAILURE_CLASSES = frozenset(
     {
@@ -154,6 +167,20 @@ def build_tqqq_daily_control_plane_source_snapshot(
             p1_reason, allowed=_P1_DEFERRED_REASON_CODES, label="deferred P1 reason code"
         )
         rendered_reason = deferred_reason.lower()
+        needs_operator_attention = deferred_reason in _P1_OPERATOR_ATTENTION_REASON_CODES
+        recommendation = (
+            {
+                "code": "defer",
+                "reason": (
+                    f"P1 deferred: {rendered_reason}; inspect Alpaca account or request configuration."
+                ),
+            }
+            if needs_operator_attention
+            else {
+                "code": "defer",
+                "reason": f"P1 deferred: {rendered_reason}; retry on the next scheduled session.",
+            }
+        )
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,
@@ -163,17 +190,17 @@ def build_tqqq_daily_control_plane_source_snapshot(
             "candidates": [
                 _candidate(
                     lifecycle={"stage": "P1", "status": "deferred"},
-                    recommendation={
-                        "code": "defer",
-                        "reason": f"P1 deferred: {rendered_reason}; retry on the next scheduled session.",
-                    },
+                    recommendation=recommendation,
                     p1_manifest_sha256=None,
                     p2_config_sha256=config_digest,
                     p3_evidence_sha256=None,
                     source_revision=revision,
                 )
             ],
-            "errors": [f"p1_deferred_{rendered_reason}"],
+            "errors": [
+                "p1_deferred_"
+                f"{'operator_attention_' if needs_operator_attention else ''}{rendered_reason}"
+            ],
         }
 
     if p1 == "QUARANTINED":

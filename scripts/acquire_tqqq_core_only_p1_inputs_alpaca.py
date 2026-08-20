@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -31,6 +32,16 @@ _START_DATES = {
     "BOXX": "2022-12-28",
 }
 _DATE_CUTOFF = "2026-07-31"
+_AVAILABILITY_REASON_CODES = frozenset(
+    {
+        "INPUT_UNAVAILABLE",
+        "ALPACA_AUTH_OR_ENTITLEMENT",
+        "ALPACA_RATE_LIMITED",
+        "ALPACA_SERVICE_UNAVAILABLE",
+        "ALPACA_TRANSPORT_UNAVAILABLE",
+        "ALPACA_REQUEST_REJECTED",
+    }
+)
 
 
 class P1InputUnavailableError(TqqqCoreOnlyP1InputUnavailableError):
@@ -40,6 +51,26 @@ class P1InputUnavailableError(TqqqCoreOnlyP1InputUnavailableError):
     Callers must park the attempt as inconclusive rather than substitute a
     provider, alter the data identity, or treat it as a strategy failure.
     """
+
+    def __init__(self, reason_code: object = "INPUT_UNAVAILABLE") -> None:
+        code = (
+            reason_code
+            if isinstance(reason_code, str) and reason_code in _AVAILABILITY_REASON_CODES
+            else "INPUT_UNAVAILABLE"
+        )
+        self.reason_code = code
+        super().__init__(code)
+
+
+def _availability_reason_for_http_status(status: object) -> str:
+    """Map an HTTP status to a small, safe control-plane reason code."""
+    if status in {401, 403}:
+        return "ALPACA_AUTH_OR_ENTITLEMENT"
+    if status == 429:
+        return "ALPACA_RATE_LIMITED"
+    if isinstance(status, int) and 500 <= status <= 599:
+        return "ALPACA_SERVICE_UNAVAILABLE"
+    return "ALPACA_REQUEST_REJECTED"
 
 
 class AlpacaBarsTransport(Protocol):
@@ -66,12 +97,22 @@ class AlpacaSipHttpTransport:
         try:
             with urlopen(request, timeout=60) as response:  # noqa: S310 - fixed HTTPS Alpaca endpoint
                 if response.status != 200:
-                    raise ValueError
+                    raise P1InputUnavailableError(
+                        _availability_reason_for_http_status(response.status)
+                    )
                 payload = json.loads(response.read())
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            raise P1InputUnavailableError("data-only acquisition failed") from None
+        except P1InputUnavailableError:
+            raise
+        except HTTPError as exc:
+            raise P1InputUnavailableError(
+                _availability_reason_for_http_status(exc.code)
+            ) from None
+        except (URLError, TimeoutError, OSError):
+            raise P1InputUnavailableError("ALPACA_TRANSPORT_UNAVAILABLE") from None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
         if not isinstance(payload, Mapping):
-            raise P1InputUnavailableError("data-only acquisition failed")
+            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
         return payload
 
 
@@ -153,7 +194,7 @@ def _normalize_bars(response: Mapping[str, object], symbol: str) -> list[dict[st
             normalized.append(bar)
         return normalized
     except (KeyError, TypeError, ValueError):
-        raise P1InputUnavailableError("data-only acquisition failed") from None
+        raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
 
 
 def publish_tqqq_core_only_p1_inputs(

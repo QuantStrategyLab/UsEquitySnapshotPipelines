@@ -97,6 +97,48 @@ def test_deferred_missing_sessions_is_distinct_from_an_unavailable_provider() ->
     assert snapshot["errors"] == ["p1_deferred_missing_sessions"]
 
 
+@pytest.mark.parametrize(
+    ("reason_code", "expected_recommendation", "expected_error"),
+    [
+        (
+            "ALPACA_RATE_LIMITED",
+            {
+                "code": "defer",
+                "reason": (
+                    "P1 deferred: alpaca_rate_limited; retry on the next scheduled session."
+                ),
+            },
+            "p1_deferred_alpaca_rate_limited",
+        ),
+        (
+            "ALPACA_AUTH_OR_ENTITLEMENT",
+            {
+                "code": "defer",
+                "reason": (
+                    "P1 deferred: alpaca_auth_or_entitlement; inspect Alpaca account or request configuration."
+                ),
+            },
+            "p1_deferred_operator_attention_alpaca_auth_or_entitlement",
+        ),
+    ],
+)
+def test_provider_reason_drives_retry_or_operator_attention(
+    reason_code: str,
+    expected_recommendation: dict[str, str],
+    expected_error: str,
+) -> None:
+    snapshot = _build(
+        p1_status="DEFERRED",
+        p1_reason_code=reason_code,
+        p1_manifest_sha256="",
+        p3_status="",
+        p3_evidence_sha256="",
+    )
+
+    assert snapshot["candidates"][0]["recommendation"] == expected_recommendation
+    assert snapshot["errors"] == [expected_error]
+
+
 def test_quarantined_p1_is_parked_without_p3() -> None:
     snapshot = _build(
         p1_status="QUARANTINED",
