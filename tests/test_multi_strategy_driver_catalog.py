@@ -4,10 +4,9 @@ import json
 
 import pytest
 
-from us_equity_snapshot_pipelines.lifecycle.soxl_pit_input_packager import INPUT_CONTRACT_ID
-from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer import (
-    CANDIDATE_ID,
-    CORE_ONLY_CONFIG_SHA256,
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import (
+    FUTURE_INPUT_CONTRACT_ID,
+    P2_V2_CONTRACT,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT
 from us_equity_snapshot_pipelines.research.multi_strategy_driver_catalog import (
@@ -30,9 +29,10 @@ def test_catalogue_describes_tqqq_as_daily_and_soxl_as_unactivated_migration() -
     assert TQQQ_DAILY_RESEARCH_ROUTE.research_identity_id == P2_V5_CONTRACT.candidate_id
     assert TQQQ_DAILY_RESEARCH_ROUTE.state == DAILY_RESEARCH_WIRED
     assert TQQQ_DAILY_RESEARCH_ROUTE.migration_blockers == ()
-    assert SOXL_MIGRATION_ROUTE.research_identity_id == CANDIDATE_ID
-    assert SOXL_MIGRATION_ROUTE.input_contract_id == INPUT_CONTRACT_ID
-    assert SOXL_MIGRATION_ROUTE.p2_config_sha256 == CORE_ONLY_CONFIG_SHA256
+    assert SOXL_MIGRATION_ROUTE.research_identity_id == P2_V2_CONTRACT.candidate_id
+    assert SOXL_MIGRATION_ROUTE.input_contract_id == FUTURE_INPUT_CONTRACT_ID
+    assert SOXL_MIGRATION_ROUTE.p2_config_sha256 == P2_V2_CONTRACT.config_sha256
+    assert SOXL_MIGRATION_ROUTE.p3_replay_entrypoint == "PENDING:soxl_core_only_p3_verifier"
     assert SOXL_MIGRATION_ROUTE.state == MIGRATION_REQUIRED
     assert SOXL_MIGRATION_ROUTE.migration_blockers
     assert catalogue["routes"][0]["authority"] == {

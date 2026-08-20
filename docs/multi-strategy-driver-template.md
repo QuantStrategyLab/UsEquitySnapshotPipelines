@@ -24,14 +24,13 @@ targets, create a broker adapter, or write an artifact.
 | Route | State | Meaning |
 | --- | --- | --- |
 | TQQQ core-only v5 | `DAILY_RESEARCH_WIRED` | The existing TQQQ controller is the first concrete implementation. Its P1 data, frozen P2 candidate, P3 replay, v6 observation record, and forward observation remain strategy-specific. |
-| SOXL/SOXX core-only legacy research | `MIGRATION_REQUIRED` | Existing SOXL research is valuable historical input, but its fixed historical cutoff and legacy source binding cannot be treated as a current daily P1/P2/P3 route. It must receive a new frozen candidate and independently verified daily input before scheduling. |
+| SOXL/SOXX core-only P2 v2 | `MIGRATION_REQUIRED` | The fresh [P2 v2 candidate](soxl-core-only-p2-v2-research.md) is frozen, but it has no daily P1 input contract or P3 verifier yet. Historical SOXL research remains context only and cannot be scheduled or reused as current evidence. |
 
 ## Safe extension rule
 
-To add a strategy such as SOXL, IBIT, or a portfolio, first create a route with
-its own input contract and frozen configuration. The route can move from
-`MIGRATION_REQUIRED` to `DAILY_RESEARCH_WIRED` only after a dedicated P1
-adapter, P2 candidate, P3 verifier, tests, and non-live workflow exist. The
-strategy's evidence cannot be inherited from TQQQ, and a plugin remains a
-read-only signal until a separate frozen strategy candidate explicitly
-consumes it.
+To add a strategy such as SOXL, IBIT, or a portfolio, first freeze its own P2
+configuration. The route can move from `MIGRATION_REQUIRED` to
+`DAILY_RESEARCH_WIRED` only after a dedicated P1 adapter, P3 verifier, tests,
+and non-live workflow exist. The strategy's evidence cannot be inherited from
+TQQQ, and a plugin remains a read-only signal until a separate frozen strategy
+candidate explicitly consumes it.
