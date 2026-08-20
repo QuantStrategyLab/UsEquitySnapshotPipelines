@@ -79,7 +79,7 @@ def _digest(value: object) -> str:
     return value
 
 
-def _session_dates(materialized: Mapping[str, object]) -> tuple[str, ...]:
+def _session_dates(materialized: Mapping[str, object]) -> tuple[tuple[str, ...], str]:
     payload = _mapping(materialized)
     expected = {
         "schema_version",
@@ -123,7 +123,7 @@ def _session_dates(materialized: Mapping[str, object]) -> tuple[str, ...]:
         dates.append(session_date)
     if dates[-1] != cutoff:
         _fail()
-    return tuple(dates)
+    return tuple(dates), claimed_digest
 
 
 def _window_dates(dates: Sequence[str], *, start: str, end: str) -> tuple[str, ...]:
@@ -137,7 +137,7 @@ def _window_dates(dates: Sequence[str], *, start: str, end: str) -> tuple[str, .
 
 def build_soxl_core_only_p3_evidence_plan(materialized: Mapping[str, object]) -> dict[str, object]:
     """Return fixed fold/OOS requests before any strategy replay is invoked."""
-    dates = _session_dates(materialized)
+    dates, materialized_input_sha256 = _session_dates(materialized)
     if dates[-1] < _OOS_MINIMUM_CUTOFF:
         _fail()
     requests: list[dict[str, object]] = []
@@ -171,6 +171,7 @@ def build_soxl_core_only_p3_evidence_plan(materialized: Mapping[str, object]) ->
             "candidate_id": P2_V2_CONTRACT.candidate_id,
             "config_sha256": P2_V2_CONTRACT.config_sha256,
         },
+        "materialized_input_sha256": materialized_input_sha256,
         "execution_timing": "next_complete_trading_session_after_signal_effective_date",
         "purge_sessions": 1,
         "cost_bps": list(_COST_BPS),

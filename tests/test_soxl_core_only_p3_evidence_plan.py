@@ -56,10 +56,12 @@ def _materialized() -> dict[str, object]:
 
 
 def test_plan_freezes_all_declared_windows_and_costs() -> None:
-    result = plan.build_soxl_core_only_p3_evidence_plan(_materialized())
+    materialized = _materialized()
+    result = plan.build_soxl_core_only_p3_evidence_plan(materialized)
 
     assert result["schema_version"] == plan.EVIDENCE_PLAN_SCHEMA
     assert result["cost_bps"] == [5, 10, 15]
+    assert result["materialized_input_sha256"] == materialized["materialized_input_sha256"]
     assert len(result["requests"]) == 12
     oos = [item for item in result["requests"] if item["window_kind"] == "rolling_locked_oos"]
     assert len(oos) == 3
