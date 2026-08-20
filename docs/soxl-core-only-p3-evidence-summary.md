@@ -8,9 +8,16 @@ returns a metrics-and-hash summary.
 It verifies the P1/P2/materialized/plan bindings, checks every runner and
 replay digest, requires one stable source-runtime identity for every request,
 and records only terminal equity, net return, maximum drawdown, turnover,
-cost, execution count, and result hashes.  It deliberately excludes raw bars,
-derived indicators, positions, target weights, orders, credentials, and
-provider responses.
+cost, execution count, result hashes, plus deterministic daily-equity-derived
+Sharpe, CAGR, Calmar, and win rate.  The latter four use the fixed 252-session
+annualization convention; a zero-drawdown Calmar is recorded as `0.0` rather
+than an infinite value.  It deliberately excludes raw bars, derived
+indicators, positions, target weights, orders, credentials, and provider
+responses.
+
+The later `soxl_p3_strategy_performance` adapter may project only the fixed
+trailing 252-session OOS run at 10 bps into the common watcher format.  It
+cannot choose the best fold or cost scenario.
 
 The module does not acquire or publish P1 data, create an immutable P1 root,
 access cloud storage, schedule a workflow, calculate a promotion decision,
