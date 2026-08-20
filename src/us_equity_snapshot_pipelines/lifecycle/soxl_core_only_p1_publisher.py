@@ -14,6 +14,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -38,6 +39,9 @@ from .soxl_core_only_p1_binding import (
 
 _UNIVERSE = ("SOXL", "SOXX", "BOXX")
 _OUTPUT_FILENAMES = frozenset({"bars.json", "binding.json", "manifest.json"})
+_REMOTE_COMPLETION_SCHEMA = "qsl.soxl-soxx-core-only-p1-remote-completion.v1"
+REMOTE_COMPLETION_FILENAME = "p1-complete.json"
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SoxlCoreOnlyHistoricalBarsProvider(Protocol):
@@ -324,3 +328,67 @@ def verify_soxl_core_only_input_root(output_root: str | Path) -> str:
         SoxlCoreOnlyP1BindingError,
     ):
         raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only input root") from None
+
+
+def build_soxl_core_only_p1_remote_completion(output_root: str | Path) -> dict[str, object]:
+    """Bind all verified local P1 members before a remote completion is published.
+
+    The caller is responsible for its remote create-only upload.  This helper
+    only creates deterministic completion content and never contacts storage.
+    """
+    root = Path(output_root)
+    manifest_sha256 = verify_soxl_core_only_input_root(root)
+    try:
+        return {
+            "schema_version": _REMOTE_COMPLETION_SCHEMA,
+            "manifest_sha256": manifest_sha256,
+            "members": {
+                filename: hashlib.sha256((root / filename).read_bytes()).hexdigest()
+                for filename in sorted(_OUTPUT_FILENAMES)
+            },
+        }
+    except OSError:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only input root") from None
+
+
+def canonical_soxl_core_only_p1_remote_completion_bytes(value: Mapping[str, object]) -> bytes:
+    """Validate and deterministically encode one remote P1 completion marker."""
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"schema_version", "manifest_sha256", "members"}
+        or value.get("schema_version") != _REMOTE_COMPLETION_SCHEMA
+        or not isinstance(value.get("manifest_sha256"), str)
+        or not _DIGEST.fullmatch(value["manifest_sha256"])
+        or not isinstance(value.get("members"), Mapping)
+        or set(value["members"]) != _OUTPUT_FILENAMES
+        or any(
+            not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+            for digest in value["members"].values()
+        )
+    ):
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only completion marker")
+    return _canonical(
+        {
+            "schema_version": _REMOTE_COMPLETION_SCHEMA,
+            "manifest_sha256": value["manifest_sha256"],
+            "members": {filename: value["members"][filename] for filename in sorted(_OUTPUT_FILENAMES)},
+        }
+    )
+
+
+def verify_soxl_core_only_p1_remote_completion(
+    output_root: str | Path, completion_path: str | Path
+) -> str:
+    """Accept a copied P1 root only if its create-only completion exactly binds it."""
+    expected = build_soxl_core_only_p1_remote_completion(output_root)
+    try:
+        marker_bytes = Path(completion_path).read_bytes()
+        marker = json.loads(marker_bytes)
+        if (
+            marker_bytes != canonical_soxl_core_only_p1_remote_completion_bytes(marker)
+            or marker != expected
+        ):
+            raise ValueError
+        return str(expected["manifest_sha256"])
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only completion marker") from None
