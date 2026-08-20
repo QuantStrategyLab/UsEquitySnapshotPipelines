@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p3_evidence_plan as plan
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
     MATERIALIZED_INPUT_SCHEMA,
 )
@@ -45,8 +45,8 @@ def _materialized() -> dict[str, object]:
             "date_cutoff": "2026-08-04",
         },
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "indicator_spec": {"id": "soxl-soxx-core-only-close-indicators.v1"},
         "sessions": sessions,

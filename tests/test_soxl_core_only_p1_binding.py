@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p1_binding as binding
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 
 _CUTOFF = "2026-08-18"
 
@@ -30,13 +30,15 @@ def _content_digests() -> dict[str, str]:
 def test_binding_freezes_the_clean_three_asset_candidate_and_daily_data_identity() -> None:
     value = binding.build_soxl_core_only_p1_binding(date_cutoff=_CUTOFF)
 
+    assert value["schema_version"] == "qsl.soxl_soxx_core_only_p1_data_binding.v2"
+    assert binding.INPUT_CONTRACT_ID == P2_V3_CONTRACT.input_contract_id
     assert value["candidate"] == {
-        "candidate_id": P2_V2_CONTRACT.candidate_id,
-        "config_sha256": P2_V2_CONTRACT.config_sha256,
+        "candidate_id": P2_V3_CONTRACT.candidate_id,
+        "config_sha256": P2_V3_CONTRACT.config_sha256,
     }
     assert value["source"] == {
         "repository": "QuantStrategyLab/UsEquityStrategies",
-        "revision": P2_V2_CONTRACT.ues_revision,
+        "revision": P2_V3_CONTRACT.ues_revision,
     }
     assert value["data_identity"] == {
         "provider": "ALPACA_MARKET_DATA",
@@ -73,7 +75,7 @@ def test_manifest_binds_all_three_sources_without_reading_market_data() -> None:
     )
 
     assert manifest["research_input_contract_id"] == binding.INPUT_CONTRACT_ID
-    assert manifest["profile"] == P2_V2_CONTRACT.candidate_id
+    assert manifest["profile"] == P2_V3_CONTRACT.candidate_id
     assert [source["source_id"] for source in manifest["sources"]] == [
         "alpaca_sip_1day_adjustment_all:BOXX",
         "alpaca_sip_1day_adjustment_all:SOXL",

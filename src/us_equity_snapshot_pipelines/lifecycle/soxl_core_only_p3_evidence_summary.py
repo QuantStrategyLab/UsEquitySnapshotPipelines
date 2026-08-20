@@ -14,7 +14,7 @@ import math
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from .soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from .soxl_core_only_p3_evidence_plan import build_soxl_core_only_p3_evidence_plan
 from .soxl_core_only_p3_input_materializer import MATERIALIZED_INPUT_SCHEMA
 
@@ -95,8 +95,8 @@ def _replay_summary(value: Mapping[str, object], *, cost_bps: int) -> tuple[dict
     execution_identity = _mapping(outer.get("execution_identity"))
     p2_identity = _mapping(outer.get("p2_identity"))
     if p2_identity != {
-        "candidate_id": P2_V2_CONTRACT.candidate_id,
-        "config_sha256": P2_V2_CONTRACT.config_sha256,
+        "candidate_id": P2_V3_CONTRACT.candidate_id,
+        "config_sha256": P2_V3_CONTRACT.config_sha256,
     }:
         _fail()
     replay = _mapping(outer.get("replay"))

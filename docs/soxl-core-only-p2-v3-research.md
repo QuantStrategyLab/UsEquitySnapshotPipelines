@@ -14,6 +14,6 @@ parameters or fall back to another provider.  P2 v3 still forbids paper,
 shadow, live, broker orders, and automatic promotion.  Those later stages
 need their own P4--P6 contracts and evidence.
 
-The existing P1/P3 implementation remains bound to v2 until a follow-up
-identity migration changes its input contract and isolated replay checks to
-v3.  Therefore this document does not claim that v3 is scheduled yet.
+The adjacent P1/P3 identity migration binds its input contract and isolated
+replay checks to v3.  A daily scheduler remains a separate follow-up, so this
+document does not claim that acquisition is scheduled yet.

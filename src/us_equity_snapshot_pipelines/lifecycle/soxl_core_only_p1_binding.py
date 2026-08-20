@@ -1,4 +1,4 @@
-"""Data-only P1 identity for the frozen SOXL/SOXX core-only P2 v2 candidate.
+"""Data-only P1 identity for the frozen SOXL/SOXX core-only P2 v3 candidate.
 
 This module defines and validates provenance plus the authoritative XNYS
 session identity for an immutable input.  It does not call a market-data
@@ -22,13 +22,9 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 
-from .soxl_core_only_p2_v2_contract import (
-    FUTURE_INPUT_CONTRACT_ID,
-    P2_V2_CONTRACT,
-)
+from .soxl_core_only_p2_v3_contract import INPUT_CONTRACT_ID, P2_V3_CONTRACT
 
-INPUT_CONTRACT_ID = FUTURE_INPUT_CONTRACT_ID
-_INPUT_SCHEMA = "qsl.soxl_soxx_core_only_p1_data_binding.v1"
+_INPUT_SCHEMA = "qsl.soxl_soxx_core_only_p1_data_binding.v2"
 _UNIVERSE = ("SOXL", "SOXX", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SOXL_SOXX_FIRST_SESSION = date(2022, 1, 3)
@@ -162,12 +158,12 @@ def build_soxl_core_only_p1_binding(*, date_cutoff: object) -> dict[str, object]
     return {
         "schema_version": _INPUT_SCHEMA,
         "candidate": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "source": {
             "repository": "QuantStrategyLab/UsEquityStrategies",
-            "revision": P2_V2_CONTRACT.ues_revision,
+            "revision": P2_V3_CONTRACT.ues_revision,
         },
         "data_identity": {
             "provider": "ALPACA_MARKET_DATA",
@@ -244,7 +240,7 @@ def build_soxl_core_only_input_manifest(
             "manifest_id": f"soxl-core-only-{binding_digest[:24]}-{hashlib.sha256(member_bytes).hexdigest()[:24]}",
             "research_input_contract_id": INPUT_CONTRACT_ID,
             "domain": "us_equity",
-            "profile": P2_V2_CONTRACT.candidate_id,
+            "profile": P2_V3_CONTRACT.candidate_id,
             "artifact_type": "immutable_adjusted_ohlcv_etf_only",
             "observed_at": observed_at,
             "effective_at": observed_at,
@@ -298,7 +294,7 @@ def validate_soxl_core_only_input_manifest(
     if (
         validated["research_input_contract_id"] != INPUT_CONTRACT_ID
         or validated["domain"] != "us_equity"
-        or validated["profile"] != P2_V2_CONTRACT.candidate_id
+        or validated["profile"] != P2_V3_CONTRACT.candidate_id
         or validated["artifact_type"] != "immutable_adjusted_ohlcv_etf_only"
         or validated["calendar"]
         != {

@@ -8,9 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-
 SCRIPT = Path(__file__).parents[1] / "scripts" / "run_soxl_core_only_p3_isolated.py"
-P2_CANDIDATE = Path(__file__).parents[1] / "config" / "soxl_soxx_core_only_p2_v2.json"
+P2_CANDIDATE = Path(__file__).parents[1] / "config" / "soxl_soxx_core_only_p2_v3.json"
 
 
 def _module():

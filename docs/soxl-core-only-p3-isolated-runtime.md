@@ -1,10 +1,10 @@
 # SOXL core-only P3 isolated runtime
 
-The SOXL/SOXX core-only P2 v2 candidate is pinned to UES commit
+The SOXL/SOXX core-only P2 v3 candidate is pinned to UES commit
 `7756fe32585e85cf1d09a163203a02e3eee39fe1` and QuantPlatformKit commit
-`3acab1923a97b805b077c85c6c19657be0143bac`.  The main UESP runtime remains
-pinned to the older TQQQ dependency set, so a global dependency upgrade would
-alter the existing TQQQ evidence path.
+`3acab1923a97b805b077c85c6c19657be0143bac`.  Its checked UESP runtime lock
+matches that source chain; historical candidates retain their own frozen
+identity rather than inheriting P2 v3.
 
 `scripts/run_soxl_core_only_p3_isolated.py` is therefore the narrow execution
 bridge:
@@ -17,8 +17,9 @@ bridge:
    environment.
 4. The inner process accepts only a JSON research context for SOXL, SOXX, and
    BOXX, takes its runtime configuration only from that validated P2 candidate,
-   calls the public core-only P2 v2 adapter, and returns three target values
-   plus a minimal deterministic diagnostic summary.
+   calls the frozen public source adapter (whose source-level name remains P2
+   v2), and returns three target values plus a minimal deterministic diagnostic
+   summary.  The P1/P3 identity remains P2 v3 throughout.
 5. The outer process verifies the inner canonical decision digest and emits a
    second result digest that includes the execution identity.
 

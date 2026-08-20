@@ -11,7 +11,7 @@ starts only on dates where all three real assets have bars.  This is not a
 proxy, carried price, or synthetic BOXX row.  Before deriving any indicator,
 it checks:
 
-- the exact SOXL P2 v2 candidate binding and immutable P1 manifest;
+- the exact SOXL P2 v3 candidate binding and immutable P1 manifest;
 - the canonical member bytes, member SHA-256, cutoff date, and each
   per-symbol source content SHA-256;
 - ordered SOXL/SOXX indicator histories of at least 252 rows, common

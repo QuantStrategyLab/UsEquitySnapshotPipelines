@@ -1,7 +1,7 @@
 """Materialize verified SOXL P1 bars into source-independent P3 contexts.
 
 This is a pure, offline P3 preparation step for the frozen
-``soxl_soxx_core_only_p2_v2`` candidate.  It verifies a canonical private
+``soxl_soxx_core_only_p2_v3`` candidate.  It verifies a canonical private
 ``bars.json`` member against the exact P1 binding and manifest, recomputes
 only the candidate's required daily indicators, and returns bounded contexts
 for the isolated source runner.  It neither acquires data nor invokes that
@@ -32,7 +32,7 @@ from .soxl_core_only_p1_binding import (
     validate_soxl_core_only_input_manifest,
     validate_soxl_core_only_p1_binding,
 )
-from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from .soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 
 MATERIALIZED_INPUT_SCHEMA = "qsl.soxl-soxx-core-only-p3-materialized-input.v1"
 INDICATOR_SPEC_ID = "soxl-soxx-core-only-close-indicators.v1"
@@ -332,8 +332,8 @@ def materialize_soxl_core_only_p3_input(
             "date_cutoff": frozen_binding["data_identity"]["date_cutoff"],
         },
         "p2_identity": {
-            "candidate_id": P2_V2_CONTRACT.candidate_id,
-            "config_sha256": P2_V2_CONTRACT.config_sha256,
+            "candidate_id": P2_V3_CONTRACT.candidate_id,
+            "config_sha256": P2_V3_CONTRACT.config_sha256,
         },
         "indicator_spec": {
             "id": INDICATOR_SPEC_ID,

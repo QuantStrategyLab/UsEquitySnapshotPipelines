@@ -1,7 +1,7 @@
 # SOXL/SOXX Core-only P3 Evidence Plan
 
 This pure planner freezes the evidence windows already declared by the frozen
-SOXL P2 v2 candidate: three chronological evaluation windows, the trailing
+SOXL P2 v3 candidate: three chronological evaluation windows, the trailing
 252-session OOS window ending at the verified P1 cutoff, and every 5/10/15
 bps cost scenario.  It accepts only a digest-checked output from the P1-bars
 materializer and rejects an unavailable boundary, changed candidate identity,

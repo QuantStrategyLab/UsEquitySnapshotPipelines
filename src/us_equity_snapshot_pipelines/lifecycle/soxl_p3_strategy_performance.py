@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
+from .soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from .soxl_core_only_p3_evidence_summary import EVIDENCE_SUMMARY_SCHEMA
 
 STRATEGY_PERFORMANCE_SCHEMA_VERSION = "strategy_performance.v2"
@@ -177,7 +177,7 @@ def _validate_evidence_summary(
     if not isinstance(p1["date_cutoff"], str) or not _DATE.fullmatch(p1["date_cutoff"]):
         raise SoxlP3StrategyPerformanceError("invalid P1 data cutoff")
     p2 = _mapping(summary["p2_identity"], "P2 identity")
-    if p2 != {"candidate_id": P2_V2_CONTRACT.candidate_id, "config_sha256": P2_V2_CONTRACT.config_sha256}:
+    if p2 != {"candidate_id": P2_V3_CONTRACT.candidate_id, "config_sha256": P2_V3_CONTRACT.config_sha256}:
         raise SoxlP3StrategyPerformanceError("unexpected P2 identity")
     _digest(summary["materialized_input_sha256"], "materialized input digest")
     _digest(summary["evidence_plan_sha256"], "evidence plan digest")
@@ -228,7 +228,7 @@ def build_soxl_p3_strategy_performance(
         "schema_version": STRATEGY_PERFORMANCE_SCHEMA_VERSION,
         "metrics_kind": METRICS_KIND,
         "repository": REPOSITORY,
-        "strategy_profile": P2_V2_CONTRACT.candidate_id,
+        "strategy_profile": P2_V3_CONTRACT.candidate_id,
         "candidate_kind": "individual",
         "domain": "us_equity",
         "generated_at": timestamp,
@@ -236,7 +236,7 @@ def build_soxl_p3_strategy_performance(
         "current_metrics": {name: metrics[name] for name in _WATCHER_METRIC_NAMES},
         "evidence": {
             "p1_input_digest": p1_digest,
-            "p2_config_digest": P2_V2_CONTRACT.config_sha256,
+            "p2_config_digest": P2_V3_CONTRACT.config_sha256,
             "p3_evidence_id": evidence_sha256,
             "strategy_revision": strategy_revision,
             "producer_revision": revision,
