@@ -188,6 +188,29 @@ def test_verifier_rejects_source_digest_drift(tmp_path: Path) -> None:
         publisher.verify_soxl_core_only_input_root(output_root)
 
 
+def test_remote_completion_binds_every_verified_p1_member_and_rejects_drift(tmp_path: Path) -> None:
+    output_root = tmp_path / "remote-completion-root"
+    result = publisher.publish_soxl_core_only_p1_inputs(
+        _CompleteProvider(),
+        output_root=output_root,
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        date_cutoff=_CUTOFF,
+    )
+    completion_path = tmp_path / publisher.REMOTE_COMPLETION_FILENAME
+    completion = publisher.build_soxl_core_only_p1_remote_completion(output_root)
+    completion_path.write_bytes(publisher.canonical_soxl_core_only_p1_remote_completion_bytes(completion))
+
+    assert publisher.verify_soxl_core_only_p1_remote_completion(output_root, completion_path) == result[
+        "manifest_sha256"
+    ]
+
+    completion["members"]["bars.json"] = "0" * 64
+    completion_path.write_bytes(publisher.canonical_soxl_core_only_p1_remote_completion_bytes(completion))
+    with pytest.raises(publisher.SoxlCoreOnlyP1BindingError, match="completion marker"):
+        publisher.verify_soxl_core_only_p1_remote_completion(output_root, completion_path)
+
+
 def test_binding_rejects_a_weekday_that_is_not_an_xnys_session() -> None:
     with pytest.raises(SoxlCoreOnlyP1BindingError, match="date cutoff"):
         expected_soxl_core_only_sessions("2025-01-09")

@@ -15,5 +15,8 @@ injected Alpaca SIP provider, validates every expected XNYS session, produces
 the canonical three-asset member, and publishes the local root atomically only
 after all checks pass.  It does not read Alpaca credentials itself, access
 cloud storage, start a GitHub workflow, replay the strategy, or place an
-order.  No verified root has been acquired yet.  The remaining migration work
-is a non-live scheduler plus a separate sanitized P3 persistence boundary.
+order.  The publisher also builds a canonical completion marker that binds all
+three local root files before a future remote, create-only uploader may expose
+the root to P3; it does not itself upload the marker or contact storage.  No
+verified root has been acquired yet.  The remaining migration work is a
+non-live scheduler plus a separate sanitized P3 persistence boundary.
