@@ -59,6 +59,14 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "Create-only upload of bound P5 forward observation" in workflow
     assert "P5_FORWARD_OBSERVATION_STATUS=RECORDED" in workflow
     assert "validate_tqqq_p5_forward_observation" in workflow
+    assert "Build bounded P2 v6 plugin observation" in workflow
+    assert "build_tqqq_p2_v6_daily_observation.py" in workflow
+    assert "P2_V6_PLUGIN_OBSERVATION_STATUS=" in workflow
+    assert "tqqq-p2-v6-plugin-observation-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert "0d5b48ce4f9dd56491d6a6b51fdf5b0aa4cb256c" in workflow
+    assert "p2-v6-plugin-observation.v1.json" in workflow
+    assert "invalid v6 plugin observation result" in workflow
+    assert "invalid v6 plugin observation failure" in workflow
     assert '"$root/bars.json"' in workflow
     assert '"$destination"' in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
