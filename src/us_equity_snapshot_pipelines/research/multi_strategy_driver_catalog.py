@@ -14,10 +14,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..lifecycle.soxl_pit_input_packager import INPUT_CONTRACT_ID as SOXL_INPUT_CONTRACT_ID
-from ..lifecycle.soxl_pit_regime_component_producer import (
-    CANDIDATE_ID as SOXL_LEGACY_RESEARCH_ID,
-    CORE_ONLY_CONFIG_SHA256 as SOXL_LEGACY_CONFIG_SHA256,
+from ..lifecycle.soxl_core_only_p2_v2_contract import (
+    FUTURE_INPUT_CONTRACT_ID as SOXL_FUTURE_INPUT_CONTRACT_ID,
+    P2_V2_CONTRACT as SOXL_P2_V2_CONTRACT,
 )
 from ..lifecycle.tqqq_core_only_p1_binding import (
     INPUT_CONTRACT_ID as TQQQ_INPUT_CONTRACT_ID,
@@ -50,9 +49,11 @@ class ResearchDriverRoute:
     """One non-executing route from a frozen strategy identity through P3.
 
     ``DAILY_RESEARCH_WIRED`` means only that a route already has its own
-    research scheduler. ``MIGRATION_REQUIRED`` names an existing research
-    identity that must not be scheduled until it obtains a clean, current
-    P1/P2/P3 binding. Neither state grants paper, shadow, or live authority.
+    research scheduler. ``MIGRATION_REQUIRED`` may name a frozen P2 identity,
+    but it must not be scheduled until it obtains its own P1 input contract
+    and P3 verifier. Its ``p3_replay_entrypoint`` is then a planned canonical
+    name, not an importable runtime. Neither state grants paper, shadow, or
+    live authority.
     """
 
     route_id: str
@@ -134,18 +135,16 @@ TQQQ_DAILY_RESEARCH_ROUTE = ResearchDriverRoute(
 )
 
 SOXL_MIGRATION_ROUTE = ResearchDriverRoute(
-    route_id="soxl.soxx.core-only.legacy-migration",
-    research_identity_id=SOXL_LEGACY_RESEARCH_ID,
-    input_contract_id=SOXL_INPUT_CONTRACT_ID,
-    p2_config_sha256=SOXL_LEGACY_CONFIG_SHA256,
-    p3_replay_entrypoint=(
-        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner:run_soxl_promotion_research"
-    ),
+    route_id="soxl.soxx.core-only.p2-v2-migration",
+    research_identity_id=SOXL_P2_V2_CONTRACT.candidate_id,
+    input_contract_id=SOXL_FUTURE_INPUT_CONTRACT_ID,
+    p2_config_sha256=SOXL_P2_V2_CONTRACT.config_sha256,
+    p3_replay_entrypoint="PENDING:soxl_core_only_p3_verifier",
     state=MIGRATION_REQUIRED,
     migration_blockers=(
-        "frozen_historical_cutoff_is_not_daily_p1_ingress",
-        "legacy_source_revisions_are_not_a_current_p2_candidate_binding",
-        "legacy_research_identity_is_not_daily_scheduler_eligible",
+        "fresh_daily_p1_input_contract_not_implemented",
+        "dedicated_p3_verifier_not_implemented",
+        "ues_dependency_upgrade_required_before_p1_or_p3",
     ),
 )
 
