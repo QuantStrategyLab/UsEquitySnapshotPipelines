@@ -65,7 +65,9 @@ P1/P3 结束后，同一 scheduled workflow 会生成一份
 - P1 manifest、冻结 P2 config、P3 evidence 的 digest（如已产生）。
 
 不会发送 bars、GCS 路径、Alpaca 凭证、账户、订单、资金或 P4–P6 权限。
-`DEFERRED`、`QUARANTINED`、`PARKED` 也会如实发布，因此控制台不会将一次
-provider 故障误显示为成功。发布只使用此 Environment 的
+`DEFERRED`、`QUARANTINED`、`PARKED` 也会如实发布。P1 的延期会附带闭合、
+脱敏的原因码（当前为 `input_unavailable` 或 `missing_sessions`）；隔离输入
+只记录 `p1_contract_failure`。这让控制台区分“下次重试”和“保持停车”，但不
+暴露 provider 原始报错、bars、路径或凭据。发布只使用此 Environment 的
 `CONTROL_PLANE_SYNC_TOKEN` 与 `QSL_CONTROL_PLANE_SYNC_URL`，两者缺失时该
 发布 job 失败可见，但不会回写、重跑或篡改已经完成的 P1/P3 数据动作。

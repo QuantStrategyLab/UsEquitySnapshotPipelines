@@ -23,6 +23,7 @@ def _build(**overrides: object) -> dict[str, object]:
         "computed_at": NOW,
         "source_revision": REVISION,
         "p1_status": "ACCEPTED",
+        "p1_reason_code": "",
         "p1_manifest_sha256": MANIFEST,
         "p2_config_sha256": P2_V5_CONTRACT.config_sha256,
         "p3_status": P3_STATUS,
@@ -63,6 +64,7 @@ def test_completed_p3_publishes_only_bound_research_summary() -> None:
 def test_deferred_p1_stops_before_p3_and_does_not_publish_digests() -> None:
     snapshot = _build(
         p1_status="DEFERRED",
+        p1_reason_code="INPUT_UNAVAILABLE",
         p1_manifest_sha256="",
         p3_status="",
         p3_evidence_sha256="",
@@ -73,12 +75,32 @@ def test_deferred_p1_stops_before_p3_and_does_not_publish_digests() -> None:
     assert candidate["evidence"]["p1_input_digest"] is None
     assert candidate["evidence"]["p3_evidence_id"] is None
     assert candidate["recommendation"]["code"] == "defer"
-    assert snapshot["errors"] == ["p1_deferred"]
+    assert candidate["recommendation"]["reason"] == (
+        "P1 deferred: input_unavailable; retry on the next scheduled session."
+    )
+    assert snapshot["errors"] == ["p1_deferred_input_unavailable"]
+
+
+def test_deferred_missing_sessions_is_distinct_from_an_unavailable_provider() -> None:
+    snapshot = _build(
+        p1_status="DEFERRED",
+        p1_reason_code="MISSING_SESSIONS",
+        p1_manifest_sha256="",
+        p3_status="",
+        p3_evidence_sha256="",
+    )
+
+    candidate = snapshot["candidates"][0]
+    assert candidate["recommendation"]["reason"] == (
+        "P1 deferred: missing_sessions; retry on the next scheduled session."
+    )
+    assert snapshot["errors"] == ["p1_deferred_missing_sessions"]
 
 
 def test_quarantined_p1_is_parked_without_p3() -> None:
     snapshot = _build(
         p1_status="QUARANTINED",
+        p1_reason_code="P1_CONTRACT_FAILURE",
         p1_manifest_sha256="",
         p3_status="",
         p3_evidence_sha256="",
@@ -87,7 +109,7 @@ def test_quarantined_p1_is_parked_without_p3() -> None:
     candidate = snapshot["candidates"][0]
     assert candidate["lifecycle"] == {"stage": "P1", "status": "parked"}
     assert candidate["recommendation"]["code"] == "park"
-    assert snapshot["errors"] == ["p1_quarantined"]
+    assert snapshot["errors"] == ["p1_quarantined_p1_contract_failure"]
 
 
 def test_accepted_p1_with_sanitized_parked_p3_remains_parked() -> None:
@@ -114,6 +136,7 @@ def test_accepted_p1_with_sanitized_parked_p3_remains_parked() -> None:
         (
             {
                 "p1_status": "DEFERRED",
+                "p1_reason_code": "INPUT_UNAVAILABLE",
                 "p1_manifest_sha256": "",
                 "p3_status": "PARKED",
                 "p3_evidence_sha256": "",
@@ -124,6 +147,15 @@ def test_accepted_p1_with_sanitized_parked_p3_remains_parked() -> None:
         (
             {"p3_status": "PARKED", "p3_evidence_sha256": "", "p3_failure_class": "not_safe"},
             "parked P3 requires a sanitized failure class",
+        ),
+        (
+            {
+                "p1_status": "DEFERRED",
+                "p1_manifest_sha256": "",
+                "p3_status": "",
+                "p3_evidence_sha256": "",
+            },
+            "invalid deferred P1 reason code",
         ),
     ],
 )

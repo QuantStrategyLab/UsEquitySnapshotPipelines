@@ -19,6 +19,8 @@ SOURCE_SCHEMA_VERSION = "qsl_control_plane_source_snapshot.v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _P1_STATUSES = frozenset({"ACCEPTED", "DEFERRED", "QUARANTINED"})
+_P1_DEFERRED_REASON_CODES = frozenset({"INPUT_UNAVAILABLE", "MISSING_SESSIONS"})
+_P1_QUARANTINED_REASON_CODES = frozenset({"P1_CONTRACT_FAILURE"})
 _P3_FAILURE_CLASSES = frozenset(
     {
         "input_validation_failure",
@@ -63,6 +65,12 @@ def _timestamp(value: object) -> str:
     return value
 
 
+def _p1_reason_code(value: object, *, allowed: frozenset[str], label: str) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise TqqqDailyControlPlaneSourceError(f"invalid {label}")
+    return value
+
+
 def _candidate(
     *,
     lifecycle: dict[str, str],
@@ -93,6 +101,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
     computed_at: object,
     source_revision: object,
     p1_status: object,
+    p1_reason_code: object = None,
     p1_manifest_sha256: object,
     p2_config_sha256: object,
     p3_status: object = None,
@@ -114,6 +123,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
     manifest_digest = _optional_digest(p1_manifest_sha256, "P1 manifest digest")
     evidence_digest = _optional_digest(p3_evidence_sha256, "P3 evidence digest")
     p1 = str(p1_status or "").strip().upper()
+    p1_reason = str(p1_reason_code or "").strip().upper()
     p3 = str(p3_status or "").strip()
     failure_class = str(p3_failure_class or "").strip()
 
@@ -140,6 +150,10 @@ def build_tqqq_daily_control_plane_source_snapshot(
     if p1 == "DEFERRED":
         if manifest_digest is not None or p3 or evidence_digest is not None or failure_class:
             raise TqqqDailyControlPlaneSourceError("deferred P1 cannot carry a P3 result")
+        deferred_reason = _p1_reason_code(
+            p1_reason, allowed=_P1_DEFERRED_REASON_CODES, label="deferred P1 reason code"
+        )
+        rendered_reason = deferred_reason.lower()
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,
@@ -151,7 +165,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
                     lifecycle={"stage": "P1", "status": "deferred"},
                     recommendation={
                         "code": "defer",
-                        "reason": "P1 input is unavailable; retry on the next scheduled session.",
+                        "reason": f"P1 deferred: {rendered_reason}; retry on the next scheduled session.",
                     },
                     p1_manifest_sha256=None,
                     p2_config_sha256=config_digest,
@@ -159,12 +173,16 @@ def build_tqqq_daily_control_plane_source_snapshot(
                     source_revision=revision,
                 )
             ],
-            "errors": ["p1_deferred"],
+            "errors": [f"p1_deferred_{rendered_reason}"],
         }
 
     if p1 == "QUARANTINED":
         if manifest_digest is not None or p3 or evidence_digest is not None or failure_class:
             raise TqqqDailyControlPlaneSourceError("quarantined P1 cannot carry a P3 result")
+        quarantined_reason = _p1_reason_code(
+            p1_reason, allowed=_P1_QUARANTINED_REASON_CODES, label="quarantined P1 reason code"
+        )
+        rendered_reason = quarantined_reason.lower()
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,
@@ -174,14 +192,14 @@ def build_tqqq_daily_control_plane_source_snapshot(
             "candidates": [
                 _candidate(
                     lifecycle={"stage": "P1", "status": "parked"},
-                    recommendation={"code": "park", "reason": "P1 input failed its immutable data contract."},
+                    recommendation={"code": "park", "reason": f"P1 quarantined: {rendered_reason}."},
                     p1_manifest_sha256=None,
                     p2_config_sha256=config_digest,
                     p3_evidence_sha256=None,
                     source_revision=revision,
                 )
             ],
-            "errors": ["p1_quarantined"],
+            "errors": [f"p1_quarantined_{rendered_reason}"],
         }
 
     if manifest_digest is None:
