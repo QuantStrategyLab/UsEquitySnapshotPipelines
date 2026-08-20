@@ -226,6 +226,77 @@ def test_inner_batch_rejects_duplicate_or_unbounded_contexts(monkeypatch) -> Non
         )
 
 
+def _replay_input(module) -> dict[str, object]:
+    first = _context()
+    second = _context()
+    second["as_of"] = "2026-08-21T12:00:00+00:00"
+    second["portfolio"]["as_of"] = "2026-08-21T12:00:00+00:00"
+    return {
+        "schema_version": module.STATEFUL_REPLAY_INPUT_SCHEMA,
+        "initial_equity": 100_000.0,
+        "cost_bps": 5,
+        "sessions": [
+            {
+                "as_of": first["as_of"],
+                "market_data": first["market_data"],
+                "prices": {"SOXL": 80.0, "SOXX": 109.0, "BOXX": 100.0},
+            },
+            {
+                "as_of": second["as_of"],
+                "market_data": second["market_data"],
+                "prices": {"SOXL": 81.0, "SOXX": 110.0, "BOXX": 100.1},
+            },
+        ],
+    }
+
+
+def test_stateful_replay_input_requires_ordered_complete_sessions() -> None:
+    module = _module()
+    replay = _replay_input(module)
+    assert module._validate_replay_input(replay)["cost_bps"] == 5.0
+
+    replay["sessions"][1]["as_of"] = replay["sessions"][0]["as_of"]
+    with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
+        module._validate_replay_input(replay)
+
+
+def test_outer_replay_runner_binds_verified_source_replay(monkeypatch, tmp_path) -> None:
+    module = _module()
+    replay_path = tmp_path / "replay.json"
+    replay_path.write_text(json.dumps(_replay_input(module)), encoding="utf-8")
+    project = tmp_path / "ues"
+    project.mkdir()
+    source_replay = {
+        "schema_version": module.STATEFUL_REPLAY_RESULT_SCHEMA,
+        "entrypoint": module.ENTRYPOINT,
+        "decisions": [],
+    }
+    source_replay["output_sha256"] = hashlib.sha256(
+        json.dumps(source_replay, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    monkeypatch.setattr(module, "validate_ues_project", lambda path: {})
+    monkeypatch.setattr(
+        module,
+        "validate_p2_candidate",
+        lambda value: {"candidate_id": module.P2_CANDIDATE_ID, "config_sha256": module.P2_CONFIG_SHA256},
+    )
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(source_replay)),
+    )
+
+    result = module.run_isolated_replay(
+        ues_project=project,
+        input_path=replay_path,
+        p2_candidate_path=P2_CANDIDATE,
+    )
+
+    assert result["schema_version"] == module.ISOLATED_REPLAY_RESULT_SCHEMA
+    assert result["replay"] == source_replay
+
+
 def test_source_contains_no_provider_or_execution_integration() -> None:
     source = SCRIPT.read_text(encoding="utf-8").lower()
     for forbidden in (

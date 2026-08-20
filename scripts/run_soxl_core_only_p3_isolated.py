@@ -34,6 +34,9 @@ ISOLATED_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-result.v1"
 BATCH_INPUT_SCHEMA = "qsl.soxl-core-only-p3-strategy-context-batch.v1"
 BATCH_DECISION_SCHEMA = "qsl.soxl-core-only-p3-decision-batch.v1"
 ISOLATED_BATCH_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-batch-result.v1"
+STATEFUL_REPLAY_INPUT_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-input.v1"
+STATEFUL_REPLAY_RESULT_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-result.v1"
+ISOLATED_REPLAY_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-replay-result.v1"
 MAX_BATCH_CONTEXTS = 1024
 ENTRYPOINT = (
     "us_equity_strategies.entrypoints."
@@ -285,9 +288,14 @@ def _source_decision(value: object, candidate: object) -> dict[str, object]:
             runtime_config=_mapping(p2["runtime_config"]),
         )
     )
+    return _summarize_source_decision(decision, as_of=as_of)
+
+
+def _summarize_source_decision(decision: object, *, as_of: datetime) -> dict[str, object]:
+    positions = getattr(decision, "positions", ())
     targets = {
         position.symbol: _finite(position.target_value, nonnegative=True)
-        for position in decision.positions
+        for position in positions
         if position.target_value is not None
     }
     if (
@@ -295,7 +303,7 @@ def _source_decision(value: object, candidate: object) -> dict[str, object]:
         or any(target != 0.0 for symbol, target in targets.items() if symbol not in _SYMBOLS)
     ):
         _fail()
-    diagnostics = _mapping(decision.diagnostics)
+    diagnostics = _mapping(getattr(decision, "diagnostics", None))
     summary = {field: diagnostics.get(field) for field in _DIAGNOSTIC_FIELDS}
     if (
         summary["blend_tier"] not in {"full", "mid", "defensive"}
@@ -334,6 +342,155 @@ def _source_decision_batch(value: object, candidate: object) -> dict[str, object
         "schema_version": BATCH_DECISION_SCHEMA,
         "entrypoint": ENTRYPOINT,
         "count": len(decisions),
+        "decisions": decisions,
+    }
+    result["output_sha256"] = _sha256(result)
+    return result
+
+
+def _validate_replay_input(value: object) -> dict[str, object]:
+    payload = _mapping(value)
+    if set(payload) != {"schema_version", "initial_equity", "cost_bps", "sessions"}:
+        _fail()
+    if payload["schema_version"] != STATEFUL_REPLAY_INPUT_SCHEMA:
+        _fail()
+    initial_equity = _finite(payload["initial_equity"], positive=True)
+    cost_bps = _finite(payload["cost_bps"], nonnegative=True)
+    if cost_bps not in {5.0, 10.0, 15.0}:
+        _fail()
+    sessions = payload["sessions"]
+    if not isinstance(sessions, list) or len(sessions) < 2 or len(sessions) > MAX_BATCH_CONTEXTS:
+        _fail()
+    previous: datetime | None = None
+    for raw in sessions:
+        session = _mapping(raw)
+        if set(session) != {"as_of", "market_data", "prices"}:
+            _fail()
+        as_of = _timestamp(session["as_of"])
+        if previous is not None and as_of <= previous:
+            _fail()
+        previous = as_of
+        _validate_market_data(session["market_data"])
+        prices = _mapping(session["prices"])
+        if set(prices) != set(_SYMBOLS):
+            _fail()
+        for price in prices.values():
+            _finite(price, positive=True)
+    return {
+        "initial_equity": initial_equity,
+        "cost_bps": cost_bps,
+        "sessions": sessions,
+    }
+
+
+def _source_stateful_replay(value: object, candidate: object) -> dict[str, object]:
+    """Replay next-session target changes once inside the pinned UES process."""
+    replay = _validate_replay_input(value)
+    p2 = validate_p2_candidate(candidate)
+    try:
+        from quant_platform_kit.common.models import PortfolioSnapshot, Position
+        from quant_platform_kit.strategy_contracts import StrategyContext
+        from us_equity_strategies.entrypoints import (
+            build_soxl_soxx_core_only_p2_v2_research_decision,
+        )
+    except ImportError as exc:  # pragma: no cover - protected by outer identity gate
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable") from exc
+
+    cash = float(replay["initial_equity"])
+    quantities = {symbol: 0.0 for symbol in _SYMBOLS}
+    pending_weights: dict[str, float] | None = None
+    one_way_turnover = 0.0
+    cost_total = 0.0
+    decisions: list[dict[str, object]] = []
+    sessions = replay["sessions"]
+    assert isinstance(sessions, list)
+    for index, raw_session in enumerate(sessions):
+        session = _mapping(raw_session)
+        as_of = _timestamp(session["as_of"])
+        prices = {symbol: _finite(_mapping(session["prices"])[symbol], positive=True) for symbol in _SYMBOLS}
+        market_values = {symbol: quantities[symbol] * prices[symbol] for symbol in _SYMBOLS}
+        equity_before_trade = cash + sum(market_values.values())
+        if equity_before_trade <= 0.0:
+            raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL replay equity invalid")
+        executed_turnover = 0.0
+        executed_cost = 0.0
+        if pending_weights is not None:
+            current_weights = {symbol: market_values[symbol] / equity_before_trade for symbol in _SYMBOLS}
+            executed_turnover = 0.5 * sum(
+                abs(pending_weights[symbol] - current_weights[symbol]) for symbol in _SYMBOLS
+            )
+            executed_cost = equity_before_trade * executed_turnover * float(replay["cost_bps"]) / 10_000.0
+            equity_after_trade = equity_before_trade - executed_cost
+            if equity_after_trade <= 0.0:
+                raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL replay equity invalid")
+            for symbol in _SYMBOLS:
+                quantities[symbol] = pending_weights[symbol] * equity_after_trade / prices[symbol]
+            cash = 0.0
+            market_values = {symbol: quantities[symbol] * prices[symbol] for symbol in _SYMBOLS}
+            one_way_turnover += executed_turnover
+            cost_total += executed_cost
+        equity = cash + sum(market_values.values())
+        portfolio = PortfolioSnapshot(
+            as_of=as_of,
+            total_equity=equity,
+            buying_power=equity,
+            cash_balance=cash,
+            positions=tuple(
+                Position(
+                    symbol=symbol,
+                    quantity=quantities[symbol],
+                    market_value=market_values[symbol],
+                    currency="USD",
+                )
+                for symbol in _SYMBOLS
+                if quantities[symbol] != 0.0
+            ),
+            metadata={"observed_effective_exposure": 0.0},
+        )
+        decision = build_soxl_soxx_core_only_p2_v2_research_decision(
+            StrategyContext(
+                as_of=as_of,
+                portfolio=portfolio,
+                market_data=_mapping(session["market_data"]),
+                runtime_config=_mapping(p2["runtime_config"]),
+            )
+        )
+        summary = _summarize_source_decision(decision, as_of=as_of)
+        target_values = _mapping(summary["target_values"])
+        total_target_value = sum(_finite(target_values[symbol], nonnegative=True) for symbol in _SYMBOLS)
+        if total_target_value <= 0.0:
+            _fail()
+        pending_weights = {
+            symbol: _finite(target_values[symbol], nonnegative=True) / total_target_value for symbol in _SYMBOLS
+        }
+        if not math.isclose(sum(pending_weights.values()), 1.0, rel_tol=0.0, abs_tol=1e-12):
+            _fail()
+        decisions.append(
+            {
+                "signal_as_of": as_of.isoformat(),
+                "effective_as_of": (
+                    _timestamp(_mapping(sessions[index + 1])["as_of"]).isoformat()
+                    if index + 1 < len(sessions)
+                    else None
+                ),
+                "equity_before_signal": equity,
+                "executed_one_way_turnover": executed_turnover,
+                "executed_cost": executed_cost,
+                "decision": summary,
+                "pending_target_weights": pending_weights,
+            }
+        )
+    result: dict[str, object] = {
+        "schema_version": STATEFUL_REPLAY_RESULT_SCHEMA,
+        "entrypoint": ENTRYPOINT,
+        "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+        "cost_bps": replay["cost_bps"],
+        "initial_equity": replay["initial_equity"],
+        "final_equity": cash + sum(quantities[symbol] * prices[symbol] for symbol in _SYMBOLS),
+        "executed_signal_count": len(sessions) - 1,
+        "unexecuted_final_signal": True,
+        "one_way_turnover": one_way_turnover,
+        "cost_total": cost_total,
         "decisions": decisions,
     }
     result["output_sha256"] = _sha256(result)
@@ -498,6 +655,66 @@ def run_isolated_batch(
     return result
 
 
+def run_isolated_replay(
+    *,
+    ues_project: Path,
+    input_path: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    """Run one stateful replay in the verified source environment."""
+    identity = validate_ues_project(ues_project)
+    if not input_path.is_file() or not p2_candidate_path.is_file() or shutil.which("uv") is None:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable")
+    p2 = validate_p2_candidate(_read_json(p2_candidate_path))
+    command = (
+        "uv",
+        "run",
+        "--locked",
+        "--project",
+        str(ues_project),
+        "python",
+        str(Path(__file__).resolve()),
+        "--source-replay",
+        str(input_path.resolve()),
+        "--p2-candidate",
+        str(p2_candidate_path.resolve()),
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable") from exc
+    if completed.returncode != 0:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    try:
+        replay_result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked") from exc
+    replay_mapping = _mapping(replay_result)
+    if replay_mapping.get("schema_version") != STATEFUL_REPLAY_RESULT_SCHEMA:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    claimed_digest = replay_mapping.pop("output_sha256", None)
+    if not isinstance(claimed_digest, str) or claimed_digest != _sha256(replay_mapping):
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    result: dict[str, object] = {
+        "schema_version": ISOLATED_REPLAY_RESULT_SCHEMA,
+        "status": "SUCCESS",
+        "execution_identity": identity,
+        "p2_identity": {
+            "candidate_id": p2["candidate_id"],
+            "config_sha256": p2["config_sha256"],
+        },
+        "replay": replay_result,
+    }
+    result["result_sha256"] = _sha256(result)
+    return result
+
+
 def _read_json(path: Path) -> object:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -518,8 +735,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--source-context", help="inner source-only JSON context path")
     group.add_argument("--source-batch", help="inner ordered source-context batch path")
+    group.add_argument("--source-replay", help="inner stateful replay input path")
     group.add_argument("--input", help="outer single JSON context path")
     group.add_argument("--batch-input", help="outer ordered JSON context batch path")
+    group.add_argument("--replay-input", help="outer stateful replay input path")
     parser.add_argument("--p2-candidate", required=True, help="exact frozen P2 candidate JSON path")
     parser.add_argument("--ues-project", help="clean local checkout at the P2-pinned UES revision")
     args = parser.parse_args(argv)
@@ -534,12 +753,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _read_json(Path(args.source_batch)),
                 _read_json(Path(args.p2_candidate)),
             )
+        elif args.source_replay:
+            result = _source_stateful_replay(
+                _read_json(Path(args.source_replay)),
+                _read_json(Path(args.p2_candidate)),
+            )
         elif not args.ues_project:
             raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable")
         elif args.batch_input:
             result = run_isolated_batch(
                 ues_project=Path(args.ues_project),
                 input_path=Path(args.batch_input),
+                p2_candidate_path=Path(args.p2_candidate),
+            )
+        elif args.replay_input:
+            result = run_isolated_replay(
+                ues_project=Path(args.ues_project),
+                input_path=Path(args.replay_input),
                 p2_candidate_path=Path(args.p2_candidate),
             )
         else:
