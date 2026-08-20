@@ -7,7 +7,7 @@ RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
 QUANT_PLATFORM_KIT_REF = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
-MARKET_REGIME_PLUGIN_REF = "1f3a27b8fd83d71b583f4f5160a748e95fbefaa1"
+MARKET_REGIME_PLUGIN_REF = "74d8288e3f897bb72980e9097d4c280dddfbaa60"
 US_EQUITY_STRATEGIES_REF = "5f0c30cdcaf3ee0f3f1c050acbe172580ea40c81"
 
 
