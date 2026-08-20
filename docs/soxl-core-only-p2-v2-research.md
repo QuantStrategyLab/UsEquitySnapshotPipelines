@@ -30,10 +30,10 @@ validated.
 ## Current state and next gate
 
 The historical fixed-cutoff SOXL pipeline remains a useful research record,
-but cannot supply current evidence or a daily scheduler.  This candidate is
-therefore **not yet P1 eligible**.  The next work item is a dedicated daily
-P1 input contract plus a P3 verifier for the same source/config/data identity.
-It must not reuse TQQQ data, TQQQ evidence, or legacy SOXL `latest` artifacts.
+but cannot supply current evidence or a daily scheduler.  A pure
+[three-asset P1 input contract](soxl-core-only-p1-contract.md) now fixes the
+future data identity, but no P1 publisher or P3 verifier exists yet.  It must
+not reuse TQQQ data, TQQQ evidence, or legacy SOXL `latest` artifacts.
 
 P4/P5/P6, broker orders, paper, shadow, and live operation remain outside this
 candidate.

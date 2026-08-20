@@ -142,7 +142,7 @@ SOXL_MIGRATION_ROUTE = ResearchDriverRoute(
     p3_replay_entrypoint="PENDING:soxl_core_only_p3_verifier",
     state=MIGRATION_REQUIRED,
     migration_blockers=(
-        "fresh_daily_p1_input_contract_not_implemented",
+        "daily_p1_publisher_not_implemented",
         "dedicated_p3_verifier_not_implemented",
         "ues_dependency_upgrade_required_before_p1_or_p3",
     ),
