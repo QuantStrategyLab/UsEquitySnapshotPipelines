@@ -41,6 +41,17 @@ receipt.  There is no per-run mandate, reviewer, paper, shadow, order, or live
 activation step.  A failure to acquire or validate input produces a visible
 `DEFERRED` or `QUARANTINED` status and stops the P3 branch for that day.
 
+P1 acquisition is never retried with a different source, parameter, or input.
+The only later recovery candidate is narrower: if the exact accepted root
+already reached P3 and its sanitized terminal state is
+`runtime_internal_failure` after replay started, the controller may plan one
+additional offline replay of that same immutable root while the short-term
+store still contains it. A create-only recovery record consumes that one
+attempt whether it completes or parks. Input, configuration, evidence, and
+contract failures are not retried automatically; they remain `PARKED` for
+diagnosis. This recovery is P3 research only and does not create a delayed P5
+forward observation, paper/shadow action, or live authority.
+
 For an accepted run, the four-bar input root, daily health record, and a
 sanitized P3 terminal-status record are create-only objects under the same
 short-term private snapshot prefix.  When P3 has complete evidence, that same
