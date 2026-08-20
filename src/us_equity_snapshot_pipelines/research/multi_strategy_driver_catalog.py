@@ -139,12 +139,11 @@ SOXL_MIGRATION_ROUTE = ResearchDriverRoute(
     research_identity_id=SOXL_P2_V2_CONTRACT.candidate_id,
     input_contract_id=SOXL_FUTURE_INPUT_CONTRACT_ID,
     p2_config_sha256=SOXL_P2_V2_CONTRACT.config_sha256,
-    p3_replay_entrypoint="PENDING:soxl_core_only_p3_verifier",
+    p3_replay_entrypoint="scripts/run_soxl_core_only_p3_evidence.py",
     state=MIGRATION_REQUIRED,
     migration_blockers=(
         "daily_p1_publisher_not_implemented",
-        "fixed_window_p3_evidence_verifier_not_implemented",
-        "nonlive_research_scheduler_not_implemented",
+        "nonlive_scheduler_and_sanitized_evidence_persistence_not_implemented",
     ),
 )
 

@@ -8,8 +8,9 @@ materializer and rejects an unavailable boundary, changed candidate identity,
 cutoff before `2026-08-04`, short OOS, malformed session ordering, or changed
 cost grid.
 
-The planner does not run the strategy or claim an outcome.  The next P3 layer
-must use these exact requests with the isolated runner, calculate bounded
-metrics, and produce a non-sensitive evidence package.  A later P1 publisher
+The planner does not run the strategy or claim an outcome.  The local offline
+P3 facade uses these exact requests with the isolated runner, calculates
+bounded metrics, and produces a non-sensitive summary.  A later P1 publisher
 remains responsible for actual XNYS session coverage and real immutable input
-publication.
+publication; a later scheduler/persistence boundary remains responsible for a
+daily evidence record.

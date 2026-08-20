@@ -34,13 +34,14 @@ previous session's target on the next complete session, deducts the requested
 5/10/15-bps one-way turnover cost, then creates the next target.  The last
 signal is explicitly unexecuted.  This avoids the invalid shortcut of treating
 every historical decision as though it started from the same cash-only
-portfolio.  A later P3 evidence component will supply these sessions from the
-validated P1 bars and evaluate the frozen windows; this runner only guarantees
-the source strategy computation and its provenance.
+portfolio.  The local P3 materializer, fixed evidence planner, summary layer,
+and offline facade now supply these sessions from validated local P1 bars and
+evaluate the frozen windows; this runner only guarantees the source strategy
+computation and its provenance.
 
-It is not yet the complete P3 verifier.  The next component must validate the
-immutable P1 binding/manifest, derive the allowed point-in-time indicators,
-run all frozen replay windows and cost scenarios, then bind this isolated
-execution result into P3 evidence.  This executable cannot fetch data, access
+It is not a P1 publisher or daily P3 scheduler.  The local facade validates
+the immutable P1 binding/manifest, derives the allowed point-in-time
+indicators, runs all frozen replay windows and cost scenarios, and returns a
+metrics-and-hashes summary.  This executable cannot fetch data, access
 credentials, call storage or workflows, assess risk, size, record, or create
 orders.  It also never uses a mutable source branch or `latest` artifact.

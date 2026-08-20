@@ -13,8 +13,8 @@ derived indicators, positions, target weights, orders, credentials, and
 provider responses.
 
 The module does not acquire or publish P1 data, create an immutable P1 root,
-access cloud storage, schedule a workflow, perform a real strategy run on
-market data by itself, calculate a promotion decision, create paper/shadow
-activity, or authorize live trading.  A later adapter must supply the exact
-frozen UES source/runtime and persist only this sanitized summary after all
-requests succeed.
+access cloud storage, schedule a workflow, calculate a promotion decision,
+create paper/shadow activity, or authorize live trading.  The local offline
+facade now supplies the exact frozen UES source/runtime; it keeps every replay
+input temporary and prints only this sanitized summary.  A later scheduler
+and persistence boundary must still record it after all requests succeed.
