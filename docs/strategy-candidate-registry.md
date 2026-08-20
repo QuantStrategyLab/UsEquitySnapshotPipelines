@@ -24,3 +24,8 @@ This registry deliberately does not reuse QuantPlatformKit's
 `CandidateRiskIdentity`: that type is a mandate-bound execution-risk identity
 and belongs to later P4+ work.  The registry also does not resolve components,
 call providers, read credentials, schedule jobs, or create P4/P5/P6 authority.
+
+The complementary [multi-strategy research-driver template](multi-strategy-driver-template.md)
+records whether a strategy-specific P1--P3 route is already wired or still
+requires migration. It does not alter this registry's candidate digests and
+does not make a legacy strategy schedulable.
