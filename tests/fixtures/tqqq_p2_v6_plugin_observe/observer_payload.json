@@ -1,0 +1,6 @@
+{
+  "as_of": "2000-03-10",
+  "reason_codes": ["trend_break", "volatility_spike"],
+  "regime": "risk_off",
+  "signal": {"risk_state": "reduced"}
+}
