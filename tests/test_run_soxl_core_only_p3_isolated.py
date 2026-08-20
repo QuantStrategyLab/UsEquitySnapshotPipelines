@@ -169,6 +169,63 @@ def test_outer_runner_rejects_tampered_source_digest(monkeypatch, tmp_path) -> N
         )
 
 
+def test_outer_batch_runner_binds_one_digest_to_ordered_decisions(monkeypatch, tmp_path) -> None:
+    module = _module()
+    context = tmp_path / "batch.json"
+    context.write_text(
+        json.dumps({"schema_version": module.BATCH_INPUT_SCHEMA, "contexts": [_context()]}),
+        encoding="utf-8",
+    )
+    project = tmp_path / "ues"
+    project.mkdir()
+    source_batch = {
+        "schema_version": module.BATCH_DECISION_SCHEMA,
+        "entrypoint": module.ENTRYPOINT,
+        "count": 1,
+        "decisions": [],
+    }
+    source_batch["output_sha256"] = hashlib.sha256(
+        json.dumps(source_batch, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    monkeypatch.setattr(module, "validate_ues_project", lambda path: {})
+    monkeypatch.setattr(
+        module,
+        "validate_p2_candidate",
+        lambda value: {"candidate_id": module.P2_CANDIDATE_ID, "config_sha256": module.P2_CONFIG_SHA256},
+    )
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(source_batch)),
+    )
+
+    result = module.run_isolated_batch(
+        ues_project=project,
+        input_path=context,
+        p2_candidate_path=P2_CANDIDATE,
+    )
+
+    assert result["schema_version"] == module.ISOLATED_BATCH_RESULT_SCHEMA
+    assert result["decision_batch"] == source_batch
+
+
+def test_inner_batch_rejects_duplicate_or_unbounded_contexts(monkeypatch) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_source_decision", lambda context, candidate: {"as_of": "same"})
+    with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
+        module._source_decision_batch(
+            {"schema_version": module.BATCH_INPUT_SCHEMA, "contexts": [{}, {}]},
+            {},
+        )
+
+    with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
+        module._source_decision_batch(
+            {"schema_version": module.BATCH_INPUT_SCHEMA, "contexts": [{}] * (module.MAX_BATCH_CONTEXTS + 1)},
+            {},
+        )
+
+
 def test_source_contains_no_provider_or_execution_integration() -> None:
     source = SCRIPT.read_text(encoding="utf-8").lower()
     for forbidden in (
