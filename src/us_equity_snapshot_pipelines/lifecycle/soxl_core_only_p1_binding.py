@@ -77,6 +77,27 @@ def _expected_xnys_sessions(start: date, cutoff: date) -> tuple[date, ...]:
         raise SoxlCoreOnlyP1BindingError("XNYS calendar is unavailable") from exc
 
 
+def resolve_soxl_core_only_daily_date_cutoff(reference_day: object) -> str:
+    """Return the latest XNYS session on or before a daily-run reference day.
+
+    The scheduled controller supplies a UTC-derived reference date only after
+    the preceding US session has closed.  This pure calendar helper does not
+    infer intraday completion, acquire data, or authorize a replay.
+    """
+    if not isinstance(reference_day, str):
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only daily reference")
+    try:
+        reference = date.fromisoformat(reference_day)
+    except ValueError as exc:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only daily reference") from exc
+    if reference.isoformat() != reference_day:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only daily reference")
+    sessions = _expected_xnys_sessions(_SOXL_SOXX_FIRST_SESSION, reference)
+    if not sessions:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only daily reference")
+    return sessions[-1].isoformat()
+
+
 def expected_soxl_core_only_sessions(date_cutoff: object) -> dict[str, tuple[date, ...]]:
     """Return the exact per-symbol P1 XNYS coverage for one completed cutoff.
 
