@@ -1,19 +1,22 @@
 """Data-only P1 identity for the frozen SOXL/SOXX core-only P2 v2 candidate.
 
-This module defines and validates provenance for a future immutable input.  It
-does not call a provider, read credentials, write a snapshot, schedule work,
-replay a strategy, or create an order.  Those actions require a later P1
-publisher and P3 verifier bound to this exact contract.
+This module defines and validates provenance plus the authoritative XNYS
+session identity for an immutable input.  It does not call a market-data
+provider, read credentials, write a snapshot, schedule work, replay a
+strategy, or create an order.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from datetime import date
 
+import exchange_calendars as xcals
+import pandas as pd
 from quant_platform_kit.data.research_input import (
     research_input_manifest_sha256,
     validate_research_input_manifest,
@@ -24,18 +27,26 @@ from .soxl_core_only_p2_v2_contract import (
     P2_V2_CONTRACT,
 )
 
-
 INPUT_CONTRACT_ID = FUTURE_INPUT_CONTRACT_ID
 _INPUT_SCHEMA = "qsl.soxl_soxx_core_only_p1_data_binding.v1"
 _UNIVERSE = ("SOXL", "SOXX", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_SOXL_SOXX_FIRST_SESSION = date(2022, 1, 3)
+_FIRST_ELIGIBLE_SESSION = {
+    "SOXL": _SOXL_SOXX_FIRST_SESSION,
+    "SOXX": _SOXL_SOXX_FIRST_SESSION,
+    "BOXX": date(2022, 12, 28),
+}
+_CALENDAR_SOURCE = "exchange_calendars:4.13.2:XNYS"
+BARS_SCHEMA = "qsl.soxl-soxx-core-only-adjusted-ohlcv.v2"
+SOURCE_SERIES_SCHEMA = "qsl.soxl-soxx-core-only-adjusted-ohlcv-source.v1"
 
 
 class SoxlCoreOnlyP1BindingError(ValueError):
     """Sanitized failure for an invalid SOXL core-only P1 identity."""
 
 
-def _canonical(value: Mapping[str, object]) -> bytes:
+def _canonical(value: object) -> bytes:
     return json.dumps(
         value,
         sort_keys=True,
@@ -52,17 +63,100 @@ def _date_cutoff(value: object) -> str:
         parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only date cutoff") from exc
-    if parsed.isoformat() != value or parsed.weekday() >= 5:
+    sessions = _expected_xnys_sessions(_SOXL_SOXX_FIRST_SESSION, parsed)
+    if parsed.isoformat() != value or not sessions or sessions[-1] != parsed:
         raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only date cutoff")
     return value
+
+
+def _expected_xnys_sessions(start: date, cutoff: date) -> tuple[date, ...]:
+    """Resolve calendar sessions from the versioned XNYS calendar dependency."""
+    if start > cutoff:
+        return ()
+    try:
+        calendar = xcals.get_calendar("XNYS")
+        labels = calendar.sessions_in_range(pd.Timestamp(start), pd.Timestamp(cutoff))
+        return tuple(label.date() for label in labels)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SoxlCoreOnlyP1BindingError("XNYS calendar is unavailable") from exc
+
+
+def expected_soxl_core_only_sessions(date_cutoff: object) -> dict[str, tuple[date, ...]]:
+    """Return the exact per-symbol P1 XNYS coverage for one completed cutoff.
+
+    The SOXL/SOXX history begins well before the fixed 252-session indicator
+    warm-up.  BOXX begins at its eligible ETF session.  This is calendar-only:
+    it neither requests nor retains market data.
+    """
+    cutoff = _date_cutoff(date_cutoff)
+    resolved_cutoff = date.fromisoformat(cutoff)
+    return {
+        symbol: _expected_xnys_sessions(first_session, resolved_cutoff)
+        for symbol, first_session in _FIRST_ELIGIBLE_SESSION.items()
+    }
+
+
+def _normalized_source_bar(value: object) -> dict[str, float]:
+    if not isinstance(value, Mapping) or set(value) != {"open", "high", "low", "close", "volume"}:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+    normalized: dict[str, float] = {}
+    for field in ("open", "high", "low", "close", "volume"):
+        raw = value[field]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+        number = float(raw)
+        if not math.isfinite(number) or (field != "volume" and number <= 0.0) or (
+            field == "volume" and number < 0.0
+        ):
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+        normalized[field] = 0.0 if number == 0.0 else number
+    if (
+        normalized["low"] > min(normalized["open"], normalized["close"])
+        or normalized["high"] < max(normalized["open"], normalized["close"])
+        or normalized["high"] < normalized["low"]
+    ):
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+    return normalized
+
+
+def canonical_soxl_core_only_source_series_bytes(
+    *, symbol: object, series: object
+) -> bytes:
+    """Canonically encode one provider-normalized series for P1 source hashing."""
+    if not isinstance(symbol, str) or symbol not in _UNIVERSE or not isinstance(series, list):
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+    normalized: list[dict[str, object]] = []
+    previous: date | None = None
+    for raw_session in series:
+        if not isinstance(raw_session, Mapping) or set(raw_session) != {"session_date", "bar"}:
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+        raw_date = raw_session["session_date"]
+        if not isinstance(raw_date, str):
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+        try:
+            parsed = date.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series") from exc
+        if parsed.isoformat() != raw_date or (previous is not None and parsed <= previous):
+            raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+        previous = parsed
+        normalized.append({"session_date": raw_date, "bar": _normalized_source_bar(raw_session["bar"])})
+    if not normalized:
+        raise SoxlCoreOnlyP1BindingError("invalid SOXL core-only source series")
+    return _canonical(
+        {
+            "schema_version": SOURCE_SERIES_SCHEMA,
+            "symbol": symbol,
+            "sessions": normalized,
+        }
+    )
 
 
 def build_soxl_core_only_p1_binding(*, date_cutoff: object) -> dict[str, object]:
     """Build one exact data identity without acquiring market data.
 
-    ``date_cutoff`` is a completed weekday supplied by a future P1 publisher.
-    The publisher and P3 verifier must additionally prove complete XNYS-session
-    coverage; this pure binding deliberately has no provider side effects.
+    ``date_cutoff`` is a completed XNYS session.  The publisher separately
+    proves complete XNYS-session coverage before it writes an input root.
     """
     cutoff = _date_cutoff(date_cutoff)
     return {
@@ -81,7 +175,7 @@ def build_soxl_core_only_p1_binding(*, date_cutoff: object) -> dict[str, object]
             "calendar": {
                 "calendar_id": "XNYS",
                 "timezone": "America/New_York",
-                "source": "exchange_calendars",
+                "source": _CALENDAR_SOURCE,
             },
             "adjustment": {
                 "policy": "total_return_adjusted",

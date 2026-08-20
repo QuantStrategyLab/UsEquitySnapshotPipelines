@@ -10,8 +10,10 @@ immutable manifest. Every future root must contain all three sources and their
 content digests under one binding; no proxy, carried price, source mixing, or
 legacy nine-asset `latest` artifact is valid.
 
-This is intentionally only a pure contract and manifest validator. It does
-not fetch data, read Alpaca credentials, write cloud storage, start a GitHub
-workflow, replay the strategy, or place an order. The remaining migration work
-is a bounded P1 publisher that validates complete session coverage, followed
-by a distinct P3 verifier that runs the pinned public strategy adapter.
+The repository now includes a bounded local P1 publisher.  It accepts only an
+injected Alpaca SIP provider, validates every expected XNYS session, produces
+the canonical three-asset member, and publishes the local root atomically only
+after all checks pass.  It does not read Alpaca credentials itself, access
+cloud storage, start a GitHub workflow, replay the strategy, or place an
+order.  No verified root has been acquired yet.  The remaining migration work
+is a non-live scheduler plus a separate sanitized P3 persistence boundary.
