@@ -28,6 +28,16 @@ UES process, rejects duplicate or out-of-order as-of timestamps, and hashes
 the whole ordered batch.  This is a replay efficiency boundary only: it does
 not permit tuning, changing the P2 configuration, or mixing source revisions.
 
+For strategy-faithful historical replay, it also has a stateful next-session
+mode.  It marks the carried portfolio at each session's prices, executes the
+previous session's target on the next complete session, deducts the requested
+5/10/15-bps one-way turnover cost, then creates the next target.  The last
+signal is explicitly unexecuted.  This avoids the invalid shortcut of treating
+every historical decision as though it started from the same cash-only
+portfolio.  A later P3 evidence component will supply these sessions from the
+validated P1 bars and evaluate the frozen windows; this runner only guarantees
+the source strategy computation and its provenance.
+
 It is not yet the complete P3 verifier.  The next component must validate the
 immutable P1 binding/manifest, derive the allowed point-in-time indicators,
 run all frozen replay windows and cost scenarios, then bind this isolated
