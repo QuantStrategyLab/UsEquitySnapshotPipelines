@@ -31,6 +31,10 @@ P2_CONFIG_SHA256 = "c63c6d96057644a3c3cfc506a93d61c14836a5f7aa164bd629fa03ca234f
 INPUT_SCHEMA = "qsl.soxl-core-only-p3-strategy-context.v1"
 DECISION_SCHEMA = "qsl.soxl-core-only-p3-decision.v1"
 ISOLATED_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-result.v1"
+BATCH_INPUT_SCHEMA = "qsl.soxl-core-only-p3-strategy-context-batch.v1"
+BATCH_DECISION_SCHEMA = "qsl.soxl-core-only-p3-decision-batch.v1"
+ISOLATED_BATCH_RESULT_SCHEMA = "qsl.soxl-core-only-p3-isolated-batch-result.v1"
+MAX_BATCH_CONTEXTS = 1024
 ENTRYPOINT = (
     "us_equity_strategies.entrypoints."
     "build_soxl_soxx_core_only_p2_v2_research_decision"
@@ -314,6 +318,28 @@ def _source_decision(value: object, candidate: object) -> dict[str, object]:
     return result
 
 
+def _source_decision_batch(value: object, candidate: object) -> dict[str, object]:
+    """Replay an ordered bounded context batch in one pinned UES process."""
+    payload = _mapping(value)
+    if set(payload) != {"schema_version", "contexts"} or payload["schema_version"] != BATCH_INPUT_SCHEMA:
+        _fail()
+    contexts = payload["contexts"]
+    if not isinstance(contexts, list) or not contexts or len(contexts) > MAX_BATCH_CONTEXTS:
+        _fail()
+    decisions = [_source_decision(context, candidate) for context in contexts]
+    as_of = [str(decision["as_of"]) for decision in decisions]
+    if as_of != sorted(as_of) or len(as_of) != len(set(as_of)):
+        _fail()
+    result: dict[str, object] = {
+        "schema_version": BATCH_DECISION_SCHEMA,
+        "entrypoint": ENTRYPOINT,
+        "count": len(decisions),
+        "decisions": decisions,
+    }
+    result["output_sha256"] = _sha256(result)
+    return result
+
+
 def _file_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -412,6 +438,66 @@ def run_isolated_source(
     return result
 
 
+def run_isolated_batch(
+    *,
+    ues_project: Path,
+    input_path: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    """Run an ordered replay batch once in the verified source environment."""
+    identity = validate_ues_project(ues_project)
+    if not input_path.is_file() or not p2_candidate_path.is_file() or shutil.which("uv") is None:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable")
+    p2 = validate_p2_candidate(_read_json(p2_candidate_path))
+    command = (
+        "uv",
+        "run",
+        "--locked",
+        "--project",
+        str(ues_project),
+        "python",
+        str(Path(__file__).resolve()),
+        "--source-batch",
+        str(input_path.resolve()),
+        "--p2-candidate",
+        str(p2_candidate_path.resolve()),
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable") from exc
+    if completed.returncode != 0:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    try:
+        decision_batch = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked") from exc
+    decision_mapping = _mapping(decision_batch)
+    if decision_mapping.get("schema_version") != BATCH_DECISION_SCHEMA:
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    claimed_digest = decision_mapping.pop("output_sha256", None)
+    if not isinstance(claimed_digest, str) or claimed_digest != _sha256(decision_mapping):
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL source execution parked")
+    result: dict[str, object] = {
+        "schema_version": ISOLATED_BATCH_RESULT_SCHEMA,
+        "status": "SUCCESS",
+        "execution_identity": identity,
+        "p2_identity": {
+            "candidate_id": p2["candidate_id"],
+            "config_sha256": p2["config_sha256"],
+        },
+        "decision_batch": decision_batch,
+    }
+    result["result_sha256"] = _sha256(result)
+    return result
+
+
 def _read_json(path: Path) -> object:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -431,7 +517,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--source-context", help="inner source-only JSON context path")
-    group.add_argument("--input", help="outer JSON context path")
+    group.add_argument("--source-batch", help="inner ordered source-context batch path")
+    group.add_argument("--input", help="outer single JSON context path")
+    group.add_argument("--batch-input", help="outer ordered JSON context batch path")
     parser.add_argument("--p2-candidate", required=True, help="exact frozen P2 candidate JSON path")
     parser.add_argument("--ues-project", help="clean local checkout at the P2-pinned UES revision")
     args = parser.parse_args(argv)
@@ -441,8 +529,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _read_json(Path(args.source_context)),
                 _read_json(Path(args.p2_candidate)),
             )
+        elif args.source_batch:
+            result = _source_decision_batch(
+                _read_json(Path(args.source_batch)),
+                _read_json(Path(args.p2_candidate)),
+            )
         elif not args.ues_project:
             raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable")
+        elif args.batch_input:
+            result = run_isolated_batch(
+                ues_project=Path(args.ues_project),
+                input_path=Path(args.batch_input),
+                p2_candidate_path=Path(args.p2_candidate),
+            )
         else:
             result = run_isolated_source(
                 ues_project=Path(args.ues_project),

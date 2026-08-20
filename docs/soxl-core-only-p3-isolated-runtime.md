@@ -22,6 +22,12 @@ bridge:
 5. The outer process verifies the inner canonical decision digest and emits a
    second result digest that includes the execution identity.
 
+For P3 historical replay, the same bridge also supports a strictly ordered
+batch of at most 1,024 contexts.  It keeps all contexts in the same verified
+UES process, rejects duplicate or out-of-order as-of timestamps, and hashes
+the whole ordered batch.  This is a replay efficiency boundary only: it does
+not permit tuning, changing the P2 configuration, or mixing source revisions.
+
 It is not yet the complete P3 verifier.  The next component must validate the
 immutable P1 binding/manifest, derive the allowed point-in-time indicators,
 run all frozen replay windows and cost scenarios, then bind this isolated
