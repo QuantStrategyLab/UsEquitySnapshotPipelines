@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,8 +15,10 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_p2_v6_plugin_observe import (
     P2_V6_PLUGIN_OBSERVE_CANDIDATE_ID,
     P3_V6_PLUGIN_OBSERVE_EVIDENCE_SCHEMA_VERSION,
     build_tqqq_p2_v6_plugin_observe_contract,
+    build_tqqq_p2_v6_qqq_price_regime_observe_contract,
     observe_only_strategy_targets,
     verify_tqqq_p3_v6_plugin_observe,
+    verify_tqqq_p3_v6_qqq_price_regime_observe,
 )
 
 
@@ -96,6 +99,20 @@ def _contract_and_inputs() -> tuple[dict[str, object], dict[str, object], dict[s
         signal_envelope=signal,
     )
     return contract, binding, manifest, signal
+
+
+def _qqq_bars(*, cutoff: str = "2026-08-18") -> list[dict[str, object]]:
+    last = date.fromisoformat(cutoff)
+    rows: list[dict[str, object]] = []
+    for index in range(260):
+        close = (100.0 + index * 0.2) * (1.0 + ((index % 7) - 3) * 0.002)
+        rows.append(
+            {
+                "date": (last - timedelta(days=259 - index)).isoformat(),
+                "close": close,
+            }
+        )
+    return rows
 
 
 def test_v6_observer_binds_exact_v5_p1_and_keeps_synthetic_targets_identical() -> None:
@@ -226,3 +243,88 @@ def test_v6_observer_parks_when_the_observer_candidate_changes_v5_targets() -> N
 
     assert evidence["status"] == "PARKED"
     assert evidence["reason_code"] == "strategy_target_equivalence_failed"
+
+
+def test_strict_qqq_v6_p3_recomputes_the_p1_bound_signal_before_recording_evidence() -> None:
+    binding, manifest = _synthetic_p1()
+    bars = _qqq_bars()
+    contract, signal = build_tqqq_p2_v6_qqq_price_regime_observe_contract(
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=bars,
+        qsp_revision="7" * 40,
+    )
+
+    evidence = verify_tqqq_p3_v6_qqq_price_regime_observe(
+        contract=contract,
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=bars,
+        signal_envelope=signal,
+        base_strategy_targets=_TARGETS,
+        observer_strategy_targets=_TARGETS,
+    )
+
+    assert evidence["status"] == "VERIFIED_OBSERVE_ONLY"
+    assert evidence["signal"]["plugin_id"] == "qqq_price_regime_observer"
+    assert evidence["recomputation"] == {
+        "method": "IN_MEMORY_P1_VERIFIED_QQQ_CLOSE_ONLY",
+        "matched": True,
+    }
+    assert "payload" not in evidence["signal"]
+
+
+def test_strict_qqq_v6_p3_parks_if_even_one_p1_bar_no_longer_recomputes_the_signal() -> None:
+    binding, manifest = _synthetic_p1()
+    bars = _qqq_bars()
+    contract, signal = build_tqqq_p2_v6_qqq_price_regime_observe_contract(
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=bars,
+        qsp_revision="7" * 40,
+    )
+    changed_bars = deepcopy(bars)
+    changed_bars[-1]["close"] = float(changed_bars[-1]["close"]) * 0.8
+
+    evidence = verify_tqqq_p3_v6_qqq_price_regime_observe(
+        contract=contract,
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=changed_bars,
+        signal_envelope=signal,
+        base_strategy_targets=_TARGETS,
+        observer_strategy_targets=_TARGETS,
+    )
+
+    assert evidence["status"] == "PARKED"
+    assert evidence["reason_code"] == "qqq_observer_recomputation_mismatch"
+
+
+def test_strict_qqq_v6_p3_parks_a_non_mapping_signal_before_recomputation() -> None:
+    binding, manifest = _synthetic_p1()
+    bars = _qqq_bars()
+    contract, _signal = build_tqqq_p2_v6_qqq_price_regime_observe_contract(
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=bars,
+        qsp_revision="7" * 40,
+    )
+
+    evidence = verify_tqqq_p3_v6_qqq_price_regime_observe(
+        contract=contract,
+        p1_binding=binding,
+        p1_manifest=manifest,
+        input_root_sha256=_INPUT_ROOT_SHA256,
+        qqq_bars=bars,
+        signal_envelope=[],  # type: ignore[arg-type]
+        base_strategy_targets=_TARGETS,
+        observer_strategy_targets=_TARGETS,
+    )
+
+    assert evidence["status"] == "PARKED"
+    assert evidence["reason_code"] == "plugin_signal_rejected"

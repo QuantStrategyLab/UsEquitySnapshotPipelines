@@ -24,6 +24,15 @@ from quant_strategy_plugins.plugin_signal_envelope_v2 import (
     canonical_json_bytes,
     validate_signal_envelope,
 )
+from quant_strategy_plugins.qqq_price_regime_observer_v2 import (
+    DEFAULT_CONFIG as QQQ_PRICE_REGIME_OBSERVER_CONFIG,
+    ENTRYPOINT as QQQ_PRICE_REGIME_OBSERVER_ENTRYPOINT,
+    PLUGIN_ID as QQQ_PRICE_REGIME_OBSERVER_PLUGIN_ID,
+    QqqPriceRegimeObserverError,
+    build_qqq_price_regime_signal_v2,
+    qqq_price_regime_observer_code_sha256,
+    qqq_price_regime_observer_config_sha256,
+)
 
 from .tqqq_core_only_p1_binding import (
     P2_V5_CONTRACT,
@@ -269,6 +278,84 @@ def _validate_observer_rule(value: object) -> dict[str, object]:
     return _observer_rule()
 
 
+def _build_qqq_price_regime_signal_for_p1(
+    *,
+    p1_binding: Mapping[str, object],
+    p1_manifest: Mapping[str, object],
+    input_root_sha256: str,
+    qqq_bars: object,
+    qsp_revision: object,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Construct one QQQ observe-only record from caller-verified P1 mappings.
+
+    This is intentionally a data-in-memory seam: the caller remains responsible
+    for verifying and loading its immutable P1 root.  The v6 code neither opens
+    a path nor contacts storage; P3 can nevertheless independently recompute
+    the exact signal from the supplied verified QQQ bars.
+    """
+
+    p1 = _validated_p1_identity(
+        p1_binding=p1_binding,
+        p1_manifest=p1_manifest,
+        input_root_sha256=input_root_sha256,
+    )
+    revision = _revision(qsp_revision, "invalid_qqq_observer_revision")
+    if not isinstance(qqq_bars, list):
+        _fail("invalid_qqq_observer_bars")
+    try:
+        signal = build_qqq_price_regime_signal_v2(
+            qqq_bars=qqq_bars,
+            as_of=p1["date_cutoff"],
+            config=QQQ_PRICE_REGIME_OBSERVER_CONFIG,
+            producer={
+                "repo": _QSP_REPOSITORY,
+                "revision": revision,
+                "entrypoint": QQQ_PRICE_REGIME_OBSERVER_ENTRYPOINT,
+                "code_sha256": qqq_price_regime_observer_code_sha256(),
+                "config_sha256": qqq_price_regime_observer_config_sha256(
+                    QQQ_PRICE_REGIME_OBSERVER_CONFIG
+                ),
+            },
+            input_provenance={
+                "p1_manifest_sha256": p1["p1_manifest_sha256"],
+                "input_root_sha256": p1["input_root_sha256"],
+                "date_cutoff": p1["date_cutoff"],
+            },
+        )
+    except QqqPriceRegimeObserverError as exc:
+        raise TqqqP2V6PluginObserveError("qqq_observer_recomputation_failure") from exc
+    return build_tqqq_p2_v6_plugin_observe_contract(
+        p1_binding=p1_binding,
+        p1_manifest=p1_manifest,
+        input_root_sha256=input_root_sha256,
+        signal_envelope=signal,
+    ), signal
+
+
+def build_tqqq_p2_v6_qqq_price_regime_observe_contract(
+    *,
+    p1_binding: Mapping[str, object],
+    p1_manifest: Mapping[str, object],
+    input_root_sha256: str,
+    qqq_bars: list[Mapping[str, object]],
+    qsp_revision: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build a V6 QQQ-only observation contract and its immutable signal.
+
+    The returned values are research artifacts only.  A future P3 caller must
+    pass both through ``verify_tqqq_p3_v6_qqq_price_regime_observe`` with an
+    independently materialized copy of the same verified P1 QQQ bars.
+    """
+
+    return _build_qqq_price_regime_signal_for_p1(
+        p1_binding=p1_binding,
+        p1_manifest=p1_manifest,
+        input_root_sha256=input_root_sha256,
+        qqq_bars=qqq_bars,
+        qsp_revision=qsp_revision,
+    )
+
+
 def build_tqqq_p2_v6_plugin_observe_contract(
     *,
     p1_binding: Mapping[str, object],
@@ -365,6 +452,8 @@ def verify_tqqq_p3_v6_plugin_observe(
     """
 
     try:
+        if not isinstance(signal_envelope, Mapping):
+            _fail("plugin_signal_rejected")
         frozen = validate_tqqq_p2_v6_plugin_observe_contract(contract)
         supplied_p1 = _validated_p1_identity(
             p1_binding=p1_binding,
@@ -433,6 +522,68 @@ def verify_tqqq_p3_v6_plugin_observe(
     }
 
 
+def verify_tqqq_p3_v6_qqq_price_regime_observe(
+    *,
+    contract: Mapping[str, object],
+    p1_binding: Mapping[str, object],
+    p1_manifest: Mapping[str, object],
+    input_root_sha256: str,
+    qqq_bars: list[Mapping[str, object]],
+    signal_envelope: Mapping[str, object],
+    base_strategy_targets: Mapping[str, object],
+    observer_strategy_targets: Mapping[str, object],
+) -> dict[str, object]:
+    """Independently recompute the QQQ V2 signal before emitting v6 evidence.
+
+    Unlike the generic mapping verifier, this strict seam accepts only the
+    pinned QQQ close-only producer.  It rebuilds its envelope from supplied
+    P1-verified QQQ bars and parks if even one derived fact, provenance field,
+    source byte digest, or target changes.
+    """
+
+    try:
+        if not isinstance(signal_envelope, Mapping):
+            _fail("plugin_signal_rejected")
+        frozen = validate_tqqq_p2_v6_plugin_observe_contract(contract)
+        signal = frozen["signal"]
+        assert isinstance(signal, Mapping)
+        producer = signal["producer"]
+        assert isinstance(producer, Mapping)
+        if (
+            signal["plugin_id"] != QQQ_PRICE_REGIME_OBSERVER_PLUGIN_ID
+            or producer["entrypoint"] != QQQ_PRICE_REGIME_OBSERVER_ENTRYPOINT
+        ):
+            _fail("invalid_qqq_observer_signal")
+        expected_contract, expected_signal = _build_qqq_price_regime_signal_for_p1(
+            p1_binding=p1_binding,
+            p1_manifest=p1_manifest,
+            input_root_sha256=input_root_sha256,
+            qqq_bars=qqq_bars,
+            qsp_revision=producer["revision"],
+        )
+        if frozen != expected_contract or dict(signal_envelope) != expected_signal:
+            _fail("qqq_observer_recomputation_mismatch")
+    except TqqqP2V6PluginObserveError as exc:
+        return _parked_evidence(exc.code)
+
+    evidence = verify_tqqq_p3_v6_plugin_observe(
+        contract=contract,
+        p1_binding=p1_binding,
+        p1_manifest=p1_manifest,
+        input_root_sha256=input_root_sha256,
+        signal_envelope=signal_envelope,
+        base_strategy_targets=base_strategy_targets,
+        observer_strategy_targets=observer_strategy_targets,
+    )
+    if evidence["status"] != "VERIFIED_OBSERVE_ONLY":
+        return evidence
+    evidence["recomputation"] = {
+        "method": "IN_MEMORY_P1_VERIFIED_QQQ_CLOSE_ONLY",
+        "matched": True,
+    }
+    return evidence
+
+
 __all__ = [
     "OBSERVE_ONLY_MODE",
     "P2_V6_PLUGIN_OBSERVE_CANDIDATE_ID",
@@ -440,8 +591,10 @@ __all__ = [
     "P3_V6_PLUGIN_OBSERVE_EVIDENCE_SCHEMA_VERSION",
     "TqqqP2V6PluginObserveError",
     "build_tqqq_p2_v6_plugin_observe_contract",
+    "build_tqqq_p2_v6_qqq_price_regime_observe_contract",
     "calculate_tqqq_p2_v6_plugin_observe_contract_sha256",
     "observe_only_strategy_targets",
     "validate_tqqq_p2_v6_plugin_observe_contract",
     "verify_tqqq_p3_v6_plugin_observe",
+    "verify_tqqq_p3_v6_qqq_price_regime_observe",
 ]
