@@ -64,6 +64,13 @@ def test_binding_rejects_a_non_session_or_noncanonical_cutoff(cutoff: str) -> No
         binding.build_soxl_core_only_p1_binding(date_cutoff=cutoff)
 
 
+def test_daily_cutoff_resolver_uses_only_the_versioned_xnys_calendar() -> None:
+    assert binding.resolve_soxl_core_only_daily_date_cutoff("2026-08-16") == "2026-08-14"
+    assert binding.resolve_soxl_core_only_daily_date_cutoff("2026-08-18") == "2026-08-18"
+    with pytest.raises(binding.SoxlCoreOnlyP1BindingError, match="daily reference"):
+        binding.resolve_soxl_core_only_daily_date_cutoff("2026-08-18T00:00:00Z")
+
+
 def test_manifest_binds_all_three_sources_without_reading_market_data() -> None:
     value = binding.build_soxl_core_only_p1_binding(date_cutoff=_CUTOFF)
     manifest = binding.build_soxl_core_only_input_manifest(
