@@ -9,6 +9,7 @@ description = "Upstream feature-snapshot and release pipelines for US equity str
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "exchange-calendars==4.13.2",
   "pandas>=2.0",
   "google-cloud-storage>=2.18",
   "requests[socks]>=2.31",

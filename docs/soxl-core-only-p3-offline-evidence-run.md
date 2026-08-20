@@ -17,5 +17,6 @@ never emitted.
 This is deliberately a local, non-persistent adapter.  It does not acquire
 or publish P1 data, create an immutable root, access cloud resources, create
 a workflow, write an evidence store, start paper/shadow execution, make a
-promotion decision, or authorize live trading.  A later P1 publisher and P3
-artifact/scheduler boundary remain required before a real daily P3 run.
+promotion decision, or authorize live trading.  The separate local P1
+publisher is available but has not acquired a root.  A P3 artifact/scheduler
+boundary remains required before a real daily P3 run.

@@ -7,7 +7,6 @@ import pytest
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p1_binding as binding
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
 
-
 _CUTOFF = "2026-08-18"
 
 
@@ -23,7 +22,7 @@ def _producer() -> dict[str, str]:
 
 def _content_digests() -> dict[str, str]:
     return {
-        symbol: hashlib.sha256(f"synthetic:{symbol}".encode("utf-8")).hexdigest()
+        symbol: hashlib.sha256(f"synthetic:{symbol}".encode()).hexdigest()
         for symbol in ("SOXL", "SOXX", "BOXX")
     }
 
@@ -45,7 +44,7 @@ def test_binding_freezes_the_clean_three_asset_candidate_and_daily_data_identity
         "calendar": {
             "calendar_id": "XNYS",
             "timezone": "America/New_York",
-            "source": "exchange_calendars",
+            "source": "exchange_calendars:4.13.2:XNYS",
         },
         "adjustment": {
             "policy": "total_return_adjusted",

@@ -24,16 +24,16 @@ from typing import Any
 import pandas as pd
 
 from .soxl_core_only_p1_binding import (
+    BARS_SCHEMA,
+    SOURCE_SERIES_SCHEMA,
     SoxlCoreOnlyP1BindingError,
+    canonical_soxl_core_only_source_series_bytes,
     soxl_core_only_p1_binding_sha256,
     validate_soxl_core_only_input_manifest,
     validate_soxl_core_only_p1_binding,
 )
 from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
 
-
-BARS_SCHEMA = "qsl.soxl-soxx-core-only-adjusted-ohlcv.v2"
-SOURCE_SERIES_SCHEMA = "qsl.soxl-soxx-core-only-adjusted-ohlcv-source.v1"
 MATERIALIZED_INPUT_SCHEMA = "qsl.soxl-soxx-core-only-p3-materialized-input.v1"
 INDICATOR_SPEC_ID = "soxl-soxx-core-only-close-indicators.v1"
 _SYMBOLS = ("SOXL", "SOXX", "BOXX")
@@ -166,32 +166,6 @@ def _normalized_bars_member(member_bytes: bytes) -> dict[str, list[dict[str, obj
     return normalized_series
 
 
-def canonical_soxl_core_only_source_series_bytes(
-    *, symbol: str, series: Sequence[Mapping[str, object]]
-) -> bytes:
-    """Return the per-symbol canonical content whose SHA appears in P1."""
-    if symbol not in _SYMBOLS:
-        _fail()
-    normalized: list[dict[str, object]] = []
-    for raw_session in series:
-        session = _mapping(raw_session)
-        if set(session) != {"session_date", "bar"}:
-            _fail()
-        normalized.append(
-            {
-                "session_date": _session_date(session["session_date"]),
-                "bar": _bar(session["bar"]),
-            }
-        )
-    return _canonical(
-        {
-            "schema_version": SOURCE_SERIES_SCHEMA,
-            "symbol": symbol,
-            "sessions": normalized,
-        }
-    )
-
-
 def _validate_manifest_and_member(
     *, binding: Mapping[str, object], manifest: Mapping[str, object], member_bytes: bytes
 ) -> tuple[dict[str, object], dict[str, list[dict[str, object]]], str]:
@@ -225,9 +199,12 @@ def _validate_manifest_and_member(
         declared_sources[source_id] = digest
     for symbol in _SYMBOLS:
         source_id = f"alpaca_sip_1day_adjustment_all:{symbol}"
-        expected_digest = hashlib.sha256(
-            canonical_soxl_core_only_source_series_bytes(symbol=symbol, series=series[symbol])
-        ).hexdigest()
+        try:
+            expected_digest = hashlib.sha256(
+                canonical_soxl_core_only_source_series_bytes(symbol=symbol, series=series[symbol])
+            ).hexdigest()
+        except SoxlCoreOnlyP1BindingError:
+            _fail()
         if declared_sources.get(source_id) != expected_digest:
             _fail()
     identity = frozen_binding["data_identity"]

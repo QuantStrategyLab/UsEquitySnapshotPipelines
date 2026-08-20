@@ -33,5 +33,6 @@ coverage, publish a P1 root, write storage, schedule work, access credentials,
 place paper/shadow/live orders, or authorize promotion.  The local P3 facade
 now selects the frozen folds and trailing OOS window, executes all 5/10/15 bps
 scenarios through the isolated runtime, and packages metrics-and-hashes only.
-A future P1 publisher must still verify complete XNYS coverage; a later
-non-live scheduler must persist only that sanitized evidence and fail closed.
+The separate P1 publisher verifies complete XNYS coverage before it can create
+a root.  A later non-live scheduler must persist only sanitized evidence and
+fail closed.
