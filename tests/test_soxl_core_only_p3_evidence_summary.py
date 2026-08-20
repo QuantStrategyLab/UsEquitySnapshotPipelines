@@ -6,10 +6,10 @@ import json
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p3_evidence_summary as summary
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
     MATERIALIZED_INPUT_SCHEMA,
 )
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
 
 
 def _canonical(value: object) -> bytes:
@@ -69,7 +69,11 @@ def _isolated_result(cost_bps: int) -> dict[str, object]:
         "one_way_turnover": 0.5,
         "executed_signal_count": 1,
         "unexecuted_final_signal": True,
-        "decisions": [{"equity_before_signal": 100_000.0}],
+        "decisions": [
+            {"equity_before_signal": 100_000.0},
+            {"equity_before_signal": 99_000.0},
+            {"equity_before_signal": 100_500.0},
+        ],
     }
     replay["output_sha256"] = hashlib.sha256(_canonical(replay)).hexdigest()
     result = {
@@ -106,7 +110,9 @@ def test_summary_executes_only_the_fixed_plan_and_keeps_metrics_only(monkeypatch
     assert calls[0]["schema_version"] == "qsl.soxl-core-only-p3-stateful-replay-input.v1"
     assert result["status"] == "SUCCESS"
     assert result["runs"][0]["metrics"]["net_return"] == pytest.approx(0.01)
-    assert result["runs"][0]["metrics"]["max_drawdown"] == 0.0
+    assert result["runs"][0]["metrics"]["max_drawdown"] == pytest.approx(0.01)
+    assert result["runs"][0]["metrics"]["win_rate"] == pytest.approx(2 / 3)
+    assert result["runs"][0]["metrics"]["calmar"] > 0.0
     assert "sessions" not in result["runs"][0]
     assert "market_data" not in json.dumps(result)
 

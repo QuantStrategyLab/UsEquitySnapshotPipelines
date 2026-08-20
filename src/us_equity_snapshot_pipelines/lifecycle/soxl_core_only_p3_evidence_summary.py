@@ -14,16 +14,16 @@ import math
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
 from .soxl_core_only_p3_evidence_plan import build_soxl_core_only_p3_evidence_plan
 from .soxl_core_only_p3_input_materializer import MATERIALIZED_INPUT_SCHEMA
-from .soxl_core_only_p2_v2_contract import P2_V2_CONTRACT
-
 
 EVIDENCE_SUMMARY_SCHEMA = "qsl.soxl-soxx-core-only-p3-evidence-summary.v1"
 _REPLAY_INPUT_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-input.v1"
 _ISOLATED_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-isolated-replay-result.v1"
 _STATEFUL_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-result.v1"
 _INITIAL_EQUITY = 100_000.0
+_TRADING_SESSIONS_PER_YEAR = 252.0
 
 
 class SoxlCoreOnlyP3EvidenceSummaryError(ValueError):
@@ -125,6 +125,21 @@ def _replay_summary(value: Mapping[str, object], *, cost_bps: int) -> tuple[dict
     for equity in equity_curve:
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, 1.0 - (equity / peak))
+    returns = [
+        (equity_curve[index] / equity_curve[index - 1]) - 1.0
+        for index in range(1, len(equity_curve))
+    ]
+    if len(returns) < 2:
+        _fail()
+    mean_return = sum(returns) / len(returns)
+    sample_variance = sum((item - mean_return) ** 2 for item in returns) / (len(returns) - 1)
+    sample_deviation = math.sqrt(sample_variance)
+    sharpe = 0.0 if sample_deviation == 0.0 else math.sqrt(_TRADING_SESSIONS_PER_YEAR) * mean_return / sample_deviation
+    cagr = (final_equity / initial_equity) ** (_TRADING_SESSIONS_PER_YEAR / len(returns)) - 1.0
+    calmar = 0.0 if max_drawdown == 0.0 else cagr / max_drawdown
+    win_rate = sum(item > 0.0 for item in returns) / len(returns)
+    if not all(math.isfinite(item) for item in (sharpe, cagr, calmar, win_rate)):
+        _fail()
     summary = {
         "initial_equity": initial_equity,
         "final_equity": final_equity,
@@ -135,6 +150,10 @@ def _replay_summary(value: Mapping[str, object], *, cost_bps: int) -> tuple[dict
         "executed_signal_count": replay.get("executed_signal_count"),
         "unexecuted_final_signal": replay.get("unexecuted_final_signal"),
         "replay_result_sha256": claimed_replay_digest,
+        "sharpe": sharpe,
+        "cagr": cagr,
+        "calmar": calmar,
+        "win_rate": win_rate,
     }
     if not isinstance(summary["executed_signal_count"], int) or summary["executed_signal_count"] < 1:
         _fail()
