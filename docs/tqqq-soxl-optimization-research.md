@@ -2,12 +2,20 @@
 
 Research date: 2026-05-10
 
-Promotion note: the current production SOXL/SOXX volatility delever gate is
-dynamic. It uses a rolling 252-day p95 threshold on SOXX 10-day annualized
-realized volatility, bounded to 50%-75%. The legacy fixed-threshold field is
-retained only as the warm-up fallback before enough rolling samples exist. The
-older synthetic long-history sweep below remains the historical optimization
-record.
+## Current-boundary notice
+
+This is an archived optimization notebook, not the authority for the current
+P0-P6 runtime. Its historical use of words such as "promote", "production",
+and "live default" records the result of the dated experiment below; it must
+not be read as a current runtime setting, a broker authorization, or P3
+evidence. The current candidate registry and P0-P6 policy decide those things.
+
+The older synthetic long-history sweep is retained because it is useful for
+stress testing. A price series reconstructed from QQQ or SOXX is not an
+observed TQQQ or SOXL history: daily leverage, costs, tracking, liquidity, and
+fund events are model assumptions. Therefore it may inform P1 historical stress
+and P2 research comparison, but can never itself count as observed P3 evidence
+or authorize P4 paper, P5 shadow, or P6 live activity.
 
 Latest current-default recheck: 2026-06-16. The 2026-06-09 replay promoted
 dynamic volatility thresholds, and the 2026-06-16 replay promoted
@@ -16,15 +24,18 @@ fires. The retention signal is deterministic and comes from
 `market_regime_control`'s `position_control.volatility_delever_context`; AI,
 OSINT, and localized notification text remain manual-review evidence only.
 
-## Long-History Promotion Gate
+## Synthetic Long-History Stress Lane
 
-Future automatic `market_regime_control` position-control expansion should
-clear a 25-30 year validation gate before promotion. Real TQQQ/SOXL products
-only cover the post-2010 live ETF window, so this gate must use a separate
-synthetic replay built from the underlying QQQ/SOXX daily series, with the
-synthetic 3x leg explicitly labeled in the output.
+The 25-30 year replay is a separate stress lane built from QQQ/SOXX daily
+series, with the synthetic 3x leg explicitly labeled. It is a useful way to
+challenge a deterministic rule against dot-com, GFC, COVID, and rate-bear
+periods. It is not a promotion gate: any candidate still needs its ordinary
+observed-data and forward-evidence path before it can progress beyond research.
 
-The retention-policy runner supports that gate directly:
+The retention-policy runner writes the normal CSV summaries and, whenever a
+synthetic leg is requested, `synthetic_long_history_stress_evidence.json`. The
+JSON records the exact input hashes, proxy assumptions, coverage, and a
+machine-readable no-authority boundary:
 
 ```bash
 python scripts/research_volatility_delever_retention_policies.py \
@@ -41,10 +52,10 @@ python scripts/research_volatility_delever_retention_policies.py \
   --window ytd2026:2026-01-02:2026-06-15
 ```
 
-The local June 2026 cache starts in 2010, so it remains useful for
-live-product smoke checks but intentionally fails `--min-history-years 25`. A
-production promotion needs either a committed replayable long-history input
-artifact or a CI/GitHub Actions run with a reliable market-data source.
+The local June 2026 cache starts in 2010, so it remains useful for historical
+product smoke checks but intentionally fails `--min-history-years 25`. A
+replayable long-history input is useful for stress research; it does not remove
+the requirement for observed, future evidence.
 
 2026-06-17 public-proxy long-history run:
 
@@ -57,17 +68,17 @@ artifact or a CI/GitHub Actions run with a reliable market-data source.
 
 | Profile | Candidate | Full CAGR delta | Full MDD delta | Dotcom total delta | 2026 YTD delta | Recent 3m delta | Read |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| TQQQ | `tqqq_step_softzero_0.25_0.50` | +0.13 pp | +0.21 pp | +0.00 pp | +1.16 pp | +1.21 pp | passes long-history gate |
+| TQQQ | `tqqq_step_softzero_0.25_0.50` | +0.13 pp | +0.21 pp | +0.00 pp | +1.16 pp | +1.21 pp | informative synthetic stress result |
 | TQQQ | `tqqq_step_softzero_0.35_0.50` | +0.12 pp | +0.21 pp | +0.00 pp | +1.46 pp | +1.52 pp | higher recent capture, slightly weaker full CAGR |
 | SOXL | `soxl_step_rebound_0.25_0.50` | -0.25 pp | -0.19 pp | -0.38 pp | +19.78 pp | +17.66 pp | strong 2026 capture but fails strict synthetic long-history no-regression |
 | SOXL | `soxl_step_softzero_rebound_0.25_0.50` | +0.08 pp | -0.05 pp | -0.07 pp | +19.78 pp | +17.66 pp | best long-history trade-off; small drawdown regression remains |
 | SOXL | `soxl_rebound_0.50` | -0.70 pp | -0.31 pp | -0.67 pp | +19.78 pp | +17.66 pp | reject |
 
-Operational decision after the 2026-06-17 review: keep the more aggressive
-`soxl_step_rebound_0.25_0.50` as the SOXL live default. The 1999 synthetic
-regression is small, while the 2026 capture is material. Keep
-`soxl_step_softzero_rebound_0.25_0.50` as the conservative fallback candidate
-for a future drawdown-control switch, not as the current default.
+Historical decision note after the 2026-06-17 review: the experiment favored
+`soxl_step_rebound_0.25_0.50` over the conservative fallback candidate. This
+is a dated research conclusion only, not the current SOXL runtime default or
+an authorization to change it. The 1999 result is synthetic stress evidence,
+not a small enough regression to waive later observed evidence.
 
 Implementation note: the plugin should emit both SOXL profiles from the same
 deterministic `price_rebound_context`. `soxl_step_rebound_0.25_0.50` is the
