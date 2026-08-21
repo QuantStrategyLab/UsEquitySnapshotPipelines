@@ -1,0 +1,131 @@
+name: TQQQ P3 Failure Fingerprint
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_manifest_sha256:
+        description: Existing accepted TQQQ P1 root digest to inspect
+        required: true
+        type: string
+
+concurrency:
+  group: tqqq-p3-failure-fingerprint
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    environment: tqqq-p1-p3-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Validate requested accepted root digest
+        env:
+          INPUT_MANIFEST_SHA256: ${{ inputs.input_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+
+          value = os.environ["INPUT_MANIFEST_SHA256"]
+          if not re.fullmatch(r"[0-9a-f]{64}", value):
+              raise SystemExit("input_manifest_sha256 must be a lowercase SHA-256")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"INPUT_MANIFEST_SHA256={value}\n")
+          PY
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Download the existing P1 root into ephemeral runner storage
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-p3-fingerprint/input"
+          source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${INPUT_MANIFEST_SHA256}"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/manifest.json" "$root/" >/dev/null
+          chmod 700 "$root"
+          printf 'SNAPSHOT_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+      - name: Execute the full ephemeral P3 path and emit a non-reversible fingerprint
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.run_tqqq_p3 import (
+              _completed_evidence_summary,
+              _snapshot_payload,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
+              run_tqqq_promotion_evidence,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+              P2_V5_CONTRACT,
+              verify_tqqq_core_only_input_root,
+          )
+
+          root = Path(os.environ["SNAPSHOT_ROOT"])
+          config = json.loads(
+              Path("config/tqqq_core_only_p2_v5.json").read_text(encoding="utf-8")
+          )
+          receipt = hashlib.sha256(
+              json.dumps(
+                  config,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  ensure_ascii=False,
+                  allow_nan=False,
+              ).encode("utf-8")
+          ).hexdigest()
+          try:
+              result = run_tqqq_promotion_evidence(
+                  input_payload=_snapshot_payload(root),
+                  config_payload=config,
+                  mandate_receipt_sha256=receipt,
+                  output_dir=Path(os.environ["RUNNER_TEMP"]) / "tqqq-p3-fingerprint/output",
+              )
+              _completed_evidence_summary(
+                  result,
+                  expected_input_manifest_sha256=verify_tqqq_core_only_input_root(
+                      root, contract=P2_V5_CONTRACT
+                  ),
+              )
+              result = {
+                  "schema_version": "qsl.tqqq_p3_failure_fingerprint.v1",
+                  "status": "P3_DIAGNOSTIC_COMPLETED",
+              }
+          except Exception as error:
+              fingerprint_input = (
+                  f"{type(error).__module__}.{type(error).__qualname__}:{error}"
+              ).encode("utf-8")
+              result = {
+                  "error_type": type(error).__name__,
+                  "failure_fingerprint_sha256": hashlib.sha256(fingerprint_input).hexdigest(),
+                  "schema_version": "qsl.tqqq_p3_failure_fingerprint.v1",
+                  "status": "P3_DIAGNOSTIC_PARKED",
+              }
+          rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
+          print(f"TQQQ_P3_FAILURE_FINGERPRINT={rendered}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"TQQQ_P3_FAILURE_FINGERPRINT={rendered}\n")
+          PY
