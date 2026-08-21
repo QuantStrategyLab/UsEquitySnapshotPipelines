@@ -110,6 +110,22 @@ the P1 root, substitutes data, or loops. It does not publish a delayed P5
 forward observation: an old replay is historical P3 evidence, not a timely
 forward allocation signal.
 
+### Historical P2 v2 disposition
+
+`tqqq_core_only_p2_v2` is a frozen historical candidate, not a runnable
+research route. Its first evidence fold begins on 2022-01-03 but it requires
+BOXX as a tradable asset; the immutable input contract permits BOXX only from
+2022-12-28. Consequently no P1 root can both satisfy its source-coverage rule
+and support the complete v2 replay. A pre-inception proxy, carried price, cash
+substitution, or synthetic BOXX row is prohibited, so the correct outcome is
+`PARKED`, not a fabricated evidence package.
+
+P2 v4 corrected this common-availability geometry without changing the public
+TQQQ research adapter. P2 v5 is the only active candidate in the registry and
+the only scheduled P1/P3 route. Historical v2 configuration and adapter
+selection remain inspectable for provenance, but must not be reactivated or
+treated as P3 evidence.
+
 ### Legacy manual v1 compatibility path
 
 The older `tqqq-p1-p3-one-shot.yml` compatibility workflow is manual v1 only.
