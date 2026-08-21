@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -11,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TQQQ_PRICES = ROOT / "data" / "output" / "tqqq_volatility_delever_threshold_research" / "normalized_price_history.csv"
 DEFAULT_SOXL_PRICES = ROOT / "data" / "output" / "soxl_dynamic_volatility_delever_threshold_research" / "normalized_price_history.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "output" / "volatility_delever_retention_policy_research"
+SYNTHETIC_STRESS_EVIDENCE_SCHEMA = "qsl.synthetic-long-history-stress-evidence.v1"
+SYNTHETIC_STRESS_EVIDENCE_FILENAME = "synthetic_long_history_stress_evidence.json"
 
 DEFAULT_WINDOWS = (
     ("full", "2011-03-10", "2026-06-15"),
@@ -32,6 +36,89 @@ def _load_prices(path: Path) -> pd.DataFrame:
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame = frame.dropna(subset=["as_of", "symbol", "close"])
     return frame
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _input_artifact_metadata(*, profile: str, path: Path, frame: pd.DataFrame) -> dict[str, object]:
+    dates = frame["as_of"]
+    return {
+        "profile": profile,
+        "input_filename": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "row_count": int(len(frame)),
+        "first_as_of": dates.min().date().isoformat(),
+        "last_as_of": dates.max().date().isoformat(),
+        "symbols": sorted(str(symbol) for symbol in frame["symbol"].unique()),
+    }
+
+
+def _matrix_coverage(*, profile: str, matrix: pd.DataFrame) -> dict[str, object]:
+    return {
+        "profile": profile,
+        "first_as_of": matrix.index[0].date().isoformat(),
+        "last_as_of": matrix.index[-1].date().isoformat(),
+        "session_count": int(len(matrix)),
+        "symbols": [str(symbol) for symbol in matrix.columns],
+    }
+
+
+def build_synthetic_long_history_stress_evidence(
+    *,
+    tqqq_prices: Path,
+    soxl_prices: Path,
+    tqqq_frame: pd.DataFrame,
+    soxl_frame: pd.DataFrame,
+    tqqq_matrix: pd.DataFrame,
+    soxl_matrix: pd.DataFrame,
+    synthetic_legs: list[dict[str, object]],
+    windows: tuple[tuple[str, str, str], ...],
+    min_history_years: float | None,
+) -> dict[str, object]:
+    """Build a reproducible stress-only boundary for synthetic leverage replays.
+
+    A daily-reset proxy is valuable for P1/P2 stress research, but it cannot
+    stand in for observed forward P3 evidence or authorize any execution lane.
+    """
+
+    payload: dict[str, object] = {
+        "schema_version": SYNTHETIC_STRESS_EVIDENCE_SCHEMA,
+        "lane_id": "SyntheticLongHistoryStress",
+        "artifact_kind": "SYNTHETIC_LEVERAGED_PROXY_STRESS_RESEARCH",
+        "authority": {
+            "research_only": True,
+            "order_submission_authorized": False,
+            "p1_historical_stress_allowed": True,
+            "p2_research_comparison_allowed": True,
+            "observed_p3_evidence_eligible": False,
+            "p4_paper_authorized": False,
+            "p5_shadow_authorized": False,
+            "p6_live_authorized": False,
+        },
+        "non_authority_reason_codes": [
+            "SYNTHETIC_LEVERAGE_PROXY",
+            "STRESS_ONLY_NOT_OBSERVED_P3_EVIDENCE",
+            "CANNOT_AUTHORIZE_P4_P5_P6",
+        ],
+        "synthetic_legs": synthetic_legs,
+        "input_artifacts": [
+            _input_artifact_metadata(profile="tqqq", path=tqqq_prices, frame=tqqq_frame),
+            _input_artifact_metadata(profile="soxl", path=soxl_prices, frame=soxl_frame),
+        ],
+        "validated_matrix_coverage": [
+            _matrix_coverage(profile="tqqq", matrix=tqqq_matrix),
+            _matrix_coverage(profile="soxl", matrix=soxl_matrix),
+        ],
+        "minimum_history_years": min_history_years,
+        "summary_windows": [
+            {"name": name, "start": start, "end": end} for name, start, end in windows
+        ],
+    }
+    payload["evidence_sha256"] = _canonical_sha256(payload)
+    return payload
 
 
 def _synthesize_levered_symbol(
@@ -408,23 +495,46 @@ def run_research(
     synthetic_annual_expense_ratio: float = 0.01,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    tqqq_frame = _load_prices(tqqq_prices)
-    soxl_frame = _load_prices(soxl_prices)
+    tqqq_input_frame = _load_prices(tqqq_prices)
+    soxl_input_frame = _load_prices(soxl_prices)
+    tqqq_frame = tqqq_input_frame.copy()
+    soxl_frame = soxl_input_frame.copy()
+    synthetic_legs: list[dict[str, object]] = []
     if synthesize_tqqq_from:
+        source_symbol = str(synthesize_tqqq_from).strip().upper()
         tqqq_frame = _synthesize_levered_symbol(
             tqqq_frame,
-            source_symbol=synthesize_tqqq_from,
+            source_symbol=source_symbol,
             target_symbol="TQQQ",
             leverage=synthetic_leverage,
             annual_expense_ratio=synthetic_annual_expense_ratio,
         )
+        synthetic_legs.append(
+            {
+                "profile": "tqqq",
+                "source_symbol": source_symbol,
+                "target_symbol": "TQQQ",
+                "daily_reset_leverage": float(synthetic_leverage),
+                "annual_expense_ratio": float(synthetic_annual_expense_ratio),
+            }
+        )
     if synthesize_soxl_from:
+        source_symbol = str(synthesize_soxl_from).strip().upper()
         soxl_frame = _synthesize_levered_symbol(
             soxl_frame,
-            source_symbol=synthesize_soxl_from,
+            source_symbol=source_symbol,
             target_symbol="SOXL",
             leverage=synthetic_leverage,
             annual_expense_ratio=synthetic_annual_expense_ratio,
+        )
+        synthetic_legs.append(
+            {
+                "profile": "soxl",
+                "source_symbol": source_symbol,
+                "target_symbol": "SOXL",
+                "daily_reset_leverage": float(synthetic_leverage),
+                "annual_expense_ratio": float(synthetic_annual_expense_ratio),
+            }
         )
     tqqq_matrix = _close_matrix(tqqq_frame, ("QQQ", "TQQQ", "HYG", "IEF", "XLF", "SPY", "^VIX"))
     soxl_matrix = _close_matrix(soxl_frame, ("SOXX", "SOXL", "HYG", "IEF", "XLF", "SPY", "^VIX"))
@@ -447,6 +557,22 @@ def run_research(
         event_rows.extend(events)
     pd.DataFrame(summary_rows).to_csv(output_dir / "retention_policy_summary.csv", index=False)
     pd.DataFrame(event_rows).to_csv(output_dir / "recent_retention_events.csv", index=False)
+    if synthetic_legs:
+        evidence = build_synthetic_long_history_stress_evidence(
+            tqqq_prices=tqqq_prices,
+            soxl_prices=soxl_prices,
+            tqqq_frame=tqqq_input_frame,
+            soxl_frame=soxl_input_frame,
+            tqqq_matrix=tqqq_matrix,
+            soxl_matrix=soxl_matrix,
+            synthetic_legs=synthetic_legs,
+            windows=windows,
+            min_history_years=min_history_years,
+        )
+        (output_dir / SYNTHETIC_STRESS_EVIDENCE_FILENAME).write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     return output_dir
 
 
