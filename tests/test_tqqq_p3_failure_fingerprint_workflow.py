@@ -30,6 +30,8 @@ def test_tqqq_p3_failure_fingerprint_is_manual_ephemeral_and_sanitized() -> None
     assert "_completed_evidence_summary" in workflow
     assert "contract=P2_V5_CONTRACT" in workflow
     assert '"failure_fingerprint_sha256"' in workflow
+    assert '"runner_checkout"' in workflow
+    assert '"--porcelain"' in workflow
     assert '"P3_DIAGNOSTIC_PARKED"' in workflow
     assert "upload-artifact" not in workflow
     assert "ALPACA_API_KEY_ID" not in workflow
