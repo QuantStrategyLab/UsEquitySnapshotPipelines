@@ -77,6 +77,8 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert '"$root/bars.json"' in workflow
     assert '"$destination"' in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
+    assert "path: p3-source" in p3_job
+    assert p3_job.count("working-directory: p3-source") == 6
     assert "ALPACA_API_KEY_ID" not in p3_job
     assert "ALPACA_API_SECRET_KEY" not in p3_job
     assert "broker" not in p3_job.lower()
