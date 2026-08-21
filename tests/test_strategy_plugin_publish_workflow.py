@@ -8,7 +8,7 @@ PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
 QUANT_PLATFORM_KIT_REF = "3acab1923a97b805b077c85c6c19657be0143bac"
 MARKET_REGIME_PLUGIN_REF = "0d5b48ce4f9dd56491d6a6b51fdf5b0aa4cb256c"
-US_EQUITY_STRATEGIES_REF = "7756fe32585e85cf1d09a163203a02e3eee39fe1"
+US_EQUITY_STRATEGIES_REF = "1ba251e2eab49692f9e08e5abd1e4531aeee1716"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
