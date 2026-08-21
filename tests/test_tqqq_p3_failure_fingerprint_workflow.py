@@ -15,6 +15,8 @@ def test_tqqq_p3_failure_fingerprint_is_manual_ephemeral_and_sanitized() -> None
     assert "pull_request:" not in workflow
     assert "workflow_run:" not in workflow
     assert "environment: tqqq-p1-p3-nonlive" in workflow
+    assert "path: p3-source" in workflow
+    assert workflow.count("working-directory: p3-source") == 3
     assert "contents: read" in workflow
     assert "id-token: write" in workflow
     assert "gcloud storage cp --quiet" in workflow
