@@ -20,9 +20,15 @@ def test_alpaca_sip_access_diagnostic_is_manual_nonlive_and_sanitized() -> None:
     assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
     assert "https://data.alpaca.markets/v2/stocks/bars?{query}" in workflow
     assert '"feed": "sip"' in workflow
+    assert '"QQQ": "2018-01-02"' in workflow
+    assert '"TQQQ": "2018-01-02"' in workflow
+    assert '"QQQM": "2020-10-13"' in workflow
+    assert '"BOXX": "2022-12-28"' in workflow
+    assert '"symbol_statuses": symbol_statuses' in workflow
     assert '"ALPACA_AUTHENTICATION_FAILED"' in workflow
     assert '"ALPACA_SIP_ACCESS_FORBIDDEN"' in workflow
     assert '"ALPACA_SIP_ACCESS_OK"' in workflow
+    assert '"ALPACA_SIP_ACCESS_PARTIALLY_AVAILABLE"' in workflow
     assert "upload-artifact" not in workflow
     assert "gcloud" not in workflow
     assert "placeorder" not in workflow.lower()

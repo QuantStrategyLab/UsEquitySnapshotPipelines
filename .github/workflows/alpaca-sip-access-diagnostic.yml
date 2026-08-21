@@ -34,13 +34,19 @@ jobs:
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
 
-          status = "ALPACA_SECRET_NOT_CONFIGURED"
-          if os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_API_SECRET_KEY"):
+          starts = {
+              "QQQ": "2018-01-02",
+              "TQQQ": "2018-01-02",
+              "QQQM": "2020-10-13",
+              "BOXX": "2022-12-28",
+          }
+
+          def classify(symbol: str, start: str) -> str:
               query = urlencode(
                   {
-                      "symbols": "QQQ",
+                      "symbols": symbol,
                       "timeframe": "1Day",
-                      "start": "2018-01-02",
+                      "start": start,
                       "end": "2026-08-20",
                       "adjustment": "all",
                       "feed": "sip",
@@ -59,19 +65,33 @@ jobs:
                   # Deliberately inspect only the HTTP result.  The body is never
                   # parsed, printed, written, uploaded, or included in an artifact.
                   with urlopen(request, timeout=30):
-                      status = "ALPACA_SIP_ACCESS_OK"
+                      return "ALPACA_SIP_ACCESS_OK"
               except HTTPError as exc:
-                  status = {
+                  return {
                       401: "ALPACA_AUTHENTICATION_FAILED",
                       403: "ALPACA_SIP_ACCESS_FORBIDDEN",
                       429: "ALPACA_RATE_LIMITED",
                   }.get(exc.code, "ALPACA_REQUEST_REJECTED")
               except (TimeoutError, URLError, OSError):
-                  status = "ALPACA_TRANSPORT_UNAVAILABLE"
+                  return "ALPACA_TRANSPORT_UNAVAILABLE"
+
+          symbol_statuses = {symbol: "ALPACA_SECRET_NOT_CONFIGURED" for symbol in starts}
+          if os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_API_SECRET_KEY"):
+              symbol_statuses = {
+                  symbol: classify(symbol, start) for symbol, start in starts.items()
+              }
+          distinct_statuses = set(symbol_statuses.values())
+          if distinct_statuses == {"ALPACA_SIP_ACCESS_OK"}:
+              status = "ALPACA_SIP_ACCESS_OK"
+          elif len(distinct_statuses) == 1:
+              status = next(iter(distinct_statuses))
+          else:
+              status = "ALPACA_SIP_ACCESS_PARTIALLY_AVAILABLE"
 
           result = {
               "schema_version": "qsl.alpaca_sip_access_diagnostic.v1",
               "status": status,
+              "symbol_statuses": symbol_statuses,
               "observed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
           }
           rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
