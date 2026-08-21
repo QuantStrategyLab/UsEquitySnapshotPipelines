@@ -75,21 +75,44 @@ jobs:
           import hashlib
           import json
           import os
+          import subprocess
           from pathlib import Path
 
           from scripts.run_tqqq_p3 import (
               _completed_evidence_summary,
               _snapshot_payload,
           )
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
-              run_tqqq_promotion_evidence,
-          )
+          from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
               P2_V5_CONTRACT,
               verify_tqqq_core_only_input_root,
           )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
+              run_tqqq_promotion_evidence,
+          )
 
           root = Path(os.environ["SNAPSHOT_ROOT"])
+          runner_repository = Path(tqqq_promotion_runner.__file__).resolve().parents[3]
+          checkout_status = subprocess.run(
+              [
+                  "git",
+                  "-C",
+                  str(runner_repository),
+                  "status",
+                  "--porcelain",
+                  "--untracked-files=normal",
+              ],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if checkout_status.returncode:
+              checkout_observation = {"status": "UNAVAILABLE"}
+          else:
+              checkout_observation = {
+                  "entries": checkout_status.stdout.splitlines(),
+                  "status": "CLEAN" if not checkout_status.stdout else "DIRTY",
+              }
           config = json.loads(
               Path("config/tqqq_core_only_p2_v5.json").read_text(encoding="utf-8")
           )
@@ -126,6 +149,7 @@ jobs:
               result = {
                   "error_type": type(error).__name__,
                   "failure_fingerprint_sha256": hashlib.sha256(fingerprint_input).hexdigest(),
+                  "runner_checkout": checkout_observation,
                   "schema_version": "qsl.tqqq_p3_failure_fingerprint.v1",
                   "status": "P3_DIAGNOSTIC_PARKED",
               }
