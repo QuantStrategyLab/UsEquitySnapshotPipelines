@@ -7,9 +7,10 @@ WORKFLOW = Path(".github/workflows/tqqq-p1-p3-daily-research.yml")
 GITIGNORE = Path(".gitignore")
 
 
-def test_ephemeral_google_auth_credentials_do_not_dirty_the_p3_checkout() -> None:
+def test_ephemeral_runner_outputs_do_not_dirty_the_p3_checkout() -> None:
     gitignore = GITIGNORE.read_text(encoding="utf-8")
 
+    assert "build/" in gitignore
     assert "gha-creds-*.json" in gitignore
 
 
