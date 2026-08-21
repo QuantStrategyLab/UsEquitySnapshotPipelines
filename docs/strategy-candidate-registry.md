@@ -1,14 +1,20 @@
 # Research Strategy Candidate Registry v1
 
 `strategy_candidate_registry` is the P2 catalogue for frozen research
-candidates.  It is intentionally small and contains only the current
-`tqqq_core_only_p2_v5` single-strategy candidate.
+candidates. It is intentionally small and contains two current
+single-strategy candidates: `tqqq_core_only_p2_v5` and
+`soxl_soxx_core_only_p2_v3`.
 
 Each entry binds a candidate identifier, immutable source revisions, frozen
 configuration digest, and data-contract identifier.  Its canonical digest can
 be carried by P1/P3 evidence.  The current entry permits exactly P1, P2, and
 P3; it does not authorize paper, shadow, broker access, orders, capital, or
 live trading.
+
+Both entries permit exactly P1, P2, and P3. The SOXL entry records its own
+three-asset observed-data contract and source revisions; it does not inherit
+TQQQ evidence or authority. Neither entry authorizes paper, shadow, broker
+access, orders, capital, or live trading.
 
 The schema also describes two future candidate kinds without activating them:
 

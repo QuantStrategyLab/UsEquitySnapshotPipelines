@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v2_contract import (
-    FUTURE_INPUT_CONTRACT_ID,
-    P2_V2_CONTRACT,
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import (
+    INPUT_CONTRACT_ID,
+    P2_V3_CONTRACT,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT
 from us_equity_snapshot_pipelines.research.multi_strategy_driver_catalog import (
@@ -15,29 +15,26 @@ from us_equity_snapshot_pipelines.research.multi_strategy_driver_catalog import 
     MIGRATION_REQUIRED,
     MultiStrategyDriverCatalogError,
     ResearchDriverRoute,
-    SOXL_MIGRATION_ROUTE,
+    SOXL_DAILY_RESEARCH_ROUTE,
     TQQQ_DAILY_RESEARCH_ROUTE,
     build_multi_strategy_research_driver_catalog,
     canonical_route_bytes,
 )
 
 
-def test_catalogue_describes_tqqq_as_daily_and_soxl_as_unactivated_migration() -> None:
+def test_catalogue_describes_tqqq_and_soxl_as_independent_daily_research_routes() -> None:
     catalogue = build_multi_strategy_research_driver_catalog()
 
-    assert CURRENT_RESEARCH_DRIVER_ROUTES == (TQQQ_DAILY_RESEARCH_ROUTE, SOXL_MIGRATION_ROUTE)
+    assert CURRENT_RESEARCH_DRIVER_ROUTES == (TQQQ_DAILY_RESEARCH_ROUTE, SOXL_DAILY_RESEARCH_ROUTE)
     assert TQQQ_DAILY_RESEARCH_ROUTE.research_identity_id == P2_V5_CONTRACT.candidate_id
     assert TQQQ_DAILY_RESEARCH_ROUTE.state == DAILY_RESEARCH_WIRED
     assert TQQQ_DAILY_RESEARCH_ROUTE.migration_blockers == ()
-    assert SOXL_MIGRATION_ROUTE.research_identity_id == P2_V2_CONTRACT.candidate_id
-    assert SOXL_MIGRATION_ROUTE.input_contract_id == FUTURE_INPUT_CONTRACT_ID
-    assert SOXL_MIGRATION_ROUTE.p2_config_sha256 == P2_V2_CONTRACT.config_sha256
-    assert SOXL_MIGRATION_ROUTE.p3_replay_entrypoint == "scripts/run_soxl_core_only_p3_evidence.py"
-    assert SOXL_MIGRATION_ROUTE.state == MIGRATION_REQUIRED
-    assert SOXL_MIGRATION_ROUTE.migration_blockers == (
-        "daily_p1_publisher_not_implemented",
-        "nonlive_scheduler_and_sanitized_evidence_persistence_not_implemented",
-    )
+    assert SOXL_DAILY_RESEARCH_ROUTE.research_identity_id == P2_V3_CONTRACT.candidate_id
+    assert SOXL_DAILY_RESEARCH_ROUTE.input_contract_id == INPUT_CONTRACT_ID
+    assert SOXL_DAILY_RESEARCH_ROUTE.p2_config_sha256 == P2_V3_CONTRACT.config_sha256
+    assert SOXL_DAILY_RESEARCH_ROUTE.p3_replay_entrypoint == "scripts/run_soxl_core_only_p3_evidence.py"
+    assert SOXL_DAILY_RESEARCH_ROUTE.state == DAILY_RESEARCH_WIRED
+    assert SOXL_DAILY_RESEARCH_ROUTE.migration_blockers == ()
     assert catalogue["routes"][0]["authority"] == {
         "research_only": True,
         "no_order": True,

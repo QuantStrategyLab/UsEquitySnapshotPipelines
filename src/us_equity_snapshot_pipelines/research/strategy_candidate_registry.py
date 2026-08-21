@@ -17,6 +17,10 @@ from ..lifecycle.tqqq_core_only_p1_binding import (
     INPUT_CONTRACT_ID,
     P2_V5_CONTRACT,
 )
+from ..lifecycle.soxl_core_only_p2_v3_contract import (
+    INPUT_CONTRACT_ID as SOXL_CORE_ONLY_INPUT_CONTRACT_ID,
+    P2_V3_CONTRACT,
+)
 
 STRATEGY_CANDIDATE_REGISTRY_SCHEMA = "qsl.strategy-candidate-registry.v1"
 RESEARCH_STAGES = ("P1", "P2", "P3")
@@ -171,7 +175,21 @@ TQQQ_CORE_ONLY_P2_V5 = StrategyCandidate(
     ),
 )
 
-CURRENT_RESEARCH_CANDIDATES: tuple[StrategyCandidate, ...] = (TQQQ_CORE_ONLY_P2_V5,)
+SOXL_SOXX_CORE_ONLY_P2_V3 = StrategyCandidate(
+    candidate_id=P2_V3_CONTRACT.candidate_id,
+    kind=SINGLE_STRATEGY,
+    config_sha256=P2_V3_CONTRACT.config_sha256,
+    data_contract_id=SOXL_CORE_ONLY_INPUT_CONTRACT_ID,
+    source_revisions=(
+        SourceRevision("QuantStrategyLab/QuantPlatformKit", P2_V3_CONTRACT.qpk_revision),
+        SourceRevision("QuantStrategyLab/UsEquityStrategies", P2_V3_CONTRACT.ues_revision),
+    ),
+)
+
+CURRENT_RESEARCH_CANDIDATES: tuple[StrategyCandidate, ...] = (
+    TQQQ_CORE_ONLY_P2_V5,
+    SOXL_SOXX_CORE_ONLY_P2_V3,
+)
 
 
 def resolve_research_candidate(candidate_id: object) -> StrategyCandidate:

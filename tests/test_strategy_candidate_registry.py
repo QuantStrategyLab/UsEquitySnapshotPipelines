@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from us_equity_snapshot_pipelines.research.strategy_candidate_registry import (
     CURRENT_RESEARCH_CANDIDATES,
     PLUGIN,
     PORTFOLIO,
     RESEARCH_STAGES,
     SINGLE_STRATEGY,
+    SOXL_SOXX_CORE_ONLY_P2_V3,
     TQQQ_CORE_ONLY_P2_V5,
     PluginBinding,
     SourceRevision,
@@ -23,10 +25,10 @@ def _source(repository: str = "QuantStrategyLab/example") -> SourceRevision:
     return SourceRevision(repository, "a" * 40)
 
 
-def test_current_registry_contains_only_the_frozen_tqqq_v5_research_candidate() -> None:
+def test_current_registry_contains_the_frozen_tqqq_v5_and_soxl_v3_research_candidates() -> None:
     registry = build_research_candidate_registry()
 
-    assert CURRENT_RESEARCH_CANDIDATES == (TQQQ_CORE_ONLY_P2_V5,)
+    assert CURRENT_RESEARCH_CANDIDATES == (TQQQ_CORE_ONLY_P2_V5, SOXL_SOXX_CORE_ONLY_P2_V3)
     assert TQQQ_CORE_ONLY_P2_V5.candidate_id == P2_V5_CONTRACT.candidate_id
     assert TQQQ_CORE_ONLY_P2_V5.kind == SINGLE_STRATEGY
     assert TQQQ_CORE_ONLY_P2_V5.config_sha256 == P2_V5_CONTRACT.config_sha256
@@ -35,6 +37,14 @@ def test_current_registry_contains_only_the_frozen_tqqq_v5_research_candidate() 
     assert TQQQ_CORE_ONLY_P2_V5.plugin_bindings == ()
     assert registry["candidates"][0]["candidate_sha256"] == TQQQ_CORE_ONLY_P2_V5.candidate_sha256
     assert resolve_research_candidate(P2_V5_CONTRACT.candidate_id) == TQQQ_CORE_ONLY_P2_V5
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.candidate_id == P2_V3_CONTRACT.candidate_id
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.kind == SINGLE_STRATEGY
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.config_sha256 == P2_V3_CONTRACT.config_sha256
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.permitted_stages == RESEARCH_STAGES
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.component_candidate_ids == ()
+    assert SOXL_SOXX_CORE_ONLY_P2_V3.plugin_bindings == ()
+    assert registry["candidates"][1]["candidate_sha256"] == SOXL_SOXX_CORE_ONLY_P2_V3.candidate_sha256
+    assert resolve_research_candidate(P2_V3_CONTRACT.candidate_id) == SOXL_SOXX_CORE_ONLY_P2_V3
 
 
 def test_portfolio_candidate_requires_multiple_distinct_components() -> None:

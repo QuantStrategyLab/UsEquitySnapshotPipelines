@@ -24,7 +24,7 @@ targets, create a broker adapter, or write an artifact.
 | Route | State | Meaning |
 | --- | --- | --- |
 | TQQQ core-only v5 | `DAILY_RESEARCH_WIRED` | The existing TQQQ controller is the first concrete implementation. Its P1 data, frozen P2 candidate, P3 replay, v6 observation record, and forward observation remain strategy-specific. |
-| SOXL/SOXX core-only P2 v2 | `MIGRATION_REQUIRED` | The frozen [P2 v2 candidate](soxl-core-only-p2-v2-research.md) has a three-asset P1 identity, local injected-provider P1 publisher with exact XNYS coverage checks, independent P1-bars-to-context materializer, fixed evidence plan, isolated stateful replay, metrics-and-hashes summary, and an offline P3 facade. It still has no verified P1 root, non-live scheduler, or sanitized evidence persistence. Historical SOXL research remains context only and cannot be scheduled or reused as current evidence. |
+| SOXL/SOXX core-only v3 | `DAILY_RESEARCH_WIRED` | The [P2 v3 candidate](soxl-core-only-p2-v3-research.md) has its own immutable three-asset P1 contract, scheduled non-live P1/P3 workflow, exact detached UES revision, create-only completion marker, sanitized terminal/performance records, and no P4/P5/P6 authority. It must earn fresh observed evidence; historical SOXL research is context only. The historical P2 v2 candidate remains frozen provenance, not a schedulable route. |
 
 ## Safe extension rule
 
