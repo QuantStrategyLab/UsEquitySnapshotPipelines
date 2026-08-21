@@ -67,6 +67,8 @@ def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -
     assert "gcloud storage cp --quiet --no-clobber \"$INDEX_PATH\" \"$destination\"" in workflow
     assert "actions/upload-artifact" not in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
+    assert "path: p3-source" in p3_job
+    assert p3_job.count("working-directory: p3-source") == 5
     assert "ALPACA_API_KEY_ID" not in p3_job
     assert "ALPACA_API_SECRET_KEY" not in p3_job
     assert p3_job.count("scripts/run_tqqq_p3.py") == 1
