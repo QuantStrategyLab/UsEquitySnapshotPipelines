@@ -14,9 +14,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..lifecycle.soxl_core_only_p2_v2_contract import (
-    FUTURE_INPUT_CONTRACT_ID as SOXL_FUTURE_INPUT_CONTRACT_ID,
-    P2_V2_CONTRACT as SOXL_P2_V2_CONTRACT,
+from ..lifecycle.soxl_core_only_p2_v3_contract import (
+    INPUT_CONTRACT_ID as SOXL_INPUT_CONTRACT_ID,
+    P2_V3_CONTRACT as SOXL_P2_V3_CONTRACT,
 )
 from ..lifecycle.tqqq_core_only_p1_binding import (
     INPUT_CONTRACT_ID as TQQQ_INPUT_CONTRACT_ID,
@@ -134,22 +134,18 @@ TQQQ_DAILY_RESEARCH_ROUTE = ResearchDriverRoute(
     state=DAILY_RESEARCH_WIRED,
 )
 
-SOXL_MIGRATION_ROUTE = ResearchDriverRoute(
-    route_id="soxl.soxx.core-only.p2-v2-migration",
-    research_identity_id=SOXL_P2_V2_CONTRACT.candidate_id,
-    input_contract_id=SOXL_FUTURE_INPUT_CONTRACT_ID,
-    p2_config_sha256=SOXL_P2_V2_CONTRACT.config_sha256,
+SOXL_DAILY_RESEARCH_ROUTE = ResearchDriverRoute(
+    route_id="soxl.soxx.core-only.v3.daily-research",
+    research_identity_id=SOXL_P2_V3_CONTRACT.candidate_id,
+    input_contract_id=SOXL_INPUT_CONTRACT_ID,
+    p2_config_sha256=SOXL_P2_V3_CONTRACT.config_sha256,
     p3_replay_entrypoint="scripts/run_soxl_core_only_p3_evidence.py",
-    state=MIGRATION_REQUIRED,
-    migration_blockers=(
-        "daily_p1_publisher_not_implemented",
-        "nonlive_scheduler_and_sanitized_evidence_persistence_not_implemented",
-    ),
+    state=DAILY_RESEARCH_WIRED,
 )
 
 CURRENT_RESEARCH_DRIVER_ROUTES: tuple[ResearchDriverRoute, ...] = (
     TQQQ_DAILY_RESEARCH_ROUTE,
-    SOXL_MIGRATION_ROUTE,
+    SOXL_DAILY_RESEARCH_ROUTE,
 )
 
 
@@ -177,7 +173,7 @@ __all__ = [
     "P1_P3_STAGES",
     "ResearchDriverRoute",
     "SCHEMA_VERSION",
-    "SOXL_MIGRATION_ROUTE",
+    "SOXL_DAILY_RESEARCH_ROUTE",
     "TQQQ_DAILY_RESEARCH_ROUTE",
     "build_multi_strategy_research_driver_catalog",
     "canonical_route_bytes",
