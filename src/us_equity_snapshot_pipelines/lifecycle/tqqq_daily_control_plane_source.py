@@ -26,13 +26,30 @@ _P1_DEFERRED_REASON_CODES = frozenset(
         "ALPACA_RATE_LIMITED",
         "ALPACA_SERVICE_UNAVAILABLE",
         "ALPACA_TRANSPORT_UNAVAILABLE",
+        "ALPACA_AUTHENTICATION_FAILED",
+        "ALPACA_SIP_ACCESS_FORBIDDEN",
+        # Legacy terminal snapshots may still carry this pre-split code.
         "ALPACA_AUTH_OR_ENTITLEMENT",
         "ALPACA_REQUEST_REJECTED",
     }
 )
 _P1_OPERATOR_ATTENTION_REASON_CODES = frozenset(
-    {"ALPACA_AUTH_OR_ENTITLEMENT", "ALPACA_REQUEST_REJECTED"}
+    {
+        "ALPACA_AUTHENTICATION_FAILED",
+        "ALPACA_SIP_ACCESS_FORBIDDEN",
+        "ALPACA_AUTH_OR_ENTITLEMENT",
+        "ALPACA_REQUEST_REJECTED",
+    }
 )
+_P1_OPERATOR_ATTENTION_RECOMMENDATIONS = {
+    "ALPACA_AUTHENTICATION_FAILED": (
+        "P1 deferred: alpaca_authentication_failed; verify the non-live Alpaca key pair."
+    ),
+    "ALPACA_SIP_ACCESS_FORBIDDEN": (
+        "P1 deferred: alpaca_sip_access_forbidden; verify SIP market-data access "
+        "and request configuration."
+    ),
+}
 _P1_QUARANTINED_REASON_CODES = frozenset({"P1_CONTRACT_FAILURE"})
 _P3_FAILURE_CLASSES = frozenset(
     {
@@ -168,19 +185,20 @@ def build_tqqq_daily_control_plane_source_snapshot(
         )
         rendered_reason = deferred_reason.lower()
         needs_operator_attention = deferred_reason in _P1_OPERATOR_ATTENTION_REASON_CODES
-        recommendation = (
-            {
+        if needs_operator_attention:
+            recommendation = {
                 "code": "defer",
-                "reason": (
-                    f"P1 deferred: {rendered_reason}; inspect Alpaca account or request configuration."
+                "reason": _P1_OPERATOR_ATTENTION_RECOMMENDATIONS.get(
+                    deferred_reason,
+                    f"P1 deferred: {rendered_reason}; inspect Alpaca account "
+                    "or request configuration.",
                 ),
             }
-            if needs_operator_attention
-            else {
+        else:
+            recommendation = {
                 "code": "defer",
                 "reason": f"P1 deferred: {rendered_reason}; retry on the next scheduled session.",
             }
-        )
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,

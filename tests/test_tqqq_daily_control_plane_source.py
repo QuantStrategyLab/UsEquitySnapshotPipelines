@@ -111,14 +111,25 @@ def test_deferred_missing_sessions_is_distinct_from_an_unavailable_provider() ->
             "p1_deferred_alpaca_rate_limited",
         ),
         (
-            "ALPACA_AUTH_OR_ENTITLEMENT",
+            "ALPACA_AUTHENTICATION_FAILED",
             {
                 "code": "defer",
                 "reason": (
-                    "P1 deferred: alpaca_auth_or_entitlement; inspect Alpaca account or request configuration."
+                    "P1 deferred: alpaca_authentication_failed; verify the non-live Alpaca key pair."
                 ),
             },
-            "p1_deferred_operator_attention_alpaca_auth_or_entitlement",
+            "p1_deferred_operator_attention_alpaca_authentication_failed",
+        ),
+        (
+            "ALPACA_SIP_ACCESS_FORBIDDEN",
+            {
+                "code": "defer",
+                "reason": (
+                    "P1 deferred: alpaca_sip_access_forbidden; verify SIP market-data access "
+                    "and request configuration."
+                ),
+            },
+            "p1_deferred_operator_attention_alpaca_sip_access_forbidden",
         ),
     ],
 )

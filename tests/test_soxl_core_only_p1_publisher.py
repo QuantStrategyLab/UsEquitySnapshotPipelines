@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -262,6 +263,33 @@ def test_alpaca_adapter_uses_only_the_frozen_sip_daily_request_envelopes(tmp_pat
         },
     ]
     assert {call["url"] for call in transport.calls} == {"https://data.alpaca.markets/v2/stocks/bars"}
+
+
+@pytest.mark.parametrize(
+    ("status", "reason_code"),
+    [
+        (401, "ALPACA_AUTHENTICATION_FAILED"),
+        (403, "ALPACA_SIP_ACCESS_FORBIDDEN"),
+    ],
+)
+def test_alpaca_http_diagnostic_never_exposes_response_details(
+    monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str
+) -> None:
+    def _raise_http_error(*_args: object, **_kwargs: object) -> object:
+        raise HTTPError(
+            "https://data.alpaca.markets/v2/stocks/bars", status, "hidden", None, None
+        )
+
+    monkeypatch.setattr(acquisition_cli, "urlopen", _raise_http_error)
+
+    with pytest.raises(acquisition_cli.P1InputUnavailableError) as error:
+        acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret")(
+            url="https://data.alpaca.markets/v2/stocks/bars",
+            params={"symbols": "SOXL"},
+        )
+
+    assert str(error.value) == reason_code
+    assert error.value.reason_code == reason_code
 
 
 def test_cli_without_an_injected_provider_parks_without_writing_a_root(

@@ -35,7 +35,8 @@ _DATE_CUTOFF = "2026-07-31"
 _AVAILABILITY_REASON_CODES = frozenset(
     {
         "INPUT_UNAVAILABLE",
-        "ALPACA_AUTH_OR_ENTITLEMENT",
+        "ALPACA_AUTHENTICATION_FAILED",
+        "ALPACA_SIP_ACCESS_FORBIDDEN",
         "ALPACA_RATE_LIMITED",
         "ALPACA_SERVICE_UNAVAILABLE",
         "ALPACA_TRANSPORT_UNAVAILABLE",
@@ -64,8 +65,10 @@ class P1InputUnavailableError(TqqqCoreOnlyP1InputUnavailableError):
 
 def _availability_reason_for_http_status(status: object) -> str:
     """Map an HTTP status to a small, safe control-plane reason code."""
-    if status in {401, 403}:
-        return "ALPACA_AUTH_OR_ENTITLEMENT"
+    if status == 401:
+        return "ALPACA_AUTHENTICATION_FAILED"
+    if status == 403:
+        return "ALPACA_SIP_ACCESS_FORBIDDEN"
     if status == 429:
         return "ALPACA_RATE_LIMITED"
     if isinstance(status, int) and 500 <= status <= 599:
