@@ -4,6 +4,13 @@ from pathlib import Path
 
 
 WORKFLOW = Path(".github/workflows/tqqq-p1-p3-daily-research.yml")
+GITIGNORE = Path(".gitignore")
+
+
+def test_ephemeral_google_auth_credentials_do_not_dirty_the_p3_checkout() -> None:
+    gitignore = GITIGNORE.read_text(encoding="utf-8")
+
+    assert "gha-creds-*.json" in gitignore
 
 
 def test_daily_research_workflow_is_scheduled_p2_v5_only_and_nonlive() -> None:
