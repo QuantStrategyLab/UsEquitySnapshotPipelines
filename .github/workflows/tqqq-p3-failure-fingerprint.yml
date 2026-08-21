@@ -34,7 +34,7 @@ jobs:
           INPUT_MANIFEST_SHA256: ${{ inputs.input_manifest_sha256 }}
         run: |
           set -euo pipefail
-          python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import os
           import re
 
@@ -66,7 +66,7 @@ jobs:
       - name: Execute the full ephemeral P3 path and emit a non-reversible fingerprint
         run: |
           set -euo pipefail
-          python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import hashlib
           import json
           import os

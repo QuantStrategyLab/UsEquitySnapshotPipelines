@@ -19,6 +19,11 @@ def test_tqqq_p3_failure_fingerprint_is_manual_ephemeral_and_sanitized() -> None
     assert "id-token: write" in workflow
     assert "gcloud storage cp --quiet" in workflow
     assert "Download the existing P1 root into ephemeral runner storage" in workflow
+    execution_step = workflow.split(
+        "Execute the full ephemeral P3 path and emit a non-reversible fingerprint",
+        maxsplit=1,
+    )[1]
+    assert "uv run --no-sync python - <<'PY'" in execution_step
     assert "run_tqqq_promotion_evidence" in workflow
     assert "_completed_evidence_summary" in workflow
     assert "contract=P2_V5_CONTRACT" in workflow
