@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+WORKFLOW = Path(".github/workflows/alpaca-sip-access-diagnostic.yml")
+
+
+def test_alpaca_sip_access_diagnostic_is_manual_nonlive_and_sanitized() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" not in workflow
+    assert "pull_request:" not in workflow
+    assert "workflow_run:" not in workflow
+    assert "environment: tqqq-p1-p3-nonlive" in workflow
+    assert "contents: read" in workflow
+    assert "id-token: write" not in workflow
+    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
+    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
+    assert "https://data.alpaca.markets/v2/stocks/bars?{query}" in workflow
+    assert '"feed": "sip"' in workflow
+    assert '"ALPACA_AUTHENTICATION_FAILED"' in workflow
+    assert '"ALPACA_SIP_ACCESS_FORBIDDEN"' in workflow
+    assert '"ALPACA_SIP_ACCESS_OK"' in workflow
+    assert "upload-artifact" not in workflow
+    assert "gcloud" not in workflow
+    assert "placeorder" not in workflow.lower()
+    assert "broker" not in workflow.lower()

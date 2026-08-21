@@ -1,0 +1,81 @@
+name: Alpaca SIP Access Diagnostic
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: alpaca-sip-access-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  classify-sip-access:
+    runs-on: ubuntu-latest
+    # This environment already holds the non-live market-data-only secrets.
+    # The job does not obtain cloud or order permissions.
+    environment: tqqq-p1-p3-nonlive
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Classify Alpaca SIP access without persisting market data
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from datetime import UTC, datetime
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          status = "ALPACA_SECRET_NOT_CONFIGURED"
+          if os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_API_SECRET_KEY"):
+              query = urlencode(
+                  {
+                      "symbols": "QQQ",
+                      "timeframe": "1Day",
+                      "start": "2018-01-02",
+                      "end": "2026-08-20",
+                      "adjustment": "all",
+                      "feed": "sip",
+                      "sort": "asc",
+                      "limit": "10000",
+                  }
+              )
+              request = Request(
+                  f"https://data.alpaca.markets/v2/stocks/bars?{query}",
+                  headers={
+                      "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY_ID"],
+                      "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET_KEY"],
+                  },
+              )
+              try:
+                  # Deliberately inspect only the HTTP result.  The body is never
+                  # parsed, printed, written, uploaded, or included in an artifact.
+                  with urlopen(request, timeout=30):
+                      status = "ALPACA_SIP_ACCESS_OK"
+              except HTTPError as exc:
+                  status = {
+                      401: "ALPACA_AUTHENTICATION_FAILED",
+                      403: "ALPACA_SIP_ACCESS_FORBIDDEN",
+                      429: "ALPACA_RATE_LIMITED",
+                  }.get(exc.code, "ALPACA_REQUEST_REJECTED")
+              except (TimeoutError, URLError, OSError):
+                  status = "ALPACA_TRANSPORT_UNAVAILABLE"
+
+          result = {
+              "schema_version": "qsl.alpaca_sip_access_diagnostic.v1",
+              "status": status,
+              "observed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+          }
+          rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
+          print(f"ALPACA_SIP_DIAGNOSTIC={rendered}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"ALPACA_SIP_DIAGNOSTIC={rendered}\n")
+          PY
