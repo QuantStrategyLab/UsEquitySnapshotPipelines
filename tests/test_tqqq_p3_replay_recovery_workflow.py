@@ -19,6 +19,9 @@ def test_recovery_workflow_is_scheduled_once_only_and_nonlive() -> None:
     assert "recovery_attempt_limit" in workflow
     assert "p3-recovery-record.v1.json" in workflow
     assert "--no-clobber" in workflow
+    recover_job = workflow.split("  recover:", maxsplit=1)[1]
+    assert "path: p3-source" in recover_job
+    assert recover_job.count("working-directory: p3-source") == 4
 
 
 def test_recovery_workflow_reuses_only_the_verified_p1_root_without_provider_or_execution() -> None:
