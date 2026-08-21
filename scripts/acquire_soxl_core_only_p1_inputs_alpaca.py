@@ -33,7 +33,8 @@ _START_DATES = {"SOXL": "2022-01-03", "SOXX": "2022-01-03", "BOXX": "2022-12-28"
 _AVAILABILITY_REASON_CODES = frozenset(
     {
         "INPUT_UNAVAILABLE",
-        "ALPACA_AUTH_OR_ENTITLEMENT",
+        "ALPACA_AUTHENTICATION_FAILED",
+        "ALPACA_SIP_ACCESS_FORBIDDEN",
         "ALPACA_RATE_LIMITED",
         "ALPACA_SERVICE_UNAVAILABLE",
         "ALPACA_TRANSPORT_UNAVAILABLE",
@@ -56,8 +57,10 @@ class P1InputUnavailableError(SoxlCoreOnlyP1InputUnavailableError):
 
 
 def _availability_reason_for_http_status(status: object) -> str:
-    if status in {401, 403}:
-        return "ALPACA_AUTH_OR_ENTITLEMENT"
+    if status == 401:
+        return "ALPACA_AUTHENTICATION_FAILED"
+    if status == 403:
+        return "ALPACA_SIP_ACCESS_FORBIDDEN"
     if status == 429:
         return "ALPACA_RATE_LIMITED"
     if isinstance(status, int) and 500 <= status <= 599:

@@ -333,8 +333,8 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("status", "reason_code"),
     [
-        (401, "ALPACA_AUTH_OR_ENTITLEMENT"),
-        (403, "ALPACA_AUTH_OR_ENTITLEMENT"),
+        (401, "ALPACA_AUTHENTICATION_FAILED"),
+        (403, "ALPACA_SIP_ACCESS_FORBIDDEN"),
         (429, "ALPACA_RATE_LIMITED"),
         (503, "ALPACA_SERVICE_UNAVAILABLE"),
         (400, "ALPACA_REQUEST_REJECTED"),
