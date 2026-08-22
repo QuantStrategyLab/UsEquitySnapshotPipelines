@@ -11,6 +11,7 @@ import pandas as pd
 
 from .contracts import RUSSELL_TOP50_LEADER_ROTATION_PROFILE
 from .mega_cap_leader_rotation_shadow_review import build_shadow_review_artifacts
+from .shadow_contract import SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION, validate_shadow_cycle_contract
 
 DEFAULT_ACTIVE_VARIANT = "blend_top2_50_top4_50"
 NAMED_VARIANTS = (
@@ -255,8 +256,15 @@ def run_russell_leader_rotation_shadow_cycle(
         "snapshot_as_of": snapshot_as_of_resolved,
         "run_as_of": run_as_of_resolved,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "shadow_contract": {
+            "schema_version": SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+            "mode": "research_only",
+            "no_order": True,
+            "broker_access": False,
+        },
         "diagnostics": dict(active_decision.diagnostics),
     }
+    validate_shadow_cycle_contract(diagnostics_payload)
     diagnostics_json = output_dir / "russell_leader_rotation_runtime_diagnostics.json"
     _write_json(diagnostics_json, diagnostics_payload)
 
