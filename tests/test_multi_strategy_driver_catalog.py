@@ -54,6 +54,34 @@ def test_route_digest_is_deterministic_and_contains_no_execution_authority() -> 
     assert "broker" not in first.decode("utf-8").lower()
 
 
+@pytest.mark.parametrize("route", CURRENT_RESEARCH_DRIVER_ROUTES)
+def test_every_registered_strategy_route_is_research_only(route: ResearchDriverRoute) -> None:
+    """TQQQ/SOXL (and future combo entries) cannot inherit execution authority."""
+
+    payload = json.loads(canonical_route_bytes(route))
+    assert payload["permitted_stages"] == ["P1", "P2", "P3"]
+    assert payload["authority"] == {
+        "research_only": True,
+        "no_order": True,
+        "p4_p5_p6_authorized": False,
+    }
+    assert all(
+        key not in payload
+        for key in ("paper_authorized", "shadow_authorized", "live_authorized", "broker")
+    )
+
+
+def test_combo_profiles_are_explicitly_not_admitted_until_their_own_p1_p3_route_exists() -> None:
+    """The combo implementation is a tracked gap, never an implicit route."""
+
+    catalogue = build_multi_strategy_research_driver_catalog()
+    route_ids = {entry["route_id"] for entry in catalogue["routes"]}
+    assert not any("combo" in route_id for route_id in route_ids)
+    assert {"us_equity_combo", "us_equity_combo_core", "us_equity_combo_leveraged"}.isdisjoint(
+        {entry["research_identity_id"] for entry in catalogue["routes"]}
+    )
+
+
 def test_route_states_fail_closed_when_their_migration_boundary_is_ambiguous() -> None:
     with pytest.raises(MultiStrategyDriverCatalogError, match="daily route"):
         ResearchDriverRoute(
