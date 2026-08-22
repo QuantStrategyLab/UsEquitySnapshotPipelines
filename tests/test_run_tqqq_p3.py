@@ -267,35 +267,43 @@ def test_cli_rejects_tampered_source_identity_before_evidence_replay(
     }
 
 
-def test_cli_rejects_a_v1_snapshot_for_the_v2_candidate_before_replay(
+def test_cli_parks_historical_v2_before_reading_snapshot_or_starting_replay(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     module = _load_script_module()
-    snapshot = tmp_path / "snapshot"
-    _write_canonical_snapshot(snapshot)
-    config_path = tmp_path / "config.json"
-    config_path.write_text(
-        '{"candidate_id":"tqqq_core_only_p2_v2"}', encoding="utf-8"
-    )
+    config_path = Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v2.json"
+    output = tmp_path / "must-not-exist"
     calls = 0
 
     def run_evidence(**_kwargs: object) -> object:
         nonlocal calls
         calls += 1
-        raise AssertionError("candidate-bound root verification must run first")
+        raise AssertionError("historical P2 v2 must not enter the P3 replay")
 
     module.run_tqqq_promotion_evidence = run_evidence
 
     assert module.main(
         [
-            "--snapshot-root", str(snapshot),
-            "--config", str(config_path),
-            "--mandate-receipt-sha256", "2" * 64,
-            "--output-dir", str(tmp_path / "output"),
+            "--snapshot-root",
+            str(tmp_path / "unreadable-snapshot"),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(output),
         ]
     ) == 2
     assert calls == 0
-    assert json.loads(capsys.readouterr().out)["stage"] == "input_validation"
+    assert not output.exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "config_contract_failure",
+        "replay_started": False,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "config_contract",
+        "status": "PARKED",
+    }
 
 
 def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
@@ -388,7 +396,7 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
     """P2 v5 extends only the verified cutoff; it remains offline and no-order."""
     module = _load_script_module()
     snapshot = tmp_path / "synthetic-v5-snapshot"
-    _write_canonical_snapshot(
+    input_payload = _write_canonical_snapshot(
         snapshot, p1_binding.P2_V5_CONTRACT, date_cutoff="2026-08-18"
     )
     config_path = tmp_path / "p2-v5.json"
@@ -434,10 +442,60 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
         "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
         "INCONCLUSIVE_DATA_OR_EXECUTION",
     }
+    evidence_path = output / "strategy-evidence-package.v2.json"
+    evidence_bytes = evidence_path.read_bytes()
+    evidence_package = json.loads(evidence_bytes)
+    backtest = json.loads(
+        (output / "artifacts" / "backtest.json").read_text(encoding="utf-8")
+    )
+    frozen_config = json.loads(
+        (output / "artifacts" / "config.json").read_text(encoding="utf-8")
+    )
+    terminal = json.loads(
+        (output / "promotion-research-result.v1.json").read_text(encoding="utf-8")
+    )
+    expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
+        input_payload["input_manifest"],
+        input_payload["binding"],
+        contract=p1_binding.P2_V5_CONTRACT,
+    )
+
+    assert summary["status"] == terminal["status"] == "EVIDENCE_V2_COMPLETE"
+    assert summary["verdict"] == terminal["verdict"]
+    assert summary["evidence_sha256"] == terminal["evidence_sha256"] == hashlib.sha256(
+        evidence_bytes
+    ).hexdigest()
+    assert terminal["input_manifest_sha256"] == expected_manifest_sha256
+    assert evidence_package["strategy"] == {
+        "profile": "tqqq_core_only_p2_v5",
+        "domain": "us_equity",
+        "source_revision": p1_binding.P2_V5_UES_REVISION,
+    }
+    assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
+    assert frozen_config["candidate"] == json.loads(config_path.read_text(encoding="utf-8"))
+    assert backtest["strategy_execution"] == {
+        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
+        "ues_revision": p1_binding.P2_V5_UES_REVISION,
+    }
+    for artifact_name, digest_name in {
+        "config": "config_sha256",
+        "data_manifest": "data_manifest_sha256",
+        "backtest": "backtest_sha256",
+        "risk": "risk_sha256",
+        "information_coefficient": "information_coefficient_sha256",
+        "cost_model": "cost_model_sha256",
+    }.items():
+        artifact = evidence_package["artifacts"][artifact_name]
+        artifact_bytes = (output / artifact["path"]).read_bytes()
+        assert artifact["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
+        assert evidence_package["digests"][digest_name] == artifact["sha256"]
+    assert terminal["authority_scope"] == "RESEARCH_ONLY"
+    assert terminal["human_acceptance"] is None
+    assert terminal["no_order"] is True
+    assert terminal["size_zero_required"] is True
+    assert not (output / "bars.json").exists()
     performance = build_tqqq_p3_strategy_performance(
-        evidence_package=json.loads(
-            (output / "strategy-evidence-package.v2.json").read_text(encoding="utf-8")
-        ),
+        evidence_package=evidence_package,
         expected_evidence_sha256=summary["evidence_sha256"],
         producer_revision="f" * 40,
         computed_at="2026-08-19T04:00:00Z",
