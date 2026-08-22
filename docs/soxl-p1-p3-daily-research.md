@@ -12,6 +12,12 @@ Both are visible as short-lived sanitized workflow artifacts and the next
 scheduled date is tried normally.  They do not tune, use a fallback provider,
 or replay an uncompleted remote root.
 
+The fixed Alpaca SIP transport has one small exception for a transient HTTP
+`403`: it waits 60 seconds and resubmits the exact same request once.  Its
+source, cutoff, parameters, and data identity remain unchanged.  A second
+`403`, or any other first failure, remains the normal sanitized `DEFERRED`
+outcome; it never selects another provider or retries indefinitely.
+
 Only an accepted root reaches P3.  P3 checks the remote completion marker,
 uses an exact detached UES source revision, runs the fixed evidence plan, and
 uploads metrics-and-hashes plus the fixed OOS performance observation.  It

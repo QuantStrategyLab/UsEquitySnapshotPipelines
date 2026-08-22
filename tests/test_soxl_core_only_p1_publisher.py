@@ -275,7 +275,11 @@ def test_alpaca_adapter_uses_only_the_frozen_sip_daily_request_envelopes(tmp_pat
 def test_alpaca_http_diagnostic_never_exposes_response_details(
     monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str
 ) -> None:
+    calls: list[object] = []
+    retry_delays: list[float] = []
+
     def _raise_http_error(*_args: object, **_kwargs: object) -> object:
+        calls.append(_args[0])
         raise HTTPError(
             "https://data.alpaca.markets/v2/stocks/bars", status, "hidden", None, None
         )
@@ -283,13 +287,54 @@ def test_alpaca_http_diagnostic_never_exposes_response_details(
     monkeypatch.setattr(acquisition_cli, "urlopen", _raise_http_error)
 
     with pytest.raises(acquisition_cli.P1InputUnavailableError) as error:
-        acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret")(
+        acquisition_cli.AlpacaSipHttpTransport(
+            "test-key", "test-secret", sleep_fn=retry_delays.append
+        )(
             url="https://data.alpaca.markets/v2/stocks/bars",
             params={"symbols": "SOXL"},
         )
 
     assert str(error.value) == reason_code
     assert error.value.reason_code == reason_code
+    assert len(calls) == (2 if status == 403 else 1)
+    assert retry_delays == ([60] if status == 403 else [])
+
+
+def test_alpaca_forbidden_retry_reuses_the_exact_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_urls: list[str] = []
+    retry_delays: list[float] = []
+
+    class _SuccessResponse:
+        status = 200
+
+        def __enter__(self) -> _SuccessResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"bars":{"SOXL":[]}}'
+
+    def _forbidden_then_success(request: object, **_kwargs: object) -> object:
+        request_urls.append(str(getattr(request, "full_url")))
+        if len(request_urls) == 1:
+            raise HTTPError("https://data.alpaca.markets/v2/stocks/bars", 403, "hidden", None, None)
+        return _SuccessResponse()
+
+    monkeypatch.setattr(acquisition_cli, "urlopen", _forbidden_then_success)
+
+    result = acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret", sleep_fn=retry_delays.append)(
+        url="https://data.alpaca.markets/v2/stocks/bars",
+        params={"symbols": "SOXL", "timeframe": "1Day", "end": "2026-08-21", "feed": "sip"},
+    )
+
+    assert result == {"bars": {"SOXL": []}}
+    assert retry_delays == [60]
+    assert len(request_urls) == 2
+    assert request_urls[0] == request_urls[1]
 
 
 def test_cli_without_an_injected_provider_parks_without_writing_a_root(

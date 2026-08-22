@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
+from time import sleep
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -32,6 +33,8 @@ _START_DATES = {
     "BOXX": "2022-12-28",
 }
 _DATE_CUTOFF = "2026-07-31"
+_SIP_FORBIDDEN_MAX_ATTEMPTS = 2
+_SIP_FORBIDDEN_RETRY_DELAY_SECONDS = 60
 _AVAILABILITY_REASON_CODES = frozenset(
     {
         "INPUT_UNAVAILABLE",
@@ -83,40 +86,52 @@ class AlpacaBarsTransport(Protocol):
 
 
 class AlpacaSipHttpTransport:
-    """One-shot HTTPS transport that confines Alpaca keys to request headers."""
+    """Fixed-request HTTPS transport that confines Alpaca keys to request headers."""
 
-    def __init__(self, api_key_id: str, api_secret_key: str) -> None:
+    def __init__(
+        self,
+        api_key_id: str,
+        api_secret_key: str,
+        *,
+        sleep_fn: Callable[[float], None] = sleep,
+    ) -> None:
         if not isinstance(api_key_id, str) or not api_key_id or not isinstance(api_secret_key, str) or not api_secret_key:
             raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
         self._headers = {
             "APCA-API-KEY-ID": api_key_id,
             "APCA-API-SECRET-KEY": api_secret_key,
         }
+        self._sleep_fn = sleep_fn
 
     def __call__(self, *, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
         if url != _ALPACA_BARS_URL:
             raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
         request = Request(f"{url}?{urlencode(params)}", headers=self._headers, method="GET")
-        try:
-            with urlopen(request, timeout=60) as response:  # noqa: S310 - fixed HTTPS Alpaca endpoint
-                if response.status != 200:
-                    raise P1InputUnavailableError(
-                        _availability_reason_for_http_status(response.status)
-                    )
-                payload = json.loads(response.read())
-        except P1InputUnavailableError:
-            raise
-        except HTTPError as exc:
-            raise P1InputUnavailableError(
-                _availability_reason_for_http_status(exc.code)
-            ) from None
-        except (URLError, TimeoutError, OSError):
-            raise P1InputUnavailableError("ALPACA_TRANSPORT_UNAVAILABLE") from None
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
-        if not isinstance(payload, Mapping):
-            raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
-        return payload
+        for attempt_index in range(_SIP_FORBIDDEN_MAX_ATTEMPTS):
+            try:
+                with urlopen(request, timeout=60) as response:  # noqa: S310 - fixed HTTPS Alpaca endpoint
+                    status = response.status
+                    payload = json.loads(response.read()) if status == 200 else None
+                if status != 200:
+                    if status == 403 and attempt_index == 0:
+                        self._sleep_fn(_SIP_FORBIDDEN_RETRY_DELAY_SECONDS)
+                        continue
+                    raise P1InputUnavailableError(_availability_reason_for_http_status(status))
+            except P1InputUnavailableError:
+                raise
+            except HTTPError as exc:
+                if exc.code == 403 and attempt_index == 0:
+                    self._sleep_fn(_SIP_FORBIDDEN_RETRY_DELAY_SECONDS)
+                    continue
+                raise P1InputUnavailableError(_availability_reason_for_http_status(exc.code)) from None
+            except (URLError, TimeoutError, OSError):
+                raise P1InputUnavailableError("ALPACA_TRANSPORT_UNAVAILABLE") from None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise TqqqCoreOnlyP1BindingError("data-only acquisition failed") from None
+            if not isinstance(payload, Mapping):
+                raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
+            return payload
+        raise TqqqCoreOnlyP1BindingError("data-only acquisition failed")
 
 
 class AlpacaSipHistoricalBarsProvider:
