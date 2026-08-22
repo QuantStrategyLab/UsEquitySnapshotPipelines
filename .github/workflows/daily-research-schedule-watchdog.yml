@@ -2,9 +2,11 @@ name: Daily Research Schedule Watchdog
 
 on:
   schedule:
-    # Tue--Sat UTC. This runs well after both scheduled P1--P3 research jobs,
-    # and only reports availability; it never starts or retries research.
-    - cron: '20 4 * * 2-6'
+    # Tue--Sat UTC. TQQQ P1 can use the default six-hour Actions job window,
+    # and scheduled runs can be queued; check after that bounded window rather
+    # than treating an in-progress research run as a failed schedule.
+    # This only reports availability; it never starts or retries research.
+    - cron: '20 11 * * 2-6'
 
 concurrency:
   group: daily-research-schedule-watchdog

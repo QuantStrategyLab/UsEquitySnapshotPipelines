@@ -9,7 +9,8 @@ WORKFLOW = Path(".github/workflows/daily-research-schedule-watchdog.yml")
 def test_watchdog_is_read_only_scheduled_and_cannot_trigger_research() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "cron: '20 4 * * 2-6'" in workflow
+    assert "cron: '20 11 * * 2-6'" in workflow
+    assert "default six-hour Actions job window" in workflow
     assert "workflow_dispatch:" not in workflow
     assert "actions: read" in workflow
     assert "contents: read" in workflow
