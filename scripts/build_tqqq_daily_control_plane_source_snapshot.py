@@ -18,6 +18,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--p1-status", required=True)
     parser.add_argument("--p1-reason-code", default="")
+    parser.add_argument("--p1-provider-retry-state", default="NOT_TRIGGERED")
     parser.add_argument("--p1-manifest-sha256", default="")
     parser.add_argument("--p2-config-sha256", required=True)
     parser.add_argument("--p3-status", default="")
@@ -33,6 +34,7 @@ def main() -> None:
         source_revision=args.source_revision,
         p1_status=args.p1_status,
         p1_reason_code=args.p1_reason_code,
+        p1_provider_retry_state=args.p1_provider_retry_state,
         p1_manifest_sha256=args.p1_manifest_sha256,
         p2_config_sha256=args.p2_config_sha256,
         p3_status=args.p3_status,

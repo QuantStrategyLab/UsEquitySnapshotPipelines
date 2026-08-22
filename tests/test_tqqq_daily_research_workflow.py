@@ -45,6 +45,8 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "assess_tqqq_core_only_p1_input_health" in workflow
     assert "build_tqqq_core_only_p1_input_unavailable_health" in workflow
     assert "P1_REASON_CODE" in workflow
+    assert "P1_PROVIDER_RETRY_STATE" in workflow
+    assert "provider_retry_state" in workflow
     assert "P1InputUnavailableError as exc" in workflow
     assert "MISSING_SESSIONS" in workflow
     assert "reason_code = exc.reason_code" in workflow
@@ -54,9 +56,12 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "invalid sanitized daily P3 failure" in workflow
     assert "daily-research-status.json" in workflow
     assert "daily-health.json" in workflow
+    assert "p1-terminal-status.json" in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "Upload sanitized P3 terminal status" in workflow
+    assert "Upload sanitized P1 terminal status" in workflow
+    assert "tqqq-p1-terminal-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "${{ runner.temp }}/tqqq-daily-research/daily-research-status.json" in workflow
     assert "strategy_performance.v2.json" in workflow
@@ -93,6 +98,7 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "gcloud storage" not in publisher_job
     assert "id-token: write" not in publisher_job
     assert "build_tqqq_daily_control_plane_source_snapshot.py" in publisher_job
+    assert "--p1-provider-retry-state" in publisher_job
     assert "--data-binary \"@$output_path\"" in publisher_job
     assert "broker" not in workflow.lower()
     assert "placeorder" not in workflow.lower()

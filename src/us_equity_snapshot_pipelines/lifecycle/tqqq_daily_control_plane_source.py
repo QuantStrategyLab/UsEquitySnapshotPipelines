@@ -51,6 +51,9 @@ _P1_OPERATOR_ATTENTION_RECOMMENDATIONS = {
     ),
 }
 _P1_QUARANTINED_REASON_CODES = frozenset({"P1_CONTRACT_FAILURE"})
+_P1_PROVIDER_RETRY_STATES = frozenset(
+    {"NOT_TRIGGERED", "SIP_403_RECOVERED", "SIP_403_EXHAUSTED"}
+)
 _P3_FAILURE_CLASSES = frozenset(
     {
         "input_validation_failure",
@@ -101,6 +104,27 @@ def _p1_reason_code(value: object, *, allowed: frozenset[str], label: str) -> st
     return value
 
 
+def _p1_provider_retry_state(value: object) -> str:
+    state = str(value or "").strip().upper()
+    if state not in _P1_PROVIDER_RETRY_STATES:
+        raise TqqqDailyControlPlaneSourceError("invalid P1 provider retry state")
+    return state
+
+
+def _with_p1_provider_retry_note(
+    recommendation: dict[str, str], *, p1_status: str, provider_retry_state: str
+) -> dict[str, str]:
+    if provider_retry_state == "SIP_403_RECOVERED":
+        note = "P1 provider request recovered after one or more same-request 403 retries."
+    elif provider_retry_state == "SIP_403_EXHAUSTED":
+        note = "P1 provider request exhausted its one same-request 403 retry."
+    elif p1_status == "ACCEPTED":
+        note = "P1 input was acquired without a 403 retry."
+    else:
+        note = "P1 provider 403 retry was not triggered."
+    return {**recommendation, "reason": f"{recommendation['reason']} {note}"}
+
+
 def _candidate(
     *,
     lifecycle: dict[str, str],
@@ -132,6 +156,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
     source_revision: object,
     p1_status: object,
     p1_reason_code: object = None,
+    p1_provider_retry_state: object = "NOT_TRIGGERED",
     p1_manifest_sha256: object,
     p2_config_sha256: object,
     p3_status: object = None,
@@ -177,6 +202,8 @@ def build_tqqq_daily_control_plane_source_snapshot(
             "errors": ["p1_terminal_missing"],
         }
 
+    provider_retry_state = _p1_provider_retry_state(p1_provider_retry_state)
+
     if p1 == "DEFERRED":
         if manifest_digest is not None or p3 or evidence_digest is not None or failure_class:
             raise TqqqDailyControlPlaneSourceError("deferred P1 cannot carry a P3 result")
@@ -199,6 +226,11 @@ def build_tqqq_daily_control_plane_source_snapshot(
                 "code": "defer",
                 "reason": f"P1 deferred: {rendered_reason}; retry on the next scheduled session.",
             }
+        if provider_retry_state == "SIP_403_EXHAUSTED" and deferred_reason != "ALPACA_SIP_ACCESS_FORBIDDEN":
+            raise TqqqDailyControlPlaneSourceError("exhausted P1 retry requires a SIP 403 reason")
+        recommendation = _with_p1_provider_retry_note(
+            recommendation, p1_status=p1, provider_retry_state=provider_retry_state
+        )
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,
@@ -228,6 +260,8 @@ def build_tqqq_daily_control_plane_source_snapshot(
             p1_reason, allowed=_P1_QUARANTINED_REASON_CODES, label="quarantined P1 reason code"
         )
         rendered_reason = quarantined_reason.lower()
+        if provider_retry_state == "SIP_403_EXHAUSTED":
+            raise TqqqDailyControlPlaneSourceError("exhausted P1 retry cannot be quarantined")
         return {
             "schema_version": SOURCE_SCHEMA_VERSION,
             "source_id": SOURCE_ID,
@@ -237,7 +271,11 @@ def build_tqqq_daily_control_plane_source_snapshot(
             "candidates": [
                 _candidate(
                     lifecycle={"stage": "P1", "status": "parked"},
-                    recommendation={"code": "park", "reason": f"P1 quarantined: {rendered_reason}."},
+                    recommendation=_with_p1_provider_retry_note(
+                        {"code": "park", "reason": f"P1 quarantined: {rendered_reason}."},
+                        p1_status=p1,
+                        provider_retry_state=provider_retry_state,
+                    ),
                     p1_manifest_sha256=None,
                     p2_config_sha256=config_digest,
                     p3_evidence_sha256=None,
@@ -249,6 +287,8 @@ def build_tqqq_daily_control_plane_source_snapshot(
 
     if manifest_digest is None:
         raise TqqqDailyControlPlaneSourceError("accepted P1 requires a manifest digest")
+    if provider_retry_state == "SIP_403_EXHAUSTED":
+        raise TqqqDailyControlPlaneSourceError("exhausted P1 retry cannot be accepted")
     if p3 == P3_STATUS:
         if evidence_digest is None or failure_class:
             raise TqqqDailyControlPlaneSourceError("completed P3 requires only its evidence digest")
@@ -267,6 +307,10 @@ def build_tqqq_daily_control_plane_source_snapshot(
         errors = ["p3_terminal_missing"]
     else:
         raise TqqqDailyControlPlaneSourceError("invalid P3 terminal state")
+
+    recommendation = _with_p1_provider_retry_note(
+        recommendation, p1_status=p1, provider_retry_state=provider_retry_state
+    )
 
     return {
         "schema_version": SOURCE_SCHEMA_VERSION,

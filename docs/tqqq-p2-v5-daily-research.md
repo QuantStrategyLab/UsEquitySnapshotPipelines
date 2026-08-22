@@ -48,6 +48,13 @@ that exact same request once more.  A second `403`, or a first failure of any
 other class, keeps the existing sanitized `DEFERRED` outcome; it does not
 switch provider, search for an alternate input, or repeat indefinitely.
 
+Each P1 terminal record now also carries one sanitized provider-retry state:
+`NOT_TRIGGERED`, `SIP_403_RECOVERED`, or `SIP_403_EXHAUSTED`.  The short-lived
+P1 Actions artifact retains this state alongside the existing terminal status;
+the TQQQ control-plane snapshot renders the same fact in its existing
+recommendation text.  This reports transport availability only, not strategy
+performance, P3 evidence, or P4--P6 authority.
+
 The only later recovery candidate is narrower: if the exact accepted root
 already reached P3 and its sanitized terminal state is
 `runtime_internal_failure` after replay started, the controller may plan one
@@ -86,6 +93,7 @@ P1/P3 结束后，同一 scheduled workflow 会生成一份
 - 固定来源 ID `uesp.tqqq_daily_research` 与 workflow revision；
 - 单个候选的 P1/P3 阶段、脱敏状态和数据新鲜度；
 - P1 manifest、冻结 P2 config、P3 evidence 的 digest（如已产生）。
+- P1 provider 的脱敏有界 403 重试结果，作为既有 recommendation 文本的一部分。
 
 不会发送 bars、GCS 路径、Alpaca 凭证、账户、订单、资金或 P4–P6 权限。
 `DEFERRED`、`QUARANTINED`、`PARKED` 也会如实发布。P1 的延期会附带闭合、
