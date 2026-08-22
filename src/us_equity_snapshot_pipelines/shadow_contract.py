@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION = "shadow_cycle_contract.v1"
+# Keep this contract intentionally narrow until every cycle has a no-order adapter.
 
 
 def validate_shadow_cycle_contract(payload: Mapping[str, Any]) -> None:
