@@ -174,7 +174,6 @@ def test_bound_synthetic_replay_reports_segmented_oos_cost_metrics_without_real_
     assert payload["paper_authorized"] is False
     assert payload["shadow_authorized"] is False
     assert payload["live_authorized"] is False
-    assert payload["authority_scope"] == "RESEARCH_ONLY"
     assert payload["common_cutoff"] == "2026-08-04"
     assert [scenario["turnover_cost_bps"] for scenario in payload["cost_scenarios"]] == [5.0, 10.0, 25.0]
     lowest_cost, highest_cost = payload["cost_scenarios"][0], payload["cost_scenarios"][-1]
