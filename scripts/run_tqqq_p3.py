@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+    P2_V2_CANDIDATE_ID,
     resolve_tqqq_core_only_candidate_contract,
     verify_tqqq_core_only_input_root,
 )
@@ -51,6 +52,10 @@ class OrchestratorContractError(ValueError):
     """The offline evidence producer did not return a bound P3 completion."""
 
 
+class ConfigContractError(ValueError):
+    """The frozen candidate is not eligible for this P3 replay route."""
+
+
 class _SanitizedParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         del message
@@ -85,6 +90,16 @@ def _candidate_contract(config_payload: object):
     if not isinstance(config_payload, Mapping):
         raise ValueError("invalid frozen candidate")
     return resolve_tqqq_core_only_candidate_contract(config_payload.get("candidate_id"))
+
+
+def _require_replayable_candidate(contract: object) -> None:
+    """Keep the historical P2 v2 candidate from entering an impossible replay.
+
+    P2 v2 predates the common BOXX availability window.  It is retained for
+    source provenance, but cannot create a truthful P3 evidence package.
+    """
+    if getattr(contract, "candidate_id", None) == P2_V2_CANDIDATE_ID:
+        raise ConfigContractError("historical TQQQ candidate is not replayable")
 
 
 def _completed_evidence_summary(
@@ -149,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         stage = "config_contract"
         config_payload = _read_json(args.config)
         contract = _candidate_contract(config_payload)
+        _require_replayable_candidate(contract)
         stage = "input_validation"
         manifest_sha256 = verify_tqqq_core_only_input_root(
             args.snapshot_root, contract=contract

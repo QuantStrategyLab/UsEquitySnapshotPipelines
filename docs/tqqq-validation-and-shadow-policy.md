@@ -120,6 +120,10 @@ and support the complete v2 replay. A pre-inception proxy, carried price, cash
 substitution, or synthetic BOXX row is prohibited, so the correct outcome is
 `PARKED`, not a fabricated evidence package.
 
+The P3 CLI recognizes this disposition at its configuration boundary. It emits
+a sanitized `config_contract_failure` before opening a snapshot, starting a
+replay, or creating an output directory.
+
 P2 v4 corrected this common-availability geometry without changing the public
 TQQQ research adapter. P2 v5 is the only active candidate in the registry and
 the only scheduled P1/P3 route. Historical v2 configuration and adapter
