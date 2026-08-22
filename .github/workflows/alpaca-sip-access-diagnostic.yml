@@ -2,6 +2,11 @@ name: Alpaca SIP Access Diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      date_cutoff:
+        description: Exact YYYY-MM-DD cutoff to compare with a daily P1 request.
+        required: true
+        type: string
 
 concurrency:
   group: alpaca-sip-access-diagnostic
@@ -24,12 +29,13 @@ jobs:
         env:
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATE_CUTOFF: ${{ inputs.date_cutoff }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           import os
-          from datetime import UTC, datetime
+          from datetime import UTC, date, datetime
           from urllib.error import HTTPError, URLError
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
@@ -40,6 +46,12 @@ jobs:
               "QQQM": "2020-10-13",
               "BOXX": "2022-12-28",
           }
+          date_cutoff = os.environ.get("DATE_CUTOFF", "")
+          try:
+              if date.fromisoformat(date_cutoff).isoformat() != date_cutoff:
+                  raise ValueError
+          except ValueError:
+              raise SystemExit("DATE_CUTOFF must be an exact YYYY-MM-DD date") from None
 
           def classify(symbol: str, start: str) -> str:
               query = urlencode(
@@ -47,7 +59,7 @@ jobs:
                       "symbols": symbol,
                       "timeframe": "1Day",
                       "start": start,
-                      "end": "2026-08-20",
+                      "end": date_cutoff,
                       "adjustment": "all",
                       "feed": "sip",
                       "sort": "asc",
@@ -92,6 +104,7 @@ jobs:
               "schema_version": "qsl.alpaca_sip_access_diagnostic.v1",
               "status": status,
               "symbol_statuses": symbol_statuses,
+              "date_cutoff": date_cutoff,
               "observed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
           }
           rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
