@@ -114,3 +114,16 @@ The removed daily forward collector and LaunchAgent were never activated.  Any
 future paper/shadow collector must be freshly scoped at P4 and must not inherit
 provider, credential, promotion, paper, shadow, live, order, or capital authority
 from this document.
+
+### Candidate naming and lineage
+
+The immutable machine identifier (`tqqq_core_only_p2_v2`, `v4`, or `v5`) is
+retained because manifests, source pins, SHA256 bindings, and CI contracts use
+it.  Human-facing surfaces should also show the candidate's freeze date and
+lineage, for example:
+
+`TQQQ Core Only / 2026-08-19 / Successor (lineage: p2_v5)`
+
+Dates improve review and dashboard readability without renaming historical
+identities.  A date label must never replace the immutable candidate ID or be
+used to relabel evidence from another candidate.
