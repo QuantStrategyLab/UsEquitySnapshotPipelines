@@ -71,7 +71,7 @@ def _soxl_p1(*, status: str = "ACCEPTED", cutoff: str = "2026-08-21") -> dict[st
     }
 
 
-def _soxl_p3(*, status: str = "SUCCESS") -> dict[str, object]:
+def _soxl_p3(*, status: str = "SUCCESS", cutoff: str = "2026-08-21") -> dict[str, object]:
     if status == "PARKED":
         return {
             "schema_version": "qsl.soxl-soxx-core-only-p3-offline-run.v1",
@@ -85,7 +85,7 @@ def _soxl_p3(*, status: str = "SUCCESS") -> dict[str, object]:
             "input_manifest_sha256": "d" * 64,
             "binding_sha256": "f" * 64,
             "bars_member_sha256": "1" * 64,
-            "date_cutoff": "2026-08-21",
+            "date_cutoff": cutoff,
         },
         "p2_identity": {
             "candidate_id": SOXL_SOXX_CORE_ONLY_P2_V3.candidate_id,
@@ -114,7 +114,7 @@ def _components(
         build_component_observation(
             candidate=SOXL_SOXX_CORE_ONLY_P2_V3,
             p1_terminal=_soxl_p1(status=soxl_p1_status, cutoff=soxl_cutoff),
-            p3_terminal=_soxl_p3() if soxl_p1_status == "ACCEPTED" else None,
+            p3_terminal=_soxl_p3(cutoff=soxl_cutoff) if soxl_p1_status == "ACCEPTED" else None,
         ),
     )
 
