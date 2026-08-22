@@ -360,6 +360,13 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}/daily-research-status.json"
           gcloud storage cp --quiet --no-clobber "$status_path" "$destination" >/dev/null
           printf 'P3_DAILY_STATUS_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized P3 terminal status
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tqqq-daily-research/daily-research-status.json
+          if-no-files-found: error
+          retention-days: 35
       - name: Build a bound P5 forward observation
         id: forward_observation
         if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'

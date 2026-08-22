@@ -56,6 +56,9 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "daily-health.json" in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
     assert "actions/upload-artifact@v7" in workflow
+    assert "Upload sanitized P3 terminal status" in workflow
+    assert "tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert "${{ runner.temp }}/tqqq-daily-research/daily-research-status.json" in workflow
     assert "strategy_performance.v2.json" in workflow
     assert "build_tqqq_p3_strategy_performance.py" in workflow
     assert "Upload sanitized P3 research performance observation" in workflow
