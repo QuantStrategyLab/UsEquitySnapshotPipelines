@@ -27,6 +27,8 @@ def test_soxl_daily_research_defers_unavailable_p1_and_requires_remote_completio
     assert "P1InputUnavailableError as exc" in workflow
     assert "status = 'DEFERRED'" in workflow
     assert "reason_code = exc.reason_code" in workflow
+    assert "provider_retry_state" in workflow
+    assert "SOXL_P1_PROVIDER_RETRY_STATE" in workflow
     assert "steps.acquire.outputs.status == 'ACCEPTED'" in workflow
     assert "build_soxl_core_only_p1_remote_completion" in workflow
     assert "p1-complete.json" in workflow

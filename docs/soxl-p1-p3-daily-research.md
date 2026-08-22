@@ -18,6 +18,11 @@ source, cutoff, parameters, and data identity remain unchanged.  A second
 `403`, or any other first failure, remains the normal sanitized `DEFERRED`
 outcome; it never selects another provider or retries indefinitely.
 
+The existing short-lived P1 terminal artifact also records the sanitized retry
+state `NOT_TRIGGERED`, `SIP_403_RECOVERED`, or `SIP_403_EXHAUSTED`, alongside
+the P1 status and reason code.  It contains no raw bars, credentials, account
+data, orders, or authority.
+
 Only an accepted root reaches P3.  P3 checks the remote completion marker,
 uses an exact detached UES source revision, runs the fixed evidence plan, and
 uploads metrics-and-hashes plus the fixed OOS performance observation.  It

@@ -25,6 +25,7 @@ jobs:
       manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
       status: ${{ steps.acquire.outputs.status }}
       reason_code: ${{ steps.acquire.outputs.reason_code }}
+      provider_retry_state: ${{ steps.acquire.outputs.provider_retry_state }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -76,13 +77,13 @@ jobs:
           status = 'PARKED'
           reason_code = 'P1_CONTRACT_OR_RUNTIME_UNAVAILABLE'
           manifest_sha256 = ''
+          provider_retry_state = 'NOT_TRIGGERED'
+          transport = None
           try:
-              provider = AlpacaSipHistoricalBarsProvider(
-                  AlpacaSipHttpTransport(
-                      os.environ['ALPACA_API_KEY_ID'], os.environ['ALPACA_API_SECRET_KEY']
-                  ),
-                  date_cutoff=cutoff,
+              transport = AlpacaSipHttpTransport(
+                  os.environ['ALPACA_API_KEY_ID'], os.environ['ALPACA_API_SECRET_KEY']
               )
+              provider = AlpacaSipHistoricalBarsProvider(transport, date_cutoff=cutoff)
               producer = {
                   'repository': 'QuantStrategyLab/UsEquitySnapshotPipelines',
                   'commit_sha': os.environ['GITHUB_SHA'],
@@ -109,10 +110,13 @@ jobs:
               reason_code = exc.reason_code
           except SoxlCoreOnlyP1BindingError:
               pass
+          if transport is not None:
+              provider_retry_state = transport.provider_retry_state
           record = {
               'schema_version': 'qsl.soxl-soxx-core-only-daily-p1-status.v1',
               'status': status,
               'reason_code': reason_code,
+              'provider_retry_state': provider_retry_state,
               'date_cutoff': cutoff,
               'candidate': {
                   'candidate_id': P2_V3_CONTRACT.candidate_id,
@@ -126,10 +130,12 @@ jobs:
               output.write(f'date_cutoff={cutoff}\n')
               output.write(f'status={status}\n')
               output.write(f'reason_code={reason_code}\n')
+              output.write(f'provider_retry_state={provider_retry_state}\n')
               output.write(f'manifest_sha256={manifest_sha256}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
               summary.write(f'SOXL_P1_STATUS={status}\n')
               summary.write(f'SOXL_DATE_CUTOFF={cutoff}\n')
+              summary.write(f'SOXL_P1_PROVIDER_RETRY_STATE={provider_retry_state}\n')
               summary.write(f'SOXL_P1_STATUS_SHA256={hashlib.sha256(encoded).hexdigest()}\n')
               if reason_code:
                   summary.write(f'SOXL_P1_REASON_CODE={reason_code}\n')

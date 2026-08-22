@@ -331,17 +331,17 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("status", "reason_code"),
+    ("status", "reason_code", "provider_retry_state"),
     [
-        (401, "ALPACA_AUTHENTICATION_FAILED"),
-        (403, "ALPACA_SIP_ACCESS_FORBIDDEN"),
-        (429, "ALPACA_RATE_LIMITED"),
-        (503, "ALPACA_SERVICE_UNAVAILABLE"),
-        (400, "ALPACA_REQUEST_REJECTED"),
+        (401, "ALPACA_AUTHENTICATION_FAILED", "NOT_TRIGGERED"),
+        (403, "ALPACA_SIP_ACCESS_FORBIDDEN", "SIP_403_EXHAUSTED"),
+        (429, "ALPACA_RATE_LIMITED", "NOT_TRIGGERED"),
+        (503, "ALPACA_SERVICE_UNAVAILABLE", "NOT_TRIGGERED"),
+        (400, "ALPACA_REQUEST_REJECTED", "NOT_TRIGGERED"),
     ],
 )
 def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
-    monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str
+    monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str, provider_retry_state: str
 ) -> None:
     calls: list[object] = []
     retry_delays: list[float] = []
@@ -356,6 +356,7 @@ def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
     transport = acquisition_cli.AlpacaSipHttpTransport(
         "test-key", "test-secret", sleep_fn=retry_delays.append
     )
+    assert transport.provider_retry_state == "NOT_TRIGGERED"
 
     with pytest.raises(acquisition_cli.P1InputUnavailableError) as error:
         transport(
@@ -367,6 +368,7 @@ def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
     assert error.value.reason_code == reason_code
     assert len(calls) == (2 if status == 403 else 1)
     assert retry_delays == ([60] if status == 403 else [])
+    assert transport.provider_retry_state == provider_retry_state
 
 
 def test_alpaca_forbidden_retry_reuses_the_exact_request(
@@ -395,7 +397,10 @@ def test_alpaca_forbidden_retry_reuses_the_exact_request(
 
     monkeypatch.setattr(acquisition_cli, "urlopen", _forbidden_then_success)
 
-    result = acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret", sleep_fn=retry_delays.append)(
+    transport = acquisition_cli.AlpacaSipHttpTransport(
+        "test-key", "test-secret", sleep_fn=retry_delays.append
+    )
+    result = transport(
         url="https://data.alpaca.markets/v2/stocks/bars",
         params={"symbols": "TQQQ", "timeframe": "1Day", "end": "2026-08-21", "feed": "sip"},
     )
@@ -404,6 +409,7 @@ def test_alpaca_forbidden_retry_reuses_the_exact_request(
     assert retry_delays == [60]
     assert len(request_urls) == 2
     assert request_urls[0] == request_urls[1]
+    assert transport.provider_retry_state == "SIP_403_RECOVERED"
 
 
 def test_malformed_provider_payload_is_a_contract_failure_not_a_retryable_outage() -> None:

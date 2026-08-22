@@ -33,6 +33,9 @@ _ALPACA_BARS_URL = "https://data.alpaca.markets/v2/stocks/bars"
 _START_DATES = {"SOXL": "2022-01-03", "SOXX": "2022-01-03", "BOXX": "2022-12-28"}
 _SIP_FORBIDDEN_MAX_ATTEMPTS = 2
 _SIP_FORBIDDEN_RETRY_DELAY_SECONDS = 60
+_PROVIDER_RETRY_NOT_TRIGGERED = "NOT_TRIGGERED"
+_PROVIDER_RETRY_RECOVERED = "SIP_403_RECOVERED"
+_PROVIDER_RETRY_EXHAUSTED = "SIP_403_EXHAUSTED"
 _AVAILABILITY_REASON_CODES = frozenset(
     {
         "INPUT_UNAVAILABLE",
@@ -91,6 +94,17 @@ class AlpacaSipHttpTransport:
             raise SoxlCoreOnlyP1BindingError("data-only acquisition failed")
         self._headers = {"APCA-API-KEY-ID": api_key_id, "APCA-API-SECRET-KEY": api_secret_key}
         self._sleep_fn = sleep_fn
+        self._forbidden_retry_count = 0
+        self._forbidden_retry_exhausted = False
+
+    @property
+    def provider_retry_state(self) -> str:
+        """Return a sanitized summary of this P1 transport's bounded 403 path."""
+        if self._forbidden_retry_exhausted:
+            return _PROVIDER_RETRY_EXHAUSTED
+        if self._forbidden_retry_count:
+            return _PROVIDER_RETRY_RECOVERED
+        return _PROVIDER_RETRY_NOT_TRIGGERED
 
     def __call__(self, *, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
         if url != _ALPACA_BARS_URL:
@@ -103,15 +117,21 @@ class AlpacaSipHttpTransport:
                     payload = json.loads(response.read()) if status == 200 else None
                 if status != 200:
                     if status == 403 and attempt_index == 0:
+                        self._forbidden_retry_count += 1
                         self._sleep_fn(_SIP_FORBIDDEN_RETRY_DELAY_SECONDS)
                         continue
+                    if status == 403:
+                        self._forbidden_retry_exhausted = True
                     raise P1InputUnavailableError(_availability_reason_for_http_status(status))
             except P1InputUnavailableError:
                 raise
             except HTTPError as exc:
                 if exc.code == 403 and attempt_index == 0:
+                    self._forbidden_retry_count += 1
                     self._sleep_fn(_SIP_FORBIDDEN_RETRY_DELAY_SECONDS)
                     continue
+                if exc.code == 403:
+                    self._forbidden_retry_exhausted = True
                 raise P1InputUnavailableError(_availability_reason_for_http_status(exc.code)) from None
             except (URLError, TimeoutError, OSError):
                 raise P1InputUnavailableError("ALPACA_TRANSPORT_UNAVAILABLE") from None
