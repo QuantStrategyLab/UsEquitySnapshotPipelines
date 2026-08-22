@@ -66,6 +66,12 @@ independently-authorized P5 scheduler, not P5 execution or permission.  No raw
 bars are copied into GitHub artifacts and the controller does not extend the
 configured retention period.
 
+After the create-only P3 status write succeeds, the same sanitized terminal
+record is also retained as a short-lived Actions artifact. It contains only
+the candidate identity, immutable input/config digests, date cutoff, and P3
+terminal outcome; it is not a P1 root, raw bars, credentials, a retry trigger,
+or P4--P6 authority.
+
 ## 全局控制台来源快照
 
 P1/P3 结束后，同一 scheduled workflow 会生成一份
