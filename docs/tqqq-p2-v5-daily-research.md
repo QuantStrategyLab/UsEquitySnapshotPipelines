@@ -41,7 +41,13 @@ receipt.  There is no per-run mandate, reviewer, paper, shadow, order, or live
 activation step.  A failure to acquire or validate input produces a visible
 `DEFERRED` or `QUARANTINED` status and stops the P3 branch for that day.
 
-P1 acquisition is never retried with a different source, parameter, or input.
+P1 acquisition never changes its source, parameter, cutoff, or input.  The
+fixed Alpaca SIP transport makes one narrowly bounded availability recovery:
+when its first request receives HTTP `403`, it waits 60 seconds and submits
+that exact same request once more.  A second `403`, or a first failure of any
+other class, keeps the existing sanitized `DEFERRED` outcome; it does not
+switch provider, search for an alternate input, or repeat indefinitely.
+
 The only later recovery candidate is narrower: if the exact accepted root
 already reached P3 and its sanitized terminal state is
 `runtime_internal_failure` after replay started, the controller may plan one

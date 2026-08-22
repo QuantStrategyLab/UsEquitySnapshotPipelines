@@ -343,13 +343,19 @@ def test_transport_failure_stops_without_retry_or_root(tmp_path: Path) -> None:
 def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
     monkeypatch: pytest.MonkeyPatch, status: int, reason_code: str
 ) -> None:
+    calls: list[object] = []
+    retry_delays: list[float] = []
+
     def _raise_http_error(*_args: object, **_kwargs: object) -> object:
+        calls.append(_args[0])
         raise HTTPError(
             "https://data.alpaca.markets/v2/stocks/bars", status, "hidden", None, None
         )
 
     monkeypatch.setattr(acquisition_cli, "urlopen", _raise_http_error)
-    transport = acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret")
+    transport = acquisition_cli.AlpacaSipHttpTransport(
+        "test-key", "test-secret", sleep_fn=retry_delays.append
+    )
 
     with pytest.raises(acquisition_cli.P1InputUnavailableError) as error:
         transport(
@@ -359,6 +365,45 @@ def test_http_alpaca_unavailability_is_classified_without_exposing_a_response(
 
     assert str(error.value) == reason_code
     assert error.value.reason_code == reason_code
+    assert len(calls) == (2 if status == 403 else 1)
+    assert retry_delays == ([60] if status == 403 else [])
+
+
+def test_alpaca_forbidden_retry_reuses_the_exact_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_urls: list[str] = []
+    retry_delays: list[float] = []
+
+    class _SuccessResponse:
+        status = 200
+
+        def __enter__(self) -> _SuccessResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"bars":{"TQQQ":[]}}'
+
+    def _forbidden_then_success(request: object, **_kwargs: object) -> object:
+        request_urls.append(str(getattr(request, "full_url")))
+        if len(request_urls) == 1:
+            raise HTTPError("https://data.alpaca.markets/v2/stocks/bars", 403, "hidden", None, None)
+        return _SuccessResponse()
+
+    monkeypatch.setattr(acquisition_cli, "urlopen", _forbidden_then_success)
+
+    result = acquisition_cli.AlpacaSipHttpTransport("test-key", "test-secret", sleep_fn=retry_delays.append)(
+        url="https://data.alpaca.markets/v2/stocks/bars",
+        params={"symbols": "TQQQ", "timeframe": "1Day", "end": "2026-08-21", "feed": "sip"},
+    )
+
+    assert result == {"bars": {"TQQQ": []}}
+    assert retry_delays == [60]
+    assert len(request_urls) == 2
+    assert request_urls[0] == request_urls[1]
 
 
 def test_malformed_provider_payload_is_a_contract_failure_not_a_retryable_outage() -> None:
@@ -413,7 +458,7 @@ def test_alpaca_slice_has_no_ibkr_fallback_or_credential_handling() -> None:
     source = inspect.getsource(acquisition_cli).lower()
     binding_source = inspect.getsource(binding).lower()
 
-    for forbidden in ("ibkr", "gateway", "credential", "authorization", "retry", "pagination", "place_order", "placeorder", "replay", "p3"):
+    for forbidden in ("ibkr", "gateway", "credential", "authorization", "pagination", "place_order", "placeorder", "replay", "p3"):
         assert forbidden not in source
     assert "ibkr" not in binding_source
 
