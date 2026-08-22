@@ -5,7 +5,7 @@
 - `TQQQ Daily P1-P3 Research`
 - `SOXL Daily P1-P3 Research`
 
-它在每个周二至周六 UTC `04:20` 运行，给前两条工作流留出延迟窗口。它仅通过 GitHub Actions 的只读元数据判断下列控制面状态：
+它在每个周二至周六 UTC `11:20` 运行。TQQQ 的 P1 作业可使用 GitHub Actions 默认的六小时 job 窗口，定时任务也可能排队；因此该时间在两条研究工作流的计划启动窗口之后留出有界完成余量，避免把仍在运行的研究误报为失败。它仅通过 GitHub Actions 的只读元数据判断下列控制面状态：
 
 - `OBSERVED / SCHEDULED_RUN_SUCCEEDED`：当天确有成功结束的定时工作流；
 - `PARKED / SCHEDULED_RUN_MISSING`：当天没有定时 run；
