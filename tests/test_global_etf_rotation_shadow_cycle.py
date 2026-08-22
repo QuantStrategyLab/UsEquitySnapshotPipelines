@@ -19,7 +19,9 @@ pytest.importorskip("us_equity_strategies")
 from us_equity_snapshot_pipelines.global_etf_rotation_shadow_cycle import (  # noqa: E402
     SHADOW_VARIANTS,
     DEFAULT_ACTIVE_VARIANT,
+    SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
     run_global_etf_rotation_shadow_cycle,
+    validate_shadow_cycle_contract,
 )
 
 
@@ -28,6 +30,22 @@ STAGING_SNAPSHOT = (
     / "data/output/global_etf_rotation_staging"
     / "global_etf_rotation_feature_snapshot_latest.csv"
 )
+
+
+def test_shadow_cycle_contract_is_research_only_and_rejects_order_access() -> None:
+    payload = {
+        "shadow_contract": {
+            "schema_version": SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+            "mode": "research_only",
+            "no_order": True,
+            "broker_access": False,
+        }
+    }
+    validate_shadow_cycle_contract(payload)
+
+    payload["shadow_contract"]["no_order"] = False
+    with pytest.raises(ValueError, match="permits order"):
+        validate_shadow_cycle_contract(payload)
 
 
 @pytest.mark.skipif(not STAGING_SNAPSHOT.exists(), reason="local staging snapshot not available")

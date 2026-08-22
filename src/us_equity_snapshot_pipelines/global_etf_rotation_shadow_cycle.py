@@ -18,12 +18,32 @@ SHADOW_VARIANTS: dict[str, dict[str, object]] = {
     "top_1": {"top_n": 1},
 }
 DEFAULT_ACTIVE_VARIANT = "active"
+SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION = "shadow_cycle_contract.v1"
 
 
 @dataclass(frozen=True)
 class ShadowCycleOutputs:
     diagnostics_json: Path
     variant_comparison_json: Path
+
+
+def validate_shadow_cycle_contract(payload: Mapping[str, Any]) -> None:
+    """Validate the safety boundary shared by research-only shadow cycles.
+
+    A shadow cycle may calculate target weights, but it must never carry an
+    order or broker instruction.  Keeping this check at the artifact boundary
+    gives future runners a small, reusable contract without coupling them to a
+    particular strategy implementation.
+    """
+    contract = payload.get("shadow_contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError("shadow cycle payload missing shadow_contract")
+    if contract.get("schema_version") != SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION:
+        raise ValueError("unsupported shadow cycle contract schema_version")
+    if contract.get("mode") != "research_only":
+        raise ValueError("shadow cycle must remain research_only")
+    if contract.get("no_order") is not True or contract.get("broker_access") is not False:
+        raise ValueError("shadow cycle contract permits order or broker access")
 
 
 def _load_feature_snapshot(path: Path) -> pd.DataFrame:
@@ -259,8 +279,15 @@ def run_global_etf_rotation_shadow_cycle(
         "strategy_profile": GLOBAL_ETF_ROTATION_PROFILE,
         "snapshot_as_of": snapshot_as_of_resolved,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "shadow_contract": {
+            "schema_version": SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+            "mode": "research_only",
+            "no_order": True,
+            "broker_access": False,
+        },
         "diagnostics": dict(active_decision.diagnostics) if hasattr(active_decision, "diagnostics") else {},
     }
+    validate_shadow_cycle_contract(diagnostics_payload)
     diagnostics_json = output_dir / "global_etf_rotation_runtime_diagnostics.json"
     _write_json(diagnostics_json, diagnostics_payload)
 
