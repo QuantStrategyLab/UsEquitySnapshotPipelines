@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
+import us_equity_snapshot_pipelines.lifecycle.tqqq_p2_v2_synthetic_evidence as synthetic_evidence
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_strategy_performance import (
@@ -62,6 +63,7 @@ def _write_canonical_snapshot(
     contract: p1_binding.TqqqCoreOnlyCandidateContract | None = None,
     *,
     date_cutoff: str | None = None,
+    producer_tool: str | None = None,
 ) -> dict[str, object]:
     root.mkdir(mode=0o700)
     root.chmod(0o700)
@@ -84,7 +86,7 @@ def _write_canonical_snapshot(
     manifest = p1_binding.build_tqqq_core_only_input_manifest(
         binding,
         observed_at="2026-08-15T00:00:00Z",
-        producer=_producer(),
+        producer={**_producer(), **({"tool": producer_tool} if producer_tool else {})},
         member_bytes=bars_bytes,
         source_content_sha256={
             symbol: hashlib.sha256(_canonical(bars["symbols"][symbol])).hexdigest()
@@ -388,6 +390,28 @@ def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
     assert terminal["no_order"] is True
     assert terminal["size_zero_required"] is True
     assert not (output / "bars.json").exists()
+
+
+def test_p2_v2_synthetic_evidence_calls_public_adapter_and_binds_artifact(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "synthetic-p2-v2"
+    payload = _write_canonical_snapshot(
+        snapshot, p1_binding.P2_V2_CONTRACT, producer_tool="synthetic_fixture"
+    )
+    candidate = json.loads(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v2.json").read_text()
+    )
+    result = synthetic_evidence.run_synthetic_p2_v2_evidence(
+        input_payload=payload, candidate=candidate, output_dir=tmp_path / "proof"
+    )
+    artifact = tmp_path / "proof" / "synthetic-adapter-evidence.json"
+    assert result["status"] == "SYNTHETIC_ONLY_VERIFIED"
+    assert result["evidence_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    package = json.loads(artifact.read_text())
+    assert package["adapter"] == "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision"
+    assert package["candidate_id"] == "tqqq_core_only_p2_v2"
+    assert package["no_order"] is True
 
 
 def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
