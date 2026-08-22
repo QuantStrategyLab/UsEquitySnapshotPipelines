@@ -20,7 +20,7 @@ pytest.importorskip("us_equity_strategies")
 from us_equity_snapshot_pipelines.russell_leader_rotation_shadow_cycle import (  # noqa: E402
     run_russell_leader_rotation_shadow_cycle,
 )
-from us_equity_snapshot_pipelines.shadow_contract import (
+from us_equity_snapshot_pipelines.shadow_contract import (  # noqa: E402
     SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
     validate_shadow_cycle_contract,
 )
