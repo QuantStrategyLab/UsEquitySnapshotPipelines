@@ -10,6 +10,10 @@ from typing import Any, Mapping
 import pandas as pd
 
 from .contracts import GLOBAL_ETF_ROTATION_PROFILE
+from .shadow_contract import (
+    SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+    validate_shadow_cycle_contract,
+)
 
 SHADOW_VARIANTS: dict[str, dict[str, object]] = {
     "active": {},

@@ -20,12 +20,27 @@ pytest.importorskip("us_equity_strategies")
 from us_equity_snapshot_pipelines.russell_leader_rotation_shadow_cycle import (  # noqa: E402
     run_russell_leader_rotation_shadow_cycle,
 )
+from us_equity_snapshot_pipelines.shadow_contract import (
+    SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+    validate_shadow_cycle_contract,
+)
 
 
 STAGING_SNAPSHOT = (
     PROJECT_ROOT
     / "data/output/russell_top50_leader_rotation_staging_20260628/russell_top50_leader_rotation_feature_snapshot_latest.csv"
 )
+
+
+def test_russell_shadow_contract_is_research_only() -> None:
+    validate_shadow_cycle_contract({
+        "shadow_contract": {
+            "schema_version": SHADOW_CYCLE_CONTRACT_SCHEMA_VERSION,
+            "mode": "research_only",
+            "no_order": True,
+            "broker_access": False,
+        }
+    })
 
 
 @pytest.mark.skipif(not STAGING_SNAPSHOT.exists(), reason="local staging snapshot not available")
