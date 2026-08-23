@@ -14,6 +14,11 @@ def test_portfolio_readiness_workflow_is_scheduled_and_uses_only_sanitized_termi
     assert "tqqq-p1-p3-daily-research.yml" in workflow
     assert "soxl-p1-p3-daily-research.yml" in workflow
     assert "--event schedule" in workflow
+    assert "latest_scheduled_run_with_artifact" in workflow
+    assert "/actions/runs/${run_id}/artifacts" in workflow
+    assert "(.expired | not)" in workflow
+    assert "startswith(" in workflow
+    assert "${artifact_prefix}" in workflow
     assert "tqqq-p1-terminal-*" in workflow
     assert "soxl-p1-terminal-*" in workflow
     assert "tqqq-p3-terminal-*" in workflow
@@ -27,3 +32,11 @@ def test_portfolio_readiness_workflow_is_scheduled_and_uses_only_sanitized_termi
     assert "gcloud storage" not in workflow
     assert "broker" not in workflow.lower()
     assert "placeorder" not in workflow.lower()
+
+
+def test_portfolio_readiness_does_not_treat_a_green_run_as_artifact_evidence() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "latest_scheduled_run()" not in workflow
+    assert "No completed daily terminal artifact pair is available yet." in workflow
+    assert "available=false" in workflow

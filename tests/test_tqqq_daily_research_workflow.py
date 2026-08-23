@@ -61,6 +61,12 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "actions/upload-artifact@v7" in workflow
     assert "Upload sanitized P3 terminal status" in workflow
     assert "Upload sanitized P1 terminal status" in workflow
+    assert "Record P3 unavailable terminal state" in workflow
+    assert "qsl.tqqq-daily-p3-availability.v1" in workflow
+    assert "'p3_status': 'NOT_RUN'" in workflow
+    assert "'execution_authorized': False" in workflow
+    assert "P3_JOB_DID_NOT_COMPLETE" in workflow
+    assert "P1_NOT_ACCEPTED" in workflow
     assert "tqqq-p1-terminal-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "${{ runner.temp }}/tqqq-daily-research/daily-research-status.json" in workflow
