@@ -39,13 +39,25 @@ jobs:
           set -euo pipefail
           root="${RUNNER_TEMP}/portfolio-candidate-readiness"
           mkdir -p "$root/tqqq" "$root/soxl"
-          latest_scheduled_run() {
-            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$1" --branch main --event schedule \
-              --status completed --limit 20 --json databaseId,conclusion \
-              --jq '[.[] | select(.conclusion == "success")][0].databaseId // ""'
+          latest_scheduled_run_with_artifact() {
+            local workflow="$1"
+            local artifact_prefix="$2"
+            local run_id
+            while IFS= read -r run_id; do
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+                --jq "any(.artifacts[]; (.expired | not) and (.name | startswith(\"${artifact_prefix}\")))" \
+                | grep -qx true; then
+                printf '%s\n' "$run_id"
+                return 0
+              fi
+            done < <(
+              gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch main --event schedule \
+                --status completed --limit 20 --json databaseId,conclusion \
+                --jq '.[] | select(.conclusion == "success") | .databaseId'
+            )
           }
-          tqqq_run="$(latest_scheduled_run tqqq-p1-p3-daily-research.yml)"
-          soxl_run="$(latest_scheduled_run soxl-p1-p3-daily-research.yml)"
+          tqqq_run="$(latest_scheduled_run_with_artifact tqqq-p1-p3-daily-research.yml tqqq-p1-terminal-)"
+          soxl_run="$(latest_scheduled_run_with_artifact soxl-p1-p3-daily-research.yml soxl-p1-terminal-)"
           if [ -z "$tqqq_run" ] || [ -z "$soxl_run" ]; then
             echo 'No completed daily terminal artifact pair is available yet.' >> "$GITHUB_STEP_SUMMARY"
             echo 'available=false' >> "$GITHUB_OUTPUT"

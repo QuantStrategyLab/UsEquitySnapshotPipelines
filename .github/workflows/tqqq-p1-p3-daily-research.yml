@@ -630,6 +630,58 @@ jobs:
             --p3-failure-class "$p3_failure_class"
           python -m json.tool "$output_path"
           printf 'CONTROL_PLANE_SOURCE_STATUS=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Record P3 unavailable terminal state
+        id: p3_unavailable
+        if: always() && needs.p3.result != 'success'
+        env:
+          P1_JOB_RESULT: ${{ needs.p1.result }}
+          P1_STATUS: ${{ needs.p1.outputs.status }}
+          P1_REASON_CODE: ${{ needs.p1.outputs.reason_code }}
+          P3_JOB_RESULT: ${{ needs.p3.result }}
+        run: |
+          set -euo pipefail
+          output_path="${RUNNER_TEMP}/tqqq-daily-research/p3-unavailable-status.json"
+          mkdir -p "$(dirname "$output_path")"
+          OUTPUT_PATH="$output_path" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          p1_status = os.environ['P1_STATUS'] or 'UNAVAILABLE'
+          if os.environ['P1_JOB_RESULT'] != 'success':
+              reason = 'P1_JOB_DID_NOT_COMPLETE'
+          elif p1_status != 'ACCEPTED':
+              reason = 'P1_NOT_ACCEPTED'
+          else:
+              reason = 'P3_JOB_DID_NOT_COMPLETE'
+          record = {
+              'schema_version': 'qsl.tqqq-daily-p3-availability.v1',
+              'state': 'PARKED',
+              'p3_status': 'NOT_RUN',
+              'reason': reason,
+              'p1_job_result': os.environ['P1_JOB_RESULT'],
+              'p1_status': p1_status,
+              'p1_reason_code': os.environ['P1_REASON_CODE'],
+              'p3_job_result': os.environ['P3_JOB_RESULT'],
+              'research_only': True,
+              'execution_authorized': False,
+          }
+          Path(os.environ['OUTPUT_PATH']).write_text(
+              json.dumps(record, sort_keys=True, separators=(',', ':')),
+              encoding='utf-8',
+          )
+          PY
+          python -m json.tool "$output_path"
+          printf 'available=true\n' >> "$GITHUB_OUTPUT"
+          printf 'P3_DAILY_STATUS=NOT_RUN\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload unavailable P3 terminal state
+        if: always() && steps.p3_unavailable.outputs.available == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tqqq-daily-research/p3-unavailable-status.json
+          if-no-files-found: error
+          retention-days: 35
       - name: Publish source snapshot to the read-only control plane
         env:
           CONTROL_PLANE_SYNC_URL: ${{ vars.QSL_CONTROL_PLANE_SYNC_URL }}
