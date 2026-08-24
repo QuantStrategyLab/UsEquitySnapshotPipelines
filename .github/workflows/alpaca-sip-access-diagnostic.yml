@@ -44,6 +44,8 @@ jobs:
               "QQQ": "2018-01-02",
               "TQQQ": "2018-01-02",
               "QQQM": "2020-10-13",
+              "SOXL": "2022-01-03",
+              "SOXX": "2022-01-03",
               "BOXX": "2022-12-28",
           }
           date_cutoff = os.environ.get("DATE_CUTOFF", "")

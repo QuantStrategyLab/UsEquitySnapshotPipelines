@@ -30,6 +30,8 @@ def test_alpaca_sip_access_diagnostic_is_manual_nonlive_and_sanitized() -> None:
     assert '"QQQ": "2018-01-02"' in workflow
     assert '"TQQQ": "2018-01-02"' in workflow
     assert '"QQQM": "2020-10-13"' in workflow
+    assert '"SOXL": "2022-01-03"' in workflow
+    assert '"SOXX": "2022-01-03"' in workflow
     assert '"BOXX": "2022-12-28"' in workflow
     assert '"symbol_statuses": symbol_statuses' in workflow
     assert '"ALPACA_AUTHENTICATION_FAILED"' in workflow
