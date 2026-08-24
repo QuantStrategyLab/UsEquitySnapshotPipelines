@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pandas as pd
+import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "research_soxl_dynamic_volatility_delever_thresholds.py"
 
@@ -45,3 +47,32 @@ def test_hysteresis_risk_budget_preserves_the_existing_external_volatility_rules
     assert candidate["soxl_delever_overlay_threshold_percentile"] == 0.95
     assert candidate["soxl_delever_overlay_reentry_hysteresis"] == 0.075
     assert candidate["soxl_delever_overlay_reentry_cooldown_days"] == 2
+
+
+def test_fixed_spec_annual_stability_excludes_incomplete_calendar_years() -> None:
+    module = _load_module()
+    sessions = pd.bdate_range("2016-01-01", "2020-06-30")
+    baseline_returns = pd.Series([0.004 if index % 2 else -0.002 for index in range(len(sessions))], index=sessions)
+    candidate_returns = pd.Series([0.003 if index % 2 else -0.001 for index in range(len(sessions))], index=sessions)
+    results = {
+        "baseline": {"portfolio_returns": baseline_returns},
+        "candidate": {"portfolio_returns": candidate_returns},
+    }
+
+    annual, summary = module.build_fixed_spec_annual_stability(
+        results,
+        baseline_variant="baseline",
+        candidate_variant="candidate",
+        start_year=2016,
+    )
+
+    assert annual["Window"].tolist() == ["calendar_2016", "calendar_2017", "calendar_2018", "calendar_2019"]
+    assert int(summary["complete_years"]) == 4
+    assert summary["promotion_eligible"] is False
+    assert summary["status"] == "research_only_historical_stability"
+
+
+def test_fixed_spec_annual_stability_requires_named_variants() -> None:
+    module = _load_module()
+    with pytest.raises(ValueError, match="annual stability variants"):
+        module.build_fixed_spec_annual_stability({}, baseline_variant="baseline", candidate_variant="candidate")
