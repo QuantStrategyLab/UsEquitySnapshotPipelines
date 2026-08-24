@@ -19,6 +19,7 @@ jobs:
   assess:
     runs-on: ubuntu-latest
     outputs:
+      terminal_artifacts_available: ${{ steps.artifacts.outputs.available }}
       status: ${{ steps.readiness.outputs.status }}
       proposal_id: ${{ steps.readiness.outputs.proposal_id }}
       readiness_sha256: ${{ steps.readiness.outputs.readiness_sha256 }}
@@ -63,8 +64,18 @@ jobs:
             echo 'available=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh run download "$tqqq_run" --repo "$GITHUB_REPOSITORY" --pattern 'tqqq-p1-terminal-*' --dir "$root/tqqq"
-          gh run download "$soxl_run" --repo "$GITHUB_REPOSITORY" --pattern 'soxl-p1-terminal-*' --dir "$root/soxl"
+          download_required_terminal() {
+            local run_id="$1"
+            local pattern="$2"
+            local destination="$3"
+            if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir "$destination"; then
+              echo "Required terminal artifact is unavailable: run=${run_id}, pattern=${pattern}" >> "$GITHUB_STEP_SUMMARY"
+              echo 'available=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          }
+          download_required_terminal "$tqqq_run" 'tqqq-p1-terminal-*' "$root/tqqq"
+          download_required_terminal "$soxl_run" 'soxl-p1-terminal-*' "$root/soxl"
           gh run download "$tqqq_run" --repo "$GITHUB_REPOSITORY" --pattern 'tqqq-p3-terminal-*' --dir "$root/tqqq" || true
           gh run download "$soxl_run" --repo "$GITHUB_REPOSITORY" --pattern 'soxl-p3-terminal-*' --dir "$root/soxl" || true
           tqqq_p1="$(find "$root/tqqq" -type f -name p1-terminal-status.json -print -quit)"
@@ -151,6 +162,77 @@ jobs:
             if (existing) {
               const digestLine = `- Readiness digest: \`${process.env.READINESS_SHA256}\``;
               if (!(existing.body || '').includes(digestLine)) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
+                  title, body,
+                });
+              }
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo, title, body,
+              });
+            }
+
+  report-research-input-availability:
+    needs: assess
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Create, update, or resolve one research-input availability alert
+        uses: actions/github-script@v8
+        env:
+          ASSESS_RESULT: ${{ needs.assess.result }}
+          TERMINAL_ARTIFACTS_AVAILABLE: ${{ needs.assess.outputs.terminal_artifacts_available }}
+          READINESS_STATUS: ${{ needs.assess.outputs.status }}
+          READINESS_SHA256: ${{ needs.assess.outputs.readiness_sha256 }}
+        with:
+          script: |
+            const marker = '<!-- qsl-portfolio-candidate-input-availability:v1 -->';
+            const assessmentSucceeded = process.env.ASSESS_RESULT === 'success';
+            const terminalArtifactsAvailable = process.env.TERMINAL_ARTIFACTS_AVAILABLE === 'true';
+            const readinessStatus = process.env.READINESS_STATUS;
+            const healthy = assessmentSucceeded
+              && terminalArtifactsAvailable
+              && readinessStatus === 'AI_RESEARCH_PROPOSAL_READY';
+            let state = 'READINESS_WORKFLOW_FAILED';
+            if (assessmentSucceeded && !terminalArtifactsAvailable) {
+              state = 'TERMINAL_ARTIFACT_UNAVAILABLE';
+            } else if (assessmentSucceeded && terminalArtifactsAvailable && !readinessStatus) {
+              state = 'READINESS_RECORD_UNAVAILABLE';
+            } else if (assessmentSucceeded && terminalArtifactsAvailable) {
+              state = readinessStatus;
+            }
+            const title = 'Research input availability requires attention';
+            const body = [
+              marker,
+              '## Sanitized research-control signal',
+              `- State: \`${state}\``,
+              `- Assessment job result: \`${process.env.ASSESS_RESULT || 'unknown'}\``,
+              `- Terminal artifacts available: \`${process.env.TERMINAL_ARTIFACTS_AVAILABLE || 'false'}\``,
+              `- Readiness status: \`${readinessStatus || 'unavailable'}\``,
+              `- Readiness digest: \`${process.env.READINESS_SHA256 || 'unavailable'}\``,
+              '',
+              '## Strict boundary',
+              '- This alert is research-only. It never retries data collection, changes a strategy, or authorizes paper, shadow, live accounts, or orders.',
+              '- The scheduled research workflow remains the sole source of a new terminal record.',
+            ].join('\n');
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100,
+            });
+            const existing = issues.find(issue => !issue.pull_request && (issue.body || '').includes(marker));
+            if (healthy) {
+              if (existing) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
+                  state: 'closed',
+                });
+              }
+              core.notice('Research input availability is healthy; any prior alert was resolved.');
+            } else if (existing) {
+              if (existing.title !== title || existing.body !== body) {
                 await github.rest.issues.update({
                   owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
                   title, body,
