@@ -282,6 +282,37 @@ def test_soxl_soxx_dynamic_volatility_delever_research_overlay_records_threshold
     assert (triggered["soxl_delever_overlay_metric"] >= triggered["soxl_delever_overlay_threshold"]).all()
 
 
+def test_soxl_soxx_volatility_reentry_hysteresis_and_cooldown_hold_delevered_state() -> None:
+    result = run_backtest(
+        _build_high_volatility_soxx_prices(),
+        initial_equity=100_000.0,
+        start_date="2023-10-02",
+        end_date="2024-03-29",
+        turnover_cost_bps=5.0,
+        soxl_delever_overlay_kind="volatility",
+        soxl_delever_overlay_symbol="SOXX",
+        soxl_delever_overlay_window=10,
+        soxl_delever_overlay_threshold=0.20,
+        soxl_delever_overlay_reentry_hysteresis=0.05,
+        soxl_delever_overlay_reentry_cooldown_days=2,
+        soxl_delever_overlay_retention_ratio=0.0,
+        soxl_delever_overlay_redirect_symbol="SOXX",
+    )
+
+    signal_history = result["signal_history"]
+    triggered = signal_history.loc[signal_history["soxl_delever_overlay_triggered"].astype(bool)]
+    held_after_raw_trigger = triggered.loc[~triggered["soxl_delever_overlay_raw_triggered"].astype(bool)]
+
+    assert not triggered.empty
+    assert not held_after_raw_trigger.empty
+    assert triggered["soxl_delever_overlay_reentry_hysteresis"].eq(0.05).all()
+    assert triggered["soxl_delever_overlay_reentry_cooldown_days"].eq(2).all()
+    assert (
+        triggered["soxl_delever_overlay_reentry_threshold"]
+        == triggered["soxl_delever_overlay_threshold"] - 0.05
+    ).all()
+
+
 def test_soxl_soxx_dual_ma_research_overlay_keeps_partial_soxl() -> None:
     result = run_backtest(
         _build_dual_ma_research_prices(),
