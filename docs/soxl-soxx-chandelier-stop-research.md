@@ -167,20 +167,60 @@ over the current policy in both reads, while reducing the full-tier SOXL sleeve
 by 10 percentage points.  This is a robustness filter, not an out-of-sample
 promotion result.
 
+### BIL/BOXX parking-yield confirmation (2026-08-24)
+
+The original input had no BIL or BOXX history and treated parking capital as a
+constant zero-return series.  The repeat used Yahoo adjusted closes for SOXL,
+SOXX, BIL, and BOXX; BIL was scaled to the first actual BOXX close and filled
+the 3,223 pre-BOXX sessions, while actual BOXX was used from 2022-12-28.  The
+direct Yahoo endpoint was rate-limited, so the request was relayed through a
+public text proxy.  This is auditable **research data only**, not a licensed
+runtime/P1 source or an execution entitlement.
+
+| Variant | CAGR | Max drawdown | Sharpe | Calmar | Read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Current 70% / 65% | 48.89% | -49.45% | 1.090 | 0.988 | Baseline |
+| Current + 7.5pp / 2d re-entry | 47.94% | -48.08% | 1.081 | 0.997 | Best Calmar, but still excessive drawdown |
+| 60% / 55% + 7.5pp / 2d re-entry | 42.45% | -42.65% | 1.085 | 0.995 | Explicit risk-budget trade-off |
+| 50% / 45% + 7.5pp / 2d re-entry | 36.64% | -36.87% | 1.091 | 0.994 | Lower-drawdown alternative, lower growth |
+
+The cash carry does not reverse the direction of the earlier result, but it
+does make the 60% / 55% edge very small.  It must therefore not be described
+as an unconditional compounding improvement: it is appropriate only when the
+account has explicitly chosen a drawdown budget closer to 40--45% than to 50%.
+
+### Fixed-spec annual stability diagnostic
+
+The research tool now writes `fixed_spec_annual_stability.csv` and its JSON
+summary for the frozen comparison of the current policy with the 60% / 55% +
+re-entry candidate.  It evaluates complete calendar years only, requires at
+least 200 observations per year, and has no parameter search inside those
+windows.  Its gate requires at least five years, a 50% risk-adjusted win rate,
+non-negative median excess Calmar, no worse than -3 percentage points of CAGR
+in the worst year, and no more than 3 percentage points of drawdown
+degradation.
+
+In the BIL/BOXX repeat for 2016--2025, the candidate had a 60% risk-adjusted
+win rate, median excess Calmar of +0.007, and improved drawdown in every year.
+It nevertheless **failed** the gate because its worst annual CAGR shortfall was
+-29.21 percentage points in 2017, far beyond the -3 point limit.  It is also
+not promotion-grade OOS evidence: the historical candidate definition was
+already known before this diagnostic was added.  The output is deliberately
+marked `research_only` and `promotion_eligible=false`.
+
 ### Decision and next gate
 
-Treat `60% / 55% + 7.5pp hysteresis / 2 trading days` as the **sole
-research candidate** for a long-term-compounding mandate.  It still has a
-historical maximum drawdown above 40%, so it is unsuitable for an investor or
-account mandate that cannot tolerate that range.  A 50% / 45% cap is the
-appropriate separate candidate only if a drawdown budget near 35--40% is more
-important than preserving the existing growth rate.
+No strategy change is eligible for promotion.  Keep the current Longbridge
+runtime unchanged.  The 60% / 55% cap remains a user-risk-preference candidate,
+not an auto-optimizer recommendation; the 7.5pp / two-day re-entry control is
+a separate, stateful research rule.
 
-Neither candidate is live or paper-enabled.  Promotion requires all of the
-following: a BOXX/BIL-backed replay, a predeclared and locked out-of-sample
-split, an immutable new strategy-candidate configuration, and an explicit
-approval to change the Longbridge runtime.  The current P2 candidate remains
-source-frozen; this research does not mutate it.
+Before any further decision, freeze an immutable candidate configuration and
+start a genuinely forward OOS observation with a licensed three-asset price
+source.  The runtime must persist and audit the re-entry state before it can
+apply the cooldown rule; a stateless strategy invocation must not infer or
+silently reconstruct it.  The current P2 candidate remains source-frozen, and
+this research does not mutate it.
 
 Reproduce the full-history run:
 

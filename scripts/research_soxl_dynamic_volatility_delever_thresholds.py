@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pandas as pd
 
-from us_equity_snapshot_pipelines.backtest_windows import build_benchmark_returns, build_window_summary
 from us_equity_snapshot_pipelines.artifacts import write_json
+from us_equity_snapshot_pipelines.backtest_windows import (
+    BacktestWindow,
+    build_benchmark_returns,
+    build_window_summary,
+)
 from us_equity_snapshot_pipelines.pipelines.soxl_soxx_trend_income_backtest import (
     DEFAULT_INITIAL_EQUITY_USD,
     DEFAULT_TURNOVER_COST_BPS,
@@ -19,12 +23,15 @@ from us_equity_snapshot_pipelines.yfinance_prices import (
     load_proxy_candidates,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRICES = ROOT / "data" / "output" / "codex_soxl_rsi_recheck_20260603" / "price_history.csv"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "output" / "soxl_dynamic_volatility_delever_threshold_research"
 DEFAULT_BACKTEST_START = "2016-06-06"
 DEFAULT_DOWNLOAD_SYMBOLS = ("SOXL", "SOXX", "BIL")
+DEFAULT_ANNUAL_STABILITY_BASELINE = "current_core_dynamic_p95"
+DEFAULT_ANNUAL_STABILITY_CANDIDATE = "risk_budget60_55_p95_hysteresis7_5pp_cooldown2d"
+DEFAULT_ANNUAL_STABILITY_START_YEAR = 2016
+MIN_COMPLETE_YEAR_OBSERVATIONS = 200
 
 
 def _normalize_prices(path: Path, *, allow_constant_cash_proxy: bool = False) -> pd.DataFrame:
@@ -373,6 +380,129 @@ def _variant_row(
     }
 
 
+def _complete_calendar_year_windows(
+    returns: pd.Series,
+    *,
+    start_year: int,
+    end_year: int | None,
+) -> tuple[BacktestWindow, ...]:
+    """Return only complete, sufficiently populated annual comparison windows."""
+
+    normalized = pd.to_numeric(pd.Series(returns), errors="coerce").dropna().copy()
+    normalized.index = pd.to_datetime(normalized.index, errors="coerce").tz_localize(None).normalize()
+    normalized = normalized.loc[normalized.index.notna()].sort_index()
+    if normalized.empty:
+        return ()
+
+    last_observation = pd.Timestamp(normalized.index[-1]).normalize()
+    last_complete_year = last_observation.year if last_observation >= pd.Timestamp(last_observation.year, 12, 31) else last_observation.year - 1
+    selected_end_year = min(int(end_year), last_complete_year) if end_year is not None else last_complete_year
+    windows = []
+    for year in range(int(start_year), selected_end_year + 1):
+        start = pd.Timestamp(year, 1, 1)
+        end = pd.Timestamp(year, 12, 31)
+        if int(normalized.loc[start:end].size) < MIN_COMPLETE_YEAR_OBSERVATIONS:
+            continue
+        windows.append(BacktestWindow(f"calendar_{year}", start, end, "fixed-spec annual stability window"))
+    return tuple(windows)
+
+
+def build_fixed_spec_annual_stability(
+    results_by_variant: Mapping[str, Mapping[str, object]],
+    *,
+    baseline_variant: str = DEFAULT_ANNUAL_STABILITY_BASELINE,
+    candidate_variant: str = DEFAULT_ANNUAL_STABILITY_CANDIDATE,
+    start_year: int = DEFAULT_ANNUAL_STABILITY_START_YEAR,
+    end_year: int | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Compare a pre-named candidate to baseline on complete annual windows.
+
+    This is a stability diagnostic, not a promotion-grade OOS claim: the named
+    candidate was specified after historical data already existed.  A true OOS
+    begins only after its immutable configuration and data contract are frozen.
+    """
+
+    if baseline_variant not in results_by_variant or candidate_variant not in results_by_variant:
+        raise ValueError("annual stability variants must be present in the research results")
+
+    baseline_returns = pd.Series(results_by_variant[baseline_variant]["portfolio_returns"])
+    candidate_returns = pd.Series(results_by_variant[candidate_variant]["portfolio_returns"])
+    windows = _complete_calendar_year_windows(
+        baseline_returns,
+        start_year=int(start_year),
+        end_year=end_year,
+    )
+    baseline_summary = build_window_summary(baseline_returns, windows=windows).set_index("Window")
+    candidate_summary = build_window_summary(candidate_returns, windows=windows).set_index("Window")
+    shared_windows = baseline_summary.index.intersection(candidate_summary.index)
+    if shared_windows.empty:
+        return pd.DataFrame(), {
+            "status": "research_only_insufficient_complete_years",
+            "baseline_variant": baseline_variant,
+            "candidate_variant": candidate_variant,
+            "complete_years": 0,
+            "promotion_eligible": False,
+        }
+
+    baseline_summary = baseline_summary.loc[shared_windows]
+    candidate_summary = candidate_summary.loc[shared_windows]
+    annual = pd.DataFrame(
+        {
+            "Window": shared_windows,
+            "Start": baseline_summary["Start"].to_numpy(),
+            "End": baseline_summary["End"].to_numpy(),
+            "Observations": baseline_summary["Observations"].astype(int).to_numpy(),
+            "Baseline CAGR": baseline_summary["CAGR"].astype(float).to_numpy(),
+            "Candidate CAGR": candidate_summary["CAGR"].astype(float).to_numpy(),
+            "Baseline Max Drawdown": baseline_summary["Max Drawdown"].astype(float).to_numpy(),
+            "Candidate Max Drawdown": candidate_summary["Max Drawdown"].astype(float).to_numpy(),
+            "Baseline Calmar": baseline_summary["Calmar"].astype(float).to_numpy(),
+            "Candidate Calmar": candidate_summary["Calmar"].astype(float).to_numpy(),
+        }
+    )
+    annual["Candidate Excess CAGR"] = annual["Candidate CAGR"] - annual["Baseline CAGR"]
+    annual["Candidate Drawdown Difference"] = (
+        annual["Candidate Max Drawdown"] - annual["Baseline Max Drawdown"]
+    )
+    annual["Candidate Excess Calmar"] = annual["Candidate Calmar"] - annual["Baseline Calmar"]
+    annual["Risk-adjusted Win"] = (
+        annual["Candidate Excess Calmar"].gt(0.0) & annual["Candidate Drawdown Difference"].ge(0.0)
+    )
+
+    complete_years = len(annual)
+    risk_adjusted_win_rate = float(annual["Risk-adjusted Win"].mean())
+    median_excess_calmar = float(annual["Candidate Excess Calmar"].median())
+    worst_excess_cagr = float(annual["Candidate Excess CAGR"].min())
+    worst_drawdown_difference = float(annual["Candidate Drawdown Difference"].min())
+    diagnostic_gate_passed = bool(
+        complete_years >= 5
+        and risk_adjusted_win_rate >= 0.50
+        and median_excess_calmar >= 0.0
+        and worst_excess_cagr >= -0.03
+        and worst_drawdown_difference >= -0.03
+    )
+    return annual, {
+        "status": "research_only_historical_stability",
+        "baseline_variant": baseline_variant,
+        "candidate_variant": candidate_variant,
+        "complete_years": complete_years,
+        "risk_adjusted_win_rate": risk_adjusted_win_rate,
+        "median_excess_calmar": median_excess_calmar,
+        "worst_excess_cagr": worst_excess_cagr,
+        "worst_drawdown_difference": worst_drawdown_difference,
+        "diagnostic_gate_passed": diagnostic_gate_passed,
+        "promotion_eligible": False,
+        "promotion_blocker": "candidate_not_selected_blind_to_historical_data; require immutable forward OOS",
+        "gate_thresholds": {
+            "minimum_complete_years": 5,
+            "minimum_risk_adjusted_win_rate": 0.50,
+            "minimum_median_excess_calmar": 0.0,
+            "minimum_worst_excess_cagr": -0.03,
+            "minimum_worst_drawdown_difference": -0.03,
+        },
+    }
+
+
 def run_research(
     *,
     prices_path: Path,
@@ -382,6 +512,10 @@ def run_research(
     initial_equity: float,
     turnover_cost_bps: float,
     allow_constant_cash_proxy: bool = False,
+    annual_stability_baseline: str = DEFAULT_ANNUAL_STABILITY_BASELINE,
+    annual_stability_candidate: str = DEFAULT_ANNUAL_STABILITY_CANDIDATE,
+    annual_stability_start_year: int = DEFAULT_ANNUAL_STABILITY_START_YEAR,
+    annual_stability_end_year: int | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     prices = _normalize_prices(prices_path, allow_constant_cash_proxy=allow_constant_cash_proxy)
@@ -398,6 +532,8 @@ def run_research(
     benchmark_returns = build_benchmark_returns(prices, symbols=("SOXX", "SOXL"))
     summary_rows = []
     window_frames = []
+    results_by_variant: dict[str, Mapping[str, object]] = {}
+    annual_stability_variants = {annual_stability_baseline, annual_stability_candidate}
 
     for name, kwargs in _variants():
         result = run_backtest(
@@ -416,6 +552,8 @@ def run_research(
                 strategy_overrides=kwargs.get("strategy_overrides"),
             )
         )
+        if name in annual_stability_variants:
+            results_by_variant[name] = result
         window_summary = build_window_summary(
             result["portfolio_returns"],
             benchmark_returns=benchmark_returns,
@@ -428,6 +566,15 @@ def run_research(
 
     pd.DataFrame(summary_rows).to_csv(output_dir / "variant_summary.csv", index=False)
     pd.concat(window_frames, ignore_index=True).to_csv(output_dir / "variant_window_summary.csv", index=False)
+    annual_stability, annual_stability_summary = build_fixed_spec_annual_stability(
+        results_by_variant,
+        baseline_variant=annual_stability_baseline,
+        candidate_variant=annual_stability_candidate,
+        start_year=int(annual_stability_start_year),
+        end_year=annual_stability_end_year,
+    )
+    annual_stability.to_csv(output_dir / "fixed_spec_annual_stability.csv", index=False)
+    write_json(output_dir / "fixed_spec_annual_stability_summary.json", annual_stability_summary)
     return output_dir
 
 
@@ -451,6 +598,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end-date")
     parser.add_argument("--initial-equity", type=float, default=DEFAULT_INITIAL_EQUITY_USD)
     parser.add_argument("--turnover-cost-bps", type=float, default=DEFAULT_TURNOVER_COST_BPS)
+    parser.add_argument("--annual-stability-baseline", default=DEFAULT_ANNUAL_STABILITY_BASELINE)
+    parser.add_argument("--annual-stability-candidate", default=DEFAULT_ANNUAL_STABILITY_CANDIDATE)
+    parser.add_argument("--annual-stability-start-year", type=int, default=DEFAULT_ANNUAL_STABILITY_START_YEAR)
+    parser.add_argument("--annual-stability-end-year", type=int)
     return parser
 
 
@@ -480,6 +631,10 @@ def main(argv: list[str] | None = None) -> int:
         initial_equity=float(args.initial_equity),
         turnover_cost_bps=float(args.turnover_cost_bps),
         allow_constant_cash_proxy=bool(args.constant_cash_proxy),
+        annual_stability_baseline=str(args.annual_stability_baseline),
+        annual_stability_candidate=str(args.annual_stability_candidate),
+        annual_stability_start_year=int(args.annual_stability_start_year),
+        annual_stability_end_year=args.annual_stability_end_year,
     )
     print(f"wrote SOXL dynamic volatility-delever threshold research -> {output_dir}")
     return 0
