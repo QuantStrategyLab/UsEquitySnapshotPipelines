@@ -1,0 +1,34 @@
+name: Twelve Data Daily Access Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      date_cutoff:
+        description: Exact YYYY-MM-DD cutoff to validate adjusted daily source availability.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  classify-daily-access:
+    runs-on: ubuntu-latest
+    # The environment may hold a market-data-only key. This workflow has no
+    # cloud, artifact-upload, or order permissions.
+    environment: tqqq-p1-p3-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Classify Twelve Data adjusted daily access without persisting market data
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          DATE_CUTOFF: ${{ inputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+          env -u UV_PYTHON -u VIRTUAL_ENV uv run --no-sync python scripts/diagnose_twelve_data_daily.py \
+            --date-cutoff "$DATE_CUTOFF" | tee -a "$GITHUB_STEP_SUMMARY"
