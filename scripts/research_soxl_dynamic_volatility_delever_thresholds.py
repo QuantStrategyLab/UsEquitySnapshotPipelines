@@ -75,6 +75,44 @@ def _external_vol_overlay(
     }
 
 
+def _risk_budget_overrides(
+    *,
+    full_soxl_weight: float,
+    mid_soxl_weight: float,
+) -> dict[str, object]:
+    """Return a research-only cap on the leveraged SOXL sleeve.
+
+    The removed allocation remains in BOXX through the strategy's normal tier
+    allocator.  It is deliberately not reallocated to SOXX: this is a genuine
+    reduction of the portfolio's semiconductor beta and leverage budget.
+    """
+
+    return {
+        "strategy_overrides": {
+            "blend_gate_soxl_weight": float(full_soxl_weight),
+            "blend_gate_mid_soxl_weight": float(mid_soxl_weight),
+        }
+    }
+
+
+def _with_risk_budget(
+    variant: Mapping[str, object],
+    *,
+    full_soxl_weight: float,
+    mid_soxl_weight: float,
+) -> dict[str, object]:
+    """Add a sleeve cap without mutating the base external-overlay variant."""
+
+    overrides = dict(variant.get("strategy_overrides", {}))
+    overrides.update(
+        {
+            "blend_gate_soxl_weight": float(full_soxl_weight),
+            "blend_gate_mid_soxl_weight": float(mid_soxl_weight),
+        }
+    )
+    return {**variant, "strategy_overrides": overrides}
+
+
 def _variants() -> tuple[tuple[str, dict[str, object]], ...]:
     core_fixed55_overrides = {
         "strategy_overrides": {
@@ -82,8 +120,20 @@ def _variants() -> tuple[tuple[str, dict[str, object]], ...]:
             "blend_gate_volatility_delever_threshold_mode": "fixed",
         }
     }
+    hysteresis_candidate = _external_vol_overlay(
+        threshold=0.55,
+        threshold_mode="rolling_percentile",
+        percentile=0.95,
+        floor=0.50,
+        cap=0.75,
+        reentry_hysteresis=0.075,
+        reentry_cooldown_days=2,
+    )
     return (
         ("current_core_dynamic_p95", {}),
+        ("core_cap60_55", _risk_budget_overrides(full_soxl_weight=0.60, mid_soxl_weight=0.55)),
+        ("core_cap50_45", _risk_budget_overrides(full_soxl_weight=0.50, mid_soxl_weight=0.45)),
+        ("core_cap40_35", _risk_budget_overrides(full_soxl_weight=0.40, mid_soxl_weight=0.35)),
         ("current_core_fixed55", core_fixed55_overrides),
         ("overlay_fixed55_replay", _external_vol_overlay(threshold=0.55)),
         (
@@ -186,15 +236,19 @@ def _variants() -> tuple[tuple[str, dict[str, object]], ...]:
         ),
         (
             "dynamic_p95_hysteresis7_5pp_cooldown2d",
-            _external_vol_overlay(
-                threshold=0.55,
-                threshold_mode="rolling_percentile",
-                percentile=0.95,
-                floor=0.50,
-                cap=0.75,
-                reentry_hysteresis=0.075,
-                reentry_cooldown_days=2,
-            ),
+            hysteresis_candidate,
+        ),
+        (
+            "risk_budget60_55_p95_hysteresis7_5pp_cooldown2d",
+            _with_risk_budget(hysteresis_candidate, full_soxl_weight=0.60, mid_soxl_weight=0.55),
+        ),
+        (
+            "risk_budget50_45_p95_hysteresis7_5pp_cooldown2d",
+            _with_risk_budget(hysteresis_candidate, full_soxl_weight=0.50, mid_soxl_weight=0.45),
+        ),
+        (
+            "risk_budget40_35_p95_hysteresis7_5pp_cooldown2d",
+            _with_risk_budget(hysteresis_candidate, full_soxl_weight=0.40, mid_soxl_weight=0.35),
         ),
         (
             "dynamic_p95_floor55_cap75",
@@ -238,7 +292,12 @@ def _first_existing_series(frame: pd.DataFrame, *columns: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 
-def _variant_row(name: str, result: Mapping[str, object]) -> dict[str, object]:
+def _variant_row(
+    name: str,
+    result: Mapping[str, object],
+    *,
+    strategy_overrides: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     summary = dict(result["summary"])
     signal_history = pd.DataFrame(result["signal_history"])
     core_triggered = (
@@ -280,9 +339,12 @@ def _variant_row(name: str, result: Mapping[str, object]) -> dict[str, object]:
         threshold_mode = ",".join(modes)
     if not threshold_mode:
         threshold_mode = "fixed_core"
+    configured_weights = dict(strategy_overrides or {})
     return {
         "Variant": name,
         **summary,
+        "Full SOXL Sleeve Cap": float(configured_weights.get("blend_gate_soxl_weight", 0.70)),
+        "Mid SOXL Sleeve Cap": float(configured_weights.get("blend_gate_mid_soxl_weight", 0.65)),
         "Core Vol Trigger Days": int(core_triggered.sum()),
         "Overlay Vol Trigger Days": int(overlay_triggered.sum()),
         "Raw Overlay Vol Trigger Days": int(raw_overlay_triggered.sum()),
@@ -347,7 +409,13 @@ def run_research(
             disable_income_layer=True,
             **kwargs,
         )
-        summary_rows.append(_variant_row(name, result))
+        summary_rows.append(
+            _variant_row(
+                name,
+                result,
+                strategy_overrides=kwargs.get("strategy_overrides"),
+            )
+        )
         window_summary = build_window_summary(
             result["portfolio_returns"],
             benchmark_returns=benchmark_returns,
