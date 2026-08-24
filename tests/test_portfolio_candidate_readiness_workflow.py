@@ -27,6 +27,9 @@ def test_portfolio_readiness_workflow_is_scheduled_and_uses_only_sanitized_termi
     assert "portfolio-candidate-readiness-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "AI_RESEARCH_PROPOSAL_READY" in workflow
     assert "qsl-portfolio-candidate-readiness:" in workflow
+    assert "qsl-portfolio-candidate-input-availability:" in workflow
+    assert "TERMINAL_ARTIFACT_UNAVAILABLE" in workflow
+    assert "download_required_terminal" in workflow
     assert "ALPACA_API_KEY_ID" not in workflow
     assert "ALPACA_API_SECRET_KEY" not in workflow
     assert "gcloud storage" not in workflow
