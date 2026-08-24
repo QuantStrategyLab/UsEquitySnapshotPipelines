@@ -37,7 +37,7 @@ def _summary() -> dict[str, object]:
         "execution_identity": {
             "repository": "QuantStrategyLab/UsEquityStrategies",
             "revision": STRATEGY_REVISION,
-            "quant_platform_kit_revision": "3acab1923a97b805b077c85c6c19657be0143bac",
+            "quant_platform_kit_revision": "2341557b8ded834bd41ef5a92111361dbf8844d9",
             "uv_lock_sha256": "2" * 64,
         },
         "runs": [
