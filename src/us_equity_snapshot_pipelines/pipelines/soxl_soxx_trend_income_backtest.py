@@ -178,6 +178,8 @@ def _build_soxl_delever_overlay_history(
     threshold_min_periods: int | None = None,
     threshold_floor: float | None = None,
     threshold_cap: float | None = None,
+    reentry_hysteresis: float = 0.0,
+    reentry_cooldown_days: int = 0,
     atr_multiple: float,
 ) -> pd.DataFrame:
     kind = _normalize_overlay_kind(kind)
@@ -232,7 +234,50 @@ def _build_soxl_delever_overlay_history(
             if cap_value is not None:
                 dynamic_threshold = dynamic_threshold.clip(upper=cap_value)
         effective_threshold = dynamic_threshold.fillna(fixed_threshold)
-        triggered = metric >= effective_threshold
+        raw_triggered = metric >= effective_threshold
+        hysteresis = float(reentry_hysteresis)
+        cooldown_days = int(reentry_cooldown_days)
+        if hysteresis < 0.0:
+            raise ValueError("SOXL volatility delever re-entry hysteresis must be non-negative")
+        if cooldown_days < 0:
+            raise ValueError("SOXL volatility delever re-entry cooldown days must be non-negative")
+
+        # The entry threshold is deliberately distinct from the exit threshold.
+        # Once the overlay has reduced SOXL, it remains active until volatility
+        # has fallen below the lower threshold and the requested number of
+        # *following* trading sessions has elapsed.  This state machine uses
+        # only the current and prior rows, so it introduces no look-ahead bias.
+        reentry_threshold = effective_threshold - hysteresis
+        triggered_values: list[bool] = []
+        cooldown_remaining_values: list[int] = []
+        active = False
+        cooldown_remaining = 0
+        for metric_value, raw_trigger, exit_threshold in zip(
+            metric,
+            raw_triggered,
+            reentry_threshold,
+            strict=False,
+        ):
+            if bool(raw_trigger):
+                active = True
+                cooldown_remaining = cooldown_days
+            elif not active:
+                cooldown_remaining = 0
+            elif cooldown_remaining > 0:
+                cooldown_remaining -= 1
+            elif (
+                not np.isfinite(metric_value)
+                or not np.isfinite(exit_threshold)
+                or float(metric_value) > float(exit_threshold)
+            ):
+                active = True
+            else:
+                active = False
+                cooldown_remaining = 0
+            triggered_values.append(active)
+            cooldown_remaining_values.append(cooldown_remaining)
+
+        triggered = pd.Series(triggered_values, index=metric.index, dtype=bool)
         extra_columns = {
             "threshold_mode": mode,
             "dynamic_threshold": dynamic_threshold,
@@ -242,6 +287,15 @@ def _build_soxl_delever_overlay_history(
             "dynamic_min_periods": min_count,
             "dynamic_floor": floor_value,
             "dynamic_cap": cap_value,
+            "raw_triggered": raw_triggered,
+            "reentry_threshold": reentry_threshold,
+            "reentry_hysteresis": hysteresis,
+            "reentry_cooldown_days": cooldown_days,
+            "reentry_cooldown_remaining": pd.Series(
+                cooldown_remaining_values,
+                index=metric.index,
+                dtype=int,
+            ),
         }
     elif kind == "momentum":
         effective_threshold = float(threshold if threshold is not None else -0.06)
@@ -728,6 +782,8 @@ def run_backtest(
     soxl_delever_overlay_threshold_min_periods: int | None = None,
     soxl_delever_overlay_threshold_floor: float | None = None,
     soxl_delever_overlay_threshold_cap: float | None = None,
+    soxl_delever_overlay_reentry_hysteresis: float = 0.0,
+    soxl_delever_overlay_reentry_cooldown_days: int = 0,
     soxl_delever_overlay_atr_multiple: float | None = None,
     soxl_delever_overlay_retention_ratio: float = 0.0,
     soxl_delever_overlay_redirect_symbol: str = "BOXX",
@@ -800,6 +856,8 @@ def run_backtest(
             threshold_min_periods=soxl_delever_overlay_threshold_min_periods,
             threshold_floor=soxl_delever_overlay_threshold_floor,
             threshold_cap=soxl_delever_overlay_threshold_cap,
+            reentry_hysteresis=soxl_delever_overlay_reentry_hysteresis,
+            reentry_cooldown_days=soxl_delever_overlay_reentry_cooldown_days,
             atr_multiple=overlay_atr_multiple,
         )
         if soxl_delever_enabled
@@ -1033,6 +1091,21 @@ def run_backtest(
                 if not delever_row.empty
                 else None,
                 "soxl_delever_overlay_dynamic_cap": delever_row.get("dynamic_cap") if not delever_row.empty else None,
+                "soxl_delever_overlay_raw_triggered": delever_row.get("raw_triggered")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_reentry_threshold": delever_row.get("reentry_threshold")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_reentry_hysteresis": delever_row.get("reentry_hysteresis")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_reentry_cooldown_days": delever_row.get("reentry_cooldown_days")
+                if not delever_row.empty
+                else None,
+                "soxl_delever_overlay_reentry_cooldown_remaining": delever_row.get("reentry_cooldown_remaining")
+                if not delever_row.empty
+                else None,
                 "soxl_delever_overlay_atr_multiple": overlay_atr_multiple if overlay_kind == "chandelier" else None,
                 "soxl_delever_overlay_retention_ratio": overlay_retention_ratio,
                 "soxl_delever_overlay_redirect_symbol": overlay_redirect_symbol,
@@ -1208,6 +1281,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--soxl-delever-threshold-floor", type=float, help="Lower bound for rolling threshold")
     parser.add_argument("--soxl-delever-threshold-cap", type=float, help="Upper bound for rolling threshold")
     parser.add_argument(
+        "--soxl-delever-reentry-hysteresis",
+        type=float,
+        default=0.0,
+        help="Research-only volatility exit buffer below the entry threshold, for example 0.05",
+    )
+    parser.add_argument(
+        "--soxl-delever-reentry-cooldown-days",
+        type=int,
+        default=0,
+        help="Research-only number of following trading sessions to remain delevered after a trigger",
+    )
+    parser.add_argument(
         "--soxl-delever-atr-multiple",
         type=float,
         help="ATR multiple when --soxl-delever-overlay=chandelier",
@@ -1281,6 +1366,8 @@ def main(argv: list[str] | None = None) -> int:
         soxl_delever_overlay_threshold_min_periods=args.soxl_delever_threshold_min_periods,
         soxl_delever_overlay_threshold_floor=args.soxl_delever_threshold_floor,
         soxl_delever_overlay_threshold_cap=args.soxl_delever_threshold_cap,
+        soxl_delever_overlay_reentry_hysteresis=args.soxl_delever_reentry_hysteresis,
+        soxl_delever_overlay_reentry_cooldown_days=args.soxl_delever_reentry_cooldown_days,
         soxl_delever_overlay_atr_multiple=args.soxl_delever_atr_multiple,
         soxl_delever_overlay_retention_ratio=float(args.soxl_delever_retention_ratio),
         soxl_delever_overlay_redirect_symbol=args.soxl_delever_redirect_symbol,
@@ -1331,6 +1418,8 @@ def main(argv: list[str] | None = None) -> int:
                 "soxl_delever_threshold_min_periods": args.soxl_delever_threshold_min_periods,
                 "soxl_delever_threshold_floor": args.soxl_delever_threshold_floor,
                 "soxl_delever_threshold_cap": args.soxl_delever_threshold_cap,
+                "soxl_delever_reentry_hysteresis": args.soxl_delever_reentry_hysteresis,
+                "soxl_delever_reentry_cooldown_days": args.soxl_delever_reentry_cooldown_days,
                 "soxl_delever_atr_multiple": args.soxl_delever_atr_multiple,
                 "soxl_delever_retention_ratio": float(args.soxl_delever_retention_ratio),
                 "soxl_delever_redirect_symbol": args.soxl_delever_redirect_symbol,

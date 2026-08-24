@@ -61,6 +61,69 @@ longer core SOXL/SOXX window degrades both CAGR and drawdown.
 This supports keeping the current baseline runtime strategy unchanged and using the new
 flags only for bounded research sweeps.
 
+## Re-entry hysteresis and cooldown candidate
+
+The July 2026 Longbridge history exposed a separate failure mode from a hard
+stop: the volatility gate could redirect SOXL to SOXX on one session and restore
+SOXL as soon as the metric fell just below its entry threshold.  This is a
+whipsaw/re-entry-control question, not evidence that an unconditional hard stop
+should be promoted.
+
+The research backtest now supports two **research-only** controls for its
+external volatility overlay:
+
+- `--soxl-delever-reentry-hysteresis 0.05` keeps the overlay active until 10d
+  annualized SOXX volatility falls 5 percentage points below the entry
+  threshold.
+- `--soxl-delever-reentry-cooldown-days 1` holds the overlay for one following
+  trading session after each trigger.  A two-day value means two following
+  sessions, not two calendar days.
+
+Both controls are stateful but causal: each day uses only that day's indicator
+and the previous overlay state.  They are not manifest parameters and cannot
+change paper or live orders.  The bounded candidates are `5pp/1d` and
+`7.5pp/2d`, evaluated against the current dynamic P95 (floor 50%, cap 75%)
+baseline with 5 bps turnover costs, the full post-SOXL-inception history, and
+separate out-of-sample windows.  A candidate must improve re-entry robustness
+without giving up the existing baseline's risk-adjusted performance before any
+separate strategy-parameter proposal is considered.
+
+Run the reproducible public-data sweep:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_soxl_dynamic_volatility_delever_thresholds.py \
+  --download --price-start 2010-03-11 --start-date 2010-09-29 \
+  --output-dir /tmp/soxl_volatility_reentry_research
+```
+
+The generated `variant_summary.csv` records both raw volatility-trigger days
+and extra stateful hold days, so a result cannot hide a higher exposure time
+behind the same trigger count.
+
+### First reproducible read (2026-08-24)
+
+The first comparison used the SOXL market-regime plugin input from GitHub
+Actions run `32534485450`, whose source price download ended on 2026-08-21.
+It covers the post-SOXL-inception period.  The artifact did not contain BOXX or
+BIL, so this run explicitly used `--constant-cash-proxy`: parking capital earns
+0%, rather than silently substituting another risk asset.  Consequently the
+absolute returns are conservative proxy results; the variants are compared on
+the same dates and cash treatment.
+
+| Variant | CAGR | Max drawdown | Sharpe | Calmar | Read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Current dynamic P95 core | 48.04% | -49.55% | 1.078 | 0.969 | Baseline |
+| P95 + 5pp hysteresis / 1 day | 47.72% | -49.68% | 1.076 | 0.961 | Reject |
+| P95 + 7.5pp hysteresis / 2 days | 47.99% | -48.17% | 1.080 | 0.996 | Provisional candidate |
+
+The surviving candidate created 64 stateful hold days in addition to 142 raw
+overlay-trigger days.  It also reduced 2026 YTD drawdown from -49.55% to
+-48.17% in this replay, while its annualized return was marginally lower.
+It needs a BOXX/BIL-backed repeat and a predeclared out-of-sample split before
+any live-parameter proposal.  No strategy manifest, plugin mode, paper order,
+or live order was changed by this research.
+
 ## Follow-Up Overlay Sweep
 
 The follow-up sweep tested additional SOXL delever gates under the same
