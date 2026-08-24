@@ -124,6 +124,76 @@ It needs a BOXX/BIL-backed repeat and a predeclared out-of-sample split before
 any live-parameter proposal.  No strategy manifest, plugin mode, paper order,
 or live order was changed by this research.
 
+## Long-term compounding risk-budget sweep
+
+The current policy can place 70% in SOXL and 20% in SOXX in a full trend tier.
+That is an intentionally aggressive semiconductor allocation; it is not
+consistent with a low-drawdown mandate simply because a volatility gate is
+also present.  Re-entry hysteresis can reduce a whipsaw, but it cannot lower
+the structural leverage budget while the gate is inactive.
+
+This follow-up therefore tested a small, predeclared risk-budget grid.  It
+changes only the SOXL sleeve and leaves the removed allocation in BOXX; it does
+not disguise deleveraging by moving that amount into SOXX.
+
+| Full / mid SOXL cap | Full-tier target (SOXL / SOXX / BOXX) | Mid-tier target (SOXL / SOXX / BOXX) |
+| --- | --- | --- |
+| Current 70% / 65% | 70% / 20% / 10% | 65% / 20% / 15% |
+| Candidate 60% / 55% | 60% / 20% / 20% | 55% / 20% / 25% |
+| Candidate 50% / 45% | 50% / 20% / 30% | 45% / 20% / 35% |
+| Candidate 40% / 35% | 40% / 20% / 40% | 35% / 20% / 45% |
+
+Each cap was tested both with the current dynamic P95 volatility gate and with
+the bounded 7.5 percentage-point / two-trading-day re-entry candidate.  The
+test uses the same 5 bps turnover cost and zero-return cash proxy as the prior
+read, so this is comparative research only, not a claim about absolute live
+performance.  No parameters were tuned inside the result windows.
+
+### Full available history: 2010-10-01 to 2026-08-21
+
+| Variant | CAGR | Max drawdown | Sharpe | Calmar | Read |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Current 70% / 65% | 48.06% | -49.55% | 1.078 | 0.970 | High-risk baseline |
+| Current + 7.5pp / 2d re-entry | 48.01% | -48.17% | 1.080 | 0.997 | Solves some re-entry whipsaw, not the risk budget |
+| 60% / 55% + 7.5pp / 2d re-entry | 42.27% | -42.79% | 1.080 | 0.988 | Best balanced cap candidate |
+| 50% / 45% + 7.5pp / 2d re-entry | 36.23% | -37.06% | 1.080 | 0.978 | Lower drawdown, but less efficient compounding |
+| 40% / 35% + 7.5pp / 2d re-entry | 29.94% | -30.97% | 1.080 | 0.967 | Lowest drawdown, but no longer beats baseline Calmar |
+
+The 60% / 55% candidate was also stable in a separate ten-year replay
+(2016-06-07 to 2026-08-21): CAGR 61.80% versus 71.09%, maximum drawdown
+-42.79% versus -49.55%, Sharpe 1.285 versus 1.282, and Calmar 1.444 versus
+1.435 for the current policy.  It is the only tested cap that improves Calmar
+over the current policy in both reads, while reducing the full-tier SOXL sleeve
+by 10 percentage points.  This is a robustness filter, not an out-of-sample
+promotion result.
+
+### Decision and next gate
+
+Treat `60% / 55% + 7.5pp hysteresis / 2 trading days` as the **sole
+research candidate** for a long-term-compounding mandate.  It still has a
+historical maximum drawdown above 40%, so it is unsuitable for an investor or
+account mandate that cannot tolerate that range.  A 50% / 45% cap is the
+appropriate separate candidate only if a drawdown budget near 35--40% is more
+important than preserving the existing growth rate.
+
+Neither candidate is live or paper-enabled.  Promotion requires all of the
+following: a BOXX/BIL-backed replay, a predeclared and locked out-of-sample
+split, an immutable new strategy-candidate configuration, and an explicit
+approval to change the Longbridge runtime.  The current P2 candidate remains
+source-frozen; this research does not mutate it.
+
+Reproduce the full-history run:
+
+```bash
+PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
+python scripts/research_soxl_dynamic_volatility_delever_thresholds.py \
+  --prices path/to/market_regime_control_price_history.csv \
+  --constant-cash-proxy \
+  --start-date 2010-09-30 \
+  --turnover-cost-bps 5 \
+  --output-dir /tmp/soxl_compounding_risk_budget
+```
+
 ## Follow-Up Overlay Sweep
 
 The follow-up sweep tested additional SOXL delever gates under the same
