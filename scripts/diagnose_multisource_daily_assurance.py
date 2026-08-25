@@ -149,6 +149,13 @@ def main(argv: list[str] | None = None) -> int:
             date_cutoff=args.date_cutoff,
             adjustment_basis=TWELVE_DATA_ADJUSTMENT_BASIS,
             required_source_ids=(TWELVE_DATA_DAILY_SOURCE_ID, YAHOO_FINANCE_DAILY_SOURCE_ID),
+            # The proposed free-source P1 candidate is a split-adjusted
+            # close-only input.  Its P3 materializer consumes no OHLC fields
+            # other than close and no volume, so those fields remain outside
+            # this candidate-specific assurance policy rather than being
+            # silently tolerated by the default full-OHLCV policy.
+            required_price_fields=("close",),
+            compare_volume=False,
         )
         report = assess_multisource_daily_bars(policy, observations).to_diagnostic()
         report["session_coverage"] = _redacted_session_coverage(
