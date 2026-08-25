@@ -67,6 +67,10 @@ _DIAGNOSTIC_FIELDS = (
     "market_regime_control_enabled",
     "market_regime_control_applied",
 )
+# Candidate wrappers may explicitly extend this finite set only when their
+# frozen P2 config has a separately bound redirect asset.  The default keeps
+# the legacy v3/v4 SOXX-only contract byte-for-byte compatible.
+ALLOWED_VOLATILITY_DELEVER_REDIRECT_SYMBOLS = frozenset({"SOXX", None})
 
 
 class SoxlCoreOnlyP3IsolatedRunnerError(ValueError):
@@ -309,7 +313,8 @@ def _summarize_source_decision(decision: object, *, as_of: datetime) -> dict[str
         or summary["base_blend_tier"] not in {"full", "mid", "defensive"}
         or summary["active_risk_asset"] not in {"SOXL", "SOXX", "SOXX+SOXL"}
         or not isinstance(summary["blend_gate_volatility_delever_triggered"], bool)
-        or summary["blend_gate_volatility_delever_redirect_symbol"] not in {"SOXX", None}
+        or summary["blend_gate_volatility_delever_redirect_symbol"]
+        not in ALLOWED_VOLATILITY_DELEVER_REDIRECT_SYMBOLS
         or summary["market_regime_control_enabled"] is not False
         or summary["market_regime_control_applied"] is not False
     ):
