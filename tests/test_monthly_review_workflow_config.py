@@ -20,6 +20,7 @@ def test_monthly_review_workflow_is_report_only_and_creates_issue() -> None:
     assert "issues: write" in workflow
     assert "actions: write" not in workflow
     assert "Install monthly review dependencies" in workflow
+    assert "python -m pip install -e ." in workflow
     assert "Build monthly review bundle" in workflow
     assert "scripts/post_monthly_ai_review_issue.py" in workflow
     assert "Upload monthly review bundle" in workflow
