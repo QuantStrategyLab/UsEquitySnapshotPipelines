@@ -11,7 +11,7 @@ def test_twelve_data_diagnostic_is_manual_nonlive_and_does_not_persist_market_da
     assert "workflow_dispatch:" in workflow
     assert "schedule:" not in workflow
     assert "pull_request:" not in workflow
-    assert "environment: tqqq-p1-p3-nonlive" in workflow
+    assert "environment: market-data-nonlive" in workflow
     assert "contents: read" in workflow
     assert "id-token: write" not in workflow
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in workflow
