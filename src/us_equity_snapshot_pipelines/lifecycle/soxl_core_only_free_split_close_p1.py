@@ -38,14 +38,8 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 
-from ..twelve_data_daily import (
-    TWELVE_DATA_ADJUSTMENT_BASIS,
-    TWELVE_DATA_DAILY_SOURCE_ID,
-)
-from ..yahoo_finance_daily import (
-    YAHOO_FINANCE_ADJUSTMENT_BASIS,
-    YAHOO_FINANCE_DAILY_SOURCE_ID,
-)
+from ..twelve_data_daily import TWELVE_DATA_DAILY_SOURCE_ID
+from ..yahoo_finance_daily import YAHOO_FINANCE_DAILY_SOURCE_ID
 from .soxl_core_only_p1_binding import expected_soxl_core_only_sessions
 from .soxl_core_only_p2_v4_free_split_close_contract import (
     INPUT_CONTRACT_ID,

@@ -10,7 +10,7 @@ configuration, UES revision, QPK revision, or lockfile cannot pass as v4.
 from __future__ import annotations
 
 import importlib.util
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 # This file executes inside the separately pinned UES environment, where the
