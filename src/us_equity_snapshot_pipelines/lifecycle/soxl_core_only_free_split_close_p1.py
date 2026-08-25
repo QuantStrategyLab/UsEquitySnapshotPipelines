@@ -23,7 +23,7 @@ import tempfile
 from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -44,7 +44,6 @@ from ..twelve_data_daily import TWELVE_DATA_DAILY_SOURCE_ID
 from ..yahoo_finance_daily import YAHOO_FINANCE_DAILY_SOURCE_ID
 from .soxl_core_only_p1_binding import expected_soxl_core_only_sessions
 from .soxl_core_only_p2_v4_free_split_close_contract import (
-    INPUT_CONTRACT_ID,
     P2_V4_FREE_SPLIT_CLOSE_CONTRACT,
 )
 
@@ -60,7 +59,7 @@ _CALENDAR = {
     "timezone": "America/New_York",
     "source": "exchange_calendars:4.13.2:XNYS",
 }
-_POLICY_SCOPE_PREFIX = "soxl_core_only_p2_v4_free_split_close"
+_V4_POLICY_SCOPE_PREFIX = "soxl_core_only_p2_v4_free_split_close"
 _PRICE_RELATIVE_TOLERANCE = 0.0001
 _OUTPUT_FILENAMES = frozenset({"closes.json", "assurance.json", "binding.json", "manifest.json"})
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -85,6 +84,38 @@ class SoxlCoreOnlyFreeSplitCloseObserver(Protocol):
         start_date: str,
         date_cutoff: str,
     ) -> DailyBarSourceObservation: ...
+
+
+class _P2Contract(Protocol):
+    """Minimal immutable P2 identity accepted by this source-only P1 boundary."""
+
+    candidate_id: str
+    config_sha256: str
+    ues_revision: str
+    qpk_revision: str
+    input_contract_id: str
+
+
+def _resolve_p2_contract(value: object | None) -> _P2Contract:
+    contract = P2_V4_FREE_SPLIT_CLOSE_CONTRACT if value is None else value
+    required = (
+        "candidate_id",
+        "config_sha256",
+        "ues_revision",
+        "qpk_revision",
+        "input_contract_id",
+    )
+    if any(not isinstance(getattr(contract, field, None), str) or not getattr(contract, field) for field in required):
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source P2 contract")
+    if not _DIGEST.fullmatch(getattr(contract, "config_sha256")):
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source P2 contract")
+    return cast(_P2Contract, contract)
+
+
+def _policy_scope_prefix(contract: _P2Contract) -> str:
+    if contract.candidate_id == P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id:
+        return _V4_POLICY_SCOPE_PREFIX
+    return contract.candidate_id
 
 
 def _canonical(value: object) -> bytes:
@@ -150,9 +181,11 @@ def validate_soxl_core_only_free_split_close_completed_session(
     return cutoff
 
 
-def _policy(*, symbol: str, date_cutoff: str) -> MultiSourceDailyBarPolicy:
+def _policy(
+    *, symbol: str, date_cutoff: str, p2_contract: _P2Contract
+) -> MultiSourceDailyBarPolicy:
     return MultiSourceDailyBarPolicy(
-        scope_id=f"{_POLICY_SCOPE_PREFIX}:{symbol.lower()}",
+        scope_id=f"{_policy_scope_prefix(p2_contract)}:{symbol.lower()}",
         symbol=symbol,
         date_cutoff=date_cutoff,
         adjustment_basis=_ADJUSTMENT_BASIS,
@@ -163,18 +196,21 @@ def _policy(*, symbol: str, date_cutoff: str) -> MultiSourceDailyBarPolicy:
     )
 
 
-def build_soxl_core_only_free_split_close_p1_binding(*, date_cutoff: object) -> dict[str, object]:
-    """Build the exact P1 v4 identity without acquiring market data."""
+def build_soxl_core_only_free_split_close_p1_binding(
+    *, date_cutoff: object, p2_contract: object | None = None
+) -> dict[str, object]:
+    """Build the exact candidate-bound P1 identity without acquiring market data."""
     cutoff = _date_cutoff(date_cutoff)
+    contract = _resolve_p2_contract(p2_contract)
     return {
         "schema_version": _INPUT_SCHEMA,
         "candidate": {
-            "candidate_id": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
-            "config_sha256": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.config_sha256,
+            "candidate_id": contract.candidate_id,
+            "config_sha256": contract.config_sha256,
         },
         "source": {
             "repository": "QuantStrategyLab/UsEquityStrategies",
-            "revision": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.ues_revision,
+            "revision": contract.ues_revision,
         },
         "data_identity": {
             "calendar": _CALENDAR,
@@ -185,7 +221,7 @@ def build_soxl_core_only_free_split_close_p1_binding(*, date_cutoff: object) -> 
             "assurance": {
                 "canonical_source_id": _CANONICAL_SOURCE_ID,
                 "verifier_source_id": _VERIFIER_SOURCE_ID,
-                "scope_id_prefix": _POLICY_SCOPE_PREFIX,
+                "scope_id_prefix": _policy_scope_prefix(contract),
                 "required_price_fields": ["close"],
                 "compare_volume": False,
                 "price_relative_tolerance": _PRICE_RELATIVE_TOLERANCE,
@@ -196,8 +232,10 @@ def build_soxl_core_only_free_split_close_p1_binding(*, date_cutoff: object) -> 
     }
 
 
-def validate_soxl_core_only_free_split_close_p1_binding(value: Mapping[str, object]) -> dict[str, object]:
-    """Reject an input binding that drifts from P2 v4's data contract."""
+def validate_soxl_core_only_free_split_close_p1_binding(
+    value: Mapping[str, object], *, p2_contract: object | None = None
+) -> dict[str, object]:
+    """Reject an input binding that drifts from the candidate's data contract."""
     try:
         identity = value["data_identity"]
         if not isinstance(identity, Mapping):
@@ -205,18 +243,27 @@ def validate_soxl_core_only_free_split_close_p1_binding(value: Mapping[str, obje
         cutoff = identity["date_cutoff"]
     except (KeyError, TypeError):
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source P1 binding") from None
-    expected = build_soxl_core_only_free_split_close_p1_binding(date_cutoff=cutoff)
+    expected = build_soxl_core_only_free_split_close_p1_binding(
+        date_cutoff=cutoff,
+        p2_contract=p2_contract,
+    )
     if not isinstance(value, Mapping) or dict(value) != expected:
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source P1 binding")
     return expected
 
 
-def canonical_soxl_core_only_free_split_close_p1_binding_bytes(value: Mapping[str, object]) -> bytes:
-    return _canonical(validate_soxl_core_only_free_split_close_p1_binding(value))
+def canonical_soxl_core_only_free_split_close_p1_binding_bytes(
+    value: Mapping[str, object], *, p2_contract: object | None = None
+) -> bytes:
+    return _canonical(validate_soxl_core_only_free_split_close_p1_binding(value, p2_contract=p2_contract))
 
 
-def soxl_core_only_free_split_close_p1_binding_sha256(value: Mapping[str, object]) -> str:
-    return hashlib.sha256(canonical_soxl_core_only_free_split_close_p1_binding_bytes(value)).hexdigest()
+def soxl_core_only_free_split_close_p1_binding_sha256(
+    value: Mapping[str, object], *, p2_contract: object | None = None
+) -> str:
+    return hashlib.sha256(
+        canonical_soxl_core_only_free_split_close_p1_binding_bytes(value, p2_contract=p2_contract)
+    ).hexdigest()
 
 
 def canonical_soxl_core_only_free_split_close_series_bytes(*, symbol: object, series: object) -> bytes:
@@ -277,6 +324,7 @@ def _assurance_member(
     date_cutoff: str,
     reports: Mapping[str, object],
     canonical_close_sha256: Mapping[str, str],
+    p2_contract: _P2Contract,
 ) -> dict[str, object]:
     if set(reports) != set(_UNIVERSE) or set(canonical_close_sha256) != set(_UNIVERSE):
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source assurance")
@@ -285,7 +333,7 @@ def _assurance_member(
         report = reports[symbol]
         diagnostic = getattr(report, "to_diagnostic", lambda: None)()
         report_sha256 = getattr(report, "report_sha256", None)
-        policy = _policy(symbol=symbol, date_cutoff=date_cutoff)
+        policy = _policy(symbol=symbol, date_cutoff=date_cutoff, p2_contract=p2_contract)
         if (
             getattr(report, "status", None) != DATA_ASSURANCE_STATUS_VERIFIED
             or getattr(report, "can_publish_research_input", False) is not True
@@ -304,6 +352,7 @@ def _assurance_member(
         value,
         date_cutoff=date_cutoff,
         canonical_close_sha256=canonical_close_sha256,
+        p2_contract=p2_contract,
     )
     return value
 
@@ -313,7 +362,9 @@ def validate_soxl_core_only_free_split_close_assurance_member(
     *,
     date_cutoff: str,
     canonical_close_sha256: Mapping[str, str],
+    p2_contract: object | None = None,
 ) -> dict[str, dict[str, str]]:
+    contract = _resolve_p2_contract(p2_contract)
     if (
         not isinstance(value, Mapping)
         or set(value) != {"schema_version", "date_cutoff", "assurances"}
@@ -333,7 +384,7 @@ def validate_soxl_core_only_free_split_close_assurance_member(
         }:
             raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source assurance")
         diagnostic = assurance["diagnostic"]
-        policy = _policy(symbol=symbol, date_cutoff=date_cutoff)
+        policy = _policy(symbol=symbol, date_cutoff=date_cutoff, p2_contract=contract)
         expected_diagnostic = {
             "schema_version": "qpk.multisource_daily_bar_assurance.v1",
             "policy_sha256": policy.policy_sha256,
@@ -377,9 +428,11 @@ def build_soxl_core_only_free_split_close_input_manifest(
     producer: Mapping[str, object],
     closes_bytes: bytes,
     assurance_bytes: bytes,
+    p2_contract: object | None = None,
 ) -> dict[str, object]:
-    """Build the v4 manifest after canonical closes and assurance are frozen."""
-    frozen = validate_soxl_core_only_free_split_close_p1_binding(binding)
+    """Build the candidate-bound manifest after closes and assurance are frozen."""
+    contract = _resolve_p2_contract(p2_contract)
+    frozen = validate_soxl_core_only_free_split_close_p1_binding(binding, p2_contract=contract)
     if not isinstance(closes_bytes, bytes) or not isinstance(assurance_bytes, bytes):
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source input member")
     series = _verified_close_series(closes_bytes, frozen["data_identity"]["date_cutoff"])
@@ -397,17 +450,18 @@ def build_soxl_core_only_free_split_close_input_manifest(
         assurance,
         date_cutoff=frozen["data_identity"]["date_cutoff"],
         canonical_close_sha256=close_digests,
+        p2_contract=contract,
     )
     if assurance_bytes != _canonical(assurance):
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source assurance")
-    binding_digest = soxl_core_only_free_split_close_p1_binding_sha256(frozen)
+    binding_digest = soxl_core_only_free_split_close_p1_binding_sha256(frozen, p2_contract=contract)
     manifest = validate_research_input_manifest(
         {
             "schema_version": "research_input_manifest.v1",
             "manifest_id": f"soxl-free-split-close-{binding_digest[:24]}-{hashlib.sha256(closes_bytes).hexdigest()[:24]}",
-            "research_input_contract_id": INPUT_CONTRACT_ID,
+            "research_input_contract_id": contract.input_contract_id,
             "domain": "us_equity",
-            "profile": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
+            "profile": contract.candidate_id,
             "artifact_type": "immutable_assured_split_adjusted_close_etf_only",
             "observed_at": observed_at,
             "effective_at": observed_at,
@@ -451,20 +505,24 @@ def build_soxl_core_only_free_split_close_input_manifest(
             ],
         }
     )
-    validate_soxl_core_only_free_split_close_input_manifest(manifest, frozen)
+    validate_soxl_core_only_free_split_close_input_manifest(manifest, frozen, p2_contract=contract)
     return manifest
 
 
 def validate_soxl_core_only_free_split_close_input_manifest(
-    manifest: Mapping[str, object], binding: Mapping[str, object]
+    manifest: Mapping[str, object],
+    binding: Mapping[str, object],
+    *,
+    p2_contract: object | None = None,
 ) -> str:
-    """Validate candidate-bound v4 manifest metadata before P3 consumes it."""
-    frozen = validate_soxl_core_only_free_split_close_p1_binding(binding)
+    """Validate candidate-bound manifest metadata before P3 consumes it."""
+    contract = _resolve_p2_contract(p2_contract)
+    frozen = validate_soxl_core_only_free_split_close_p1_binding(binding, p2_contract=contract)
     try:
         validated = validate_research_input_manifest(manifest)
     except ValueError as exc:
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source input manifest") from exc
-    binding_digest = soxl_core_only_free_split_close_p1_binding_sha256(frozen)
+    binding_digest = soxl_core_only_free_split_close_p1_binding_sha256(frozen, p2_contract=contract)
     identity = frozen["data_identity"]
     expected_sources = {
         f"{source_id}:{symbol}"
@@ -472,9 +530,9 @@ def validate_soxl_core_only_free_split_close_input_manifest(
         for source_id in (_CANONICAL_SOURCE_ID, _VERIFIER_SOURCE_ID)
     }
     if (
-        validated["research_input_contract_id"] != INPUT_CONTRACT_ID
+        validated["research_input_contract_id"] != contract.input_contract_id
         or validated["domain"] != "us_equity"
-        or validated["profile"] != P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id
+        or validated["profile"] != contract.candidate_id
         or validated["artifact_type"] != "immutable_assured_split_adjusted_close_etf_only"
         or validated["calendar"]
         != {**_CALENDAR, "session_date": identity["date_cutoff"], "source_revision": binding_digest}
@@ -554,14 +612,19 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
     observed_at: str,
     producer: Mapping[str, object],
     date_cutoff: str,
+    p2_contract: object | None = None,
 ) -> dict[str, object]:
-    """Publish a verified v4 P1 root, or fail closed without a root."""
+    """Publish a verified candidate-bound P1 root, or fail closed without a root."""
+    contract = _resolve_p2_contract(p2_contract)
     destination = _require_new_private_output_root(output_root)
     validate_soxl_core_only_free_split_close_completed_session(
         date_cutoff=date_cutoff,
         observed_at=observed_at,
     )
-    binding = build_soxl_core_only_free_split_close_p1_binding(date_cutoff=date_cutoff)
+    binding = build_soxl_core_only_free_split_close_p1_binding(
+        date_cutoff=date_cutoff,
+        p2_contract=contract,
+    )
     expected = expected_soxl_core_only_sessions(date_cutoff)
     canonical_series: dict[str, list[dict[str, object]]] = {}
     close_digests: dict[str, str] = {}
@@ -579,7 +642,7 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
                 for source_id in (_CANONICAL_SOURCE_ID, _VERIFIER_SOURCE_ID)
             )
             report = assess_multisource_daily_bars(
-                _policy(symbol=symbol, date_cutoff=date_cutoff), observations
+                _policy(symbol=symbol, date_cutoff=date_cutoff, p2_contract=contract), observations
             )
         except SoxlCoreOnlyFreeSplitCloseP1Error:
             raise
@@ -598,7 +661,12 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
         reports[symbol] = report
     closes_bytes = _closes_bytes(canonical_series)
     assurance_bytes = _canonical(
-        _assurance_member(date_cutoff=date_cutoff, reports=reports, canonical_close_sha256=close_digests)
+        _assurance_member(
+            date_cutoff=date_cutoff,
+            reports=reports,
+            canonical_close_sha256=close_digests,
+            p2_contract=contract,
+        )
     )
     manifest = build_soxl_core_only_free_split_close_input_manifest(
         binding,
@@ -606,18 +674,22 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
         producer=producer,
         closes_bytes=closes_bytes,
         assurance_bytes=assurance_bytes,
+        p2_contract=contract,
     )
     manifest_bytes = canonical_research_input_manifest_bytes(manifest)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
     try:
         temporary.chmod(0o700)
         (temporary / "binding.json").write_bytes(
-            canonical_soxl_core_only_free_split_close_p1_binding_bytes(binding)
+            canonical_soxl_core_only_free_split_close_p1_binding_bytes(binding, p2_contract=contract)
         )
         (temporary / "closes.json").write_bytes(closes_bytes)
         (temporary / "assurance.json").write_bytes(assurance_bytes)
         (temporary / "manifest.json").write_bytes(manifest_bytes)
-        manifest_sha256 = verify_soxl_core_only_free_split_close_p1_input_root(temporary)
+        manifest_sha256 = verify_soxl_core_only_free_split_close_p1_input_root(
+            temporary,
+            p2_contract=contract,
+        )
         _publish_noreplace(temporary, destination)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -625,8 +697,11 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
     return {"manifest_sha256": manifest_sha256, "status": "P1_FREE_SPLIT_CLOSE_INPUTS_PUBLISHED"}
 
 
-def verify_soxl_core_only_free_split_close_p1_input_root(output_root: str | Path) -> str:
-    """Verify the immutable v4 P1 root without provider or network access."""
+def verify_soxl_core_only_free_split_close_p1_input_root(
+    output_root: str | Path, *, p2_contract: object | None = None
+) -> str:
+    """Verify an immutable candidate-bound P1 root without provider or network access."""
+    contract = _resolve_p2_contract(p2_contract)
     root = Path(output_root)
     try:
         root_stat = root.lstat()
@@ -641,12 +716,19 @@ def verify_soxl_core_only_free_split_close_p1_input_root(output_root: str | Path
         assurance_bytes = (root / "assurance.json").read_bytes()
         manifest_bytes = (root / "manifest.json").read_bytes()
         binding = json.loads(binding_bytes)
-        if binding_bytes != canonical_soxl_core_only_free_split_close_p1_binding_bytes(binding):
+        if binding_bytes != canonical_soxl_core_only_free_split_close_p1_binding_bytes(
+            binding,
+            p2_contract=contract,
+        ):
             raise ValueError
         manifest = json.loads(manifest_bytes)
         if manifest_bytes != canonical_research_input_manifest_bytes(manifest):
             raise ValueError
-        manifest_sha256 = validate_soxl_core_only_free_split_close_input_manifest(manifest, binding)
+        manifest_sha256 = validate_soxl_core_only_free_split_close_input_manifest(
+            manifest,
+            binding,
+            p2_contract=contract,
+        )
         series = _verified_close_series(closes_bytes, binding["data_identity"]["date_cutoff"])
         close_digests = {
             symbol: hashlib.sha256(
@@ -659,6 +741,7 @@ def verify_soxl_core_only_free_split_close_p1_input_root(output_root: str | Path
             assurance,
             date_cutoff=binding["data_identity"]["date_cutoff"],
             canonical_close_sha256=close_digests,
+            p2_contract=contract,
         )
         if assurance_bytes != _canonical(assurance):
             raise ValueError

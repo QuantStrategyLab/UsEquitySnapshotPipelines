@@ -21,6 +21,9 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p1_binding import (
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v4_free_split_close_contract import (
     P2_V4_FREE_SPLIT_CLOSE_CONTRACT,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v5_longterm_drawdown_contract import (
+    P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+)
 
 _CUTOFF = "2026-08-18"
 _CANONICAL = "twelve_data_1day_split_adjusted"
@@ -116,6 +119,31 @@ def test_binding_freezes_v4_two_source_split_adjusted_close_identity() -> None:
         "price_relative_tolerance": 0.0001,
     }
     assert p1.validate_soxl_core_only_free_split_close_p1_binding(binding) == binding
+
+
+def test_binding_keeps_v5_source_assurance_identity_separate_from_v4() -> None:
+    v4 = p1.build_soxl_core_only_free_split_close_p1_binding(date_cutoff=_CUTOFF)
+    v5 = p1.build_soxl_core_only_free_split_close_p1_binding(
+        date_cutoff=_CUTOFF,
+        p2_contract=P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+    )
+
+    assert v5["candidate"] == {
+        "candidate_id": P2_V5_LONGTERM_DRAWDOWN_CONTRACT.candidate_id,
+        "config_sha256": P2_V5_LONGTERM_DRAWDOWN_CONTRACT.config_sha256,
+    }
+    assert v5["data_identity"]["assurance"]["scope_id_prefix"] == P2_V5_LONGTERM_DRAWDOWN_CONTRACT.candidate_id
+    assert p1.validate_soxl_core_only_free_split_close_p1_binding(
+        v5,
+        p2_contract=P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+    ) == v5
+    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1Error):
+        p1.validate_soxl_core_only_free_split_close_p1_binding(v5)
+    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1Error):
+        p1.validate_soxl_core_only_free_split_close_p1_binding(
+            v4,
+            p2_contract=P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+        )
 
 
 def test_p1_rejects_an_in_progress_xnys_session_before_any_source_observation(tmp_path: Path) -> None:

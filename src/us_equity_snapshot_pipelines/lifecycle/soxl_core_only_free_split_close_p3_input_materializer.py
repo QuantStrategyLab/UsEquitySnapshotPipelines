@@ -24,7 +24,6 @@ from .soxl_core_only_free_split_close_p1 import (
     validate_soxl_core_only_free_split_close_p1_binding,
 )
 from .soxl_core_only_p1_binding import expected_soxl_core_only_sessions
-from .soxl_core_only_p2_v4_free_split_close_contract import P2_V4_FREE_SPLIT_CLOSE_CONTRACT
 
 MATERIALIZED_INPUT_SCHEMA = "qsl.soxl-soxx-core-only-p3-free-split-close-materialized-input.v1"
 INDICATOR_SPEC_ID = "soxl-soxx-core-only-split-adjusted-close-indicators.v1"
@@ -116,10 +115,15 @@ def _validate_members(
     manifest: Mapping[str, object],
     closes_bytes: bytes,
     assurance_bytes: bytes,
+    p2_contract: object | None = None,
 ) -> tuple[dict[str, object], dict[str, list[dict[str, object]]], str]:
     try:
-        frozen = validate_soxl_core_only_free_split_close_p1_binding(binding)
-        manifest_sha256 = validate_soxl_core_only_free_split_close_input_manifest(manifest, frozen)
+        frozen = validate_soxl_core_only_free_split_close_p1_binding(binding, p2_contract=p2_contract)
+        manifest_sha256 = validate_soxl_core_only_free_split_close_input_manifest(
+            manifest,
+            frozen,
+            p2_contract=p2_contract,
+        )
     except SoxlCoreOnlyFreeSplitCloseP1Error as exc:
         raise SoxlCoreOnlyFreeSplitCloseP3MaterializerError("SOXL free-source P1 provenance mismatch") from exc
     identity = _mapping(frozen["data_identity"])
@@ -136,6 +140,7 @@ def _validate_members(
             assurance,
             date_cutoff=str(identity["date_cutoff"]),
             canonical_close_sha256=close_digests,
+            p2_contract=p2_contract,
         )
     except (TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError, SoxlCoreOnlyFreeSplitCloseP1Error):
         _fail()
@@ -230,13 +235,15 @@ def materialize_soxl_core_only_free_split_close_p3_input(
     manifest: Mapping[str, object],
     closes_bytes: bytes,
     assurance_bytes: bytes,
+    p2_contract: object | None = None,
 ) -> dict[str, object]:
-    """Build bounded P3 contexts from a verified v4 input without execution."""
+    """Build bounded P3 contexts from a verified candidate input without execution."""
     frozen, raw_series, manifest_sha256 = _validate_members(
         binding=binding,
         manifest=manifest,
         closes_bytes=closes_bytes,
         assurance_bytes=assurance_bytes,
+        p2_contract=p2_contract,
     )
     if len(raw_series["SOXL"]) < _MIN_RAW_SESSIONS or len(raw_series["SOXX"]) < _MIN_RAW_SESSIONS:
         _fail()
@@ -281,14 +288,17 @@ def materialize_soxl_core_only_free_split_close_p3_input(
         "schema_version": MATERIALIZED_INPUT_SCHEMA,
         "p1_identity": {
             "input_manifest_sha256": manifest_sha256,
-            "binding_sha256": soxl_core_only_free_split_close_p1_binding_sha256(frozen),
+            "binding_sha256": soxl_core_only_free_split_close_p1_binding_sha256(
+                frozen,
+                p2_contract=p2_contract,
+            ),
             "closes_member_sha256": hashlib.sha256(closes_bytes).hexdigest(),
             "assurance_member_sha256": hashlib.sha256(assurance_bytes).hexdigest(),
             "date_cutoff": frozen["data_identity"]["date_cutoff"],
         },
         "p2_identity": {
-            "candidate_id": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
-            "config_sha256": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.config_sha256,
+            "candidate_id": frozen["candidate"]["candidate_id"],
+            "config_sha256": frozen["candidate"]["config_sha256"],
         },
         "indicator_spec": {
             "id": INDICATOR_SPEC_ID,
