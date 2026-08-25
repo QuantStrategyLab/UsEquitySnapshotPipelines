@@ -17,7 +17,7 @@ def test_alpaca_sip_access_diagnostic_is_manual_nonlive_and_sanitized() -> None:
     assert "schedule:" not in workflow
     assert "pull_request:" not in workflow
     assert "workflow_run:" not in workflow
-    assert "environment: tqqq-p1-p3-nonlive" in workflow
+    assert "environment: market-data-nonlive" in workflow
     assert "contents: read" in workflow
     assert "id-token: write" not in workflow
     assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow

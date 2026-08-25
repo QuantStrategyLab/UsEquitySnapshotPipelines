@@ -17,7 +17,7 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       status: ${{ steps.select.outputs.status }}
       manifest_sha256: ${{ steps.select.outputs.manifest_sha256 }}
@@ -118,7 +118,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.status == 'REPLAY_ONCE'
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       p3_status: ${{ steps.record.outputs.p3_status }}
       evidence_sha256: ${{ steps.record.outputs.evidence_sha256 }}

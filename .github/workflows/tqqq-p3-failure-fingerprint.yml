@@ -19,7 +19,7 @@ permissions:
 jobs:
   fingerprint:
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

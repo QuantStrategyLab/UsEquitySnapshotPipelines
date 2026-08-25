@@ -18,7 +18,7 @@ permissions:
 jobs:
   p1:
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       date_cutoff: ${{ steps.binding.outputs.date_cutoff }}
       manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
@@ -252,7 +252,7 @@ jobs:
     needs: p1
     if: needs.p1.outputs.status == 'ACCEPTED'
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       terminal_status: ${{ steps.terminal.outputs.status }}
       evidence_sha256: ${{ steps.terminal.outputs.evidence_sha256 }}
@@ -554,7 +554,7 @@ jobs:
     needs: [p1, p3]
     if: always()
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     permissions:
       contents: read
     steps:

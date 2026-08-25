@@ -15,7 +15,7 @@ from .tqqq_core_only_p1_binding import CANDIDATE_CONFIG_SHA256, CANDIDATE_ID
 SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v1"
 _MANDATE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _APPROVER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
-_RECORD = re.compile(r"^github-environment:tqqq-p1-p3-nonlive$")
+_RECORD = re.compile(r"^github-environment:market-data-nonlive$")
 _TOP_LEVEL_FIELDS = frozenset({"schema_version", "mandate_id", "candidate", "scope", "attestation"})
 _CANDIDATE_FIELDS = frozenset({"candidate_id", "config_sha256"})
 _SCOPE_FIELDS = frozenset(

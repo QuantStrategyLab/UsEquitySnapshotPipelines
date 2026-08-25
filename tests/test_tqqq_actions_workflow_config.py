@@ -21,7 +21,7 @@ def test_tqqq_workflow_is_manual_nonlive_and_pinned() -> None:
     assert "cancel-in-progress: false" in workflow
     assert "contents: read" in workflow
     assert "id-token: write" in workflow
-    assert "environment: tqqq-p1-p3-nonlive" in workflow
+    assert "environment: market-data-nonlive" in workflow
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in workflow
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in workflow
     assert "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" in workflow
