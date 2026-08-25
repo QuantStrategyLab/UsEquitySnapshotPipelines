@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import date, timedelta
 from hashlib import sha256
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -86,12 +87,19 @@ class TwelveDataAdjustedDailyClient:
         start_date: str,
         date_cutoff: str,
     ) -> tuple[DailyBar, ...]:
+        try:
+            exclusive_end = (date.fromisoformat(date_cutoff) + timedelta(days=1)).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise TwelveDataPayloadError from exc
         query = urlencode(
             {
                 "symbol": symbol,
                 "interval": "1day",
                 "start_date": start_date,
-                "end_date": date_cutoff,
+                # The endpoint uses an exclusive end boundary.  The
+                # normalizer below still rejects any returned row after the
+                # requested completed-session cutoff.
+                "end_date": exclusive_end,
                 "adjust": "all",
             }
         )

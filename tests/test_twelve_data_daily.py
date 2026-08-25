@@ -76,6 +76,7 @@ def test_adjusted_daily_observation_uses_header_auth_and_never_exposes_key(monke
     assert request.get_header("Authorization") == "apikey private-key"
     assert "private-key" not in request.full_url
     assert "adjust=all" in request.full_url
+    assert "end_date=2026-08-22" in request.full_url
     assert timeout == twelve_data_daily.TWELVE_DATA_TIMEOUT_SECONDS
 
 
