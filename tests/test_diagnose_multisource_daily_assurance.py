@@ -23,7 +23,7 @@ def _ready(source_id: str, *, symbol: str) -> DailyBarSourceObservation:
         source_id=source_id,
         symbol=symbol,
         date_cutoff="2026-08-21",
-        adjustment_basis="total_return_adjusted",
+        adjustment_basis="split_adjusted",
         source_artifact_sha256=("a" if source_id.startswith("twelve") else "b") * 64,
         bars=(DailyBar("2026-08-21", 100, 102, 99, 101, 1_000_000),),
     )
@@ -34,12 +34,12 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
     monkeypatch.setattr(
         diagnostic_cli,
         "observe_twelve_data_adjusted_daily_bars",
-        lambda *, symbol, **kwargs: _ready("twelve_data_1day_adjustment_all", symbol=symbol),
+        lambda *, symbol, **kwargs: _ready("twelve_data_1day_split_adjusted", symbol=symbol),
     )
     monkeypatch.setattr(
         diagnostic_cli,
         "observe_yahoo_finance_adjusted_daily_bars",
-        lambda *, symbol, **kwargs: _ready("yahoo_finance_chart_1day_adjusted", symbol=symbol),
+        lambda *, symbol, **kwargs: _ready("yahoo_finance_chart_1day_split_adjusted", symbol=symbol),
     )
 
     assert diagnostic_cli.main(["--date-cutoff", "2026-08-21"]) == 0
@@ -54,8 +54,8 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
         coverage = report["session_coverage"]
         assert coverage["expected_session_count"] >= 1
         assert set(coverage["sources"]) == {
-            "twelve_data_1day_adjustment_all",
-            "yahoo_finance_chart_1day_adjusted",
+            "twelve_data_1day_split_adjusted",
+            "yahoo_finance_chart_1day_split_adjusted",
         }
         assert all(source["missing_session_count"] >= 0 for source in coverage["sources"].values())
     assert '"open"' not in output

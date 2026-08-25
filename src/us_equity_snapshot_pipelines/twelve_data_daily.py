@@ -25,8 +25,8 @@ from quant_platform_kit.data.multisource_assurance import (
     DailyBarSourceSnapshot,
 )
 
-TWELVE_DATA_DAILY_SOURCE_ID = "twelve_data_1day_adjustment_all"
-TWELVE_DATA_ADJUSTMENT_BASIS = "total_return_adjusted"
+TWELVE_DATA_DAILY_SOURCE_ID = "twelve_data_1day_split_adjusted"
+TWELVE_DATA_ADJUSTMENT_BASIS = "split_adjusted"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_TIMEOUT_SECONDS = 30
 
@@ -100,7 +100,7 @@ class TwelveDataAdjustedDailyClient:
                 # normalizer below still rejects any returned row after the
                 # requested completed-session cutoff.
                 "end_date": exclusive_end,
-                "adjust": "all",
+                "adjust": "splits",
             }
         )
         request = Request(

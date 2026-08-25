@@ -24,10 +24,10 @@ from quant_platform_kit.data.multisource_assurance import (
     DailyBarSourceSnapshot,
 )
 
-from .yfinance_prices import PRICE_FIELD_ADJUSTED_CLOSE, download_yahoo_chart_price_history
+from .yfinance_prices import PRICE_FIELD_CLOSE, download_yahoo_chart_price_history
 
-YAHOO_FINANCE_DAILY_SOURCE_ID = "yahoo_finance_chart_1day_adjusted"
-YAHOO_FINANCE_ADJUSTMENT_BASIS = "total_return_adjusted"
+YAHOO_FINANCE_DAILY_SOURCE_ID = "yahoo_finance_chart_1day_split_adjusted"
+YAHOO_FINANCE_ADJUSTMENT_BASIS = "split_adjusted"
 
 YAHOO_FINANCE_RATE_LIMITED = "YAHOO_FINANCE_RATE_LIMITED"
 YAHOO_FINANCE_SERVICE_UNAVAILABLE = "YAHOO_FINANCE_SERVICE_UNAVAILABLE"
@@ -88,7 +88,7 @@ def observe_yahoo_finance_adjusted_daily_bars(
             [normalized_symbol],
             start=start_date,
             end=exclusive_end,
-            price_field=PRICE_FIELD_ADJUSTED_CLOSE,
+            price_field=PRICE_FIELD_CLOSE,
         )
         bars = _normalize_daily_bars(
             frame.to_dict(orient="records"),
