@@ -118,6 +118,27 @@ def test_binding_freezes_v4_two_source_split_adjusted_close_identity() -> None:
     assert p1.validate_soxl_core_only_free_split_close_p1_binding(binding) == binding
 
 
+def test_p1_rejects_an_in_progress_xnys_session_before_any_source_observation(tmp_path: Path) -> None:
+    observer = _AssuredObserver()
+    output_root = tmp_path / "in-progress-p1"
+
+    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1UnavailableError, match="not complete"):
+        p1.publish_soxl_core_only_free_split_close_p1_inputs(
+            observer,
+            output_root=output_root,
+            observed_at="2026-08-18T19:59:59Z",
+            producer=_producer(),
+            date_cutoff=_CUTOFF,
+        )
+
+    assert observer.requests == []
+    assert not output_root.exists()
+    assert p1.validate_soxl_core_only_free_split_close_completed_session(
+        date_cutoff=_CUTOFF,
+        observed_at="2026-08-18T20:00:00Z",
+    ) == _CUTOFF
+
+
 def test_publisher_requires_two_source_close_agreement_then_writes_a_private_root(tmp_path: Path) -> None:
     observer = _AssuredObserver()
     output_root = tmp_path / "free-split-close-p1"

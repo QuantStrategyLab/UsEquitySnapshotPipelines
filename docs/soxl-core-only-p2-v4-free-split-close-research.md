@@ -15,6 +15,8 @@ remain separate.
 
 ## P1 admission rule
 
+Before any source request, P1 proves that the requested XNYS cutoff session has
+closed at `observed_at`; a calendar-valid but in-progress session is parked.
 For each of `SOXL`, `SOXX`, and `BOXX`:
 
 1. Twelve Data provides the candidate canonical split-adjusted close series.
