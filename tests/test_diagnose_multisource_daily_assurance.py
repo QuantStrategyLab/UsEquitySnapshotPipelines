@@ -31,6 +31,9 @@ def _ready(source_id: str, *, symbol: str) -> DailyBarSourceObservation:
 
 
 def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatch, capsys) -> None:
+    policies = []
+    original_assess = diagnostic_cli.assess_multisource_daily_bars
+
     monkeypatch.setattr(
         diagnostic_cli,
         "observe_twelve_data_adjusted_daily_bars",
@@ -41,6 +44,11 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
         "observe_yahoo_finance_adjusted_daily_bars",
         lambda *, symbol, **kwargs: _ready("yahoo_finance_chart_1day_split_adjusted", symbol=symbol),
     )
+    monkeypatch.setattr(
+        diagnostic_cli,
+        "assess_multisource_daily_bars",
+        lambda policy, observations: (policies.append(policy), original_assess(policy, observations))[1],
+    )
 
     assert diagnostic_cli.main(["--date-cutoff", "2026-08-21"]) == 0
 
@@ -50,7 +58,9 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
     assert payload["status"] == "MULTISOURCE_DAILY_ASSURANCE_VERIFIED"
     assert set(payload["reports"]) == {"BOXX", "SOXL", "SOXX"}
     assert all(report["can_publish_research_input"] is True for report in payload["reports"].values())
+    assert all(policy.required_price_fields == ("close",) and not policy.compare_volume for policy in policies)
     for report in payload["reports"].values():
+        assert report["price_agreement"]["price_relative_tolerance"] == 0.0001
         coverage = report["session_coverage"]
         assert coverage["expected_session_count"] >= 1
         assert set(coverage["sources"]) == {
