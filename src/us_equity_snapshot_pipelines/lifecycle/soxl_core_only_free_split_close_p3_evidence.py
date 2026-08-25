@@ -13,6 +13,7 @@ import importlib.util
 import json
 import re
 from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 
 from .soxl_core_only_free_split_close_p3_input_materializer import MATERIALIZED_INPUT_SCHEMA
@@ -48,6 +49,20 @@ def _mapping(value: object) -> dict[str, object]:
     return dict(value)
 
 
+def _p2_contract(value: object | None) -> object:
+    contract = P2_V4_FREE_SPLIT_CLOSE_CONTRACT if value is None else value
+    candidate_id = getattr(contract, "candidate_id", None)
+    config_sha256 = getattr(contract, "config_sha256", None)
+    if (
+        not isinstance(candidate_id, str)
+        or not candidate_id
+        or not isinstance(config_sha256, str)
+        or not _DIGEST.fullmatch(config_sha256)
+    ):
+        raise SoxlCoreOnlyFreeSplitCloseP3EvidenceError("invalid SOXL free-source P3 evidence input")
+    return contract
+
+
 def _load_module(filename: str, name: str):
     path = Path(__file__).with_name(filename)
     spec = importlib.util.spec_from_file_location(
@@ -64,8 +79,11 @@ def _load_module(filename: str, name: str):
     return module
 
 
-def _legacy_planner_view(materialized: Mapping[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+def _legacy_planner_view(
+    materialized: Mapping[str, object], *, p2_contract: object | None = None
+) -> tuple[dict[str, object], dict[str, object]]:
     """Adapt only identity-field names for the invariant v3 planner mechanics."""
+    contract = _p2_contract(p2_contract)
     original = _mapping(materialized)
     if set(original) != {
         "schema_version",
@@ -97,8 +115,8 @@ def _legacy_planner_view(materialized: Mapping[str, object]) -> tuple[dict[str, 
     ):
         raise SoxlCoreOnlyFreeSplitCloseP3EvidenceError("invalid SOXL free-source P3 evidence input")
     if _mapping(original["p2_identity"]) != {
-        "candidate_id": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
-        "config_sha256": P2_V4_FREE_SPLIT_CLOSE_CONTRACT.config_sha256,
+        "candidate_id": contract.candidate_id,
+        "config_sha256": contract.config_sha256,
     }:
         raise SoxlCoreOnlyFreeSplitCloseP3EvidenceError("invalid SOXL free-source P3 evidence input")
     if _mapping(original["indicator_spec"]).get("id") != "soxl-soxx-core-only-split-adjusted-close-indicators.v1":
@@ -125,11 +143,14 @@ def _legacy_planner_view(materialized: Mapping[str, object]) -> tuple[dict[str, 
 
 def build_soxl_core_only_free_split_close_p3_evidence_plan(
     materialized: Mapping[str, object],
+    *,
+    p2_contract: object | None = None,
 ) -> dict[str, object]:
-    """Build the fixed fold/OOS cost requests for a verified v4 materialization."""
-    original, legacy = _legacy_planner_view(materialized)
+    """Build fixed fold/OOS cost requests for a verified candidate materialization."""
+    contract = _p2_contract(p2_contract)
+    original, legacy = _legacy_planner_view(materialized, p2_contract=contract)
     planner = _load_module("soxl_core_only_p3_evidence_plan.py", "qsl_soxl_core_only_p3_v4_plan_core")
-    planner.P2_V3_CONTRACT = P2_V4_FREE_SPLIT_CLOSE_CONTRACT
+    planner.P2_V3_CONTRACT = contract
     planner.MATERIALIZED_INPUT_SCHEMA = MATERIALIZED_INPUT_SCHEMA
     try:
         result = planner.build_soxl_core_only_p3_evidence_plan(legacy)
@@ -147,12 +168,17 @@ def build_soxl_core_only_free_split_close_p3_evidence_summary(
     materialized: Mapping[str, object],
     evidence_plan: Mapping[str, object],
     replay_executor: Callable[[Mapping[str, object]], Mapping[str, object]],
+    p2_contract: object | None = None,
 ) -> dict[str, object]:
-    """Execute exactly v4's fixed requests and return metrics-only evidence."""
+    """Execute exactly the fixed candidate requests and return metrics-only evidence."""
+    contract = _p2_contract(p2_contract)
     summary = _load_module("soxl_core_only_p3_evidence_summary.py", "qsl_soxl_core_only_p3_v4_summary_core")
-    summary.P2_V3_CONTRACT = P2_V4_FREE_SPLIT_CLOSE_CONTRACT
+    summary.P2_V3_CONTRACT = contract
     summary.MATERIALIZED_INPUT_SCHEMA = MATERIALIZED_INPUT_SCHEMA
-    summary.build_soxl_core_only_p3_evidence_plan = build_soxl_core_only_free_split_close_p3_evidence_plan
+    summary.build_soxl_core_only_p3_evidence_plan = partial(
+        build_soxl_core_only_free_split_close_p3_evidence_plan,
+        p2_contract=contract,
+    )
     try:
         return summary.build_soxl_core_only_p3_evidence_summary(
             materialized=materialized,

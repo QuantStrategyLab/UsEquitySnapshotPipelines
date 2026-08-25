@@ -19,6 +19,9 @@ from us_equity_snapshot_pipelines.lifecycle import (
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p1_binding import (
     expected_soxl_core_only_sessions,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v5_longterm_drawdown_contract import (
+    P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+)
 
 _CUTOFF = "2026-08-18"
 
@@ -118,4 +121,36 @@ def test_materializer_rejects_tampered_verifier_receipt(tmp_path: Path) -> None:
             manifest=json.loads((root / "manifest.json").read_bytes()),
             closes_bytes=(root / "closes.json").read_bytes(),
             assurance_bytes=json.dumps(assurance, sort_keys=True, separators=(",", ":")).encode(),
+        )
+
+
+def test_materializer_keeps_v5_p1_and_p2_identities_separate_from_v4(tmp_path: Path) -> None:
+    root = tmp_path / "v5-p1"
+    p1.publish_soxl_core_only_free_split_close_p1_inputs(
+        _Observer(),
+        output_root=root,
+        observed_at="2026-08-19T00:00:00Z",
+        producer=_producer(),
+        date_cutoff=_CUTOFF,
+        p2_contract=P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+    )
+
+    result = materializer.materialize_soxl_core_only_free_split_close_p3_input(
+        binding=json.loads((root / "binding.json").read_bytes()),
+        manifest=json.loads((root / "manifest.json").read_bytes()),
+        closes_bytes=(root / "closes.json").read_bytes(),
+        assurance_bytes=(root / "assurance.json").read_bytes(),
+        p2_contract=P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
+    )
+
+    assert result["p2_identity"] == {
+        "candidate_id": P2_V5_LONGTERM_DRAWDOWN_CONTRACT.candidate_id,
+        "config_sha256": P2_V5_LONGTERM_DRAWDOWN_CONTRACT.config_sha256,
+    }
+    with pytest.raises(materializer.SoxlCoreOnlyFreeSplitCloseP3MaterializerError):
+        materializer.materialize_soxl_core_only_free_split_close_p3_input(
+            binding=json.loads((root / "binding.json").read_bytes()),
+            manifest=json.loads((root / "manifest.json").read_bytes()),
+            closes_bytes=(root / "closes.json").read_bytes(),
+            assurance_bytes=(root / "assurance.json").read_bytes(),
         )
