@@ -1,0 +1,143 @@
+name: SOXL Free Split-Close P1-P3 Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      date_cutoff:
+        description: Exact completed XNYS session (YYYY-MM-DD) for the v4 research input.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soxl-free-split-close-p1-p3-v4
+  cancel-in-progress: false
+
+jobs:
+  p1-p3-research:
+    runs-on: ubuntu-latest
+    # This environment is market-data only.  There is no broker, cloud-storage,
+    # artifact-upload, or deployment permission in this research workflow.
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install locked research runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Build one assured v4 P1 root or park
+        id: p1
+        env:
+          DATE_CUTOFF: ${{ inputs.date_cutoff }}
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-free-split-close-v4/p1-root"
+          mkdir -p "$(dirname "$root")"
+          ROOT="$root" uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          from scripts.acquire_soxl_core_only_free_split_close_p1 import TwelveYahooSplitAdjustedCloseObserver
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_free_split_close_p1 import (
+              SoxlCoreOnlyFreeSplitCloseP1Error,
+              SoxlCoreOnlyFreeSplitCloseP1UnavailableError,
+              publish_soxl_core_only_free_split_close_p1_inputs,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v4_free_split_close_contract import (
+              P2_V4_FREE_SPLIT_CLOSE_CONTRACT,
+          )
+
+          root = Path(os.environ['ROOT'])
+          observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+          result = {'status': 'PARKED', 'reason': 'P1_CONTRACT_OR_SOURCE_UNAVAILABLE'}
+          try:
+              published = publish_soxl_core_only_free_split_close_p1_inputs(
+                  TwelveYahooSplitAdjustedCloseObserver(os.environ.get('TWELVE_DATA_API_KEY', '')),
+                  output_root=root,
+                  observed_at=observed_at,
+                  producer={
+                      'repository': 'QuantStrategyLab/UsEquitySnapshotPipelines',
+                      'commit_sha': os.environ['GITHUB_SHA'],
+                      'tree_sha': subprocess.check_output(
+                          ['git', 'rev-parse', 'HEAD^{tree}'], text=True
+                      ).strip(),
+                      'tool': 'soxl_core_only_free_split_close_p1',
+                      'tool_version': 'v4',
+                  },
+                  date_cutoff=os.environ['DATE_CUTOFF'],
+              )
+              result = {
+                  'status': 'ACCEPTED',
+                  'manifest_sha256': published['manifest_sha256'],
+                  'candidate_id': P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
+              }
+          except SoxlCoreOnlyFreeSplitCloseP1UnavailableError:
+              pass
+          except SoxlCoreOnlyFreeSplitCloseP1Error:
+              pass
+          encoded = json.dumps(result, sort_keys=True, separators=(',', ':')).encode('utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f"status={result['status']}\n")
+              output.write(f"manifest_sha256={result.get('manifest_sha256', '')}\n")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write(f"SOXL_V4_P1_STATUS={result['status']}\n")
+              output.write(f"SOXL_V4_P1_TERMINAL_SHA256={hashlib.sha256(encoded).hexdigest()}\n")
+              if result.get('manifest_sha256'):
+                  output.write(f"SOXL_V4_P1_MANIFEST_SHA256={result['manifest_sha256']}\n")
+          PY
+      - name: Run v4 offline P3 evidence after accepted P1
+        if: steps.p1.outputs.status == 'ACCEPTED'
+        id: p3
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-free-split-close-v4/p1-root"
+          ues="${RUNNER_TEMP}/soxl-free-split-close-v4/ues"
+          summary="${RUNNER_TEMP}/soxl-free-split-close-v4/p3-summary.json"
+          git clone --quiet --no-checkout https://github.com/QuantStrategyLab/UsEquityStrategies.git "$ues"
+          git -C "$ues" fetch --quiet --depth=1 origin be692f75f64557e68edbff93786781e26c4f5893
+          git -C "$ues" checkout --quiet --detach be692f75f64557e68edbff93786781e26c4f5893
+          uv run --no-sync python scripts/run_soxl_core_only_free_split_close_p3_evidence.py \
+            --p1-binding "$root/binding.json" \
+            --input-manifest "$root/manifest.json" \
+            --closes-member "$root/closes.json" \
+            --assurance-member "$root/assurance.json" \
+            --ues-project "$ues" \
+            --p2-candidate config/soxl_soxx_core_only_p2_v4_free_split_close.json > "$summary"
+          SUMMARY="$summary" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ['SUMMARY']).read_bytes())
+          if result.get('status') == 'SUCCESS' and isinstance(result.get('evidence_summary_sha256'), str):
+              status = 'SUCCESS'
+              evidence_sha256 = result['evidence_summary_sha256']
+          elif set(result) == {'schema_version', 'status', 'failure_class'} and result['status'] == 'PARKED':
+              status = 'PARKED'
+              evidence_sha256 = ''
+          else:
+              raise SystemExit('invalid sanitized SOXL v4 P3 terminal result')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'status={status}\n')
+              output.write(f'evidence_summary_sha256={evidence_sha256}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write(f'SOXL_V4_P3_STATUS={status}\n')
+              if evidence_sha256:
+                  output.write(f'SOXL_V4_P3_EVIDENCE_SUMMARY_SHA256={evidence_sha256}\n')
+              else:
+                  output.write(f"SOXL_V4_P3_FAILURE_CLASS={result['failure_class']}\n")
+          PY
+      - name: Record parked P3 when P1 is not admitted
+        if: steps.p1.outputs.status != 'ACCEPTED'
+        run: echo 'SOXL_V4_P3_STATUS=PARKED' >> "$GITHUB_STEP_SUMMARY"
