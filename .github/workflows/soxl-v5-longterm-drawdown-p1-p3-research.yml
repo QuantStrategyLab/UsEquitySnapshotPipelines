@@ -162,8 +162,14 @@ jobs:
                   })
               status = 'SUCCESS'
               evidence_sha256 = result['evidence_summary_sha256']
+              strategy_verdict = (
+                  'PASS_REQUIRES_SEPARATE_HUMAN_PROMOTION'
+                  if gate.get('all_fixed_folds_and_cost_scenarios_passed') is True
+                  else 'REJECT_NEGATIVE_STRATEGY_EVIDENCE'
+              )
               review = {
-                  'status': status,
+                  'evidence_status': 'EVIDENCE_COMPLETE',
+                  'strategy_verdict': strategy_verdict,
                   'evidence_summary_sha256': evidence_sha256,
                   'longterm_compounding_gate': gate,
                   'runs': review_runs,
@@ -171,15 +177,22 @@ jobs:
           elif set(result) == {'schema_version', 'status', 'failure_class'} and result['status'] == 'PARKED':
               status = 'PARKED'
               evidence_sha256 = ''
-              review = {'status': status, 'failure_class': result['failure_class']}
+              strategy_verdict = 'INCONCLUSIVE_DATA_OR_EXECUTION'
+              review = {
+                  'evidence_status': status,
+                  'strategy_verdict': strategy_verdict,
+                  'failure_class': result['failure_class'],
+              }
           else:
               raise SystemExit('invalid sanitized SOXL v5 P3 terminal result')
           encoded_review = json.dumps(review, sort_keys=True, separators=(',', ':'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'status={status}\n')
+              output.write(f'strategy_verdict={strategy_verdict}\n')
               output.write(f'evidence_summary_sha256={evidence_sha256}\n')
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
-              output.write(f'SOXL_V5_P3_STATUS={status}\n')
+            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write(f'SOXL_V5_P3_EVIDENCE_STATUS={"EVIDENCE_COMPLETE" if status == "SUCCESS" else status}\n')
+              output.write(f'SOXL_V5_P3_STRATEGY_VERDICT={strategy_verdict}\n')
               if evidence_sha256:
                   output.write(f'SOXL_V5_P3_EVIDENCE_SUMMARY_SHA256={evidence_sha256}\n')
               else:

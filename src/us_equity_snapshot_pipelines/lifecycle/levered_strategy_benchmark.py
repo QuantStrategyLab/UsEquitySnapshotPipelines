@@ -14,6 +14,15 @@ from collections.abc import Mapping, Sequence
 _INITIAL_EQUITY = 100_000.0
 _TRADING_SESSIONS_PER_YEAR = 252.0
 _REQUIRED_STRATEGY_METRICS = ("max_drawdown", "calmar")
+_DRAWDOWN_GATE_FIELDS = (
+    "max_drawdown_not_exceeding_benchmark",
+    "passed",
+)
+_LONGTERM_GATE_FIELDS = (
+    "max_drawdown_not_exceeding_benchmark",
+    "incremental_calmar_after_cost",
+    "passed",
+)
 
 
 class LeveredStrategyBenchmarkError(ValueError):
@@ -109,11 +118,32 @@ def build_same_window_buy_and_hold_benchmark(
     }
 
 
+def assess_relative_drawdown(
+    strategy_metrics: Mapping[str, object],
+    benchmark_metrics: Mapping[str, object],
+) -> dict[str, bool]:
+    """Apply only the non-waivable same-window maximum-drawdown gate.
+
+    Short chronological folds are useful for exposing risk failures, but their
+    Calmar ratios are intentionally not treated as a long-compounding verdict.
+    Both operands must use a positive drawdown-magnitude convention.
+    """
+    if not isinstance(strategy_metrics, Mapping) or not isinstance(benchmark_metrics, Mapping):
+        _fail()
+    strategy_drawdown = _finite(strategy_metrics.get("max_drawdown"), nonnegative=True)
+    benchmark_drawdown = _finite(benchmark_metrics.get("max_drawdown"), nonnegative=True)
+    passed = strategy_drawdown <= benchmark_drawdown
+    return {
+        "max_drawdown_not_exceeding_benchmark": passed,
+        "passed": passed,
+    }
+
+
 def assess_relative_longterm_compounding(
     strategy_metrics: Mapping[str, object],
     benchmark_metrics: Mapping[str, object],
 ) -> dict[str, bool]:
-    """Apply the non-waivable MDD and Calmar promotion gates after costs."""
+    """Apply the continuous-long-horizon MDD and Calmar gates after costs."""
     if not isinstance(strategy_metrics, Mapping) or not isinstance(benchmark_metrics, Mapping):
         _fail()
     strategy = {
@@ -124,7 +154,8 @@ def assess_relative_longterm_compounding(
         field: _finite(benchmark_metrics.get(field), nonnegative=field == "max_drawdown")
         for field in _REQUIRED_STRATEGY_METRICS
     }
-    drawdown_passed = strategy["max_drawdown"] <= benchmark["max_drawdown"]
+    drawdown_gate = assess_relative_drawdown(strategy, benchmark)
+    drawdown_passed = drawdown_gate["passed"]
     calmar_increment_passed = strategy["calmar"] > benchmark["calmar"]
     return {
         "max_drawdown_not_exceeding_benchmark": drawdown_passed,
@@ -133,8 +164,69 @@ def assess_relative_longterm_compounding(
     }
 
 
+def _gate(value: object, *, fields: tuple[str, ...]) -> dict[str, bool]:
+    if not isinstance(value, Mapping) or set(value) != set(fields):
+        _fail()
+    result: dict[str, bool] = {}
+    for field in fields:
+        item = value.get(field)
+        if type(item) is not bool:
+            _fail()
+        result[field] = item
+    return result
+
+
+def aggregate_relative_benchmark_policy(
+    *,
+    short_window_drawdown_gates: Sequence[Mapping[str, object]],
+    long_window_compounding_gates: Sequence[Mapping[str, object]],
+    forward_confirmation_satisfied: bool,
+) -> dict[str, object]:
+    """Aggregate a pre-registered relative benchmark policy without waiver.
+
+    The caller classifies windows before this boundary.  Every short-window
+    drawdown gate and every continuous-long-window compounding gate must pass.
+    A passed retrospective policy remains research-only until its separately
+    bound forward checkpoint is satisfied; this function never grants
+    promotion authority.
+    """
+    if (
+        isinstance(forward_confirmation_satisfied, bool) is False
+        or not isinstance(short_window_drawdown_gates, Sequence)
+        or isinstance(short_window_drawdown_gates, (str, bytes))
+        or not isinstance(long_window_compounding_gates, Sequence)
+        or isinstance(long_window_compounding_gates, (str, bytes))
+        or not short_window_drawdown_gates
+        or not long_window_compounding_gates
+    ):
+        _fail()
+    short_gates = [_gate(value, fields=_DRAWDOWN_GATE_FIELDS) for value in short_window_drawdown_gates]
+    long_gates = [_gate(value, fields=_LONGTERM_GATE_FIELDS) for value in long_window_compounding_gates]
+    short_drawdown_passed = all(gate["max_drawdown_not_exceeding_benchmark"] for gate in short_gates)
+    long_drawdown_passed = all(gate["max_drawdown_not_exceeding_benchmark"] for gate in long_gates)
+    long_calmar_passed = all(gate["incremental_calmar_after_cost"] for gate in long_gates)
+    all_passed = short_drawdown_passed and long_drawdown_passed and long_calmar_passed
+    if not all_passed:
+        strategy_verdict = "REJECT_NEGATIVE_STRATEGY_EVIDENCE"
+    elif forward_confirmation_satisfied:
+        strategy_verdict = "PASS_REQUIRES_SEPARATE_HUMAN_PROMOTION"
+    else:
+        strategy_verdict = "PASS_PENDING_FORWARD_CONFIRMATION"
+    return {
+        "evidence_status": "EVIDENCE_COMPLETE",
+        "short_window_drawdown_all_passed": short_drawdown_passed,
+        "long_window_drawdown_all_passed": long_drawdown_passed,
+        "long_window_incremental_calmar_all_passed": long_calmar_passed,
+        "forward_confirmation_satisfied": forward_confirmation_satisfied,
+        "strategy_verdict": strategy_verdict,
+        "automatic_promotion": False,
+    }
+
+
 __all__ = [
     "LeveredStrategyBenchmarkError",
+    "aggregate_relative_benchmark_policy",
+    "assess_relative_drawdown",
     "assess_relative_longterm_compounding",
     "build_same_window_buy_and_hold_benchmark",
 ]

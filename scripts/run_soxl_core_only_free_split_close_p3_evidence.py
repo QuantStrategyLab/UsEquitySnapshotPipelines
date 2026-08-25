@@ -29,14 +29,22 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_free_split_close_p3_i
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v5_longterm_drawdown_contract import (
     P2_V5_LONGTERM_DRAWDOWN_CONTRACT,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v6_longterm_compounding_contract import (
+    P2_V6_LONGTERM_COMPOUNDING_CONTRACT,
+)
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v5_longterm_drawdown_p3_evidence import (
     SoxlCoreOnlyV5LongtermDrawdownP3EvidenceError,
     build_soxl_core_only_v5_longterm_drawdown_p3_evidence_plan,
     build_soxl_core_only_v5_longterm_drawdown_p3_evidence_summary,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v6_longterm_compounding_p3_evidence import (
+    SoxlCoreOnlyV6LongtermCompoundingP3EvidenceError,
+    build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan,
+    build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary,
+)
 
 RUN_SCHEMA = "qsl.soxl-soxx-core-only-free-split-close-p3-offline-run.v1"
-_P2_PROFILES = frozenset({"v4", "v5_longterm_drawdown"})
+_P2_PROFILES = frozenset({"v4", "v5_longterm_drawdown", "v6_longterm_compounding"})
 
 
 class SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError(ValueError):
@@ -79,6 +87,7 @@ def _load_isolated_replay(*, p2_profile: str = "v4") -> Callable[..., Mapping[st
     runner_name = {
         "v4": "run_soxl_core_only_free_split_close_p3_isolated.py",
         "v5_longterm_drawdown": "run_soxl_core_only_v5_longterm_drawdown_p3_isolated.py",
+        "v6_longterm_compounding": "run_soxl_core_only_v6_longterm_compounding_p3_isolated.py",
     }[p2_profile]
     runner_path = Path(__file__).with_name(runner_name)
     spec = importlib.util.spec_from_file_location("qsl_soxl_core_only_free_split_close_p3_isolated", runner_path)
@@ -118,7 +127,7 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
         )
         plan = build_soxl_core_only_free_split_close_p3_evidence_plan(materialized)
         build_summary = build_soxl_core_only_free_split_close_p3_evidence_summary
-    else:
+    elif p2_profile == "v5_longterm_drawdown":
         materialized = materialize_soxl_core_only_free_split_close_p3_input(
             binding=binding,
             manifest=manifest,
@@ -128,6 +137,16 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
         )
         plan = build_soxl_core_only_v5_longterm_drawdown_p3_evidence_plan(materialized)
         build_summary = build_soxl_core_only_v5_longterm_drawdown_p3_evidence_summary
+    else:
+        materialized = materialize_soxl_core_only_free_split_close_p3_input(
+            binding=binding,
+            manifest=manifest,
+            closes_bytes=closes_bytes,
+            assurance_bytes=assurance_bytes,
+            p2_contract=P2_V6_LONGTERM_COMPOUNDING_CONTRACT,
+        )
+        plan = build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(materialized)
+        build_summary = build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary
 
     def execute(replay_input: Mapping[str, object]) -> Mapping[str, object]:
         with tempfile.TemporaryDirectory(prefix=f"qsl-soxl-{p2_profile}-p3-") as directory:
@@ -183,6 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         SoxlCoreOnlyFreeSplitCloseP3MaterializerError,
         SoxlCoreOnlyFreeSplitCloseP3EvidenceError,
         SoxlCoreOnlyV5LongtermDrawdownP3EvidenceError,
+        SoxlCoreOnlyV6LongtermCompoundingP3EvidenceError,
         ValueError,
         OSError,
     ):

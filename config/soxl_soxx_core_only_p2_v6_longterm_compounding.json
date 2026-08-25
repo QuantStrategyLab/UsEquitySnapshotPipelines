@@ -1,0 +1,184 @@
+{
+  "acceptance": {
+    "automatic_promotion": false,
+    "failure_behavior": "Any unavailable, incomplete, malformed, mismatched, mixed-identity, or non-deterministic source observation is INCONCLUSIVE/PARK. No fallback provider, source averaging, synthetic market-data substitution, parameter change, automatic waiver, or automatic rerun is permitted.",
+    "live_ready": false,
+    "promotion_eligible": false,
+    "required_evidence": [
+      "immutable independently-assured split-adjusted close input identity",
+      "two-source coverage and close-agreement evidence",
+      "source/config/runtime binding",
+      "three chronological no-tuning evidence windows",
+      "trailing 252-XNYS-session OOS window",
+      "continuous 756-XNYS-session long-compounding window",
+      "5/10/15bps all-in cost stress",
+      "separate fixed future confirmation checkpoint"
+    ],
+    "risk_mandate": {
+      "drawdown_reference": {
+        "benchmark": "SOXX",
+        "benchmark_policy": "buy_and_hold_unlevered_same_assured_close_series",
+        "comparison_windows": "every_fixed_fold_trailing_locked_oos_and_continuous_long_horizon",
+        "strategy_max_drawdown_must_not_exceed_benchmark": true,
+        "strategy_cost_scenarios_bps": [5, 10, 15]
+      },
+      "risk_adjusted_return": {
+        "benchmark": "SOXX",
+        "continuous_long_horizon_only": true,
+        "minimum_xnys_sessions": 756,
+        "require_incremental_calmar_after_cost": true,
+        "short_fold_calmar": "diagnostic_only_not_a_promotion_veto"
+      },
+      "forward_confirmation": {
+        "required_new_xnys_sessions_after_policy_freeze": 252,
+        "review_mode": "single_pre_registered_future_checkpoint",
+        "retrospective_evidence_is_promotion_eligible": false
+      },
+      "no_automatic_waiver": true,
+      "purpose": "Long-term compounding requires drawdown at or below same-period SOXX in every risk window, plus an incremental after-cost Calmar only on a pre-registered continuous long horizon. A retrospective result never grants execution authority."
+    }
+  },
+  "candidate_id": "soxl_soxx_core_only_p2_v6_longterm_compounding",
+  "classification": {
+    "execution_authorized": false,
+    "no_order": true,
+    "research_only": true,
+    "size_zero_required": true
+  },
+  "cost_assumptions": {
+    "borrow_cost_bps": 0,
+    "cash_yield_assumption": 0,
+    "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+    "fill_model": "close-to-next-session target-weight simulation only; no broker-fill or live claim",
+    "stress_turnover_cost_bps": [10, 15],
+    "turnover_cost_bps": 5
+  },
+  "data_contract": {
+    "adjustment_basis": "split_adjusted",
+    "canonical_source_id": "twelve_data_1day_split_adjusted",
+    "compare_volume": false,
+    "price_field": "close",
+    "required_price_fields": ["close"],
+    "required_source_ids": [
+      "twelve_data_1day_split_adjusted",
+      "yahoo_finance_chart_1day_split_adjusted"
+    ],
+    "rule": "Twelve Data is canonical only after it and Yahoo Finance independently cover every expected XNYS session and agree within the fixed close-price tolerance. Yahoo is a verifier, never a fallback; no source averaging or substitution is permitted."
+  },
+  "evaluation_plan": {
+    "all_assets_common_availability": {
+      "first_session": "2022-12-28",
+      "required_assets": ["SOXL", "SOXX", "BOXX"],
+      "rule": "Every replay session must have an independently-assured observed close for every tradable asset. No pre-inception proxy, carried price, cash substitution, source fallback, or synthetic market-data row is permitted."
+    },
+    "continuous_long_horizon": {
+      "anchor": "VERIFIED_P1_DATE_CUTOFF",
+      "session_count": 756,
+      "window_kind": "continuous_long_horizon"
+    },
+    "embargo_days": 1,
+    "parameter_selection": "This candidate changes only evidence acceptance geometry. Runtime weights and decision logic are unchanged from v5; no parameter may be selected, retuned, or replaced from historical, OOS, or future observations.",
+    "purge_sessions": 1,
+    "purged_folds": [
+      {"evaluation": ["2023-07-03", "2023-12-29"], "id": "sequential_evidence_fold_1", "purge_sessions_after_train": 1, "train": ["2022-12-28", "2023-06-30"]},
+      {"evaluation": ["2024-07-01", "2024-12-31"], "id": "sequential_evidence_fold_2", "purge_sessions_after_train": 1, "train": ["2024-01-02", "2024-06-28"]},
+      {"evaluation": ["2025-03-03", "2025-07-31"], "id": "sequential_evidence_fold_3", "purge_sessions_after_train": 1, "train": ["2025-01-02", "2025-02-28"]}
+    ],
+    "rolling_locked_oos": {
+      "anchor": "VERIFIED_P1_DATE_CUTOFF",
+      "minimum_date_cutoff": "2026-08-04",
+      "rule": "The rolling OOS is monitoring evidence only; it cannot be repeatedly relabelled as independent untouched confirmation.",
+      "trailing_xnys_sessions": 252
+    },
+    "seen_window_policy": "All history available when this policy was frozen is retrospective diagnostic evidence only. The candidate, source policy, windows, risk mandate, and runtime parameters cannot change from any outcome. Only the separately recorded forward checkpoint may satisfy forward confirmation."
+  },
+  "explicitly_not_in_candidate": {
+    "ai_extensions": {"status": "disabled"},
+    "external_market_regime_plugin": {"status": "disabled"},
+    "income_layer": {"status": "disabled"},
+    "option_overlays": {"status": "disabled"},
+    "volatility_retention_policy": {"status": "disabled"}
+  },
+  "frozen_at": "2026-08-26T00:00:00Z",
+  "phase": "P2",
+  "p1_entry": {
+    "eligible_now": false,
+    "forbidden_operations": ["parameter_tuning", "broker_order", "paper", "shadow", "live"],
+    "reason": "This v6 identity must obtain a new candidate-bound P1/P3 root. It cannot reuse a v5 P1 root or grant P6 authority from retrospective evidence.",
+    "unique_next_gate": "SOXL_CORE_ONLY_V6_LONGTERM_COMPOUNDING_P1_P3_RESEARCH_ONLY_DRIVER"
+  },
+  "required_inputs": {
+    "derived_indicators": {"frequency": "1d", "minimum_lookback_sessions": 252, "required_fields": ["close", "ma_trend", "ma20", "ma20_slope", "rsi14", "bb_upper", "realized_volatility_10", "realized_volatility_10_dynamic_threshold", "realized_volatility_10_dynamic_sample_count"], "symbols": ["SOXL", "SOXX"]},
+    "source_mix_allowed": false,
+    "tradable_assets": ["SOXL", "SOXX", "BOXX"]
+  },
+  "runtime_config": {
+    "attack_allocation_mode": "soxx_gate_tiered_blend",
+    "blend_gate_active_soxx_weight": 0.25,
+    "blend_gate_bollinger_cap_enabled": true,
+    "blend_gate_defensive_soxx_weight": 0.15,
+    "blend_gate_dynamic_rsi_threshold_enabled": true,
+    "blend_gate_mid_soxl_weight": 0.25,
+    "blend_gate_overlay_stack_triggers": true,
+    "blend_gate_rsi_cap_enabled": true,
+    "blend_gate_rsi_threshold": 70,
+    "blend_gate_soxl_weight": 0.35,
+    "blend_gate_trend_source": "SOXX",
+    "blend_gate_volatility_delever_dynamic_cap": 0.75,
+    "blend_gate_volatility_delever_dynamic_floor": 0.5,
+    "blend_gate_volatility_delever_dynamic_lookback": 252,
+    "blend_gate_volatility_delever_dynamic_min_periods": 126,
+    "blend_gate_volatility_delever_dynamic_percentile": 0.95,
+    "blend_gate_volatility_delever_enabled": true,
+    "blend_gate_volatility_delever_max_retention_ratio": 0.5,
+    "blend_gate_volatility_delever_redirect_symbol": "BOXX",
+    "blend_gate_volatility_delever_retention_context_required": false,
+    "blend_gate_volatility_delever_retention_mode": "none",
+    "blend_gate_volatility_delever_retention_ratio": 0,
+    "blend_gate_volatility_delever_retention_policy": "soxl_step_rebound_0.25_0.50",
+    "blend_gate_volatility_delever_symbol": "SOXX",
+    "blend_gate_volatility_delever_threshold": 0.55,
+    "blend_gate_volatility_delever_threshold_mode": "rolling_percentile",
+    "blend_gate_volatility_delever_window": 10,
+    "cash_reserve_floor_usd": 0,
+    "cash_reserve_ratio": 0.03,
+    "income_layer_enabled": false,
+    "managed_symbols": ["SOXL", "SOXX", "BOXX"],
+    "market_regime_control_apply_risk_off": false,
+    "market_regime_control_apply_risk_reduced": false,
+    "market_regime_control_enabled": false,
+    "min_trade_floor": 100,
+    "min_trade_ratio": 0.01,
+    "option_growth_overlay_enabled": false,
+    "option_income_overlay_enabled": false,
+    "option_overlay_enabled": false,
+    "rebalance_threshold_ratio": 0.01,
+    "trend_entry_buffer": 0.08,
+    "trend_exit_buffer": 0.02,
+    "trend_ma_window": 140,
+    "trend_mid_buffer": 0.06
+  },
+  "schema_version": "qsl.soxl-soxx-core-only-p2-candidate.v6",
+  "source": {
+    "builder": "us_equity_strategies.strategies.soxl_soxx_trend_income.build_rebalance_plan",
+    "dependency_lock": {"quant_platform_kit_revision": "f30e7b1910df8da22fdcedc347ab847df5adcd76", "strategy_dependency_upgrade_required_before_p1_or_p3": false},
+    "entrypoint": "us_equity_strategies.entrypoints.build_soxl_soxx_core_only_p2_v2_research_decision",
+    "repository": "QuantStrategyLab/UsEquityStrategies",
+    "revision": "be692f75f64557e68edbff93786781e26c4f5893",
+    "selection_reason": "P2 v6 is a separate evidence-policy candidate. It preserves v5's frozen runtime and risk budget, moves short-window Calmar to diagnostics, and requires a continuous long-horizon incremental Calmar plus a separately bound forward confirmation before any human promotion discussion.",
+    "strategy_logic_disposition": "UNCHANGED_FROM_P2_V5"
+  },
+  "supersedes": {"candidate_id": "soxl_soxx_core_only_p2_v5_longterm_drawdown", "reason": "v5 produced negative strategy evidence under its pre-registered every-window Calmar rule. v6 changes acceptance geometry only and may not reuse v5 P1/P3 evidence."},
+  "target_mapping": {
+    "defensive": {"BOXX": 0.85, "SOXL": 0, "SOXX": 0.15},
+    "full": {"BOXX": 0.4, "SOXL": 0.35, "SOXX": 0.25},
+    "full_high_10d_realized_volatility": {"BOXX": 0.75, "SOXL": 0, "SOXX": 0.25},
+    "mid": {"BOXX": 0.5, "SOXL": 0.25, "SOXX": 0.25},
+    "mid_high_10d_realized_volatility": {"BOXX": 0.75, "SOXL": 0, "SOXX": 0.25}
+  },
+  "trial_ledger": {
+    "candidate_local_outcome_reads": 0,
+    "parameters_not_derived_from": ["v5 historical evidence outcomes", "future daily evidence outcomes", "prior locked OOS returns"],
+    "p1_preflight_rule": "A malformed, unavailable, incomplete, or disagreeing daily source observation PARKs only that run; it cannot change the candidate or relabel prior evidence."
+  }
+}
