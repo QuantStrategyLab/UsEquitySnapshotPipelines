@@ -13,7 +13,8 @@ def test_monthly_review_workflow_is_report_only_and_creates_issue() -> None:
     workflow = MONTHLY_REVIEW.read_text(encoding="utf-8")
 
     assert "Publish Snapshot Artifacts" in workflow
-    assert "github.event.workflow_run.event == 'workflow_run'" in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert "github.event.workflow_run.event == 'workflow_run'" not in workflow
     assert "contents: read" in workflow
     assert "actions: read" in workflow
     assert "issues: write" in workflow
