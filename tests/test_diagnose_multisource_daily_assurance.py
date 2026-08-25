@@ -50,5 +50,13 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
     assert payload["status"] == "MULTISOURCE_DAILY_ASSURANCE_VERIFIED"
     assert set(payload["reports"]) == {"BOXX", "SOXL", "SOXX"}
     assert all(report["can_publish_research_input"] is True for report in payload["reports"].values())
+    for report in payload["reports"].values():
+        coverage = report["session_coverage"]
+        assert coverage["expected_session_count"] >= 1
+        assert set(coverage["sources"]) == {
+            "twelve_data_1day_adjustment_all",
+            "yahoo_finance_chart_1day_adjusted",
+        }
+        assert all(source["missing_session_count"] >= 0 for source in coverage["sources"].values())
     assert '"open"' not in output
     assert '"volume"' not in output

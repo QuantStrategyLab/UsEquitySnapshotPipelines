@@ -23,8 +23,12 @@ from us_equity_snapshot_pipelines.yahoo_finance_daily import (
     YAHOO_FINANCE_DAILY_SOURCE_ID,
     observe_yahoo_finance_adjusted_daily_bars,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p1_binding import (
+    expected_soxl_core_only_sessions,
+)
 
 _START_DATES = {"SOXL": "2022-01-03", "SOXX": "2022-01-03", "BOXX": "2022-12-28"}
+_COVERAGE_SAMPLE_LIMIT = 3
 
 
 def _date_cutoff(value: str) -> str:
@@ -32,6 +36,45 @@ def _date_cutoff(value: str) -> str:
         return date.fromisoformat(value).isoformat()
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date_cutoff must be YYYY-MM-DD") from exc
+
+
+def _redacted_session_coverage(*, observations: tuple[object, ...], symbol: str, date_cutoff: str) -> dict[str, object]:
+    """Return bounded session-coverage evidence without emitting market bars.
+
+    An assurance finding deliberately names only the failure class.  This
+    companion is for diagnosing a source/calendar disagreement safely: it
+    contains session dates and counts only, never prices, volumes, response
+    payloads, credentials, or source URLs.
+    """
+
+    expected = {session.isoformat() for session in expected_soxl_core_only_sessions(date_cutoff)[symbol]}
+    coverage: dict[str, object] = {"expected_session_count": len(expected), "sources": {}}
+    sources = coverage["sources"]
+    assert isinstance(sources, dict)
+    for observation in observations:
+        source_id = getattr(observation, "source_id", None)
+        status = getattr(observation, "status", None)
+        snapshot = getattr(observation, "snapshot", None)
+        if not isinstance(source_id, str) or not isinstance(status, str):
+            continue
+        source_coverage: dict[str, object] = {"status": status}
+        if snapshot is not None:
+            observed = {bar.session_date for bar in snapshot.bars}
+            missing = sorted(expected - observed)
+            unexpected = sorted(observed - expected)
+            source_coverage.update(
+                {
+                    "observed_session_count": len(observed),
+                    "first_observed_session": min(observed),
+                    "last_observed_session": max(observed),
+                    "missing_session_count": len(missing),
+                    "unexpected_session_count": len(unexpected),
+                    "missing_session_samples": missing[:_COVERAGE_SAMPLE_LIMIT],
+                    "unexpected_session_samples": unexpected[:_COVERAGE_SAMPLE_LIMIT],
+                }
+            )
+        sources[source_id] = source_coverage
+    return coverage
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,7 +107,13 @@ def main(argv: list[str] | None = None) -> int:
             adjustment_basis=TWELVE_DATA_ADJUSTMENT_BASIS,
             required_source_ids=(TWELVE_DATA_DAILY_SOURCE_ID, YAHOO_FINANCE_DAILY_SOURCE_ID),
         )
-        reports[symbol] = assess_multisource_daily_bars(policy, observations).to_diagnostic()
+        report = assess_multisource_daily_bars(policy, observations).to_diagnostic()
+        report["session_coverage"] = _redacted_session_coverage(
+            observations=observations,
+            symbol=symbol,
+            date_cutoff=args.date_cutoff,
+        )
+        reports[symbol] = report
 
     status = (
         "MULTISOURCE_DAILY_ASSURANCE_VERIFIED"
