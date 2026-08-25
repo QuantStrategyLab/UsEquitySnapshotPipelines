@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     # This shared environment supplies non-live data credentials only. The
     # candidate/P1 binding below remains SOXL-specific and research-only.
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       date_cutoff: ${{ steps.acquire.outputs.date_cutoff }}
       manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
@@ -180,7 +180,7 @@ jobs:
     needs: p1
     if: needs.p1.outputs.status == 'ACCEPTED'
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       status: ${{ steps.terminal.outputs.status }}
       evidence_summary_sha256: ${{ steps.terminal.outputs.evidence_summary_sha256 }}

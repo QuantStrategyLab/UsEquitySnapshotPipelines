@@ -14,5 +14,5 @@ SHA-256 is carried into the P3 research evidence as a provenance binding; it
 never grants P4–P6 promotion authority. Future unattended P1 requires a
 separately defined, externally verified, non-execution data-acquisition
 authorization for this exact P1/P3 scope. That authorization is not active.
-The repository and `tqqq-p1-p3-nonlive` environment do not read, verify, or
+The repository and `market-data-nonlive` environment do not read, verify, or
 inject it today; otherwise the workflow must remain unused.

@@ -23,7 +23,7 @@ def test_daily_research_workflow_is_scheduled_p2_v5_only_and_nonlive() -> None:
     assert "pull_request:" not in workflow
     assert "group: tqqq-p1-p3-daily-research-v5" in workflow
     assert "cancel-in-progress: false" in workflow
-    assert workflow.count("environment: tqqq-p1-p3-nonlive") == 3
+    assert workflow.count("environment: market-data-nonlive") == 3
     assert "config/tqqq_core_only_p2_v5.json" in workflow
     assert "P2_V5_CONTRACT" in workflow
     assert "P4_P5_P6=NOT_AUTHORIZED" in workflow

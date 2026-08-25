@@ -19,7 +19,7 @@ permissions:
 jobs:
   p1:
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     outputs:
       manifest_sha256: ${{ steps.acquire.outputs.manifest_sha256 }}
       mandate_id: ${{ steps.mandate.outputs.mandate_id }}
@@ -153,7 +153,7 @@ jobs:
   p3:
     needs: p1
     runs-on: ubuntu-latest
-    environment: tqqq-p1-p3-nonlive
+    environment: market-data-nonlive
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

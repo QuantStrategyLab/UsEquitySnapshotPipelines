@@ -14,7 +14,7 @@ def test_soxl_daily_research_is_scheduled_nonlive_p1_p3_only() -> None:
     assert "pull_request:" not in workflow
     assert "group: soxl-p1-p3-daily-research-v3" in workflow
     assert "cancel-in-progress: false" in workflow
-    assert workflow.count("environment: tqqq-p1-p3-nonlive") == 2
+    assert workflow.count("environment: market-data-nonlive") == 2
     assert "config/soxl_soxx_core_only_p2_v3.json" in workflow
     assert "P2_V3_CONTRACT" in workflow
     assert "placeorder" not in workflow.lower()

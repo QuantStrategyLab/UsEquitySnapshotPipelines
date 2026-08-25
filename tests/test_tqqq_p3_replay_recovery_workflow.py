@@ -14,7 +14,7 @@ def test_recovery_workflow_is_scheduled_once_only_and_nonlive() -> None:
     assert "workflow_dispatch:" not in workflow
     assert "group: tqqq-p3-replay-recovery-v5" in workflow
     assert "cancel-in-progress: false" in workflow
-    assert workflow.count("environment: tqqq-p1-p3-nonlive") == 2
+    assert workflow.count("environment: market-data-nonlive") == 2
     assert "RUNTIME_REPLAY_RECOVERY" in workflow
     assert "recovery_attempt_limit" in workflow
     assert "p3-recovery-record.v1.json" in workflow
