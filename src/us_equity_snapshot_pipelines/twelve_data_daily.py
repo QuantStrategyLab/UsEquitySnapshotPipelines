@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import date, timedelta
 from hashlib import sha256
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -24,8 +25,8 @@ from quant_platform_kit.data.multisource_assurance import (
     DailyBarSourceSnapshot,
 )
 
-TWELVE_DATA_DAILY_SOURCE_ID = "twelve_data_1day_adjustment_all"
-TWELVE_DATA_ADJUSTMENT_BASIS = "total_return_adjusted"
+TWELVE_DATA_DAILY_SOURCE_ID = "twelve_data_1day_split_adjusted"
+TWELVE_DATA_ADJUSTMENT_BASIS = "split_adjusted"
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
 TWELVE_DATA_TIMEOUT_SECONDS = 30
 
@@ -86,13 +87,20 @@ class TwelveDataAdjustedDailyClient:
         start_date: str,
         date_cutoff: str,
     ) -> tuple[DailyBar, ...]:
+        try:
+            exclusive_end = (date.fromisoformat(date_cutoff) + timedelta(days=1)).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise TwelveDataPayloadError from exc
         query = urlencode(
             {
                 "symbol": symbol,
                 "interval": "1day",
                 "start_date": start_date,
-                "end_date": date_cutoff,
-                "adjust": "all",
+                # The endpoint uses an exclusive end boundary.  The
+                # normalizer below still rejects any returned row after the
+                # requested completed-session cutoff.
+                "end_date": exclusive_end,
+                "adjust": "splits",
             }
         )
         request = Request(

@@ -23,7 +23,7 @@ def _ready(source_id: str, *, symbol: str) -> DailyBarSourceObservation:
         source_id=source_id,
         symbol=symbol,
         date_cutoff="2026-08-21",
-        adjustment_basis="total_return_adjusted",
+        adjustment_basis="split_adjusted",
         source_artifact_sha256=("a" if source_id.startswith("twelve") else "b") * 64,
         bars=(DailyBar("2026-08-21", 100, 102, 99, 101, 1_000_000),),
     )
@@ -34,12 +34,12 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
     monkeypatch.setattr(
         diagnostic_cli,
         "observe_twelve_data_adjusted_daily_bars",
-        lambda *, symbol, **kwargs: _ready("twelve_data_1day_adjustment_all", symbol=symbol),
+        lambda *, symbol, **kwargs: _ready("twelve_data_1day_split_adjusted", symbol=symbol),
     )
     monkeypatch.setattr(
         diagnostic_cli,
         "observe_yahoo_finance_adjusted_daily_bars",
-        lambda *, symbol, **kwargs: _ready("yahoo_finance_chart_1day_adjusted", symbol=symbol),
+        lambda *, symbol, **kwargs: _ready("yahoo_finance_chart_1day_split_adjusted", symbol=symbol),
     )
 
     assert diagnostic_cli.main(["--date-cutoff", "2026-08-21"]) == 0
@@ -50,5 +50,20 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
     assert payload["status"] == "MULTISOURCE_DAILY_ASSURANCE_VERIFIED"
     assert set(payload["reports"]) == {"BOXX", "SOXL", "SOXX"}
     assert all(report["can_publish_research_input"] is True for report in payload["reports"].values())
+    for report in payload["reports"].values():
+        coverage = report["session_coverage"]
+        assert coverage["expected_session_count"] >= 1
+        assert set(coverage["sources"]) == {
+            "twelve_data_1day_split_adjusted",
+            "yahoo_finance_chart_1day_split_adjusted",
+        }
+        assert all(source["missing_session_count"] >= 0 for source in coverage["sources"].values())
+        assert report["price_agreement"] == {
+            "status": "COMPARED",
+            "price_relative_tolerance": 0.0001,
+            "max_price_relative_delta": 0.0,
+            "first_price_divergent_session": None,
+            "price_divergent_fields": [],
+        }
     assert '"open"' not in output
     assert '"volume"' not in output

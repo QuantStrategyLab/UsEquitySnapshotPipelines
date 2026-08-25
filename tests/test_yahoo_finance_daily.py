@@ -61,7 +61,7 @@ def test_adjusted_daily_observation_uses_existing_chart_adapter_and_keeps_cutoff
     assert observation.status == SOURCE_OBSERVATION_READY
     assert observation.snapshot is not None
     assert tuple(bar.session_date for bar in observation.snapshot.bars) == ("2026-08-20", "2026-08-21")
-    assert calls == [(["SOXL"], "2026-08-20", "2026-08-22", "adjusted_close")]
+    assert calls == [(["SOXL"], "2026-08-20", "2026-08-22", "close")]
 
 
 def test_rate_limited_and_malformed_public_responses_become_safe_terminal_states(monkeypatch) -> None:
