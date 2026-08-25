@@ -77,6 +77,49 @@ def _redacted_session_coverage(*, observations: tuple[object, ...], symbol: str,
     return coverage
 
 
+def _redacted_price_agreement(
+    *, observations: tuple[object, ...], price_relative_tolerance: float
+) -> dict[str, object]:
+    """Report bounded comparison metadata without emitting OHLCV values."""
+
+    snapshots = [
+        (observation.source_id, observation.snapshot)
+        for observation in observations
+        if getattr(observation, "snapshot", None) is not None
+    ]
+    if len(snapshots) != 2:
+        return {"status": "NOT_COMPARABLE"}
+    (_left_source, left), (_right_source, right) = snapshots
+    assert left is not None and right is not None
+    left_by_session = {bar.session_date: bar for bar in left.bars}
+    right_by_session = {bar.session_date: bar for bar in right.bars}
+    if set(left_by_session) != set(right_by_session):
+        return {"status": "SESSION_COVERAGE_MISMATCH"}
+
+    max_relative_delta = 0.0
+    first_divergent_session: str | None = None
+    divergent_fields: set[str] = set()
+    for session_date in sorted(left_by_session):
+        left_bar = left_by_session[session_date]
+        right_bar = right_by_session[session_date]
+        for field_name in ("open", "high", "low", "close"):
+            left_value = float(getattr(left_bar, field_name))
+            right_value = float(getattr(right_bar, field_name))
+            relative_delta = abs(left_value - right_value) / max(abs(left_value), abs(right_value), 1e-12)
+            max_relative_delta = max(max_relative_delta, relative_delta)
+            if relative_delta > price_relative_tolerance:
+                divergent_fields.add(field_name)
+                if first_divergent_session is None:
+                    first_divergent_session = session_date
+    return {
+        "status": "COMPARED",
+        "price_relative_tolerance": price_relative_tolerance,
+        "max_price_relative_delta": max_relative_delta,
+        "first_price_divergent_session": first_divergent_session,
+        "price_divergent_fields": sorted(divergent_fields),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date-cutoff", required=True, type=_date_cutoff)
@@ -112,6 +155,10 @@ def main(argv: list[str] | None = None) -> int:
             observations=observations,
             symbol=symbol,
             date_cutoff=args.date_cutoff,
+        )
+        report["price_agreement"] = _redacted_price_agreement(
+            observations=observations,
+            price_relative_tolerance=policy.price_relative_tolerance,
         )
         reports[symbol] = report
 

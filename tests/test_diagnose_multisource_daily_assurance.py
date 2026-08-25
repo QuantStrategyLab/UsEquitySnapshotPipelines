@@ -58,5 +58,12 @@ def test_multisource_diagnostic_only_emits_redacted_assurance_reports(monkeypatc
             "yahoo_finance_chart_1day_split_adjusted",
         }
         assert all(source["missing_session_count"] >= 0 for source in coverage["sources"].values())
+        assert report["price_agreement"] == {
+            "status": "COMPARED",
+            "price_relative_tolerance": 0.0001,
+            "max_price_relative_delta": 0.0,
+            "first_price_divergent_session": None,
+            "price_divergent_fields": [],
+        }
     assert '"open"' not in output
     assert '"volume"' not in output
