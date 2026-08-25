@@ -31,6 +31,7 @@ def _core():
     module.P2_UES_UV_LOCK_SHA256 = P2_UES_UV_LOCK_SHA256
     module.P2_CANDIDATE_ID = P2_CANDIDATE_ID
     module.P2_CONFIG_SHA256 = P2_CONFIG_SHA256
+    module.ALLOWED_VOLATILITY_DELEVER_REDIRECT_SYMBOLS = frozenset({"SOXX", "BOXX", None})
     module.__file__ = str(Path(__file__).resolve())
     return module
 
