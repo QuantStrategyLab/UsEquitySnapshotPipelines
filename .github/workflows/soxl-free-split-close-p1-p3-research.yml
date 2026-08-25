@@ -95,6 +95,7 @@ jobs:
               output.write(f"SOXL_V4_P1_TERMINAL_SHA256={hashlib.sha256(encoded).hexdigest()}\n")
               if result.get('manifest_sha256'):
                   output.write(f"SOXL_V4_P1_MANIFEST_SHA256={result['manifest_sha256']}\n")
+          print('SOXL_V4_P1_TERMINAL=' + encoded.decode('utf-8'))
           PY
       - name: Run v4 offline P3 evidence after accepted P1
         if: steps.p1.outputs.status == 'ACCEPTED'
@@ -123,11 +124,45 @@ jobs:
           if result.get('status') == 'SUCCESS' and isinstance(result.get('evidence_summary_sha256'), str):
               status = 'SUCCESS'
               evidence_sha256 = result['evidence_summary_sha256']
+              runs = result.get('runs')
+              if not isinstance(runs, list) or len(runs) != 12:
+                  raise SystemExit('invalid sanitized SOXL v4 P3 run count')
+              metrics_fields = (
+                  'net_return',
+                  'max_drawdown',
+                  'sharpe',
+                  'cagr',
+                  'calmar',
+                  'win_rate',
+                  'cost_total',
+              )
+              review_runs = []
+              for run in runs:
+                  if not isinstance(run, dict) or not isinstance(run.get('metrics'), dict):
+                      raise SystemExit('invalid sanitized SOXL v4 P3 run')
+                  metrics = run['metrics']
+                  if not all(isinstance(metrics.get(field), (int, float)) for field in metrics_fields):
+                      raise SystemExit('invalid sanitized SOXL v4 P3 metrics')
+                  review_runs.append(
+                      {
+                          'window_id': run.get('window_id'),
+                          'window_kind': run.get('window_kind'),
+                          'cost_bps': run.get('cost_bps'),
+                          'metrics': {field: metrics[field] for field in metrics_fields},
+                      }
+                  )
+              review = {
+                  'status': status,
+                  'evidence_summary_sha256': evidence_sha256,
+                  'runs': review_runs,
+              }
           elif set(result) == {'schema_version', 'status', 'failure_class'} and result['status'] == 'PARKED':
               status = 'PARKED'
               evidence_sha256 = ''
+              review = {'status': status, 'failure_class': result['failure_class']}
           else:
               raise SystemExit('invalid sanitized SOXL v4 P3 terminal result')
+          encoded_review = json.dumps(review, sort_keys=True, separators=(',', ':'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'status={status}\n')
               output.write(f'evidence_summary_sha256={evidence_sha256}\n')
@@ -137,6 +172,7 @@ jobs:
                   output.write(f'SOXL_V4_P3_EVIDENCE_SUMMARY_SHA256={evidence_sha256}\n')
               else:
                   output.write(f"SOXL_V4_P3_FAILURE_CLASS={result['failure_class']}\n")
+          print('SOXL_V4_P3_REVIEW=' + encoded_review)
           PY
       - name: Record parked P3 when P1 is not admitted
         if: steps.p1.outputs.status != 'ACCEPTED'
