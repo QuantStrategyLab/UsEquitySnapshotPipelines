@@ -21,10 +21,12 @@ import stat
 import sys
 import tempfile
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
+import exchange_calendars as xcals
+import pandas as pd
 from quant_platform_kit.data.multisource_assurance import (
     DATA_ASSURANCE_STATUS_VERIFIED,
     SOURCE_OBSERVATION_READY,
@@ -118,6 +120,34 @@ def _date_cutoff(value: object) -> str:
     if parsed.isoformat() != value or not expected or expected[-1] != parsed:
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source date cutoff")
     return value
+
+
+def validate_soxl_core_only_free_split_close_completed_session(
+    *, date_cutoff: object, observed_at: object
+) -> str:
+    """Require a completed XNYS session before a daily P1 can acquire data.
+
+    A calendar-valid date alone is insufficient: before that session closes,
+    both providers can legitimately expose an in-progress daily bar.  P1 must
+    park before any source request in that case, rather than comparing or
+    materializing provisional prices.
+    """
+    cutoff = _date_cutoff(date_cutoff)
+    if not isinstance(observed_at, str):
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source observed time")
+    try:
+        observed = datetime.fromisoformat(observed_at)
+    except ValueError as exc:
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source observed time") from exc
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source observed time")
+    try:
+        closing = xcals.get_calendar("XNYS").session_close(pd.Timestamp(cutoff))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SoxlCoreOnlyFreeSplitCloseP1Error("XNYS calendar is unavailable") from exc
+    if pd.Timestamp(observed) < closing:
+        raise SoxlCoreOnlyFreeSplitCloseP1UnavailableError("SOXL free-source session is not complete")
+    return cutoff
 
 
 def _policy(*, symbol: str, date_cutoff: str) -> MultiSourceDailyBarPolicy:
@@ -527,6 +557,10 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
 ) -> dict[str, object]:
     """Publish a verified v4 P1 root, or fail closed without a root."""
     destination = _require_new_private_output_root(output_root)
+    validate_soxl_core_only_free_split_close_completed_session(
+        date_cutoff=date_cutoff,
+        observed_at=observed_at,
+    )
     binding = build_soxl_core_only_free_split_close_p1_binding(date_cutoff=date_cutoff)
     expected = expected_soxl_core_only_sessions(date_cutoff)
     canonical_series: dict[str, list[dict[str, object]]] = {}
@@ -674,6 +708,7 @@ __all__ = [
     "canonical_soxl_core_only_free_split_close_series_bytes",
     "publish_soxl_core_only_free_split_close_p1_inputs",
     "soxl_core_only_free_split_close_p1_binding_sha256",
+    "validate_soxl_core_only_free_split_close_completed_session",
     "validate_soxl_core_only_free_split_close_input_manifest",
     "validate_soxl_core_only_free_split_close_assurance_member",
     "validate_soxl_core_only_free_split_close_p1_binding",
