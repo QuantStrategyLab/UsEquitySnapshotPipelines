@@ -155,7 +155,8 @@ def _build_base_summary(
     summary.P2_V3_CONTRACT = p2_contract
     summary.MATERIALIZED_INPUT_SCHEMA = MATERIALIZED_INPUT_SCHEMA
     summary.build_soxl_core_only_p3_evidence_plan = partial(
-        build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan,
+        _build_longterm_compounding_p3_evidence_plan,
+        p2_contract=p2_contract,
     )
     try:
         return summary.build_soxl_core_only_p3_evidence_summary(
