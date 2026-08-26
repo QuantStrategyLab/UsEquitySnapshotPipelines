@@ -59,6 +59,41 @@ def test_v4_offline_facade_binds_two_p1_members_and_one_temp_replay_per_request(
     ]
 
 
+def test_v6_offline_facade_uses_a_distinct_candidate_contract(monkeypatch, tmp_path) -> None:
+    module = _module()
+    observed: dict[str, object] = {}
+
+    def materialize(**kwargs):
+        observed["contract"] = kwargs["p2_contract"]
+        return {"v6": "ok"}
+
+    monkeypatch.setattr(module, "materialize_soxl_core_only_free_split_close_p3_input", materialize)
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan",
+        lambda value: {"plan": "v6"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary",
+        lambda **kwargs: {"status": "SUCCESS", "profile": kwargs["evidence_plan"]["plan"]},
+    )
+
+    result = module.run_soxl_core_only_free_split_close_p3_offline_evidence(
+        binding={"binding": "v6"},
+        manifest={"manifest": "v6"},
+        closes_bytes=b"closes",
+        assurance_bytes=b"assurance",
+        ues_project=tmp_path / "ues",
+        p2_candidate_path=tmp_path / "candidate.json",
+        isolated_replay=lambda **_kwargs: {"isolated": "result"},
+        p2_profile="v6_longterm_compounding",
+    )
+
+    assert observed["contract"] == module.P2_V6_LONGTERM_COMPOUNDING_CONTRACT
+    assert result == {"status": "SUCCESS", "profile": "v6"}
+
+
 def test_v4_cli_parks_invalid_paths_without_echoing_them(capsys, tmp_path) -> None:
     module = _module()
     absent = tmp_path / "private-closes.json"

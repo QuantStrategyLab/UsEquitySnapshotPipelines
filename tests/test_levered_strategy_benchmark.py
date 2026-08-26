@@ -4,6 +4,8 @@ import pytest
 
 from us_equity_snapshot_pipelines.lifecycle.levered_strategy_benchmark import (
     LeveredStrategyBenchmarkError,
+    aggregate_relative_benchmark_policy,
+    assess_relative_drawdown,
     assess_relative_longterm_compounding,
     build_same_window_buy_and_hold_benchmark,
 )
@@ -50,6 +52,56 @@ def test_relative_gates_require_both_lower_drawdown_and_calmar_increment() -> No
         {"max_drawdown": 0.250001, "calmar": float(benchmark["calmar"]) + 1.0},
         benchmark,
     )["passed"] is False
+
+
+def test_short_windows_keep_drawdown_hard_without_using_calmar_as_a_veto() -> None:
+    benchmark = build_same_window_buy_and_hold_benchmark(_sessions(), symbol="SOXX")
+
+    assert assess_relative_drawdown(
+        {"max_drawdown": float(benchmark["max_drawdown"])},
+        benchmark,
+    ) == {
+        "max_drawdown_not_exceeding_benchmark": True,
+        "passed": True,
+    }
+
+
+def test_aggregate_policy_requires_every_drawdown_and_long_horizon_calmar_gate() -> None:
+    short = {"max_drawdown_not_exceeding_benchmark": True, "passed": True}
+    long = {
+        "max_drawdown_not_exceeding_benchmark": True,
+        "incremental_calmar_after_cost": True,
+        "passed": True,
+    }
+    pending = aggregate_relative_benchmark_policy(
+        short_window_drawdown_gates=[short, short],
+        long_window_compounding_gates=[long, long, long],
+        forward_confirmation_satisfied=False,
+    )
+    assert pending["strategy_verdict"] == "PASS_PENDING_FORWARD_CONFIRMATION"
+    assert pending["automatic_promotion"] is False
+
+    rejected = aggregate_relative_benchmark_policy(
+        short_window_drawdown_gates=[short],
+        long_window_compounding_gates=[{**long, "incremental_calmar_after_cost": False, "passed": False}],
+        forward_confirmation_satisfied=True,
+    )
+    assert rejected["strategy_verdict"] == "REJECT_NEGATIVE_STRATEGY_EVIDENCE"
+
+
+def test_aggregate_policy_fails_closed_for_missing_or_inconsistent_gate_fields() -> None:
+    with pytest.raises(LeveredStrategyBenchmarkError):
+        aggregate_relative_benchmark_policy(
+            short_window_drawdown_gates=[{"passed": True}],
+            long_window_compounding_gates=[
+                {
+                    "max_drawdown_not_exceeding_benchmark": True,
+                    "incremental_calmar_after_cost": True,
+                    "passed": True,
+                }
+            ],
+            forward_confirmation_satisfied=False,
+        )
 
 
 def test_benchmark_rejects_duplicate_or_unusable_price_observations() -> None:
