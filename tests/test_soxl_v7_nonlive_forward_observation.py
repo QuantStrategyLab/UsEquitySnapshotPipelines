@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from pathlib import Path
 
 import exchange_calendars as xcals
 import pandas as pd
+import pytest
 
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
     P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
@@ -13,6 +15,7 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p4_v7_forward_confirm
     P4_V7_FORWARD_CONFIRMATION_CONTRACT,
 )
 from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation import (
+    SoxlV7NonliveForwardObservationError,
     build_soxl_v7_nonlive_forward_inputs,
     build_soxl_v7_nonlive_forward_policy,
     build_soxl_v7_nonlive_forward_record,
@@ -67,7 +70,7 @@ def _materialized(count: int = 3) -> dict[str, object]:
     }
 
 
-def _record(*, count: int = 3, previous=None, **changes: object) -> dict[str, object]:
+def _record_once(*, count: int, previous=None, **changes: object) -> dict[str, object]:
     inputs = build_soxl_v7_nonlive_forward_inputs(_materialized(count))
     values: dict[str, object] = {
         "observed_at": "2026-08-31T02:45:00Z",
@@ -78,6 +81,20 @@ def _record(*, count: int = 3, previous=None, **changes: object) -> dict[str, ob
     }
     values.update(changes)
     return build_soxl_v7_nonlive_forward_record(**values)  # type: ignore[arg-type]
+
+
+def _record(*, count: int = 1, previous=None, **changes: object) -> dict[str, object]:
+    if previous is not None:
+        return _record_once(count=count, previous=previous, **changes)
+    record = None
+    for session_count in range(1, count + 1):
+        record = _record_once(
+            count=session_count,
+            previous=record,
+            **(changes if session_count == count else {}),
+        )
+    assert isinstance(record, dict)
+    return record
 
 
 def test_v7_inputs_keep_exact_candidate_and_simulated_paper_is_no_broker() -> None:
@@ -99,14 +116,16 @@ def test_v7_record_starts_both_nonlive_modes_without_live_authority() -> None:
     assert record["no_order"] is True
     assert record["broker_dependency"] is False
     assert record["live_authority_granted"] is False
+    receipt = record["forward_observation_receipt"]
+    assert receipt["observation_index"] == 1
+    assert receipt["evidence_modes"] == ["shadow_decision", "simulated_replay"]
 
 
-def test_v7_record_pauses_nonlive_observation_when_data_or_risk_is_unhealthy() -> None:
+def test_v7_record_pauses_nonlive_observation_for_transient_data_or_mode_failure() -> None:
     record = _record(
         data_status="stale",
         shadow_status="unavailable",
         paper_status="unavailable",
-        risk_status="blocked",
         shadow_observation_sha256=None,
         simulated_paper_observation_sha256=None,
     )
@@ -117,21 +136,59 @@ def test_v7_record_pauses_nonlive_observation_when_data_or_risk_is_unhealthy() -
 
 def test_v7_nonlive_pause_recovers_after_three_healthy_sessions() -> None:
     paused = _record(
+        count=1,
         data_status="stale",
         shadow_status="unavailable",
         paper_status="unavailable",
-        risk_status="blocked",
         shadow_observation_sha256=None,
         simulated_paper_observation_sha256=None,
     )
-    first = _record(previous=paused)
-    second = _record(previous=first)
-    resumed = _record(previous=second)
+    first = _record(count=2, previous=paused)
+    second = _record(count=3, previous=first)
+    resumed = _record(count=4, previous=second)
 
     assert first["controller"]["state"] == "PAUSED"
     assert second["controller"]["state"] == "PAUSED"
     assert resumed["controller"]["state"] == "FORWARD_ACTIVE"
     assert resumed["controller"]["non_live_actions"] == ["resume_shadow", "resume_paper"]
+
+
+def test_v7_risk_block_never_auto_resumes() -> None:
+    blocked = _record(count=1, risk_status="blocked")
+    still_blocked = _record(count=2, previous=blocked)
+
+    assert blocked["controller"]["state"] == "RISK_BLOCKED"
+    assert still_blocked["controller"]["state"] == "RISK_BLOCKED"
+    assert still_blocked["controller"]["non_live_actions"] == [
+        "keep_shadow_stopped",
+        "keep_paper_stopped",
+    ]
+
+
+def test_v7_manual_hold_never_auto_resumes() -> None:
+    held = _record(count=1, control_status="manual_hold")
+    still_held = _record(count=2, previous=held)
+
+    assert held["controller"]["state"] == "MANUAL_HOLD"
+    assert still_held["controller"]["state"] == "MANUAL_HOLD"
+    assert still_held["controller"]["non_live_actions"] == [
+        "keep_shadow_stopped",
+        "keep_paper_stopped",
+    ]
+
+
+def test_v7_receipt_chain_binds_and_verifies_its_predecessor() -> None:
+    first = _record(count=1)
+    second = _record(count=2, previous=first)
+
+    first_receipt = first["forward_observation_receipt"]
+    second_receipt = second["forward_observation_receipt"]
+    assert second_receipt["previous_receipt_sha256"] == first_receipt["receipt_sha256"]
+
+    tampered = deepcopy(first)
+    tampered["forward_observation_receipt"]["receipt_sha256"] = "0" * 64
+    with pytest.raises(SoxlV7NonliveForwardObservationError):
+        _record(count=2, previous=tampered)
 
 
 def test_full_v7_window_requires_human_live_review() -> None:
@@ -140,6 +197,7 @@ def test_full_v7_window_requires_human_live_review() -> None:
 
     assert build_soxl_v7_nonlive_forward_policy().required_trading_sessions == 252
     assert controller["state"] == "FORWARD_COMPLETE_HUMAN_REVIEW"
+    assert controller["non_live_actions"] == ["keep_shadow_stopped", "keep_paper_stopped"]
     assert controller["live_authority_granted"] is False
 
 

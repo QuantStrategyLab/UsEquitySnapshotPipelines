@@ -24,6 +24,11 @@ from quant_platform_kit.strategy_lifecycle.forward_observation import (
     ForwardObservationSnapshot,
     evaluate_forward_observation,
 )
+from quant_platform_kit.strategy_lifecycle.forward_observation_receipt import (
+    InvalidForwardObservationReceipt,
+    build_forward_observation_receipt,
+    validate_forward_observation_receipt,
+)
 
 from .soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
     P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
@@ -33,7 +38,7 @@ from .soxl_core_only_p4_v7_forward_confirmation_contract import (
 )
 
 
-NONLIVE_FORWARD_OBSERVATION_SCHEMA = "soxl_v7_nonlive_forward_observation.v1"
+NONLIVE_FORWARD_OBSERVATION_SCHEMA = "soxl_v7_nonlive_forward_observation.v2"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CALENDAR = xcals.get_calendar("XNYS")
 _PAPER_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-input.v1"
@@ -213,14 +218,23 @@ def build_soxl_v7_nonlive_forward_policy() -> ForwardObservationPolicy:
         review_milestones=(20, 60),
         automatic_non_live_modes=("shadow", "paper"),
         auto_resume_clean_sessions=3,
+        observation_calendar="XNYS",
+        observation_window_type="fixed",
+        observation_start_session=P4_V7_FORWARD_CONFIRMATION_CONTRACT.first_forward_xnys_session,
+        window_rationale_ref=(
+            "sha256:" + P4_V7_FORWARD_CONFIRMATION_CONTRACT.policy_config_sha256
+        ),
+        non_live_evidence_modes=("shadow_decision", "simulated_replay"),
     )
 
 
 def _previous_state(
     previous_record: Mapping[str, object] | None,
-) -> tuple[int, str, int]:
+    *,
+    policy: ForwardObservationPolicy,
+) -> tuple[int, str, int, dict[str, object] | None]:
     if previous_record is None:
-        return 0, "not_started", 0
+        return 0, "not_started", 0, None
     value = _mapping(previous_record)
     if value.get("schema_version") != NONLIVE_FORWARD_OBSERVATION_SCHEMA:
         _fail("invalid previous non-live record")
@@ -236,19 +250,59 @@ def _previous_state(
         "FORWARD_ACTIVE": "active",
         "PAUSED": "paused",
         "FORWARD_COMPLETE_HUMAN_REVIEW": "complete",
+        "MANUAL_HOLD": "manual_hold",
+        "IDENTITY_MISMATCH": "identity_mismatch",
+        "RISK_BLOCKED": "risk_blocked",
+        "REVOKED": "revoked",
+        "SUPERSEDED": "superseded",
     }.get(state)
     if previous_state is None:
         _fail("invalid previous observation state")
     clean = value.get("clean_sessions_since_pause", 0)
     if not isinstance(clean, int) or isinstance(clean, bool) or clean < 0:
         _fail("invalid previous recovery count")
-    return observed, previous_state, clean
+    try:
+        receipt = validate_forward_observation_receipt(
+            _mapping(value.get("forward_observation_receipt")), policy=policy
+        )
+    except InvalidForwardObservationReceipt as exc:
+        raise SoxlV7NonliveForwardObservationError(
+            "invalid previous non-live receipt"
+        ) from exc
+    if receipt["observation_index"] != observed:
+        _fail("previous receipt observation count mismatch")
+    return observed, previous_state, clean, receipt
 
 
 def _evidence_digest(value: object | None, label: str, *, required: bool) -> str | None:
     if value is None and not required:
         return None
     return _digest(value, label)
+
+
+def _strategy_release_identity_sha256() -> str:
+    """Hash the frozen isolated runner identity without treating it as Live release authority."""
+
+    return _sha256(
+        {
+            "repository": "QuantStrategyLab/UsEquityStrategies",
+            "ues_revision": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.ues_revision,
+            "qpk_revision": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.qpk_revision,
+            "candidate_id": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.candidate_id,
+            "config_sha256": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+        }
+    )
+
+
+def _receipt_dependency_digests(inputs: SoxlV7NonliveForwardInputs) -> dict[str, str]:
+    return {
+        "p1_manifest": _digest(inputs.p1_manifest_sha256, "P1 manifest"),
+        "p2_config": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+        "p3_evidence": P4_V7_FORWARD_CONFIRMATION_CONTRACT.baseline_p3_evidence_summary_sha256,
+        "risk_policy": P4_V7_FORWARD_CONFIRMATION_CONTRACT.policy_config_sha256,
+        "strategy_release": _strategy_release_identity_sha256(),
+        "plugin_bundle": _sha256({"plugin_bundle": "none"}),
+    }
 
 
 def build_soxl_v7_nonlive_forward_record(
@@ -262,6 +316,7 @@ def build_soxl_v7_nonlive_forward_record(
     shadow_status: str = "healthy",
     paper_status: str = "healthy",
     risk_status: str = "pass",
+    control_status: str = "clear",
 ) -> dict[str, object]:
     """Build one durable, no-order V7 observation receipt.
 
@@ -280,7 +335,10 @@ def build_soxl_v7_nonlive_forward_record(
         _fail("invalid observation sessions")
     if len(sessions) > P4_V7_FORWARD_CONFIRMATION_CONTRACT.forward_session_count:
         _fail("observation exceeds fixed window")
-    prior_count, previous_state, prior_clean = _previous_state(previous_record)
+    policy = build_soxl_v7_nonlive_forward_policy()
+    prior_count, previous_state, prior_clean, previous_receipt = _previous_state(
+        previous_record, policy=policy
+    )
     if prior_count > len(sessions):
         _fail("observation count regressed")
     healthy = (
@@ -299,8 +357,16 @@ def build_soxl_v7_nonlive_forward_record(
         required=healthy,
     )
     try:
+        forward_receipt = build_forward_observation_receipt(
+            policy=policy,
+            observation_session=sessions[-1],
+            observation_index=len(sessions),
+            dependency_digests=_receipt_dependency_digests(inputs),
+            evidence_modes=policy.non_live_evidence_modes,
+            previous_receipt=previous_receipt,
+        )
         controller = evaluate_forward_observation(
-            build_soxl_v7_nonlive_forward_policy(),
+            policy,
             ForwardObservationSnapshot(
                 historical_evidence_verified=True,
                 historical_evidence_ref=(
@@ -315,9 +381,10 @@ def build_soxl_v7_nonlive_forward_record(
                 shadow_status=shadow_status,
                 paper_status=paper_status,
                 risk_status=risk_status,
+                control_status=control_status,
             ),
         )
-    except ForwardObservationPolicyError as exc:
+    except (ForwardObservationPolicyError, InvalidForwardObservationReceipt) as exc:
         raise SoxlV7NonliveForwardObservationError(
             "invalid SOXL V7 non-live forward observation"
         ) from exc
@@ -332,6 +399,7 @@ def build_soxl_v7_nonlive_forward_record(
         "observation_sessions": list(sessions),
         "shadow_observation_sha256": shadow_digest,
         "simulated_paper_observation_sha256": paper_digest,
+        "forward_observation_receipt": forward_receipt,
         "controller": controller.to_dict(),
         "clean_sessions_since_pause": clean,
         "no_order": True,
