@@ -108,7 +108,13 @@ def test_v8_free_ohlcv_parks_when_a_mandatory_source_disagrees(tmp_path: Path) -
     assert diagnostic["reports"]["TQQQ"]["findings"] == [
         "daily_bar_price_divergence"
     ]
+    agreement = diagnostic["reports"]["TQQQ"]["price_agreement"]
+    assert agreement["status"] == "COMPARED"
+    assert agreement["first_price_divergent_session"] is not None
+    assert agreement["price_divergent_fields"] == ["close", "high", "low", "open"]
+    assert agreement["max_price_delta_bps"] > 90.0
     assert "bars" not in diagnostic["reports"]["TQQQ"]
+    assert "close" not in agreement
 
 
 def test_v9_uses_the_same_two_source_p1_transport_but_a_distinct_identity(

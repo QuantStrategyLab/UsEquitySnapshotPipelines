@@ -217,15 +217,17 @@ def _availability_diagnostic(
     contract: TqqqCoreOnlyCandidateContract,
     cutoff: str,
     reports: Mapping[str, object],
+    observations_by_symbol: Mapping[str, tuple[DailyBarSourceObservation, ...]],
 ) -> dict[str, object]:
     """Return redacted per-symbol assurance outcomes when P1 is parked.
 
     The diagnostic contains only QPK's stable status, reason, and digest
-    fields; it deliberately excludes observed bars, URLs, payloads, paths,
-    and credentials.  It is not a fallback, retry, or source-selection path.
+    fields plus derived divergence metadata; it deliberately excludes observed
+    bars, URLs, payloads, paths, and credentials.  It is not a fallback,
+    retry, or source-selection path.
     """
     frozen_contract = _free_contract(contract)
-    if set(reports) != set(_UNIVERSE):
+    if set(reports) != set(_UNIVERSE) or set(observations_by_symbol) != set(_UNIVERSE):
         raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
     diagnostic_reports: dict[str, object] = {}
     for symbol in _UNIVERSE:
@@ -235,7 +237,14 @@ def _availability_diagnostic(
         diagnostic = report.to_diagnostic()
         if not isinstance(diagnostic, Mapping):
             raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
-        diagnostic_reports[symbol] = dict(diagnostic)
+        report_diagnostic = dict(diagnostic)
+        report_diagnostic["price_agreement"] = _redacted_price_agreement(
+            observations=observations_by_symbol[symbol],
+            price_relative_tolerance=_policy(
+                frozen_contract, symbol, cutoff
+            ).price_relative_tolerance,
+        )
+        diagnostic_reports[symbol] = report_diagnostic
     status = (
         "VERIFIED"
         if all(
@@ -253,6 +262,53 @@ def _availability_diagnostic(
         "date_cutoff": cutoff,
         "status": status,
         "reports": diagnostic_reports,
+    }
+
+
+def _redacted_price_agreement(
+    *,
+    observations: tuple[DailyBarSourceObservation, ...],
+    price_relative_tolerance: float,
+) -> dict[str, object]:
+    """Summarize cross-source OHLC divergence without exposing a price value."""
+    snapshots = tuple(
+        observation.snapshot
+        for observation in observations
+        if observation.status == SOURCE_OBSERVATION_READY
+        and observation.snapshot is not None
+    )
+    if len(snapshots) != 2:
+        return {"status": "NOT_COMPARABLE"}
+    left, right = snapshots
+    left_by_session = {bar.session_date: bar for bar in left.bars}
+    right_by_session = {bar.session_date: bar for bar in right.bars}
+    if set(left_by_session) != set(right_by_session):
+        return {"status": "SESSION_COVERAGE_MISMATCH"}
+
+    max_relative_delta = 0.0
+    first_divergent_session: str | None = None
+    divergent_fields: set[str] = set()
+    for session_date in sorted(left_by_session):
+        left_bar = left_by_session[session_date]
+        right_bar = right_by_session[session_date]
+        for field_name in ("open", "high", "low", "close"):
+            left_value = float(getattr(left_bar, field_name))
+            right_value = float(getattr(right_bar, field_name))
+            relative_delta = abs(left_value - right_value) / max(
+                abs(left_value), abs(right_value), 1e-12
+            )
+            max_relative_delta = max(max_relative_delta, relative_delta)
+            if relative_delta > price_relative_tolerance:
+                divergent_fields.add(field_name)
+                if first_divergent_session is None:
+                    first_divergent_session = session_date
+    return {
+        "status": "COMPARED",
+        "price_relative_tolerance": price_relative_tolerance,
+        "max_price_relative_delta": max_relative_delta,
+        "max_price_delta_bps": max_relative_delta * 10_000.0,
+        "first_price_divergent_session": first_divergent_session,
+        "price_divergent_fields": sorted(divergent_fields),
     }
 
 
@@ -398,7 +454,10 @@ def publish_tqqq_core_only_free_ohlcv_p1_inputs(
         observations_by_symbol[symbol] = observations
         reports[symbol] = report
     availability = _availability_diagnostic(
-        contract=frozen_contract, cutoff=cutoff, reports=reports
+        contract=frozen_contract,
+        cutoff=cutoff,
+        reports=reports,
+        observations_by_symbol=observations_by_symbol,
     )
     if availability["status"] != "VERIFIED":
         raise TqqqCoreOnlyFreeOhlcvP1UnavailableError(
