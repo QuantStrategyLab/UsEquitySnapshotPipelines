@@ -16,19 +16,28 @@ from dataclasses import dataclass
 
 from ..lifecycle.soxl_core_only_p2_v3_contract import (
     INPUT_CONTRACT_ID as SOXL_INPUT_CONTRACT_ID,
+)
+from ..lifecycle.soxl_core_only_p2_v3_contract import (
     P2_V3_CONTRACT as SOXL_P2_V3_CONTRACT,
+)
+from ..lifecycle.soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
+    P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+)
+from ..lifecycle.tqqq_core_only_p1_binding import (
+    FREE_OHLCV_INPUT_CONTRACT_ID,
+    P2_V5_CONTRACT,
+    P2_V9_CONTRACT,
 )
 from ..lifecycle.tqqq_core_only_p1_binding import (
     INPUT_CONTRACT_ID as TQQQ_INPUT_CONTRACT_ID,
-    P2_V5_CONTRACT,
 )
-
 
 SCHEMA_VERSION = "qsl.multi-strategy-research-driver-catalog.v1"
 P1_P3_STAGES = ("P1", "P2", "P3")
 DAILY_RESEARCH_WIRED = "DAILY_RESEARCH_WIRED"
+MANUAL_RESEARCH_WIRED = "MANUAL_RESEARCH_WIRED"
 MIGRATION_REQUIRED = "MIGRATION_REQUIRED"
-_ROUTE_STATES = frozenset({DAILY_RESEARCH_WIRED, MIGRATION_REQUIRED})
+_ROUTE_STATES = frozenset({DAILY_RESEARCH_WIRED, MANUAL_RESEARCH_WIRED, MIGRATION_REQUIRED})
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_.-]{2,95}$")
 _IDENTITY_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -49,11 +58,12 @@ class ResearchDriverRoute:
     """One non-executing route from a frozen strategy identity through P3.
 
     ``DAILY_RESEARCH_WIRED`` means only that a route already has its own
-    research scheduler. ``MIGRATION_REQUIRED`` may name a frozen P2 identity,
-    but it must not be scheduled until it obtains its own P1 input contract
-    and P3 verifier. Its ``p3_replay_entrypoint`` is then a planned canonical
-    name, not an importable runtime. Neither state grants paper, shadow, or
-    live authority.
+    research scheduler. ``MANUAL_RESEARCH_WIRED`` means it has a manually
+    dispatched research workflow but no schedule. ``MIGRATION_REQUIRED`` may
+    name a frozen P2 identity, but it must not be scheduled until it obtains
+    its own P1 input contract and P3 verifier. Its ``p3_replay_entrypoint`` is
+    then a planned canonical name, not an importable runtime. No state grants
+    paper, shadow, or live authority.
     """
 
     route_id: str
@@ -82,8 +92,8 @@ class ResearchDriverRoute:
             raise MultiStrategyDriverCatalogError("invalid migration blockers")
         if len(set(self.migration_blockers)) != len(self.migration_blockers):
             raise MultiStrategyDriverCatalogError("migration blockers must be unique")
-        if self.state == DAILY_RESEARCH_WIRED and self.migration_blockers:
-            raise MultiStrategyDriverCatalogError("daily route cannot carry migration blockers")
+        if self.state in {DAILY_RESEARCH_WIRED, MANUAL_RESEARCH_WIRED} and self.migration_blockers:
+            raise MultiStrategyDriverCatalogError("wired research route cannot carry migration blockers")
         if self.state == MIGRATION_REQUIRED and not self.migration_blockers:
             raise MultiStrategyDriverCatalogError("migration route requires explicit blockers")
 
@@ -143,9 +153,29 @@ SOXL_DAILY_RESEARCH_ROUTE = ResearchDriverRoute(
     state=DAILY_RESEARCH_WIRED,
 )
 
+TQQQ_V9_MANUAL_RESEARCH_ROUTE = ResearchDriverRoute(
+    route_id="tqqq.core-only.v9.manual-research",
+    research_identity_id=P2_V9_CONTRACT.candidate_id,
+    input_contract_id=FREE_OHLCV_INPUT_CONTRACT_ID,
+    p2_config_sha256=P2_V9_CONTRACT.config_sha256,
+    p3_replay_entrypoint="scripts/run_tqqq_p3.py",
+    state=MANUAL_RESEARCH_WIRED,
+)
+
+SOXL_V7_MANUAL_RESEARCH_ROUTE = ResearchDriverRoute(
+    route_id="soxl.soxx.core-only.v7.manual-research",
+    research_identity_id=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.candidate_id,
+    input_contract_id=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.input_contract_id,
+    p2_config_sha256=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+    p3_replay_entrypoint="scripts/run_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_isolated.py",
+    state=MANUAL_RESEARCH_WIRED,
+)
+
 CURRENT_RESEARCH_DRIVER_ROUTES: tuple[ResearchDriverRoute, ...] = (
     TQQQ_DAILY_RESEARCH_ROUTE,
     SOXL_DAILY_RESEARCH_ROUTE,
+    TQQQ_V9_MANUAL_RESEARCH_ROUTE,
+    SOXL_V7_MANUAL_RESEARCH_ROUTE,
 )
 
 
@@ -168,13 +198,16 @@ def build_multi_strategy_research_driver_catalog(
 __all__ = [
     "CURRENT_RESEARCH_DRIVER_ROUTES",
     "DAILY_RESEARCH_WIRED",
+    "MANUAL_RESEARCH_WIRED",
     "MIGRATION_REQUIRED",
-    "MultiStrategyDriverCatalogError",
     "P1_P3_STAGES",
-    "ResearchDriverRoute",
     "SCHEMA_VERSION",
     "SOXL_DAILY_RESEARCH_ROUTE",
+    "SOXL_V7_MANUAL_RESEARCH_ROUTE",
     "TQQQ_DAILY_RESEARCH_ROUTE",
+    "TQQQ_V9_MANUAL_RESEARCH_ROUTE",
+    "MultiStrategyDriverCatalogError",
+    "ResearchDriverRoute",
     "build_multi_strategy_research_driver_catalog",
     "canonical_route_bytes",
 ]

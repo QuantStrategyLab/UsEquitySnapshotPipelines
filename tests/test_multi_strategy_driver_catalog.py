@@ -8,24 +8,35 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import
     INPUT_CONTRACT_ID,
     P2_V3_CONTRACT,
 )
-from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
+    P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V5_CONTRACT, P2_V9_CONTRACT
 from us_equity_snapshot_pipelines.research.multi_strategy_driver_catalog import (
     CURRENT_RESEARCH_DRIVER_ROUTES,
     DAILY_RESEARCH_WIRED,
+    MANUAL_RESEARCH_WIRED,
     MIGRATION_REQUIRED,
+    SOXL_DAILY_RESEARCH_ROUTE,
+    SOXL_V7_MANUAL_RESEARCH_ROUTE,
+    TQQQ_DAILY_RESEARCH_ROUTE,
+    TQQQ_V9_MANUAL_RESEARCH_ROUTE,
     MultiStrategyDriverCatalogError,
     ResearchDriverRoute,
-    SOXL_DAILY_RESEARCH_ROUTE,
-    TQQQ_DAILY_RESEARCH_ROUTE,
     build_multi_strategy_research_driver_catalog,
     canonical_route_bytes,
 )
 
 
-def test_catalogue_describes_tqqq_and_soxl_as_independent_daily_research_routes() -> None:
+def test_catalogue_describes_independent_daily_and_manual_research_routes() -> None:
     catalogue = build_multi_strategy_research_driver_catalog()
 
-    assert CURRENT_RESEARCH_DRIVER_ROUTES == (TQQQ_DAILY_RESEARCH_ROUTE, SOXL_DAILY_RESEARCH_ROUTE)
+    assert CURRENT_RESEARCH_DRIVER_ROUTES == (
+        TQQQ_DAILY_RESEARCH_ROUTE,
+        SOXL_DAILY_RESEARCH_ROUTE,
+        TQQQ_V9_MANUAL_RESEARCH_ROUTE,
+        SOXL_V7_MANUAL_RESEARCH_ROUTE,
+    )
     assert TQQQ_DAILY_RESEARCH_ROUTE.research_identity_id == P2_V5_CONTRACT.candidate_id
     assert TQQQ_DAILY_RESEARCH_ROUTE.state == DAILY_RESEARCH_WIRED
     assert TQQQ_DAILY_RESEARCH_ROUTE.migration_blockers == ()
@@ -35,6 +46,15 @@ def test_catalogue_describes_tqqq_and_soxl_as_independent_daily_research_routes(
     assert SOXL_DAILY_RESEARCH_ROUTE.p3_replay_entrypoint == "scripts/run_soxl_core_only_p3_evidence.py"
     assert SOXL_DAILY_RESEARCH_ROUTE.state == DAILY_RESEARCH_WIRED
     assert SOXL_DAILY_RESEARCH_ROUTE.migration_blockers == ()
+    assert TQQQ_V9_MANUAL_RESEARCH_ROUTE.research_identity_id == P2_V9_CONTRACT.candidate_id
+    assert TQQQ_V9_MANUAL_RESEARCH_ROUTE.state == MANUAL_RESEARCH_WIRED
+    assert TQQQ_V9_MANUAL_RESEARCH_ROUTE.migration_blockers == ()
+    assert (
+        SOXL_V7_MANUAL_RESEARCH_ROUTE.research_identity_id
+        == P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.candidate_id
+    )
+    assert SOXL_V7_MANUAL_RESEARCH_ROUTE.state == MANUAL_RESEARCH_WIRED
+    assert SOXL_V7_MANUAL_RESEARCH_ROUTE.migration_blockers == ()
     assert catalogue["routes"][0]["authority"] == {
         "research_only": True,
         "no_order": True,
@@ -83,7 +103,7 @@ def test_combo_profiles_are_explicitly_not_admitted_until_their_own_p1_p3_route_
 
 
 def test_route_states_fail_closed_when_their_migration_boundary_is_ambiguous() -> None:
-    with pytest.raises(MultiStrategyDriverCatalogError, match="daily route"):
+    with pytest.raises(MultiStrategyDriverCatalogError, match="wired research route"):
         ResearchDriverRoute(
             route_id="example.daily",
             research_identity_id="example_identity",
