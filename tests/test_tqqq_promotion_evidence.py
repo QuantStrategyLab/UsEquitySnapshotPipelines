@@ -146,6 +146,25 @@ def test_v5_candidate_keeps_the_public_adapter_and_derives_rolling_oos_from_bind
     assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
 
 
+def test_v7_candidate_binds_the_same_runtime_to_a_separate_long_horizon_policy() -> None:
+    candidate = json.loads(
+        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v7_relative_benchmark.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert evidence._validate_config(candidate)["candidate"] == candidate
+    plan = evidence._plan_from_candidate(candidate, data_cutoff="2026-08-18")
+    callable_, identity = evidence._tqqq_replay_callable_and_identity(
+        p1_binding.P2_V7_CONTRACT
+    )
+
+    assert plan.long_horizon_start is not None
+    assert plan.long_horizon_end == plan.locked_oos_end
+    assert identity["ues_revision"] == p1_binding.P2_V7_UES_REVISION
+    assert callable_.__name__ == "build_tqqq_core_only_p2_v2_research_decision"
+
+
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 

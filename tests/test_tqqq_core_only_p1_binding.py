@@ -160,6 +160,24 @@ def test_v5_candidate_binds_a_completed_daily_cutoff_without_changing_v1_to_v4()
         )
 
 
+def test_v7_relative_benchmark_candidate_has_its_own_daily_input_identity() -> None:
+    cutoff = "2026-08-18"
+    value = binding.build_tqqq_core_only_p1_binding_for_contract(
+        binding.P2_V7_CONTRACT, date_cutoff=cutoff
+    )
+
+    assert value["candidate"] == {
+        "candidate_id": "tqqq_core_only_p2_v7_relative_benchmark",
+        "config_sha256": "455fd66ad56734a291cfcfecacb63fef7bf7bfa5857f3a2f2f92bba169a18a12",
+    }
+    assert value["data_identity"]["date_cutoff"] == cutoff
+    assert binding.validate_tqqq_core_only_p1_binding_for_contract(
+        value, binding.P2_V7_CONTRACT
+    ) == value
+    with pytest.raises(binding.TqqqCoreOnlyP1BindingError):
+        binding.build_tqqq_core_only_p1_binding_for_contract(binding.P2_V7_CONTRACT)
+
+
 def test_v5_generic_publisher_keeps_daily_cutoff_in_the_verified_root(tmp_path: Path) -> None:
     cutoff = "2026-08-18"
 

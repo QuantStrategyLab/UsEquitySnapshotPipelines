@@ -18,6 +18,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     _canonical_sha256,
     _params,
     _p2_v5_oos_bounds,
+    _p2_v7_long_horizon_bounds,
     _timing_sha256,
     _validate_identity,
     _validate_plan,
@@ -123,6 +124,35 @@ def test_v5_plan_uses_only_a_binding_derived_trailing_oos_window() -> None:
                 embargo_days=1,
             ),
             candidate_profile="tqqq_core_only_p2_v5",
+        )
+
+
+def test_v7_plan_adds_only_one_pre_registered_continuous_long_horizon() -> None:
+    oos_start, oos_end = _p2_v5_oos_bounds(date(2026, 8, 18))
+    long_start, long_end = _p2_v7_long_horizon_bounds(oos_end)
+    plan = TqqqPromotionPlan(
+        folds=_v4_plan().folds,
+        locked_oos_start=oos_start,
+        locked_oos_end=oos_end,
+        purge_days=1,
+        embargo_days=1,
+        long_horizon_start=long_start,
+        long_horizon_end=long_end,
+    )
+
+    _validate_plan(plan, candidate_profile="tqqq_core_only_p2_v7_relative_benchmark")
+    assert long_end == oos_end
+    assert (long_end - long_start).days > 756
+    with pytest.raises(TqqqPromotionContractError, match="long-horizon"):
+        _validate_plan(
+            TqqqPromotionPlan(
+                folds=plan.folds,
+                locked_oos_start=plan.locked_oos_start,
+                locked_oos_end=plan.locked_oos_end,
+                purge_days=plan.purge_days,
+                embargo_days=plan.embargo_days,
+            ),
+            candidate_profile="tqqq_core_only_p2_v7_relative_benchmark",
         )
 
 

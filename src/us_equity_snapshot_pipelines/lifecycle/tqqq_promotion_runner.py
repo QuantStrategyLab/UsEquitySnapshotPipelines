@@ -35,6 +35,7 @@ _CANDIDATE_VARIANT = "tqqq_core_only_p2_v1"
 _P2_V2_PROFILE = "tqqq_core_only_p2_v2"
 _P2_V4_PROFILE = "tqqq_core_only_p2_v4"
 _P2_V5_PROFILE = "tqqq_core_only_p2_v5"
+_P2_V7_PROFILE = "tqqq_core_only_p2_v7_relative_benchmark"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -49,6 +50,7 @@ _P2_V4_LOCKED_OOS_START = date(2025, 8, 4)
 _P2_V4_LOCKED_OOS_END = date(2026, 8, 4)
 _P2_V5_MINIMUM_DATE_CUTOFF = date(2026, 8, 4)
 _P2_V5_TRAILING_OOS_SESSION_COUNT = 252
+_P2_V7_CONTINUOUS_LONG_SESSION_COUNT = 756
 _FROZEN_CALENDAR_SHA256 = "448b47dd408817e2e413036d6281f0ec5334531aff6a23b65fe1a3dd96af71fa"
 _FROZEN_CALENDAR_SOURCE_REVISION = (
     "exchange_calendars:4.13.2:XNYS:"
@@ -154,6 +156,8 @@ class TqqqPromotionPlan:
     locked_oos_end: date
     purge_days: int
     embargo_days: int
+    long_horizon_start: date | None = None
+    long_horizon_end: date | None = None
 
 
 @dataclass(frozen=True)
@@ -422,12 +426,26 @@ def _p2_v5_oos_bounds(end: date) -> tuple[date, date]:
     return sessions[-_P2_V5_TRAILING_OOS_SESSION_COUNT], end
 
 
+def _p2_v7_long_horizon_bounds(end: date) -> tuple[date, date]:
+    """Return the one pre-registered continuous common-asset long horizon."""
+    if end < _P2_V5_MINIMUM_DATE_CUTOFF:
+        raise TqqqPromotionContractError("invalid rolling P2 long-horizon end")
+    sessions = tuple(
+        session
+        for session in _p2_v5_calendar_sessions(end)
+        if session >= _EXACT_COMMON_ELIGIBILITY
+    )
+    if len(sessions) < _P2_V7_CONTINUOUS_LONG_SESSION_COUNT:
+        raise TqqqPromotionContractError("insufficient rolling P2 long-horizon history")
+    return sessions[-_P2_V7_CONTINUOUS_LONG_SESSION_COUNT], end
+
+
 def _candidate_calendar_sessions(
     candidate_profile: str, end: date
 ) -> tuple[date, ...]:
     return (
         _p2_v5_calendar_sessions(end)
-        if candidate_profile == _P2_V5_PROFILE
+        if candidate_profile in {_P2_V5_PROFILE, _P2_V7_PROFILE}
         else _FROZEN_XNYS_SESSIONS
     )
 
@@ -1494,6 +1512,11 @@ def _validate_plan(
             (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
             (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
         ),
+        _P2_V7_PROFILE: (
+            (date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+            (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+            (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+        ),
     }
     expected = expected_by_candidate.get(candidate_profile)
     if expected is None:
@@ -1502,7 +1525,7 @@ def _validate_plan(
         raise TqqqPromotionContractError("P2 fold geometry mismatch")
     expected_evaluation = (
         (*_p2_v5_oos_bounds(plan.locked_oos_end), 1, 1)
-        if candidate_profile == _P2_V5_PROFILE
+        if candidate_profile in {_P2_V5_PROFILE, _P2_V7_PROFILE}
         else (_P2_V4_LOCKED_OOS_START, _P2_V4_LOCKED_OOS_END, 1, 1)
         if candidate_profile == _P2_V4_PROFILE
         else (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0)
@@ -1514,6 +1537,12 @@ def _validate_plan(
         plan.embargo_days,
     ) != expected_evaluation:
         raise TqqqPromotionContractError("P2 evaluation geometry mismatch")
+    if candidate_profile == _P2_V7_PROFILE:
+        expected_long = _p2_v7_long_horizon_bounds(plan.locked_oos_end)
+        if (plan.long_horizon_start, plan.long_horizon_end) != expected_long:
+            raise TqqqPromotionContractError("P2 long-horizon geometry mismatch")
+    elif plan.long_horizon_start is not None or plan.long_horizon_end is not None:
+        raise TqqqPromotionContractError("unexpected P2 long-horizon geometry")
 
 
 def _cost_scenarios(
@@ -1526,7 +1555,7 @@ def _cost_scenarios(
     values = (cost_assumptions.get("turnover_cost_bps"), *(cost_assumptions.get("stress_turnover_cost_bps") or ()))
     expected = (
         (5.0, 10.0, 15.0)
-        if candidate_profile in {_P2_V4_PROFILE, _P2_V5_PROFILE}
+        if candidate_profile in {_P2_V4_PROFILE, _P2_V5_PROFILE, _P2_V7_PROFILE}
         else (5.0, 10.0, 25.0)
     )
     if tuple(float(value) for value in values) != expected:
@@ -1543,6 +1572,16 @@ def _timing_sha256(plan: TqqqPromotionPlan) -> str:
         "embargo_days": plan.embargo_days,
         "signal_effective_after_trading_days": 1,
     }
+    if plan.long_horizon_start is not None or plan.long_horizon_end is not None:
+        material["continuous_long_horizon"] = {
+            "start": plan.long_horizon_start.isoformat()
+            if type(plan.long_horizon_start) is date
+            else None,
+            "end": plan.long_horizon_end.isoformat()
+            if type(plan.long_horizon_end) is date
+            else None,
+            "sessions": _P2_V7_CONTINUOUS_LONG_SESSION_COUNT,
+        }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -2136,6 +2175,16 @@ def run_tqqq_promotion_research(
             cost_model=_cost_model(total_cost_bps),
             param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
+        if identity.candidate_profile == _P2_V7_PROFILE:
+            long_results = orchestrator.walk_forward(
+                identity.candidate_profile,
+                domain=_DOMAIN,
+                params=_params(identity, timing_sha256),
+                windows=((plan.long_horizon_start, plan.long_horizon_end),),
+                param_set_id=f"tqqq_core_only_{total_cost_bps}bp_continuous_long_horizon",
+            )
+            if len(long_results) != 1:
+                raise TqqqPromotionContractError("continuous long-horizon replay failed")
         scenarios.append(
             TqqqCostScenarioResult(
                 total_cost_bps=total_cost_bps,
@@ -2153,7 +2202,14 @@ def run_tqqq_promotion_research(
                 (fold.test_start.isoformat(), fold.test_end.isoformat())
                 for fold in plan.folds
             ]
-            + [(plan.locked_oos_start.isoformat(), plan.locked_oos_end.isoformat())],
+            + [(plan.locked_oos_start.isoformat(), plan.locked_oos_end.isoformat())]
+            + (
+                [(plan.long_horizon_start.isoformat(), plan.long_horizon_end.isoformat())]
+                if identity.candidate_profile == _P2_V7_PROFILE
+                and type(plan.long_horizon_start) is date
+                and type(plan.long_horizon_end) is date
+                else []
+            ),
         },
         cost_scenarios=(), regime_coverage={}, overfitting_diagnostics={"status": "NOT_REPLAYED"},
     )
