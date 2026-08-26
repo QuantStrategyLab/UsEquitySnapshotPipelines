@@ -129,6 +129,44 @@ def test_v7_offline_facade_uses_the_cash_reserve_candidate_contract(monkeypatch,
     assert result == {"status": "SUCCESS", "profile": "v7"}
 
 
+def test_v7_forward_confirmation_facade_requires_and_binds_the_frozen_policy(monkeypatch, tmp_path) -> None:
+    module = _module()
+    observed: dict[str, object] = {}
+    policy = {"p4": "frozen"}
+
+    def materialize(**kwargs):
+        observed["contract"] = kwargs["p2_contract"]
+        return {"v7": "forward"}
+
+    monkeypatch.setattr(module, "materialize_soxl_core_only_free_split_close_p3_input", materialize)
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan",
+        lambda value, *, policy: observed.setdefault("plan_policy", policy) and {"plan": "p4"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_forward_confirmation_p4_evidence_summary",
+        lambda **kwargs: {"status": "SUCCESS", "policy": kwargs["policy"]},
+    )
+
+    result = module.run_soxl_core_only_free_split_close_p3_offline_evidence(
+        binding={"binding": "v7"},
+        manifest={"manifest": "v7"},
+        closes_bytes=b"closes",
+        assurance_bytes=b"assurance",
+        ues_project=tmp_path / "ues",
+        p2_candidate_path=tmp_path / "candidate.json",
+        isolated_replay=lambda **_kwargs: {"isolated": "result"},
+        p2_profile="v7_forward_confirmation",
+        p4_policy=policy,
+    )
+
+    assert observed["contract"] == module.P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT
+    assert observed["plan_policy"] == policy
+    assert result == {"status": "SUCCESS", "policy": policy}
+
+
 def test_v4_cli_parks_invalid_paths_without_echoing_them(capsys, tmp_path) -> None:
     module = _module()
     absent = tmp_path / "private-closes.json"

@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       date_cutoff:
-        description: Exact completed XNYS session (YYYY-MM-DD) for the frozen v7 research input.
+        description: Exact completed XNYS session (YYYY-MM-DD) for the frozen V7 research input.
         required: true
         type: string
+      evaluation_stage:
+        description: Retrospective P3 evidence or the single fixed P4 forward checkpoint.
+        required: true
+        default: retrospective_p3
+        type: choice
+        options:
+          - retrospective_p3
+          - forward_confirmation_p4
 
 permissions:
   contents: read
@@ -98,8 +106,8 @@ jobs:
                   output.write(f"SOXL_V7_P1_MANIFEST_SHA256={result['manifest_sha256']}\n")
           print('SOXL_V7_P1_TERMINAL=' + encoded.decode('utf-8'))
           PY
-      - name: Run v7 offline P3 evidence after accepted P1
-        if: steps.p1.outputs.status == 'ACCEPTED'
+      - name: Run V7 offline P3 evidence after accepted P1
+        if: steps.p1.outputs.status == 'ACCEPTED' && inputs.evaluation_stage == 'retrospective_p3'
         id: p3
         run: |
           set -euo pipefail
@@ -174,6 +182,87 @@ jobs:
                   output.write(f"SOXL_V7_P3_FAILURE_CLASS={review['failure_class']}\n")
           print('SOXL_V7_P3_REVIEW=' + encoded_review)
           PY
-      - name: Record parked P3 when P1 is not admitted
-        if: steps.p1.outputs.status != 'ACCEPTED'
+      - name: Run the fixed V7 P4 forward checkpoint after accepted P1
+        if: steps.p1.outputs.status == 'ACCEPTED' && inputs.evaluation_stage == 'forward_confirmation_p4'
+        id: p4
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-v7-longterm-compounding-cash-reserve/p1-root"
+          ues="${RUNNER_TEMP}/soxl-v7-longterm-compounding-cash-reserve/ues"
+          summary="${RUNNER_TEMP}/soxl-v7-longterm-compounding-cash-reserve/p4-summary.json"
+          git clone --quiet --no-checkout https://github.com/QuantStrategyLab/UsEquityStrategies.git "$ues"
+          git -C "$ues" fetch --quiet --depth=1 origin 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+          git -C "$ues" checkout --quiet --detach 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+          uv run --no-sync python scripts/run_soxl_core_only_free_split_close_p3_evidence.py \
+            --p1-binding "$root/binding.json" \
+            --input-manifest "$root/manifest.json" \
+            --closes-member "$root/closes.json" \
+            --assurance-member "$root/assurance.json" \
+            --ues-project "$ues" \
+            --p2-candidate config/soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve.json \
+            --p2-profile v7_forward_confirmation \
+            --p4-policy config/soxl_soxx_core_only_p4_v7_forward_confirmation.json > "$summary"
+          SUMMARY="$summary" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ['SUMMARY']).read_bytes())
+          if result.get('status') == 'SUCCESS' and isinstance(result.get('evidence_summary_sha256'), str):
+              policy = result.get('forward_confirmation_policy')
+              runs = result.get('runs')
+              if not isinstance(policy, dict) or not isinstance(runs, list) or len(runs) != 3:
+                  raise SystemExit('invalid sanitized SOXL V7 P4 result')
+              verdict = policy.get('strategy_verdict')
+              if verdict not in {
+                  'PASS_REQUIRES_SEPARATE_HUMAN_PROMOTION',
+                  'REJECT_NEGATIVE_STRATEGY_EVIDENCE',
+              }:
+                  raise SystemExit('invalid sanitized SOXL V7 P4 verdict')
+              if policy.get('automatic_promotion') is not False:
+                  raise SystemExit('SOXL V7 P4 must not promote automatically')
+              gate_fields = (
+                  'all_forward_drawdown_gates_passed',
+                  'all_forward_incremental_calmar_gates_passed',
+                  'forward_confirmation_satisfied',
+              )
+              if not all(isinstance(policy.get(field), bool) for field in gate_fields):
+                  raise SystemExit('invalid sanitized SOXL V7 P4 acceptance gates')
+              review = {
+                  'evidence_status': 'FORWARD_CONFIRMATION_COMPLETE',
+                  'strategy_verdict': verdict,
+                  'evidence_summary_sha256': result['evidence_summary_sha256'],
+                  'all_forward_drawdown_gates_passed': policy['all_forward_drawdown_gates_passed'],
+                  'all_forward_incremental_calmar_gates_passed': policy['all_forward_incremental_calmar_gates_passed'],
+                  'forward_confirmation_satisfied': policy['forward_confirmation_satisfied'],
+              }
+              status = 'SUCCESS'
+          elif set(result) == {'schema_version', 'status', 'failure_class'} and result['status'] == 'PARKED':
+              status = 'PARKED'
+              verdict = 'INCONCLUSIVE_DATA_OR_EXECUTION'
+              review = {
+                  'evidence_status': status,
+                  'strategy_verdict': verdict,
+                  'failure_class': result['failure_class'],
+              }
+          else:
+              raise SystemExit('invalid sanitized SOXL V7 P4 terminal result')
+          encoded_review = json.dumps(review, sort_keys=True, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'status={status}\n')
+              output.write(f'strategy_verdict={verdict}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write(f'SOXL_V7_P4_EVIDENCE_STATUS={review["evidence_status"]}\n')
+              output.write(f'SOXL_V7_P4_STRATEGY_VERDICT={verdict}\n')
+              if status == 'SUCCESS':
+                  output.write(f"SOXL_V7_P4_EVIDENCE_SUMMARY_SHA256={review['evidence_summary_sha256']}\n")
+              else:
+                  output.write(f"SOXL_V7_P4_FAILURE_CLASS={review['failure_class']}\n")
+          print('SOXL_V7_P4_REVIEW=' + encoded_review)
+          PY
+      - name: Record parked P3 when retrospective P1 is not admitted
+        if: steps.p1.outputs.status != 'ACCEPTED' && inputs.evaluation_stage == 'retrospective_p3'
         run: echo 'SOXL_V7_P3_STATUS=PARKED' >> "$GITHUB_STEP_SUMMARY"
+      - name: Record parked P4 when forward P1 is not admitted
+        if: steps.p1.outputs.status != 'ACCEPTED' && inputs.evaluation_stage == 'forward_confirmation_p4'
+        run: echo 'SOXL_V7_P4_STATUS=PARKED' >> "$GITHUB_STEP_SUMMARY"

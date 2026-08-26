@@ -58,8 +58,12 @@ def test_v7_workflow_is_manual_cash_reserve_research_without_promotion_or_execut
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in workflow
     assert "P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT" in workflow
     assert "--p2-profile v7_longterm_compounding_cash_reserve" in workflow
+    assert "forward_confirmation_p4" in workflow
+    assert "--p2-profile v7_forward_confirmation" in workflow
+    assert "--p4-policy config/soxl_soxx_core_only_p4_v7_forward_confirmation.json" in workflow
     assert "automatic_promotion" in workflow
     assert "SOXL_V7_P3_REVIEW=" in workflow
+    assert "SOXL_V7_P4_REVIEW=" in workflow
     assert "actions/upload-artifact" not in workflow
     assert "google-github-actions" not in workflow
     assert "gcloud " not in workflow
