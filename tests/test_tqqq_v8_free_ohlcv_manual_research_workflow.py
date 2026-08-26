@@ -18,6 +18,8 @@ def test_v8_free_ohlcv_workflow_is_manual_nonexecution_and_does_not_use_alpaca()
     assert "Verify V8 scope record before provider access" in workflow
     assert "--no-clobber" in workflow
     assert "build_tqqq_p3_v8_evidence_index" in workflow
+    assert "build_relative_benchmark_terminal_summary" in workflow
+    assert "relative-benchmark-policy.v1.json" in workflow
     assert "Create-only upload of sanitized V8 P3 metadata" in workflow
     assert "exit_code=0" in workflow
     assert "P4_P5_P6=NOT_AUTHORIZED" in workflow
@@ -35,5 +37,6 @@ def test_v8_workflow_never_uploads_raw_market_data_to_github_artifacts() -> None
     assert "p3-result.json" in artifact_block
     assert "p3-status.json" in artifact_block
     assert "p3-evidence-index.json" in artifact_block
+    assert "relative-benchmark-summary.json" in artifact_block
     assert '"$root/bars.json"' not in artifact_block
     assert '"$root/assurance.json"' not in artifact_block
