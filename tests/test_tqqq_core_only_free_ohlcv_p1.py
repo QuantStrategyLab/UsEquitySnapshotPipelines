@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+from quant_platform_kit.data.multisource_assurance import (
+    SOURCE_OBSERVATION_READY,
+    DailyBar,
+    DailyBarSourceObservation,
+    DailyBarSourceSnapshot,
+)
+
+from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_free_ohlcv_p1 as p1
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
+    P2_V8_CONTRACT,
+    expected_tqqq_core_only_sessions_for_contract,
+)
+
+_CUTOFF = "2026-08-25"
+_CANONICAL = "twelve_data_1day_split_adjusted"
+_VERIFIER = "yahoo_finance_chart_1day_split_adjusted"
+
+
+def _producer() -> dict[str, str]:
+    return {
+        "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+        "commit_sha": "a" * 40,
+        "tree_sha": "b" * 40,
+        "tool": "tqqq_core_only_free_ohlcv_p1_test",
+        "tool_version": "v1",
+    }
+
+
+class _Observer:
+    def __init__(self, *, divergent: bool = False) -> None:
+        self._sessions = expected_tqqq_core_only_sessions_for_contract(
+            P2_V8_CONTRACT, date_cutoff=_CUTOFF
+        )
+        self._divergent = divergent
+
+    def observe_daily_bars(
+        self, *, source_id: str, symbol: str, start_date: str, date_cutoff: str
+    ) -> DailyBarSourceObservation:
+        assert start_date == self._sessions[symbol][0].isoformat()
+        assert date_cutoff == _CUTOFF
+        bars = []
+        for index, session in enumerate(self._sessions[symbol], start=1):
+            price = 10.0 + index
+            if self._divergent and source_id == _VERIFIER and symbol == "TQQQ" and index == 1:
+                price *= 1.01
+            bars.append(
+                DailyBar(
+                    session_date=session.isoformat(),
+                    open=price,
+                    high=price,
+                    low=price,
+                    close=price,
+                    volume=1000.0,
+                )
+            )
+        return DailyBarSourceObservation(
+            source_id=source_id,
+            status=SOURCE_OBSERVATION_READY,
+            snapshot=DailyBarSourceSnapshot(
+                source_id=source_id,
+                symbol=symbol,
+                date_cutoff=date_cutoff,
+                adjustment_basis="split_adjusted",
+                source_artifact_sha256=hashlib.sha256(f"{source_id}:{symbol}".encode()).hexdigest(),
+                bars=tuple(bars),
+            ),
+        )
+
+
+def test_v8_free_ohlcv_root_requires_two_source_agreement_and_is_candidate_bound(tmp_path: Path) -> None:
+    root = tmp_path / "p1"
+
+    published = p1.publish_tqqq_core_only_free_ohlcv_p1_inputs(
+        _Observer(), output_root=root, observed_at="2026-08-26T02:00:00Z", producer=_producer(), date_cutoff=_CUTOFF
+    )
+
+    assert p1.verify_tqqq_core_only_free_ohlcv_p1_input_root(root) == published["manifest_sha256"]
+    assert {path.name for path in root.iterdir()} == {"binding.json", "bars.json", "assurance.json", "manifest.json"}
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    assert manifest["profile"] == P2_V8_CONTRACT.candidate_id
+    assert {source["source_id"] for source in manifest["sources"]} == {
+        f"{source_id}:{symbol}"
+        for source_id in (_CANONICAL, _VERIFIER)
+        for symbol in ("QQQ", "TQQQ", "QQQM", "BOXX")
+    }
+
+
+def test_v8_free_ohlcv_parks_when_a_mandatory_source_disagrees(tmp_path: Path) -> None:
+    with pytest.raises(p1.TqqqCoreOnlyFreeOhlcvP1UnavailableError):
+        p1.publish_tqqq_core_only_free_ohlcv_p1_inputs(
+            _Observer(divergent=True), output_root=tmp_path / "parked", observed_at="2026-08-26T02:00:00Z", producer=_producer(), date_cutoff=_CUTOFF
+        )
