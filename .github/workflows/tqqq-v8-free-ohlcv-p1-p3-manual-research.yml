@@ -99,14 +99,113 @@ jobs:
           root="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p1-root"; dest="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
           gcloud storage ls "$dest/" >/dev/null 2>&1 && exit 1
           gcloud storage cp --quiet --no-clobber "$root/binding.json" "$root/bars.json" "$root/assurance.json" "$root/manifest.json" "$dest/" >/dev/null
-      - name: Run offline V8 P3 after accepted P1
+      - name: Run offline V8 P3 and write only sanitized evidence metadata
         if: steps.p1.outputs.status == 'ACCEPTED'
         env:
+          MANIFEST_SHA256: ${{ steps.p1.outputs.manifest_sha256 }}
+          MANDATE_ID: ${{ steps.mandate.outputs.mandate_id }}
           MANDATE_RECEIPT_SHA256: ${{ steps.mandate.outputs.mandate_receipt_sha256 }}
         run: |
           set -euo pipefail
-          root="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p1-root"; output="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-output"
-          uv run --no-sync python scripts/run_tqqq_p3.py --snapshot-root "$root" --config config/tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark.json --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" --output-dir "$output" > "${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-result.json"
+          root="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p1-root"
+          result_path="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-result.json"
+          status_path="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-status.json"
+          output_root="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-output"
+          exit_code=0
+          uv run --no-sync python scripts/run_tqqq_p3.py \
+            --snapshot-root "$root" \
+            --config config/tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark.json \
+            --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" \
+            --output-dir "$output_root" > "$result_path" || exit_code=$?
+          RESULT_PATH="$result_path" STATUS_PATH="$status_path" SNAPSHOT_ROOT="$root" EXIT_CODE="$exit_code" uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V8_CONTRACT
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v8_evidence_index import (
+              build_tqqq_p3_v8_evidence_index,
+              canonical_tqqq_p3_v8_evidence_index_bytes,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
+              validate_tqqq_p3_v7_result,
+          )
+
+          result_path = Path(os.environ['RESULT_PATH'])
+          completed = os.environ['EXIT_CODE'] == '0'
+          try:
+              result = json.loads(result_path.read_text(encoding='utf-8'))
+          except (OSError, json.JSONDecodeError):
+              result = None
+              completed = False
+          if completed:
+              terminal = validate_tqqq_p3_v7_result(result)
+          elif isinstance(result, dict):
+              expected = {'complete_evidence', 'failure_class', 'replay_started', 'source_commit', 'stage', 'status'}
+              if set(result) != expected or result.get('status') != 'PARKED' or result.get('complete_evidence') is not False:
+                  raise SystemExit('invalid sanitized P3 failure')
+              terminal = result
+          else:
+              terminal = {
+                  'complete_evidence': False,
+                  'failure_class': 'runtime_internal_failure',
+                  'replay_started': True,
+                  'source_commit': os.environ['GITHUB_SHA'],
+                  'stage': 'runtime_internal',
+                  'status': 'PARKED',
+              }
+          record = {
+              'schema_version': 'qsl.tqqq-p2-v8-free-ohlcv-p3-manual-status.v1',
+              'candidate': {'candidate_id': P2_V8_CONTRACT.candidate_id, 'config_sha256': P2_V8_CONTRACT.config_sha256},
+              'input_manifest_sha256': os.environ['MANIFEST_SHA256'],
+              'p3_terminal': terminal,
+              'authority_scope': 'RESEARCH_ONLY',
+              'automatic_promotion': False,
+              'no_order': True,
+          }
+          if completed:
+              manifest = json.loads((Path(os.environ['SNAPSHOT_ROOT']) / 'manifest.json').read_text(encoding='utf-8'))
+              index = build_tqqq_p3_v8_evidence_index(
+                  p1_manifest_sha256=os.environ['MANIFEST_SHA256'],
+                  nonlive_scope_record={'mandate_id': os.environ['MANDATE_ID'], 'receipt_sha256': os.environ['MANDATE_RECEIPT_SHA256']},
+                  p3_result=terminal,
+                  input_producer=manifest['producer'],
+                  producer={
+                      'repository': os.environ['GITHUB_REPOSITORY'],
+                      'commit_sha': os.environ['GITHUB_SHA'],
+                      'tree_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                      'tool': 'tqqq_p1_p3_v8_free_ohlcv_evidence_index',
+                      'tool_version': 'v1',
+                      'workflow_run_id': os.environ['GITHUB_RUN_ID'],
+                      'workflow_run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                  },
+              )
+              index_path = Path(os.environ['STATUS_PATH']).with_name('p3-evidence-index.json')
+              index_path.write_bytes(canonical_tqqq_p3_v8_evidence_index_bytes(index))
+              index_path.chmod(0o600)
+              record['p3_evidence_index_sha256'] = hashlib.sha256(index_path.read_bytes()).hexdigest()
+          status_path = Path(os.environ['STATUS_PATH'])
+          status_path.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode())
+          status_path.chmod(0o600)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(f"P3_STATUS={terminal['status']}\n")
+              summary.write('P4_P5_P6=NOT_AUTHORIZED\n')
+          PY
+      - name: Create-only upload of sanitized V8 P3 metadata
+        if: always() && steps.p1.outputs.status == 'ACCEPTED'
+        env:
+          MANIFEST_SHA256: ${{ steps.p1.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          status_path="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-status.json"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          gcloud storage cp --quiet --no-clobber "$status_path" "${destination}/tqqq-v8-p3-status.json" >/dev/null
+          index_path="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/p3-evidence-index.json"
+          if [ -f "$index_path" ]; then
+            gcloud storage cp --quiet --no-clobber "$index_path" "${destination}/tqqq-v8-p3-evidence-index.json" >/dev/null
+          fi
       - name: Upload sanitized terminal status only
         if: always()
         uses: actions/upload-artifact@v7
@@ -115,6 +214,8 @@ jobs:
           path: |
             ${{ runner.temp }}/tqqq-v8-free-ohlcv/p1-status.json
             ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-result.json
+            ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-status.json
+            ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-evidence-index.json
           if-no-files-found: warn
           retention-days: 7
       - name: Record lifecycle boundary

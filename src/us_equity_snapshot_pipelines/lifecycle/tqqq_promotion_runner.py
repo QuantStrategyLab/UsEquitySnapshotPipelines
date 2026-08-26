@@ -1470,19 +1470,14 @@ def _validate_identity(identity: TqqqPromotionIdentity) -> None:
 
 
 def _is_tqqq_candidate_id(value: object) -> bool:
-    if type(value) is not str or not 8 <= len(value) <= 128:
-        return False
-    parts = value.split("_")
-    version = parts[-1]
-    return (
-        len(parts) >= 3
-        and parts[0] == "tqqq"
-        and all(part.isascii() and part.isalnum() and part == part.lower() for part in parts)
-        and len(version) > 1
-        and version[0] == "v"
-        and version[1:].isdigit()
-        and version[1] != "0"
-    )
+    return value in {
+        _PROFILE,
+        _P2_V2_PROFILE,
+        _P2_V4_PROFILE,
+        _P2_V5_PROFILE,
+        _P2_V7_PROFILE,
+        _P2_V8_PROFILE,
+    }
 
 
 def _validate_plan(
@@ -2181,7 +2176,7 @@ def run_tqqq_promotion_research(
             cost_model=_cost_model(total_cost_bps),
             param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
-        if identity.candidate_profile == _P2_V7_PROFILE:
+        if identity.candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE}:
             long_results = orchestrator.walk_forward(
                 identity.candidate_profile,
                 domain=_DOMAIN,
@@ -2211,7 +2206,7 @@ def run_tqqq_promotion_research(
             + [(plan.locked_oos_start.isoformat(), plan.locked_oos_end.isoformat())]
             + (
                 [(plan.long_horizon_start.isoformat(), plan.long_horizon_end.isoformat())]
-                if identity.candidate_profile == _P2_V7_PROFILE
+                if identity.candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE}
                 and type(plan.long_horizon_start) is date
                 and type(plan.long_horizon_end) is date
                 else []
