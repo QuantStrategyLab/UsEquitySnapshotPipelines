@@ -1,0 +1,241 @@
+name: TQQQ V8 Verified Snapshot Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      mandate_id:
+        description: Checked-in V8 non-live scope record ID
+        required: true
+        type: string
+      manifest_sha256:
+        description: Immutable, previously verified V8 P1 manifest SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tqqq-v8-verified-snapshot-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked runtime
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Verify V8 scope record before snapshot access
+        id: mandate
+        env:
+          MANDATE_ID: ${{ inputs.mandate_id }}
+        run: |
+          set -euo pipefail
+          result="$(uv run --no-sync python scripts/verify_tqqq_p1_p3_mandate.py --mandates-root config/tqqq_p1_p3_mandates --mandate-id "$MANDATE_ID")"
+          RESULT="$result" uv run --no-sync python - <<'PY'
+          import json
+          import os
+
+          value = json.loads(os.environ['RESULT'])
+          if value.get('status') != 'NONLIVE_SCOPE_RECORD_VERIFIED':
+              raise SystemExit('scope verification failed')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f"mandate_id={value['mandate_id']}\n")
+              out.write(f"mandate_receipt_sha256={value['mandate_receipt_sha256']}\n")
+          PY
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Rehydrate and independently verify immutable V8 P1 snapshot
+        id: snapshot
+        env:
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          case "$MANIFEST_SHA256" in
+            *[!0123456789abcdef]*|'') exit 1 ;;
+          esac
+          [ "${#MANIFEST_SHA256}" -eq 64 ] || exit 1
+          root="${RUNNER_TEMP}/tqqq-v8-verified-snapshot-diagnostic/p1-root"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          source="gs://qsl-runtime-logs-shared/tqqq-p1-p3/${MANIFEST_SHA256}"
+          gcloud storage cp --quiet "$source/binding.json" "$source/bars.json" "$source/assurance.json" "$source/manifest.json" "$root/" >/dev/null
+          ROOT="$root" EXPECTED_MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import (
+              verify_tqqq_core_only_free_ohlcv_p1_input_root,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V8_CONTRACT
+
+          actual = verify_tqqq_core_only_free_ohlcv_p1_input_root(os.environ['ROOT'])
+          if actual != os.environ['EXPECTED_MANIFEST_SHA256']:
+              raise SystemExit('verified snapshot digest mismatch')
+          manifest = json.loads((Path(os.environ['ROOT']) / 'manifest.json').read_text(encoding='utf-8'))
+          producer = manifest.get('producer')
+          if not isinstance(producer, dict):
+              raise SystemExit('verified snapshot producer unavailable')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f"candidate_id={P2_V8_CONTRACT.candidate_id}\n")
+              out.write(f"config_sha256={P2_V8_CONTRACT.config_sha256}\n")
+          PY
+      - name: Run offline V8 P3 against the verified snapshot
+        env:
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          MANDATE_ID: ${{ steps.mandate.outputs.mandate_id }}
+          MANDATE_RECEIPT_SHA256: ${{ steps.mandate.outputs.mandate_receipt_sha256 }}
+        run: |
+          set -euo pipefail
+          replay_root="${RUNNER_TEMP}/tqqq-v8-verified-snapshot-diagnostic"
+          snapshot_root="$replay_root/p1-root"
+          result_path="$replay_root/p3-result.json"
+          status_path="$replay_root/diagnostic-status.json"
+          output_root="$replay_root/p3-output"
+          p3_exit=0
+          uv run --no-sync python scripts/run_tqqq_p3.py \
+            --snapshot-root "$snapshot_root" \
+            --config config/tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark.json \
+            --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" \
+            --output-dir "$output_root" > "$result_path" || p3_exit=$?
+          RESULT_PATH="$result_path" STATUS_PATH="$status_path" SNAPSHOT_ROOT="$snapshot_root" OUTPUT_ROOT="$output_root" EXIT_CODE="$p3_exit" MANIFEST_SHA256="$MANIFEST_SHA256" uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.relative_benchmark_terminal_summary import (
+              build_relative_benchmark_terminal_summary,
+              canonical_relative_benchmark_terminal_summary_bytes,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V8_CONTRACT
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
+              validate_tqqq_p3_v7_result,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.verified_snapshot_relative_benchmark_diagnostic import (
+              build_verified_snapshot_relative_benchmark_diagnostic,
+              canonical_verified_snapshot_relative_benchmark_diagnostic_bytes,
+          )
+
+          result_path = Path(os.environ['RESULT_PATH'])
+          completed = os.environ['EXIT_CODE'] == '0'
+          try:
+              result = json.loads(result_path.read_text(encoding='utf-8'))
+          except (OSError, json.JSONDecodeError):
+              result = None
+              completed = False
+          if completed:
+              terminal = validate_tqqq_p3_v7_result(result)
+          elif isinstance(result, dict):
+              expected = {'complete_evidence', 'failure_class', 'replay_started', 'source_commit', 'stage', 'status'}
+              if set(result) != expected or result.get('status') != 'PARKED' or result.get('complete_evidence') is not False:
+                  raise SystemExit('invalid sanitized P3 failure')
+              terminal = result
+          else:
+              terminal = {
+                  'complete_evidence': False,
+                  'failure_class': 'runtime_internal_failure',
+                  'replay_started': True,
+                  'source_commit': os.environ['GITHUB_SHA'],
+                  'stage': 'runtime_internal',
+                  'status': 'PARKED',
+              }
+          record = {
+              'schema_version': 'qsl.tqqq-v8-verified-snapshot-diagnostic-status.v1',
+              'candidate': {'candidate_id': P2_V8_CONTRACT.candidate_id, 'config_sha256': P2_V8_CONTRACT.config_sha256},
+              'input_manifest_sha256': os.environ['MANIFEST_SHA256'],
+              'p3_terminal': terminal,
+              'authority_scope': 'RESEARCH_ONLY',
+              'diagnostic_only': True,
+              'formal_evidence_index': False,
+              'automatic_promotion': False,
+              'no_order': True,
+          }
+          if completed:
+              policy = json.loads((Path(os.environ['OUTPUT_ROOT']) / 'relative-benchmark-policy.v1.json').read_text(encoding='utf-8'))
+              summary = build_relative_benchmark_terminal_summary(
+                  candidate={'candidate_id': P2_V8_CONTRACT.candidate_id, 'config_sha256': P2_V8_CONTRACT.config_sha256},
+                  input_manifest_sha256=os.environ['MANIFEST_SHA256'],
+                  p3_result=terminal,
+                  relative_benchmark_policy=policy,
+              )
+              summary_path = Path(os.environ['STATUS_PATH']).with_name('relative-benchmark-summary.json')
+              summary_path.write_bytes(canonical_relative_benchmark_terminal_summary_bytes(summary))
+              summary_path.chmod(0o600)
+              manifest = json.loads((Path(os.environ['SNAPSHOT_ROOT']) / 'manifest.json').read_text(encoding='utf-8'))
+              diagnostic = build_verified_snapshot_relative_benchmark_diagnostic(
+                  candidate={'candidate_id': P2_V8_CONTRACT.candidate_id, 'config_sha256': P2_V8_CONTRACT.config_sha256},
+                  input_manifest_sha256=os.environ['MANIFEST_SHA256'],
+                  input_producer=manifest['producer'],
+                  p3_terminal=terminal,
+                  relative_benchmark_summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
+                  producer={
+                      'repository': os.environ['GITHUB_REPOSITORY'],
+                      'commit_sha': os.environ['GITHUB_SHA'],
+                      'tree_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                      'tool': 'verified_snapshot_relative_benchmark_diagnostic',
+                      'tool_version': 'v1',
+                      'workflow_run_id': os.environ['GITHUB_RUN_ID'],
+                      'workflow_run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                  },
+              )
+              diagnostic_path = Path(os.environ['STATUS_PATH']).with_name('diagnostic-record.v1.json')
+              diagnostic_path.write_bytes(canonical_verified_snapshot_relative_benchmark_diagnostic_bytes(diagnostic))
+              diagnostic_path.chmod(0o600)
+              record['relative_benchmark_summary_sha256'] = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+              record['diagnostic_record_sha256'] = hashlib.sha256(diagnostic_path.read_bytes()).hexdigest()
+          status_path = Path(os.environ['STATUS_PATH'])
+          status_path.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode())
+          status_path.chmod(0o600)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('DIAGNOSTIC_ONLY=true\n')
+              summary.write(f"P3_STATUS={terminal['status']}\n")
+              summary.write('P4_P5_P6=NOT_AUTHORIZED\n')
+          PY
+      - name: Create-only upload of sanitized diagnostic metadata
+        if: always()
+        env:
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          source_root="${RUNNER_TEMP}/tqqq-v8-verified-snapshot-diagnostic"
+          destination="gs://qsl-runtime-logs-shared/tqqq-p1-p3/diagnostic-replays/v1/${MANIFEST_SHA256}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud storage ls "$destination/" >/dev/null 2>&1 && exit 1
+          gcloud storage cp --quiet --no-clobber "$source_root/diagnostic-status.json" "$destination/diagnostic-status.json" >/dev/null
+          for member in diagnostic-record.v1.json relative-benchmark-summary.json; do
+            if [ -f "$source_root/$member" ]; then
+              gcloud storage cp --quiet --no-clobber "$source_root/$member" "$destination/$member" >/dev/null
+            fi
+          done
+      - name: Upload sanitized diagnostic status only
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tqqq-v8-verified-snapshot-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/tqqq-v8-verified-snapshot-diagnostic/p3-result.json
+            ${{ runner.temp }}/tqqq-v8-verified-snapshot-diagnostic/diagnostic-status.json
+            ${{ runner.temp }}/tqqq-v8-verified-snapshot-diagnostic/diagnostic-record.v1.json
+            ${{ runner.temp }}/tqqq-v8-verified-snapshot-diagnostic/relative-benchmark-summary.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Record lifecycle boundary
+        if: always()
+        run: echo 'P4_P5_P6=NOT_AUTHORIZED; AUTHORITY=RESEARCH_ONLY_DIAGNOSTIC_NO_ORDER' >> "$GITHUB_STEP_SUMMARY"
