@@ -34,24 +34,37 @@ def _finite(value: object) -> float:
 
 
 def build_tqqq_qqq_relative_compounding_metrics(
-    metrics: TqqqQqqRelativeMetrics,
+    metrics: TqqqQqqRelativeMetrics, *, require_incremental_calmar: bool = True
 ) -> dict[str, dict[str, float]]:
     """Normalize the runner's negative-loss drawdowns for the shared helper.
 
-    Calmar is undefined without a drawdown.  Rather than manufacture an
-    infinite ratio, this boundary fails closed so a zero-drawdown edge case
-    cannot satisfy a strict incremental-Calmar promotion rule accidentally.
+    Calmar is undefined without a drawdown.  The long-horizon compounding
+    rule therefore fails closed on a zero-drawdown edge case rather than
+    manufacturing an infinite ratio.  Short chronological windows use only
+    the drawdown ceiling, so zero is a valid observed magnitude there.
     """
-    if type(metrics) is not TqqqQqqRelativeMetrics or metrics.benchmark_symbol != "QQQ":
+    if (
+        type(metrics) is not TqqqQqqRelativeMetrics
+        or metrics.benchmark_symbol != "QQQ"
+        or type(require_incremental_calmar) is not bool
+    ):
         _fail()
     strategy_drawdown = _finite(metrics.strategy_max_drawdown)
     benchmark_drawdown = _finite(metrics.qqq_max_drawdown)
     _finite(metrics.strategy_cagr)
     benchmark_cagr = _finite(metrics.qqq_cagr)
-    if strategy_drawdown > 0.0 or benchmark_drawdown >= 0.0 or strategy_drawdown == 0.0:
+    if strategy_drawdown > 0.0 or benchmark_drawdown > 0.0:
         _fail()
     strategy_calmar = _finite(metrics.calmar_ratio)
-    benchmark_calmar = benchmark_cagr / abs(benchmark_drawdown)
+    if require_incremental_calmar and (
+        strategy_drawdown == 0.0 or benchmark_drawdown == 0.0
+    ):
+        _fail()
+    benchmark_calmar = (
+        benchmark_cagr / abs(benchmark_drawdown)
+        if benchmark_drawdown != 0.0
+        else 0.0
+    )
     if not math.isfinite(benchmark_calmar):
         _fail()
     return {
@@ -74,7 +87,9 @@ def assess_tqqq_qqq_relative_benchmark(
     """Apply a pre-registered QQQ-relative gate to one aligned TQQQ replay."""
     if type(require_incremental_calmar) is not bool:
         _fail()
-    normalized = build_tqqq_qqq_relative_compounding_metrics(metrics)
+    normalized = build_tqqq_qqq_relative_compounding_metrics(
+        metrics, require_incremental_calmar=require_incremental_calmar
+    )
     try:
         gate = (
             assess_relative_longterm_compounding(**normalized)

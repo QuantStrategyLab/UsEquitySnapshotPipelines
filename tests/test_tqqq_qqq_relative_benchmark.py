@@ -70,6 +70,18 @@ def test_tqqq_short_window_gate_does_not_use_calmar_but_keeps_drawdown_hard() ->
     }
 
 
+def test_tqqq_short_window_accepts_zero_drawdown_without_using_calmar() -> None:
+    assessment = assess_tqqq_qqq_relative_benchmark(
+        _metrics(strategy_max_drawdown=0.0, qqq_max_drawdown=0.0),
+        require_incremental_calmar=False,
+    )
+
+    assert assessment["gate"] == {
+        "max_drawdown_not_exceeding_benchmark": True,
+        "passed": True,
+    }
+
+
 @pytest.mark.parametrize(
     "candidate",
     [
