@@ -10,9 +10,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .tqqq_core_only_p1_binding import CANDIDATE_CONFIG_SHA256, CANDIDATE_ID
+from .tqqq_core_only_p1_binding import (
+    CANDIDATE_CONFIG_SHA256,
+    CANDIDATE_ID,
+    P2_V7_CANDIDATE_CONFIG_SHA256,
+    P2_V7_CANDIDATE_ID,
+)
 
+# Keep the legacy V1 record valid for its existing manual workflow.  V7 has a
+# separate schema so an authorization for V1 can never be replayed for V7.
 SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v1"
+TQQQ_V7_SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v2"
 _MANDATE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _APPROVER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _RECORD = re.compile(r"^github-environment:market-data-nonlive$")
@@ -48,6 +56,13 @@ _SCOPE = {
     "no_capital": True,
 }
 _MAX_VALIDITY = timedelta(days=31)
+_CANDIDATE_BY_SCHEMA = {
+    SCHEMA_VERSION: {"candidate_id": CANDIDATE_ID, "config_sha256": CANDIDATE_CONFIG_SHA256},
+    TQQQ_V7_SCHEMA_VERSION: {
+        "candidate_id": P2_V7_CANDIDATE_ID,
+        "config_sha256": P2_V7_CANDIDATE_CONFIG_SHA256,
+    },
+}
 
 
 class TqqqP1P3MandateError(ValueError):
@@ -92,14 +107,16 @@ def validate_tqqq_p1_p3_mandate(
     defined external authorization remains outside this repository.
     """
     mandate = _mapping(value, _TOP_LEVEL_FIELDS, "TQQQ P1/P3 mandate")
-    if mandate["schema_version"] != SCHEMA_VERSION:
+    schema_version = mandate["schema_version"]
+    if not isinstance(schema_version, str) or schema_version not in _CANDIDATE_BY_SCHEMA:
         raise TqqqP1P3MandateError("invalid mandate schema")
     mandate_id = mandate["mandate_id"]
     if not isinstance(mandate_id, str) or not _MANDATE_ID.fullmatch(mandate_id):
         raise TqqqP1P3MandateError("invalid mandate id")
 
     candidate = _mapping(mandate["candidate"], _CANDIDATE_FIELDS, "candidate")
-    if candidate != {"candidate_id": CANDIDATE_ID, "config_sha256": CANDIDATE_CONFIG_SHA256}:
+    expected_candidate = _CANDIDATE_BY_SCHEMA[schema_version]
+    if candidate != expected_candidate:
         raise TqqqP1P3MandateError("invalid mandate candidate")
 
     scope = _mapping(mandate["scope"], _SCOPE_FIELDS, "mandate scope")
@@ -121,9 +138,9 @@ def validate_tqqq_p1_p3_mandate(
         raise TqqqP1P3MandateError("mandate is not current")
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "mandate_id": mandate_id,
-        "candidate": {"candidate_id": CANDIDATE_ID, "config_sha256": CANDIDATE_CONFIG_SHA256},
+        "candidate": dict(expected_candidate),
         "scope": dict(_SCOPE),
         "attestation": {
             "record_source": attestation["record_source"],
@@ -173,6 +190,7 @@ def load_tqqq_p1_p3_mandate(
 
 __all__ = [
     "SCHEMA_VERSION",
+    "TQQQ_V7_SCHEMA_VERSION",
     "TqqqP1P3MandateError",
     "canonical_tqqq_p1_p3_mandate_bytes",
     "load_tqqq_p1_p3_mandate",

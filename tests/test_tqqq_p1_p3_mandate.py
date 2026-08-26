@@ -56,6 +56,24 @@ def test_valid_nonlive_mandate_has_deterministic_receipt() -> None:
     assert receipt == mandate.tqqq_p1_p3_mandate_receipt_sha256(validated, now_utc=NOW)
 
 
+def test_v7_requires_its_own_schema_and_immutable_candidate_binding() -> None:
+    value = _value()
+    value["schema_version"] = mandate.TQQQ_V7_SCHEMA_VERSION
+    value["candidate"] = {
+        "candidate_id": "tqqq_core_only_p2_v7_relative_benchmark",
+        "config_sha256": "455fd66ad56734a291cfcfecacb63fef7bf7bfa5857f3a2f2f92bba169a18a12",
+    }
+
+    assert mandate.validate_tqqq_p1_p3_mandate(value, now_utc=NOW) == value
+
+    value["candidate"] = {
+        "candidate_id": "tqqq_core_only_p2_v1",
+        "config_sha256": "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69",
+    }
+    with pytest.raises(mandate.TqqqP1P3MandateError):
+        mandate.validate_tqqq_p1_p3_mandate(value, now_utc=NOW)
+
+
 @pytest.mark.parametrize(
     "mutate",
     (

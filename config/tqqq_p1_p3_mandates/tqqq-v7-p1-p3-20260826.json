@@ -1,0 +1,30 @@
+{
+  "schema_version": "qsl.tqqq-p1-p3-nonlive-run-mandate.v2",
+  "mandate_id": "tqqq-v7-p1-p3-20260826",
+  "candidate": {
+    "candidate_id": "tqqq_core_only_p2_v7_relative_benchmark",
+    "config_sha256": "455fd66ad56734a291cfcfecacb63fef7bf7bfa5857f3a2f2f92bba169a18a12"
+  },
+  "scope": {
+    "authority_scope": "P1_P3_RESEARCH_ONLY",
+    "provider": "ALPACA_SIP",
+    "allowed_operations": [
+      "p1_data_acquisition",
+      "p1_private_root_create_only_upload",
+      "p3_historical_replay",
+      "p3_private_root_read",
+      "p3_private_evidence_index_create_only_upload"
+    ],
+    "no_order": true,
+    "no_paper": true,
+    "no_shadow": true,
+    "no_live": true,
+    "no_capital": true
+  },
+  "attestation": {
+    "record_source": "github-environment:market-data-nonlive",
+    "recorded_by": "Pigbibi",
+    "recorded_at": "2026-08-26T02:29:18Z",
+    "expires_at": "2026-09-02T02:29:18Z"
+  }
+}
