@@ -41,6 +41,8 @@ from .tqqq_core_only_p1_binding import (
     P2_V4_UES_REVISION,
     P2_V5_CONTRACT,
     P2_V5_UES_REVISION,
+    P2_V7_CONTRACT,
+    P2_V7_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
     _expected_xnys_sessions,
     resolve_tqqq_core_only_candidate_contract,
@@ -55,11 +57,17 @@ from .tqqq_promotion_runner import (
     TqqqPromotionPlan,
     TqqqPromotionResearchResult,
     TqqqSwitchingTrace,
+    TqqqWindowEvidence,
     TqqqWindowReplay,
     _resolve_runner_revision,
+    _p2_v7_long_horizon_bounds,
     build_tqqq_switching_characterization_contract,
     evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
+)
+from .tqqq_v7_relative_benchmark_policy import (
+    TqqqV7RelativeBenchmarkPolicyError,
+    evaluate_tqqq_v7_relative_benchmark_policy,
 )
 
 _PROFILE = "tqqq_core_only_p2_v1"
@@ -69,6 +77,7 @@ _CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v1"
 _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
 _P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
 _P2_V5_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v5"
+_P2_V7_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v7"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -230,6 +239,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         _P2_V2_CONFIG_SCHEMA,
         _P2_V4_CONFIG_SCHEMA,
         _P2_V5_CONFIG_SCHEMA,
+        _P2_V7_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
@@ -277,10 +287,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         P2_V2_CONTRACT.candidate_id: _P2_V2_CONFIG_SCHEMA,
         P2_V4_CONTRACT.candidate_id: _P2_V4_CONFIG_SCHEMA,
         P2_V5_CONTRACT.candidate_id: _P2_V5_CONFIG_SCHEMA,
+        P2_V7_CONTRACT.candidate_id: _P2_V7_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT}:
+    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT, P2_V7_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -292,6 +303,8 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
                 else P2_V4_UES_REVISION
                 if contract == P2_V4_CONTRACT
                 else P2_V5_UES_REVISION
+                if contract == P2_V5_CONTRACT
+                else P2_V7_UES_REVISION
             )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):
@@ -364,9 +377,9 @@ def _plan_from_candidate(
 ) -> TqqqPromotionPlan:
     """Build a candidate plan without giving evidence outcomes any tuning path.
 
-    P2 v5 is the only rolling candidate.  Its frozen configuration fixes the
-    folds, cost model, and trailing OOS session count; the verified P1 binding
-    contributes only the completed data cutoff that anchors that OOS window.
+    The rolling v5 and v7 candidates fix their folds and costs in config; the
+    verified P1 binding contributes only the completed data cutoff that anchors
+    their derived windows.  v7 additionally fixes one continuous long horizon.
     """
     contract = _candidate_contract(candidate)
     plan = candidate.get("evaluation_plan")
@@ -387,7 +400,7 @@ def _plan_from_candidate(
             if isinstance(fold, Mapping)
             and fold.get("purge_sessions_after_train") == purge_days
         )
-        if contract == P2_V5_CONTRACT:
+        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
             rolling = plan["rolling_locked_oos"]
             if (
                 not isinstance(rolling, Mapping)
@@ -416,18 +429,43 @@ def _plan_from_candidate(
                 raise ValueError
             locked_start = sessions[-252]
             locked_end = cutoff
+            if contract == P2_V7_CONTRACT:
+                continuous = plan["continuous_long_horizon"]
+                if (
+                    not isinstance(continuous, Mapping)
+                    or set(continuous)
+                    != {
+                        "anchor",
+                        "minimum_date_cutoff",
+                        "rule",
+                        "trailing_xnys_sessions",
+                    }
+                    or continuous["anchor"] != "VERIFIED_P1_DATE_CUTOFF"
+                    or continuous["minimum_date_cutoff"] != "2026-08-04"
+                    or continuous["trailing_xnys_sessions"] != 756
+                    or not isinstance(continuous["rule"], str)
+                ):
+                    raise ValueError
+                long_start, long_end = _p2_v7_long_horizon_bounds(cutoff)
+            else:
+                long_start = None
+                long_end = None
         else:
             if data_cutoff is not None:
                 raise ValueError
             locked = plan["locked_oos"]
             locked_start = date.fromisoformat(locked["start"])
             locked_end = date.fromisoformat(locked["end"])
+            long_start = None
+            long_end = None
         result = TqqqPromotionPlan(
             folds=folds,
             locked_oos_start=locked_start,
             locked_oos_end=locked_end,
             purge_days=purge_days,
             embargo_days=plan.get("embargo_days", 0),
+            long_horizon_start=long_start,
+            long_horizon_end=long_end,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise TqqqPromotionEvidenceError("invalid candidate evaluation plan") from exc
@@ -462,7 +500,7 @@ def _validate_input(
     try:
         plan = _plan_from_candidate(
             candidate, data_cutoff=str(identity["date_cutoff"])
-            if contract == P2_V5_CONTRACT
+            if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}
             else None,
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -556,6 +594,24 @@ def _validate_input(
     )
     if observed_locked_sessions != expected_locked_sessions:
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
+    if contract == P2_V7_CONTRACT:
+        if plan.long_horizon_start is None or plan.long_horizon_end is None:
+            raise TqqqPromotionEvidenceError("long-horizon calendar identity mismatch")
+        expected_long_sessions = tuple(
+            session
+            for session in _expected_xnys_sessions(plan.long_horizon_end.isoformat())
+            if plan.long_horizon_start <= session <= plan.long_horizon_end
+        )
+        observed_long_sessions = tuple(
+            session
+            for session in qqq_sessions
+            if plan.long_horizon_start <= session <= plan.long_horizon_end
+        )
+        if (
+            observed_long_sessions != expected_long_sessions
+            or len(observed_long_sessions) != 756
+        ):
+            raise TqqqPromotionEvidenceError("long-horizon calendar identity mismatch")
     return provenance, parsed, manifest_sha256
 
 
@@ -573,7 +629,7 @@ def _bound_data_cutoff(
         cutoff = identity["date_cutoff"]
     except (KeyError, TypeError, ValueError):
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
-    if contract == P2_V5_CONTRACT:
+    if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
         if not isinstance(cutoff, str):
             raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding")
         return cutoff
@@ -1082,6 +1138,17 @@ def _refresh_digests(payload: dict[str, Any]) -> None:
     payload["digests"]["package_sha256"] = _sha256(canonical_evidence_package_v2_bytes(projection))
 
 
+def _locked_oos_window(result: TqqqPromotionResearchResult) -> TqqqWindowEvidence:
+    """Keep package headline metrics tied to locked OOS, not v7's long replay."""
+    try:
+        window = result.scenarios[0].windows[3]
+    except (AttributeError, IndexError) as exc:
+        raise TqqqPromotionEvidenceError("missing locked OOS evidence") from exc
+    if type(window) is not TqqqWindowEvidence:
+        raise TqqqPromotionEvidenceError("missing locked OOS evidence")
+    return window
+
+
 def _result_artifacts(
     result: TqqqPromotionResearchResult,
     replay: _ImmutableReplayProducer,
@@ -1095,7 +1162,7 @@ def _result_artifacts(
     _private_directory(artifacts)
     scenarios = {scenario.total_cost_bps: scenario for scenario in result.scenarios}
     base = scenarios[5]
-    locked = base.windows[-1]
+    locked = base.windows[3]
     records = {
         "config": _write_private(artifacts / "config.json", _canonical(config)),
         "data_manifest": _write_private(
@@ -1293,9 +1360,17 @@ def run_tqqq_promotion_evidence(
         strategy_execution=strategy_execution,
     )
     base = result.scenarios[0]
-    locked = base.windows[-1]
+    locked = _locked_oos_window(result)
     metrics = locked.relative_metrics
-    verdict = evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
+    relative_benchmark_policy: dict[str, object] | None = None
+    if candidate.strategy_profile == P2_V7_CONTRACT.candidate_id:
+        try:
+            relative_benchmark_policy = evaluate_tqqq_v7_relative_benchmark_policy(result)
+            verdict = str(relative_benchmark_policy["strategy_verdict"])
+        except (KeyError, TqqqV7RelativeBenchmarkPolicyError) as exc:
+            raise TqqqPromotionEvidenceError("relative benchmark policy failed") from exc
+    else:
+        verdict = evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
     generated = _timestamp(generated_at)
     evidence: dict[str, Any] = {
         "schema_version": "strategy_evidence_package.v2",
@@ -1390,34 +1465,44 @@ def run_tqqq_promotion_evidence(
         raise TqqqPromotionEvidenceError("evidence package validation failed:" + ";".join(issues))
     evidence_bytes = canonical_evidence_package_v2_bytes(evidence)
     evidence_record = _write_private(output_root / "strategy-evidence-package.v2.json", evidence_bytes)
+    terminal_payload: dict[str, object] = {
+        "schema_version": "tqqq_promotion_research_result.v1",
+        "generated_at": generated,
+        "status": "EVIDENCE_V2_COMPLETE",
+        "verdict": verdict,
+        "candidate_identity_sha256": candidate.candidate_sha256,
+        "input_manifest_sha256": manifest_sha256,
+        "evidence_sha256": evidence_record["sha256"],
+        "human_acceptance": None,
+        "authority_scope": "RESEARCH_ONLY",
+        "learning_only": True,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "size_zero_required": True,
+        "no_order": True,
+    }
+    if relative_benchmark_policy is not None:
+        policy_record = _write_private(
+            output_root / "relative-benchmark-policy.v1.json",
+            _canonical(relative_benchmark_policy),
+        )
+        terminal_payload["relative_benchmark_policy_sha256"] = policy_record["sha256"]
     terminal_record = _write_private(
         output_root / "promotion-research-result.v1.json",
-        _canonical(
-            {
-                "schema_version": "tqqq_promotion_research_result.v1",
-                "generated_at": generated,
-                "status": "EVIDENCE_V2_COMPLETE",
-                "verdict": verdict,
-                "candidate_identity_sha256": candidate.candidate_sha256,
-                "input_manifest_sha256": manifest_sha256,
-                "evidence_sha256": evidence_record["sha256"],
-                "human_acceptance": None,
-                "authority_scope": "RESEARCH_ONLY",
-                "learning_only": True,
-                "promotion_eligible": False,
-                "live_ready": False,
-                "size_zero_required": True,
-                "no_order": True,
-            }
-        ),
+        _canonical(terminal_payload),
     )
-    return {
+    completion: dict[str, str] = {
         "evidence_sha256": evidence_record["sha256"],
         "promotion_result_sha256": terminal_record["sha256"],
         "candidate_identity_sha256": candidate.candidate_sha256,
         "input_manifest_sha256": manifest_sha256,
         "verdict": verdict,
     }
+    if relative_benchmark_policy is not None:
+        completion["relative_benchmark_policy_sha256"] = str(
+            terminal_payload["relative_benchmark_policy_sha256"]
+        )
+    return completion
 
 
 __all__ = [

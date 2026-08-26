@@ -36,6 +36,9 @@ P2_V4_UES_REVISION = P2_V2_UES_REVISION
 P2_V5_CANDIDATE_ID = "tqqq_core_only_p2_v5"
 P2_V5_CANDIDATE_CONFIG_SHA256 = "e6422cf7c3819734ec300a7bfa3d936d5273993c0ce865dfe0218d7b7f8426e2"
 P2_V5_UES_REVISION = P2_V2_UES_REVISION
+P2_V7_CANDIDATE_ID = "tqqq_core_only_p2_v7_relative_benchmark"
+P2_V7_CANDIDATE_CONFIG_SHA256 = "455fd66ad56734a291cfcfecacb63fef7bf7bfa5857f3a2f2f92bba169a18a12"
+P2_V7_UES_REVISION = P2_V2_UES_REVISION
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
@@ -82,11 +85,18 @@ P2_V5_CONTRACT = TqqqCoreOnlyCandidateContract(
     ues_revision=P2_V5_UES_REVISION,
     qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
 )
+P2_V7_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V7_CANDIDATE_ID,
+    config_sha256=P2_V7_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V7_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
 _SUPPORTED_CONTRACTS = {
     _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
     P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
     P2_V4_CONTRACT.candidate_id: P2_V4_CONTRACT,
     P2_V5_CONTRACT.candidate_id: P2_V5_CONTRACT,
+    P2_V7_CONTRACT.candidate_id: P2_V7_CONTRACT,
 }
 
 
@@ -179,12 +189,13 @@ def build_tqqq_core_only_p1_binding_for_contract(
 ) -> dict[str, object]:
     """Return a data-only identity; this function performs no acquisition.
 
-    v1--v4 retain their exact historical cutoffs.  v5 alone binds a caller
-    supplied, completed XNYS date into each immutable daily input root.  The
-    cutoff is an input identity, never a mutable strategy parameter.
+    v1--v4 retain their exact historical cutoffs.  The rolling v5 and v7
+    candidates bind a caller supplied, completed XNYS date into each immutable
+    daily input root.  The cutoff is an input identity, never a mutable
+    strategy parameter.
     """
     frozen_contract = _require_contract(contract)
-    if frozen_contract == P2_V5_CONTRACT:
+    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
         resolved_date_cutoff = _validate_p2_v5_date_cutoff(date_cutoff)
     elif date_cutoff is not None:
         raise TqqqCoreOnlyP1BindingError("unexpected TQQQ core-only date cutoff")
@@ -260,7 +271,7 @@ def validate_tqqq_core_only_p1_binding_for_contract(
     """Reject a binding that is not exact for its immutable candidate identity."""
     frozen_contract = _require_contract(contract)
     date_cutoff: str | None = None
-    if frozen_contract == P2_V5_CONTRACT:
+    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
         try:
             identity = value["data_identity"]
             if not isinstance(identity, Mapping):
@@ -616,7 +627,7 @@ def _validate_frozen_historical_coverage(
     expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(
         contract,
         date_cutoff=identity.get("date_cutoff")
-        if contract == P2_V5_CONTRACT
+        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}
         else None,
     )
     for symbol in _UNIVERSE:

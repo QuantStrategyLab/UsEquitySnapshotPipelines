@@ -12,6 +12,7 @@ from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     P2_V2_CANDIDATE_ID,
+    P2_V7_CONTRACT,
     resolve_tqqq_core_only_candidate_contract,
     verify_tqqq_core_only_input_root,
 )
@@ -21,6 +22,9 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
     P3_STATUS,
     validate_tqqq_p3_result,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
+    validate_tqqq_p3_v7_result,
 )
 
 _SOURCE_COMMIT = "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2"
@@ -103,12 +107,18 @@ def _require_replayable_candidate(contract: object) -> None:
 
 
 def _completed_evidence_summary(
-    value: object, *, expected_input_manifest_sha256: str
+    value: object, *, expected_input_manifest_sha256: str, candidate_id: str
 ) -> dict[str, str]:
     """Accept a replay success only when it stays bound to the verified P1 root."""
+    required_fields = (
+        _COMPLETED_EVIDENCE_FIELDS
+        | {"relative_benchmark_policy_sha256"}
+        if candidate_id == P2_V7_CONTRACT.candidate_id
+        else _COMPLETED_EVIDENCE_FIELDS
+    )
     if (
         not isinstance(value, Mapping)
-        or set(value) != _COMPLETED_EVIDENCE_FIELDS
+        or set(value) != required_fields
         or not isinstance(value["input_manifest_sha256"], str)
         or value["input_manifest_sha256"] != expected_input_manifest_sha256
         or any(
@@ -123,6 +133,26 @@ def _completed_evidence_summary(
     ):
         raise OrchestratorContractError("invalid bound P3 completion")
     try:
+        if candidate_id == P2_V7_CONTRACT.candidate_id:
+            result = validate_tqqq_p3_v7_result(
+                {
+                    "evidence_sha256": value["evidence_sha256"],
+                    "promotion_result_sha256": value["promotion_result_sha256"],
+                    "relative_benchmark_policy_sha256": value[
+                        "relative_benchmark_policy_sha256"
+                    ],
+                    "status": P3_STATUS,
+                    "verdict": value["verdict"],
+                }
+            )
+            return {
+                "evidence_sha256": result["evidence_sha256"],
+                "promotion_result_sha256": result["promotion_result_sha256"],
+                "relative_benchmark_policy_sha256": result[
+                    "relative_benchmark_policy_sha256"
+                ],
+                "verdict": result["verdict"],
+            }
         return validate_tqqq_p3_result(
             {
                 "evidence_sha256": value["evidence_sha256"],
@@ -180,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output_dir,
             ),
             expected_input_manifest_sha256=manifest_sha256,
+            candidate_id=contract.candidate_id,
         )
     except Exception as error:
         print(json.dumps(_failure_payload(error, stage=stage, replay_started=replay_started), sort_keys=True))
@@ -190,6 +221,18 @@ def main(argv: list[str] | None = None) -> int:
                 "evidence_sha256": result["evidence_sha256"],
                 "status": "EVIDENCE_V2_COMPLETE",
                 "verdict": result["verdict"],
+                **(
+                    {
+                        "promotion_result_sha256": result[
+                            "promotion_result_sha256"
+                        ],
+                        "relative_benchmark_policy_sha256": result[
+                            "relative_benchmark_policy_sha256"
+                        ]
+                    }
+                    if contract.candidate_id == P2_V7_CONTRACT.candidate_id
+                    else {}
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),

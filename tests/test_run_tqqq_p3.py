@@ -150,6 +150,48 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     }
 
 
+def test_cli_emits_the_versioned_v7_policy_and_terminal_digests(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    snapshot = tmp_path / "snapshot-v7"
+    input_payload = _write_canonical_snapshot(
+        snapshot, p1_binding.P2_V7_CONTRACT, date_cutoff="2026-08-18"
+    )
+    config_path = tmp_path / "config-v7.json"
+    config_path.write_text(
+        '{"candidate_id":"tqqq_core_only_p2_v7_relative_benchmark"}', encoding="utf-8"
+    )
+
+    def run_evidence(**_kwargs: object) -> dict[str, str]:
+        return {
+            **_completed_evidence_result(
+                p1_binding.validate_tqqq_core_only_input_manifest(
+                    input_payload["input_manifest"], input_payload["binding"],
+                    contract=p1_binding.P2_V7_CONTRACT,
+                )
+            ),
+            "relative_benchmark_policy_sha256": "4" * 64,
+        }
+
+    module.run_tqqq_promotion_evidence = run_evidence
+
+    assert module.main(
+        [
+            "--snapshot-root", str(snapshot), "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--output-dir", str(tmp_path / "output"),
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "evidence_sha256": "1" * 64,
+        "promotion_result_sha256": "2" * 64,
+        "relative_benchmark_policy_sha256": "4" * 64,
+        "status": "EVIDENCE_V2_COMPLETE",
+        "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
+    }
+
+
 def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
