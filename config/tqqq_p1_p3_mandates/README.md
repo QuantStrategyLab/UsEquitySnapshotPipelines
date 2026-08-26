@@ -1,7 +1,7 @@
 # TQQQ P1/P3 non-live mandates
 
-Before a P1/P3 workflow can read Alpaca data, a bounded canonical JSON record
-named `<mandate_id>.json` must exist. The record is a no-order technical scope
+Before a P1/P3 workflow can read its configured market-data providers, a
+bounded canonical JSON record named `<mandate_id>.json` must exist. The record is a no-order technical scope
 record, reviewed and expiring; it does not grant autonomous policy promotion.
 
 The record is deliberately narrow: it permits only TQQQ P1 data acquisition,
@@ -13,8 +13,8 @@ never grants P4–P6 promotion authority. Future unattended P1 requires a
 separately defined, externally verified, non-execution data-acquisition
 authorization for this exact P1/P3 scope. A workflow validates the checked-in
 scope record before it reads a provider, and it remains manual-only. The
-record must use the schema that is bound to the exact candidate: V1 records
-cannot authorize V7, and V7 records cannot authorize V1.
+record must use the schema that is bound to the exact candidate: V1, V7, V8,
+and V9 records cannot authorize one another.
 
 ## Default state and external approval
 

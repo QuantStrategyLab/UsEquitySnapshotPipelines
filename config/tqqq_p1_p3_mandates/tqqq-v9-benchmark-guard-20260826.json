@@ -1,0 +1,31 @@
+{
+  "schema_version": "qsl.tqqq-p1-p3-nonlive-run-mandate.v4",
+  "mandate_id": "tqqq-v9-benchmark-guard-20260826",
+  "candidate": {
+    "candidate_id": "tqqq_core_only_p2_v9_benchmark_drawdown_guard",
+    "config_sha256": "c2c3d7ce1333f8f1675f40cd4c45ffa89d83f0dcf99b2a475840d0f87ab64dce"
+  },
+  "scope": {
+    "authority_scope": "P1_P3_RESEARCH_ONLY",
+    "provider": "TWELVE_DATA_AND_YAHOO_FINANCE",
+    "allowed_operations": [
+      "p1_data_acquisition",
+      "p1_independent_source_verification",
+      "p1_private_root_create_only_upload",
+      "p3_historical_replay",
+      "p3_private_root_read",
+      "p3_private_evidence_index_create_only_upload"
+    ],
+    "no_order": true,
+    "no_paper": true,
+    "no_shadow": true,
+    "no_live": true,
+    "no_capital": true
+  },
+  "attestation": {
+    "record_source": "github-environment:market-data-nonlive",
+    "recorded_by": "Pigbibi",
+    "recorded_at": "2026-08-26T07:46:45Z",
+    "expires_at": "2026-09-02T07:46:45Z"
+  }
+}

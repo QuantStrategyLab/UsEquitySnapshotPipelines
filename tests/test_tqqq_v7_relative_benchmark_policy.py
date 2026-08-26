@@ -94,3 +94,12 @@ def test_v8_can_use_the_same_frozen_relative_benchmark_policy() -> None:
 
     assert policy["candidate_id"] == "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
     assert policy["strategy_verdict"] == "PASS_PENDING_FORWARD_CONFIRMATION"
+
+
+def test_v9_can_use_the_same_frozen_relative_benchmark_policy() -> None:
+    policy = evaluate_tqqq_v7_relative_benchmark_policy(
+        _result(candidate_profile="tqqq_core_only_p2_v9_benchmark_drawdown_guard")
+    )
+
+    assert policy["candidate_id"] == "tqqq_core_only_p2_v9_benchmark_drawdown_guard"
+    assert policy["strategy_verdict"] == "PASS_PENDING_FORWARD_CONFIRMATION"

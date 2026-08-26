@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 import us_equity_snapshot_pipelines.lifecycle.tqqq_p2_v2_synthetic_evidence as synthetic_evidence
+import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_strategy_performance import (
@@ -190,6 +190,51 @@ def test_cli_emits_the_versioned_v7_policy_and_terminal_digests(
         "status": "EVIDENCE_V2_COMPLETE",
         "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
     }
+
+
+def test_cli_uses_the_v9_free_ohlcv_verification_route(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    config_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "tqqq_core_only_p2_v9_benchmark_drawdown_guard.json"
+    )
+    expected_manifest = "4" * 64
+    observed: dict[str, object] = {}
+
+    def verify(snapshot_root: Path, *, contract: object) -> str:
+        observed["snapshot_root"] = snapshot_root
+        observed["contract"] = contract
+        return expected_manifest
+
+    monkeypatch.setattr(module, "verify_tqqq_core_only_free_ohlcv_p1_input_root", verify)
+    monkeypatch.setattr(module, "_snapshot_payload", lambda _root: {"synthetic": True})
+    monkeypatch.setattr(
+        module,
+        "run_tqqq_promotion_evidence",
+        lambda **_kwargs: {
+            **_completed_evidence_result(expected_manifest),
+            "relative_benchmark_policy_sha256": "5" * 64,
+        },
+    )
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(tmp_path / "v9-snapshot"),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--output-dir",
+            str(tmp_path / "output"),
+        ]
+    ) == 0
+
+    assert observed["contract"] == p1_binding.P2_V9_CONTRACT
+    assert json.loads(capsys.readouterr().out)["relative_benchmark_policy_sha256"] == "5" * 64
 
 
 def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding(

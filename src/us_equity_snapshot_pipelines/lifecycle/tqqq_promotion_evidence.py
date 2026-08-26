@@ -28,8 +28,15 @@ from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
     validate_evidence_package_v2,
 )
+from quant_strategy_plugins.benchmark_drawdown_guard import (
+    build_benchmark_drawdown_guard_signal,
+)
+from quant_strategy_plugins.market_regime_control_plugin import (
+    build_market_regime_control_signal,
+)
 from us_equity_strategies.entrypoints import (
     _build_tqqq_growth_income_decision,
+    build_tqqq_core_only_p2_benchmark_guard_research_decision,
     build_tqqq_core_only_p2_v2_research_decision,
 )
 
@@ -48,6 +55,8 @@ from .tqqq_core_only_p1_binding import (
     P2_V7_UES_REVISION,
     P2_V8_CONTRACT,
     P2_V8_UES_REVISION,
+    P2_V9_CONTRACT,
+    P2_V9_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
     _expected_xnys_sessions,
     resolve_tqqq_core_only_candidate_contract,
@@ -85,6 +94,7 @@ _P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
 _P2_V5_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v5"
 _P2_V7_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v7"
 _P2_V8_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v8"
+_P2_V9_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v9"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -94,6 +104,17 @@ _TQQQ_REPLAY_CALLABLE = (
 )
 _P2_V2_REPLAY_CALLABLE = (
     "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision"
+)
+_P2_V9_REPLAY_CALLABLE = (
+    "us_equity_strategies.entrypoints."
+    "build_tqqq_core_only_p2_benchmark_guard_research_decision"
+)
+_FREE_OHLCV_CONTRACTS = frozenset({P2_V8_CONTRACT, P2_V9_CONTRACT})
+_ROLLING_CONTRACTS = frozenset(
+    {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT, P2_V9_CONTRACT}
+)
+_LONG_HORIZON_CONTRACTS = frozenset(
+    {P2_V7_CONTRACT, P2_V8_CONTRACT, P2_V9_CONTRACT}
 )
 
 _CORE_FIELDS = (
@@ -248,6 +269,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         _P2_V5_CONFIG_SCHEMA,
         _P2_V7_CONFIG_SCHEMA,
         _P2_V8_CONFIG_SCHEMA,
+        _P2_V9_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
@@ -297,10 +319,18 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         P2_V5_CONTRACT.candidate_id: _P2_V5_CONFIG_SCHEMA,
         P2_V7_CONTRACT.candidate_id: _P2_V7_CONFIG_SCHEMA,
         P2_V8_CONTRACT.candidate_id: _P2_V8_CONFIG_SCHEMA,
+        P2_V9_CONTRACT.candidate_id: _P2_V9_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
+    if contract in {
+        P2_V2_CONTRACT,
+        P2_V4_CONTRACT,
+        P2_V5_CONTRACT,
+        P2_V7_CONTRACT,
+        P2_V8_CONTRACT,
+        P2_V9_CONTRACT,
+    }:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -316,8 +346,15 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
                 else P2_V7_UES_REVISION
                 if contract == P2_V7_CONTRACT
                 else P2_V8_UES_REVISION
+                if contract == P2_V8_CONTRACT
+                else P2_V9_UES_REVISION
             )
-            or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
+            or source.get("entrypoint")
+            != (
+                _P2_V9_REPLAY_CALLABLE
+                if contract == P2_V9_CONTRACT
+                else _P2_V2_REPLAY_CALLABLE
+            )
         ):
             raise TqqqPromotionEvidenceError("invalid public research adapter")
     return contract
@@ -340,15 +377,15 @@ def _tqqq_replay_callable_and_identity(
         raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable") from exc
     if frozen_contract != contract:
         raise TqqqPromotionEvidenceError("unexpected TQQQ replay callable")
-    callable_ = (
-        _build_tqqq_growth_income_decision
+    callable_, expected_callable = (
+        (_build_tqqq_growth_income_decision, _TQQQ_REPLAY_CALLABLE)
         if frozen_contract.candidate_id == _PROFILE
-        else build_tqqq_core_only_p2_v2_research_decision
-    )
-    expected_callable = (
-        _TQQQ_REPLAY_CALLABLE
-        if frozen_contract.candidate_id == _PROFILE
-        else _P2_V2_REPLAY_CALLABLE
+        else (
+            build_tqqq_core_only_p2_benchmark_guard_research_decision,
+            _P2_V9_REPLAY_CALLABLE,
+        )
+        if frozen_contract == P2_V9_CONTRACT
+        else (build_tqqq_core_only_p2_v2_research_decision, _P2_V2_REPLAY_CALLABLE)
     )
     observed = f"{callable_.__module__}.{callable_.__qualname__}"
     if observed != expected_callable:
@@ -411,7 +448,7 @@ def _plan_from_candidate(
             if isinstance(fold, Mapping)
             and fold.get("purge_sessions_after_train") == purge_days
         )
-        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
+        if contract in _ROLLING_CONTRACTS:
             rolling = plan["rolling_locked_oos"]
             if (
                 not isinstance(rolling, Mapping)
@@ -440,7 +477,7 @@ def _plan_from_candidate(
                 raise ValueError
             locked_start = sessions[-252]
             locked_end = cutoff
-            if contract in {P2_V7_CONTRACT, P2_V8_CONTRACT}:
+            if contract in _LONG_HORIZON_CONTRACTS:
                 continuous = plan["continuous_long_horizon"]
                 if (
                     not isinstance(continuous, Mapping)
@@ -498,17 +535,25 @@ def _validate_input(
     payload = _exact_mapping(
         value,
         {"binding", "input_manifest", "bars", "assurance"}
-        if contract == P2_V8_CONTRACT
+        if contract in _FREE_OHLCV_CONTRACTS
         else {"binding", "input_manifest", "bars"},
         "input payload",
     )
     try:
-        if contract == P2_V8_CONTRACT:
-            manifest_sha256 = validate_tqqq_core_only_free_ohlcv_input_payload(payload)
+        if contract in _FREE_OHLCV_CONTRACTS:
+            manifest_sha256 = validate_tqqq_core_only_free_ohlcv_input_payload(
+                payload, contract=contract
+            )
         else:
             manifest_sha256 = ""
         binding = validate_tqqq_core_only_p1_binding_for_contract(payload["binding"], contract)
-        manifest_sha256 = validate_tqqq_core_only_input_manifest(payload["input_manifest"], binding, contract=contract) if contract != P2_V8_CONTRACT else manifest_sha256
+        manifest_sha256 = (
+            validate_tqqq_core_only_input_manifest(
+                payload["input_manifest"], binding, contract=contract
+            )
+            if contract not in _FREE_OHLCV_CONTRACTS
+            else manifest_sha256
+        )
         manifest = validate_research_input_manifest(payload["input_manifest"])
     except (InvalidResearchInputEvidence, ValueError):
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
@@ -517,7 +562,7 @@ def _validate_input(
     try:
         plan = _plan_from_candidate(
             candidate, data_cutoff=str(identity["date_cutoff"])
-            if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}
+            if contract in _ROLLING_CONTRACTS
             else None,
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -555,7 +600,7 @@ def _validate_input(
                 "sha256": _sha256(bars_bytes),
             },
         }
-        if contract == P2_V8_CONTRACT
+        if contract in _FREE_OHLCV_CONTRACTS
         else {
             "bars.json": {
                 "path": "bars.json",
@@ -578,7 +623,7 @@ def _validate_input(
         rows = symbol_payload["bars"]
         if not isinstance(rows, list) or not rows:
             raise TqqqPromotionEvidenceError("missing immutable bars")
-        if contract != P2_V8_CONTRACT and source_digests[f"alpaca_sip_1day_adjustment_all:{symbol}"] != _sha256(
+        if contract not in _FREE_OHLCV_CONTRACTS and source_digests[f"alpaca_sip_1day_adjustment_all:{symbol}"] != _sha256(
             _canonical(symbol_payload)
         ):
             raise TqqqPromotionEvidenceError("input identity mismatch")
@@ -625,7 +670,7 @@ def _validate_input(
     )
     if observed_locked_sessions != expected_locked_sessions:
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
-    if contract in {P2_V7_CONTRACT, P2_V8_CONTRACT}:
+    if contract in _LONG_HORIZON_CONTRACTS:
         if plan.long_horizon_start is None or plan.long_horizon_end is None:
             raise TqqqPromotionEvidenceError("long-horizon calendar identity mismatch")
         expected_long_sessions = tuple(
@@ -660,7 +705,7 @@ def _bound_data_cutoff(
         cutoff = identity["date_cutoff"]
     except (KeyError, TypeError, ValueError):
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
-    if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
+    if contract in _ROLLING_CONTRACTS:
         if not isinstance(cutoff, str):
             raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding")
         return cutoff
@@ -723,6 +768,71 @@ def _state_projection(state: _ReplayState) -> dict[str, Any]:
         "volatility_hysteresis_state_sha256": state.volatility_hysteresis_state_sha256,
         "retention_state_sha256": state.retention_state_sha256,
     }
+
+
+def _v9_market_regime_artifact(
+    candidate: Mapping[str, Any], qqq_history: tuple[_Bar, ...], signal_session: date
+) -> dict[str, Any] | None:
+    """Materialize V9's causal guard artifact with an isolated P3-only marker.
+
+    QSP remains shadow-only.  This producer adds a narrowly scoped
+    ``research_backtest_approved`` marker only to the in-memory artifact passed
+    to UES's named research entrypoint; it never writes an automation-approved
+    marker, submits an order, or changes any live runtime configuration.
+    """
+    if _candidate_contract(candidate) != P2_V9_CONTRACT:
+        return None
+    guard = candidate.get("benchmark_drawdown_guard")
+    if not isinstance(guard, Mapping):
+        raise TqqqPromotionEvidenceError("missing frozen benchmark guard")
+    expected_revision = "af1963e102d9fd42cd23622d1d2799d2ea654747"
+    if guard.get("quant_strategy_plugins_revision") != expected_revision:
+        raise TqqqPromotionEvidenceError("invalid frozen benchmark guard")
+    try:
+        price_history = tuple(
+            {
+                "symbol": "QQQ",
+                "as_of": row.session.isoformat(),
+                "close": row.close,
+            }
+            for row in qqq_history
+        )
+        benchmark_guard = build_benchmark_drawdown_guard_signal(
+            price_history,
+            benchmark_symbol=str(guard["benchmark_symbol"]),
+            as_of=signal_session.isoformat(),
+            drawdown_lookback_sessions=guard["drawdown_lookback_sessions"],
+            soft_drawdown_threshold=guard["soft_drawdown_threshold"],
+            hard_drawdown_threshold=guard["hard_drawdown_threshold"],
+            soft_risk_asset_scalar=guard["soft_risk_asset_scalar"],
+            hard_risk_asset_scalar=guard["hard_risk_asset_scalar"],
+            max_price_age_days=guard["max_price_age_days"],
+        )
+        artifact = build_market_regime_control_signal(
+            {"benchmark_guard": benchmark_guard},
+            strategy_policy="tqqq_core_only_p2_v9_benchmark_drawdown_guard",
+            as_of=signal_session.isoformat(),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TqqqPromotionEvidenceError("invalid frozen benchmark guard") from exc
+    if not isinstance(artifact, Mapping):
+        raise TqqqPromotionEvidenceError("invalid benchmark guard artifact")
+    materialized = copy.deepcopy(dict(artifact))
+    # QSP stamps wall-clock generation time for normal shadow observability;
+    # evidence state must be reproducible from frozen prices and config only.
+    materialized.pop("generated_at", None)
+    controls = materialized.get("execution_controls")
+    if not isinstance(controls, Mapping):
+        raise TqqqPromotionEvidenceError("invalid benchmark guard artifact")
+    research_controls = dict(controls)
+    research_controls.update(
+        {
+            "position_control_allowed": True,
+            "consumption_evidence_status": "research_backtest_approved",
+        }
+    )
+    materialized["execution_controls"] = research_controls
+    return materialized
 
 
 class _ImmutableReplayProducer:
@@ -988,11 +1098,42 @@ class _ImmutableReplayProducer:
             Position(symbol=symbol, quantity=quantity, market_value=quantity * self._price(symbol, signal_session).close)
             for symbol, quantity in state.quantities.items() if quantity > 0.0
         )
-        portfolio = PortfolioSnapshot(as_of=datetime.now(UTC), total_equity=equity, buying_power=state.cash, cash_balance=state.cash, positions=positions)
+        benchmark_history = tuple(
+            {
+                "date": row.session.isoformat(),
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+            }
+            for row in self.qqq[: signal_index + 1]
+        )
+        market_regime_control = _v9_market_regime_artifact(
+            self.config, self.qqq[: signal_index + 1], signal_session
+        )
+        if market_regime_control is not None:
+            state.market_regime_control_sha256 = _digest(market_regime_control)
+        portfolio = PortfolioSnapshot(
+            as_of=datetime.now(UTC),
+            total_equity=equity,
+            buying_power=state.cash,
+            cash_balance=state.cash,
+            positions=positions,
+            metadata=(
+                {"market_regime_control": market_regime_control}
+                if market_regime_control is not None
+                else {}
+            ),
+        )
         context = StrategyContext(
             as_of=datetime.combine(signal_session, time(16, 0), tzinfo=ZoneInfo("America/New_York")),
             portfolio=portfolio,
-            market_data={"benchmark_history": tuple({"date": row.session.isoformat(), "open": row.open, "high": row.high, "low": row.low, "close": row.close, "volume": row.volume} for row in self.qqq[:signal_index + 1]), "signal_session": signal_session.isoformat(), "next_execution_session": execution_session.isoformat()},
+            market_data={
+                "benchmark_history": benchmark_history,
+                "signal_session": signal_session.isoformat(),
+                "next_execution_session": execution_session.isoformat(),
+            },
             runtime_config=_runtime_config(self.config),
         )
         decision = self._replay_callable(context)
@@ -1394,7 +1535,11 @@ def run_tqqq_promotion_evidence(
     locked = _locked_oos_window(result)
     metrics = locked.relative_metrics
     relative_benchmark_policy: dict[str, object] | None = None
-    if candidate.strategy_profile in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}:
+    if candidate.strategy_profile in {
+        P2_V7_CONTRACT.candidate_id,
+        P2_V8_CONTRACT.candidate_id,
+        P2_V9_CONTRACT.candidate_id,
+    }:
         try:
             relative_benchmark_policy = evaluate_tqqq_v7_relative_benchmark_policy(result)
             verdict = str(relative_benchmark_policy["strategy_verdict"])

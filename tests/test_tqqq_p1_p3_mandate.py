@@ -8,7 +8,6 @@ import pytest
 
 from us_equity_snapshot_pipelines.lifecycle import tqqq_p1_p3_mandate as mandate
 
-
 NOW = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
 
 
@@ -70,6 +69,23 @@ def test_v7_requires_its_own_schema_and_immutable_candidate_binding() -> None:
         "candidate_id": "tqqq_core_only_p2_v1",
         "config_sha256": "969cae10850f5a2d72c17fedd77689301411f62dc24d9a530026e3f7efdc1c69",
     }
+    with pytest.raises(mandate.TqqqP1P3MandateError):
+        mandate.validate_tqqq_p1_p3_mandate(value, now_utc=NOW)
+
+
+def test_v9_requires_its_own_schema_and_free_data_scope() -> None:
+    value = _value()
+    value["schema_version"] = mandate.TQQQ_V9_SCHEMA_VERSION
+    value["candidate"] = {
+        "candidate_id": "tqqq_core_only_p2_v9_benchmark_drawdown_guard",
+        "config_sha256": "c2c3d7ce1333f8f1675f40cd4c45ffa89d83f0dcf99b2a475840d0f87ab64dce",
+    }
+    value["scope"]["provider"] = "TWELVE_DATA_AND_YAHOO_FINANCE"
+    value["scope"]["allowed_operations"].insert(1, "p1_independent_source_verification")
+
+    assert mandate.validate_tqqq_p1_p3_mandate(value, now_utc=NOW) == value
+
+    value["scope"]["provider"] = "ALPACA_SIP"
     with pytest.raises(mandate.TqqqP1P3MandateError):
         mandate.validate_tqqq_p1_p3_mandate(value, now_utc=NOW)
 
