@@ -42,18 +42,25 @@ def _window(session_count: int, *, calmar_ratio: float = 3.0) -> TqqqWindowEvide
     )
 
 
-def _result(*, long_calmar: float = 3.0) -> TqqqPromotionResearchResult:
+def _result(
+    *,
+    candidate_profile: str = "tqqq_core_only_p2_v7_relative_benchmark",
+    long_calmar: float = 3.0,
+) -> TqqqPromotionResearchResult:
     identity = TqqqPromotionIdentity(
         qpk_revision="a" * 40, ues_revision="b" * 40, runner_revision="c" * 40,
         config_sha256="d" * 64, input_manifest_sha256="e" * 64,
         mandate_receipt_sha256="f" * 64, initial_state_sha256="0" * 64,
-        candidate_profile="tqqq_core_only_p2_v7_relative_benchmark",
-        candidate_variant="tqqq_core_only_p2_v7_relative_benchmark",
+        candidate_profile=candidate_profile,
+        candidate_variant=candidate_profile,
     )
     scenarios = tuple(
         TqqqCostScenarioResult(
             total_cost_bps=cost, cost_model_scope="ALL_IN_PER_SIDE", promotion_run=None,
-            windows=tuple([*(_window(3, calmar_ratio=-10.0) for _ in range(4)), _window(756, calmar_ratio=long_calmar)]),
+            windows=(
+                *(_window(3, calmar_ratio=-10.0) for _ in range(4)),
+                _window(756, calmar_ratio=long_calmar),
+            ),
         )
         for cost in (5, 10, 15)
     )
@@ -78,3 +85,12 @@ def test_v7_policy_rejects_a_long_horizon_without_incremental_calmar() -> None:
 
     assert policy["strategy_verdict"] == "REJECT_NEGATIVE_STRATEGY_EVIDENCE"
     assert policy["long_window_incremental_calmar_all_passed"] is False
+
+
+def test_v8_can_use_the_same_frozen_relative_benchmark_policy() -> None:
+    policy = evaluate_tqqq_v7_relative_benchmark_policy(
+        _result(candidate_profile="tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark")
+    )
+
+    assert policy["candidate_id"] == "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
+    assert policy["strategy_verdict"] == "PASS_PENDING_FORWARD_CONFIRMATION"

@@ -2,6 +2,10 @@
 
 This module consumes replay metrics only.  It never reads prices, fetches
 market data, writes evidence, or exposes an order/promotion path.
+
+P2 v8 is explicitly frozen to this same acceptance policy while retaining a
+separate source contract and candidate identity.  No other candidate may use
+this evaluator.
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from .tqqq_qqq_relative_benchmark import (
 )
 
 _CANDIDATE_ID = "tqqq_core_only_p2_v7_relative_benchmark"
+_V8_CANDIDATE_ID = "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
+_CANDIDATE_IDS = frozenset({_CANDIDATE_ID, _V8_CANDIDATE_ID})
 _COSTS = (5, 10, 15)
 _SHORT_WINDOW_COUNT = 4
 _WINDOW_COUNT = _SHORT_WINDOW_COUNT + 1
@@ -40,8 +46,8 @@ def evaluate_tqqq_v7_relative_benchmark_policy(
     """
     if (
         type(result) is not TqqqPromotionResearchResult
-        or result.identity.candidate_profile != _CANDIDATE_ID
-        or result.identity.candidate_variant != _CANDIDATE_ID
+        or result.identity.candidate_profile not in _CANDIDATE_IDS
+        or result.identity.candidate_variant != result.identity.candidate_profile
         or result.authority_scope != "RESEARCH_ONLY"
         or not result.learning_only
         or not result.no_order
@@ -108,7 +114,7 @@ def evaluate_tqqq_v7_relative_benchmark_policy(
 
     return {
         "schema_version": "qsl.tqqq-p2-v7-relative-benchmark-policy.v1",
-        "candidate_id": _CANDIDATE_ID,
+        "candidate_id": result.identity.candidate_profile,
         "benchmark_symbol": "QQQ",
         "benchmark_policy": "buy_and_hold_unlevered_same_assured_close_series",
         "short_window_calmar": "diagnostic_only_not_a_promotion_veto",
