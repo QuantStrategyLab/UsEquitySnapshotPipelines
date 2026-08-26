@@ -70,6 +70,14 @@ class TqqqCoreOnlyFreeOhlcvP1Error(ValueError):
 class TqqqCoreOnlyFreeOhlcvP1UnavailableError(TqqqCoreOnlyFreeOhlcvP1Error):
     """A mandatory source is unavailable, incomplete, or disagrees."""
 
+    def __init__(
+        self, message: str, *, availability_diagnostic: Mapping[str, object] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.availability_diagnostic = (
+            dict(availability_diagnostic) if availability_diagnostic is not None else None
+        )
+
 
 class TqqqCoreOnlyFreeOhlcvObserver(Protocol):
     """Injected observation port; P1 itself cannot read credentials."""
@@ -204,6 +212,50 @@ def _assurance_member(
     return {"schema_version": _ASSURANCE_SCHEMA, "date_cutoff": cutoff, "assurances": assurances}
 
 
+def _availability_diagnostic(
+    *,
+    contract: TqqqCoreOnlyCandidateContract,
+    cutoff: str,
+    reports: Mapping[str, object],
+) -> dict[str, object]:
+    """Return redacted per-symbol assurance outcomes when P1 is parked.
+
+    The diagnostic contains only QPK's stable status, reason, and digest
+    fields; it deliberately excludes observed bars, URLs, payloads, paths,
+    and credentials.  It is not a fallback, retry, or source-selection path.
+    """
+    frozen_contract = _free_contract(contract)
+    if set(reports) != set(_UNIVERSE):
+        raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
+    diagnostic_reports: dict[str, object] = {}
+    for symbol in _UNIVERSE:
+        report = reports[symbol]
+        if not hasattr(report, "to_diagnostic"):
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
+        diagnostic = report.to_diagnostic()
+        if not isinstance(diagnostic, Mapping):
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
+        diagnostic_reports[symbol] = dict(diagnostic)
+    status = (
+        "VERIFIED"
+        if all(
+            diagnostic_reports[symbol].get("status") == DATA_ASSURANCE_STATUS_VERIFIED
+            for symbol in _UNIVERSE
+        )
+        else "NOT_VERIFIED"
+    )
+    return {
+        "schema_version": "qsl.tqqq-core-only-free-ohlcv-availability.v1",
+        "candidate": {
+            "candidate_id": frozen_contract.candidate_id,
+            "config_sha256": frozen_contract.config_sha256,
+        },
+        "date_cutoff": cutoff,
+        "status": status,
+        "reports": diagnostic_reports,
+    }
+
+
 def validate_tqqq_core_only_free_ohlcv_assurance(
     value: object,
     *,
@@ -336,16 +388,27 @@ def publish_tqqq_core_only_free_ohlcv_p1_inputs(
     expected = expected_tqqq_core_only_sessions_for_contract(frozen_contract, date_cutoff=cutoff)
     symbols: dict[str, object] = {}
     reports: dict[str, object] = {}
+    observations_by_symbol: dict[str, tuple[DailyBarSourceObservation, ...]] = {}
     for symbol in _UNIVERSE:
         try:
             observations = tuple(observer.observe_daily_bars(source_id=source, symbol=symbol, start_date=expected[symbol][0].isoformat(), date_cutoff=cutoff) for source in (_CANONICAL, _VERIFIER))
             report = assess_multisource_daily_bars(_policy(frozen_contract, symbol, cutoff), observations)
         except Exception as exc:
             raise TqqqCoreOnlyFreeOhlcvP1Error("free OHLCV source observation failed") from exc
-        if report.status != DATA_ASSURANCE_STATUS_VERIFIED or not report.can_publish_research_input:
-            raise TqqqCoreOnlyFreeOhlcvP1UnavailableError("free OHLCV assurance not verified")
-        symbols[symbol] = {"bars": _bar_rows(observations[0], expected[symbol])}
+        observations_by_symbol[symbol] = observations
         reports[symbol] = report
+    availability = _availability_diagnostic(
+        contract=frozen_contract, cutoff=cutoff, reports=reports
+    )
+    if availability["status"] != "VERIFIED":
+        raise TqqqCoreOnlyFreeOhlcvP1UnavailableError(
+            "free OHLCV assurance not verified",
+            availability_diagnostic=availability,
+        )
+    for symbol in _UNIVERSE:
+        symbols[symbol] = {
+            "bars": _bar_rows(observations_by_symbol[symbol][0], expected[symbol])
+        }
     bars = {"schema_version": _BARS_SCHEMA, "symbols": symbols}
     assurance = _assurance_member(contract=frozen_contract, cutoff=cutoff, reports=reports, bars=symbols)
     bars_bytes, assurance_bytes = _canonical(bars), _canonical(assurance)

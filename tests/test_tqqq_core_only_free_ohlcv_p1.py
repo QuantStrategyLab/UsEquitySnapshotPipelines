@@ -94,10 +94,21 @@ def test_v8_free_ohlcv_root_requires_two_source_agreement_and_is_candidate_bound
 
 
 def test_v8_free_ohlcv_parks_when_a_mandatory_source_disagrees(tmp_path: Path) -> None:
-    with pytest.raises(p1.TqqqCoreOnlyFreeOhlcvP1UnavailableError):
+    with pytest.raises(p1.TqqqCoreOnlyFreeOhlcvP1UnavailableError) as raised:
         p1.publish_tqqq_core_only_free_ohlcv_p1_inputs(
             _Observer(divergent=True), output_root=tmp_path / "parked", observed_at="2026-08-26T02:00:00Z", producer=_producer(), date_cutoff=_CUTOFF
         )
+    diagnostic = raised.value.availability_diagnostic
+    assert diagnostic is not None
+    assert diagnostic["candidate"] == {
+        "candidate_id": P2_V8_CONTRACT.candidate_id,
+        "config_sha256": P2_V8_CONTRACT.config_sha256,
+    }
+    assert diagnostic["status"] == "NOT_VERIFIED"
+    assert diagnostic["reports"]["TQQQ"]["findings"] == [
+        "daily_bar_price_divergence"
+    ]
+    assert "bars" not in diagnostic["reports"]["TQQQ"]
 
 
 def test_v9_uses_the_same_two_source_p1_transport_but_a_distinct_identity(

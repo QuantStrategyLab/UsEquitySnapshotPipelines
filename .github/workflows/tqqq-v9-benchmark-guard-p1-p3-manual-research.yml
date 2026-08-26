@@ -85,7 +85,7 @@ jobs:
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import TqqqCoreOnlyFreeOhlcvP1Error, TqqqCoreOnlyFreeOhlcvP1UnavailableError, publish_tqqq_core_only_free_ohlcv_p1_inputs
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT
           observed = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-          status, manifest, reason = 'PARKED', '', 'FREE_SOURCE_UNAVAILABLE'
+          status, manifest, reason, availability = 'PARKED', '', 'FREE_SOURCE_UNAVAILABLE', {}
           try:
               result = publish_tqqq_core_only_free_ohlcv_p1_inputs(
                   TwelveYahooOhlcvObserver(os.environ.get('TWELVE_DATA_API_KEY', '')),
@@ -102,8 +102,10 @@ jobs:
                   contract=P2_V9_CONTRACT,
               )
               status, manifest, reason = 'ACCEPTED', result['manifest_sha256'], ''
-          except TqqqCoreOnlyFreeOhlcvP1UnavailableError:
-              pass
+          except TqqqCoreOnlyFreeOhlcvP1UnavailableError as exc:
+              observed_availability = getattr(exc, 'availability_diagnostic', None)
+              if isinstance(observed_availability, dict):
+                  availability = observed_availability
           except TqqqCoreOnlyFreeOhlcvP1Error:
               reason = 'FREE_SOURCE_CONTRACT_FAILURE'
           record = {
@@ -113,6 +115,7 @@ jobs:
               'status': status,
               'reason_code': reason,
               'input_manifest_sha256': manifest,
+              'availability_diagnostic': availability,
           }
           Path(os.environ['STATUS']).write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode())
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
