@@ -45,6 +45,11 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v6_longterm_compoundi
     build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan,
     build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary,
 )
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_forward_confirmation_p4_evidence import (
+    SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError,
+    build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan,
+    build_soxl_core_only_v7_forward_confirmation_p4_evidence_summary,
+)
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence import (
     SoxlCoreOnlyV7LongtermCompoundingCashReserveP3EvidenceError,
     build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan,
@@ -57,6 +62,7 @@ _P2_PROFILES = frozenset({
     "v5_longterm_drawdown",
     "v6_longterm_compounding",
     "v7_longterm_compounding_cash_reserve",
+    "v7_forward_confirmation",
 })
 
 
@@ -102,6 +108,7 @@ def _load_isolated_replay(*, p2_profile: str = "v4") -> Callable[..., Mapping[st
         "v5_longterm_drawdown": "run_soxl_core_only_v5_longterm_drawdown_p3_isolated.py",
         "v6_longterm_compounding": "run_soxl_core_only_v6_longterm_compounding_p3_isolated.py",
         "v7_longterm_compounding_cash_reserve": "run_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_isolated.py",
+        "v7_forward_confirmation": "run_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_isolated.py",
     }[p2_profile]
     runner_path = Path(__file__).with_name(runner_name)
     spec = importlib.util.spec_from_file_location("qsl_soxl_core_only_free_split_close_p3_isolated", runner_path)
@@ -128,6 +135,7 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
     p2_candidate_path: Path,
     isolated_replay: Callable[..., Mapping[str, object]],
     p2_profile: str = "v4",
+    p4_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return a metrics-only P3 summary after every fixed replay succeeds."""
     if not callable(isolated_replay) or p2_profile not in _P2_PROFILES:
@@ -161,7 +169,7 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
         )
         plan = build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(materialized)
         build_summary = build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary
-    else:
+    elif p2_profile == "v7_longterm_compounding_cash_reserve":
         materialized = materialize_soxl_core_only_free_split_close_p3_input(
             binding=binding,
             manifest=manifest,
@@ -171,6 +179,28 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
         )
         plan = build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan(materialized)
         build_summary = build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_summary
+    else:
+        if p4_policy is None:
+            raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("invalid SOXL V7 P4 policy")
+        materialized = materialize_soxl_core_only_free_split_close_p3_input(
+            binding=binding,
+            manifest=manifest,
+            closes_bytes=closes_bytes,
+            assurance_bytes=assurance_bytes,
+            p2_contract=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+        )
+        plan = build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan(
+            materialized,
+            policy=p4_policy,
+        )
+
+        def build_summary(*, materialized, evidence_plan, replay_executor):
+            return build_soxl_core_only_v7_forward_confirmation_p4_evidence_summary(
+                materialized=materialized,
+                evidence_plan=evidence_plan,
+                replay_executor=replay_executor,
+                policy=p4_policy,
+            )
 
     def execute(replay_input: Mapping[str, object]) -> Mapping[str, object]:
         with tempfile.TemporaryDirectory(prefix=f"qsl-soxl-{p2_profile}-p3-") as directory:
@@ -201,6 +231,7 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--ues-project", required=True, type=Path)
     parser.add_argument("--p2-candidate", required=True, type=Path)
     parser.add_argument("--p2-profile", default="v4", choices=tuple(sorted(_P2_PROFILES)))
+    parser.add_argument("--p4-policy", type=Path)
     return parser.parse_args(argv)
 
 
@@ -220,6 +251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             p2_candidate_path=args.p2_candidate,
             isolated_replay=_load_isolated_replay(p2_profile=args.p2_profile),
             p2_profile=args.p2_profile,
+            p4_policy=None if args.p4_policy is None else _read_json(args.p4_policy),
         )
     except (
         SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError,
@@ -228,6 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         SoxlCoreOnlyV5LongtermDrawdownP3EvidenceError,
         SoxlCoreOnlyV6LongtermCompoundingP3EvidenceError,
         SoxlCoreOnlyV7LongtermCompoundingCashReserveP3EvidenceError,
+        SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError,
         ValueError,
         OSError,
     ):

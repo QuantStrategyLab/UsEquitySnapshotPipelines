@@ -1,0 +1,32 @@
+{
+  "acceptance": {
+    "automatic_promotion": false,
+    "failure_behavior": "Any unavailable, incomplete, malformed, mismatched, mixed-identity, or non-deterministic forward input is INCONCLUSIVE/PARK. No parameter change, automatic waiver, source substitution, automatic retry, platform reload, or order is permitted.",
+    "promotion_requires_separate_human_decision": true,
+    "required_gates": [
+      "all 5/10/15bps forward maximum drawdowns do not exceed same-session SOXX",
+      "all 5/10/15bps forward Calmar values exceed same-session SOXX after cost",
+      "exact first 252 XNYS sessions after the frozen baseline are used once"
+    ]
+  },
+  "baseline": {
+    "p1_date_cutoff": "2026-08-25",
+    "p1_manifest_sha256": "d16f5b4f5191215010a6d40218423ab12a5ff419adb172d9d31f7145f914f406",
+    "p3_evidence_summary_sha256": "ef329f83923767cf9aa564f71bdcbd9225e6ac45f34a4b9ed9a465e2ac56242c",
+    "p3_verdict": "PASS_PENDING_FORWARD_CONFIRMATION"
+  },
+  "candidate": {
+    "candidate_id": "soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve",
+    "config_sha256": "843ab4e93e81985c2b3becc61a2f0b971508ccf25afa59acf402e75f574514d1"
+  },
+  "cost_scenarios_bps": [5, 10, 15],
+  "created_at": "2026-08-26T09:51:36Z",
+  "forward_window": {
+    "first_forward_xnys_session": "2026-08-26",
+    "initial_state": "100_percent_cash_at_first_forward_signal",
+    "selection_rule": "first_complete_fixed_window_only_no_rolling_relabeling",
+    "session_count": 252
+  },
+  "purpose": "P4 forward confirmation for the frozen SOXL V7 cash-reserve candidate. This policy is evidence-only and has no broker, execution, deployment, or platform authority.",
+  "schema_version": "qsl.soxl-soxx-core-only-p4-forward-confirmation-policy.v1"
+}
