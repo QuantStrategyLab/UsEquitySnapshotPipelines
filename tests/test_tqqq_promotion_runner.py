@@ -3,22 +3,21 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
-    TqqqPromotionIdentity,
-    TqqqPromotionContractError,
-    TqqqPromotionRunner,
     TQQQ_SWITCHING_CHARACTERIZATION_SHA256,
     TqqqEpisodeSummary,
+    TqqqPromotionContractError,
+    TqqqPromotionIdentity,
     TqqqPromotionPlan,
+    TqqqPromotionRunner,
     TqqqWindowReplay,
-    _cost_scenarios,
     _canonical_sha256,
-    _params,
+    _cost_scenarios,
     _p2_v5_oos_bounds,
     _p2_v7_long_horizon_bounds,
+    _params,
     _timing_sha256,
     _validate_identity,
     _validate_plan,
@@ -156,6 +155,26 @@ def test_v7_plan_adds_only_one_pre_registered_continuous_long_horizon() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "candidate_profile",
+    (
+        "tqqq_core_only_p2_v7_relative_benchmark",
+        "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark",
+    ),
+)
+def test_relative_benchmark_candidate_identity_is_an_explicitly_registered_profile(
+    candidate_profile: str,
+) -> None:
+    _validate_identity(
+        _identity(
+            qpk_revision="3" * 40,
+            ues_revision="f" * 40,
+            candidate_profile=candidate_profile,
+            candidate_variant=candidate_profile,
+        )
+    )
+
+
 @pytest.mark.parametrize("bad", [
     TqqqPromotionPlan(_plan().folds, date(2025, 7, 2), date(2026, 7, 31), 252, 0),
     TqqqPromotionPlan(_plan().folds, date(2025, 8, 1), date(2026, 7, 31), 20, 20),
@@ -167,6 +186,7 @@ def test_old_oos_or_purge_plan_is_rejected(bad: TqqqPromotionPlan) -> None:
 
 def test_active_runner_uses_qpk_evidence_runner_not_any_execution_api() -> None:
     import inspect
+
     import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as runner
 
     source = inspect.getsource(runner.run_tqqq_promotion_research)
