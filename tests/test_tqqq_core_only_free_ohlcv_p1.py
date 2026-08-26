@@ -15,6 +15,7 @@ from quant_platform_kit.data.multisource_assurance import (
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_free_ohlcv_p1 as p1
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     P2_V8_CONTRACT,
+    P2_V9_CONTRACT,
     expected_tqqq_core_only_sessions_for_contract,
 )
 
@@ -97,3 +98,28 @@ def test_v8_free_ohlcv_parks_when_a_mandatory_source_disagrees(tmp_path: Path) -
         p1.publish_tqqq_core_only_free_ohlcv_p1_inputs(
             _Observer(divergent=True), output_root=tmp_path / "parked", observed_at="2026-08-26T02:00:00Z", producer=_producer(), date_cutoff=_CUTOFF
         )
+
+
+def test_v9_uses_the_same_two_source_p1_transport_but_a_distinct_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "v9"
+
+    published = p1.publish_tqqq_core_only_free_ohlcv_p1_inputs(
+        _Observer(),
+        output_root=root,
+        observed_at="2026-08-26T02:00:00Z",
+        producer=_producer(),
+        date_cutoff=_CUTOFF,
+        contract=P2_V9_CONTRACT,
+    )
+
+    assert (
+        p1.verify_tqqq_core_only_free_ohlcv_p1_input_root(
+            root, contract=P2_V9_CONTRACT
+        )
+        == published["manifest_sha256"]
+    )
+    assert json.loads((root / "manifest.json").read_bytes())["profile"] == P2_V9_CONTRACT.candidate_id
+    with pytest.raises(p1.TqqqCoreOnlyFreeOhlcvP1Error):
+        p1.verify_tqqq_core_only_free_ohlcv_p1_input_root(root)

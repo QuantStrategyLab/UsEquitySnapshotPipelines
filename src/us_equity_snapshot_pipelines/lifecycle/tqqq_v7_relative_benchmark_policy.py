@@ -3,9 +3,9 @@
 This module consumes replay metrics only.  It never reads prices, fetches
 market data, writes evidence, or exposes an order/promotion path.
 
-P2 v8 is explicitly frozen to this same acceptance policy while retaining a
-separate source contract and candidate identity.  No other candidate may use
-this evaluator.
+P2 v8 and v9 are explicitly frozen to this same acceptance policy while
+retaining separate source contracts and candidate identities.  No other
+candidate may use this evaluator.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ from .tqqq_qqq_relative_benchmark import (
 
 _CANDIDATE_ID = "tqqq_core_only_p2_v7_relative_benchmark"
 _V8_CANDIDATE_ID = "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
-_CANDIDATE_IDS = frozenset({_CANDIDATE_ID, _V8_CANDIDATE_ID})
+_V9_CANDIDATE_ID = "tqqq_core_only_p2_v9_benchmark_drawdown_guard"
+_CANDIDATE_IDS = frozenset({_CANDIDATE_ID, _V8_CANDIDATE_ID, _V9_CANDIDATE_ID})
 _COSTS = (5, 10, 15)
 _SHORT_WINDOW_COUNT = 4
 _WINDOW_COUNT = _SHORT_WINDOW_COUNT + 1

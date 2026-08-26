@@ -17,6 +17,7 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     P2_V2_CANDIDATE_ID,
     P2_V7_CONTRACT,
     P2_V8_CONTRACT,
+    P2_V9_CONTRACT,
     resolve_tqqq_core_only_candidate_contract,
     verify_tqqq_core_only_input_root,
 )
@@ -121,7 +122,12 @@ def _completed_evidence_summary(
     required_fields = (
         _COMPLETED_EVIDENCE_FIELDS
         | {"relative_benchmark_policy_sha256"}
-        if candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}
+        if candidate_id
+        in {
+            P2_V7_CONTRACT.candidate_id,
+            P2_V8_CONTRACT.candidate_id,
+            P2_V9_CONTRACT.candidate_id,
+        }
         else _COMPLETED_EVIDENCE_FIELDS
     )
     if (
@@ -141,7 +147,11 @@ def _completed_evidence_summary(
     ):
         raise OrchestratorContractError("invalid bound P3 completion")
     try:
-        if candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}:
+        if candidate_id in {
+            P2_V7_CONTRACT.candidate_id,
+            P2_V8_CONTRACT.candidate_id,
+            P2_V9_CONTRACT.candidate_id,
+        }:
             result = validate_tqqq_p3_v7_result(
                 {
                     "evidence_sha256": value["evidence_sha256"],
@@ -205,8 +215,10 @@ def main(argv: list[str] | None = None) -> int:
         _require_replayable_candidate(contract)
         stage = "input_validation"
         manifest_sha256 = (
-            verify_tqqq_core_only_free_ohlcv_p1_input_root(args.snapshot_root)
-            if contract == P2_V8_CONTRACT
+            verify_tqqq_core_only_free_ohlcv_p1_input_root(
+                args.snapshot_root, contract=contract
+            )
+            if contract in {P2_V8_CONTRACT, P2_V9_CONTRACT}
             else verify_tqqq_core_only_input_root(args.snapshot_root, contract=contract)
         )
         input_payload = _snapshot_payload(args.snapshot_root)
@@ -240,7 +252,12 @@ def main(argv: list[str] | None = None) -> int:
                             "relative_benchmark_policy_sha256"
                         ]
                     }
-                    if contract.candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}
+                    if contract.candidate_id
+                    in {
+                        P2_V7_CONTRACT.candidate_id,
+                        P2_V8_CONTRACT.candidate_id,
+                        P2_V9_CONTRACT.candidate_id,
+                    }
                     else {}
                 ),
             },

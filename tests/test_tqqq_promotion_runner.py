@@ -160,6 +160,7 @@ def test_v7_plan_adds_only_one_pre_registered_continuous_long_horizon() -> None:
     (
         "tqqq_core_only_p2_v7_relative_benchmark",
         "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark",
+        "tqqq_core_only_p2_v9_benchmark_drawdown_guard",
     ),
 )
 def test_relative_benchmark_candidate_identity_is_an_explicitly_registered_profile(

@@ -1,4 +1,4 @@
-"""Validate a bounded, non-live permit before the TQQQ P1/P3 workflow reads Alpaca."""
+"""Validate a bounded, non-live permit before a TQQQ P1/P3 provider read."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from .tqqq_core_only_p1_binding import (
     P2_V7_CANDIDATE_ID,
     P2_V8_CANDIDATE_CONFIG_SHA256,
     P2_V8_CANDIDATE_ID,
+    P2_V9_CANDIDATE_CONFIG_SHA256,
+    P2_V9_CANDIDATE_ID,
 )
 
 # Keep the legacy V1 record valid for its existing manual workflow.  V7 has a
@@ -24,6 +26,7 @@ from .tqqq_core_only_p1_binding import (
 SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v1"
 TQQQ_V7_SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v2"
 TQQQ_V8_SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v3"
+TQQQ_V9_SCHEMA_VERSION = "qsl.tqqq-p1-p3-nonlive-run-mandate.v4"
 _MANDATE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _APPROVER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _RECORD = re.compile(r"^github-environment:market-data-nonlive$")
@@ -81,11 +84,16 @@ _CANDIDATE_BY_SCHEMA = {
         "candidate_id": P2_V8_CANDIDATE_ID,
         "config_sha256": P2_V8_CANDIDATE_CONFIG_SHA256,
     },
+    TQQQ_V9_SCHEMA_VERSION: {
+        "candidate_id": P2_V9_CANDIDATE_ID,
+        "config_sha256": P2_V9_CANDIDATE_CONFIG_SHA256,
+    },
 }
 _SCOPE_BY_SCHEMA = {
     SCHEMA_VERSION: _SCOPE,
     TQQQ_V7_SCHEMA_VERSION: _SCOPE,
     TQQQ_V8_SCHEMA_VERSION: _V8_SCOPE,
+    TQQQ_V9_SCHEMA_VERSION: _V8_SCOPE,
 }
 
 
@@ -216,6 +224,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "TQQQ_V7_SCHEMA_VERSION",
     "TQQQ_V8_SCHEMA_VERSION",
+    "TQQQ_V9_SCHEMA_VERSION",
     "TqqqP1P3MandateError",
     "canonical_tqqq_p1_p3_mandate_bytes",
     "load_tqqq_p1_p3_mandate",

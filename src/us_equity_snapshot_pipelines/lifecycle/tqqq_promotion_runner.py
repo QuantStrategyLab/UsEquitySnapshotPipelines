@@ -37,6 +37,7 @@ _P2_V4_PROFILE = "tqqq_core_only_p2_v4"
 _P2_V5_PROFILE = "tqqq_core_only_p2_v5"
 _P2_V7_PROFILE = "tqqq_core_only_p2_v7_relative_benchmark"
 _P2_V8_PROFILE = "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
+_P2_V9_PROFILE = "tqqq_core_only_p2_v9_benchmark_drawdown_guard"
 _DOMAIN = "us_equity"
 _ALLOWED_ASSETS = frozenset({"TQQQ", "QQQM", "BOXX"})
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -446,7 +447,8 @@ def _candidate_calendar_sessions(
 ) -> tuple[date, ...]:
     return (
         _p2_v5_calendar_sessions(end)
-        if candidate_profile in {_P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE}
+        if candidate_profile
+        in {_P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE, _P2_V9_PROFILE}
         else _FROZEN_XNYS_SESSIONS
     )
 
@@ -1477,6 +1479,7 @@ def _is_tqqq_candidate_id(value: object) -> bool:
         _P2_V5_PROFILE,
         _P2_V7_PROFILE,
         _P2_V8_PROFILE,
+        _P2_V9_PROFILE,
     }
 
 
@@ -1518,6 +1521,11 @@ def _validate_plan(
             (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
             (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
         ),
+        _P2_V9_PROFILE: (
+            (date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+            (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+            (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+        ),
     }
     expected = expected_by_candidate.get(candidate_profile)
     if expected is None:
@@ -1526,7 +1534,8 @@ def _validate_plan(
         raise TqqqPromotionContractError("P2 fold geometry mismatch")
     expected_evaluation = (
         (*_p2_v5_oos_bounds(plan.locked_oos_end), 1, 1)
-        if candidate_profile in {_P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE}
+        if candidate_profile
+        in {_P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE, _P2_V9_PROFILE}
         else (_P2_V4_LOCKED_OOS_START, _P2_V4_LOCKED_OOS_END, 1, 1)
         if candidate_profile == _P2_V4_PROFILE
         else (_LOCKED_OOS_START, _LOCKED_OOS_END, 252, 0)
@@ -1538,7 +1547,7 @@ def _validate_plan(
         plan.embargo_days,
     ) != expected_evaluation:
         raise TqqqPromotionContractError("P2 evaluation geometry mismatch")
-    if candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE}:
+    if candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE, _P2_V9_PROFILE}:
         expected_long = _p2_v7_long_horizon_bounds(plan.locked_oos_end)
         if (plan.long_horizon_start, plan.long_horizon_end) != expected_long:
             raise TqqqPromotionContractError("P2 long-horizon geometry mismatch")
@@ -1556,7 +1565,8 @@ def _cost_scenarios(
     values = (cost_assumptions.get("turnover_cost_bps"), *(cost_assumptions.get("stress_turnover_cost_bps") or ()))
     expected = (
         (5.0, 10.0, 15.0)
-        if candidate_profile in {_P2_V4_PROFILE, _P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE}
+        if candidate_profile
+        in {_P2_V4_PROFILE, _P2_V5_PROFILE, _P2_V7_PROFILE, _P2_V8_PROFILE, _P2_V9_PROFILE}
         else (5.0, 10.0, 25.0)
     )
     if tuple(float(value) for value in values) != expected:
@@ -2176,7 +2186,11 @@ def run_tqqq_promotion_research(
             cost_model=_cost_model(total_cost_bps),
             param_set_id=f"tqqq_core_only_{total_cost_bps}bp",
         )
-        if identity.candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE}:
+        if identity.candidate_profile in {
+            _P2_V7_PROFILE,
+            _P2_V8_PROFILE,
+            _P2_V9_PROFILE,
+        }:
             long_results = orchestrator.walk_forward(
                 identity.candidate_profile,
                 domain=_DOMAIN,
@@ -2206,7 +2220,8 @@ def run_tqqq_promotion_research(
             + [(plan.locked_oos_start.isoformat(), plan.locked_oos_end.isoformat())]
             + (
                 [(plan.long_horizon_start.isoformat(), plan.long_horizon_end.isoformat())]
-                if identity.candidate_profile in {_P2_V7_PROFILE, _P2_V8_PROFILE}
+                if identity.candidate_profile
+                in {_P2_V7_PROFILE, _P2_V8_PROFILE, _P2_V9_PROFILE}
                 and type(plan.long_horizon_start) is date
                 and type(plan.long_horizon_end) is date
                 else []
