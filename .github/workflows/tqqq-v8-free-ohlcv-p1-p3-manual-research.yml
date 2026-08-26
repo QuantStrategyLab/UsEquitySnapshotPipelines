@@ -117,7 +117,7 @@ jobs:
             --config config/tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark.json \
             --mandate-receipt-sha256 "$MANDATE_RECEIPT_SHA256" \
             --output-dir "$output_root" > "$result_path" || exit_code=$?
-          RESULT_PATH="$result_path" STATUS_PATH="$status_path" SNAPSHOT_ROOT="$root" EXIT_CODE="$exit_code" uv run --no-sync python - <<'PY'
+          RESULT_PATH="$result_path" STATUS_PATH="$status_path" SNAPSHOT_ROOT="$root" OUTPUT_ROOT="$output_root" EXIT_CODE="$exit_code" uv run --no-sync python - <<'PY'
           import hashlib
           import json
           import os
@@ -131,6 +131,10 @@ jobs:
           )
           from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
               validate_tqqq_p3_v7_result,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.relative_benchmark_terminal_summary import (
+              build_relative_benchmark_terminal_summary,
+              canonical_relative_benchmark_terminal_summary_bytes,
           )
 
           result_path = Path(os.environ['RESULT_PATH'])
@@ -186,6 +190,30 @@ jobs:
               index_path.write_bytes(canonical_tqqq_p3_v8_evidence_index_bytes(index))
               index_path.chmod(0o600)
               record['p3_evidence_index_sha256'] = hashlib.sha256(index_path.read_bytes()).hexdigest()
+              policy = json.loads(
+                  (Path(os.environ['OUTPUT_ROOT']) / 'relative-benchmark-policy.v1.json').read_text(
+                      encoding='utf-8'
+                  )
+              )
+              summary = build_relative_benchmark_terminal_summary(
+                  candidate={
+                      'candidate_id': P2_V8_CONTRACT.candidate_id,
+                      'config_sha256': P2_V8_CONTRACT.config_sha256,
+                  },
+                  input_manifest_sha256=os.environ['MANIFEST_SHA256'],
+                  p3_result=terminal,
+                  relative_benchmark_policy=policy,
+              )
+              summary_path = Path(os.environ['STATUS_PATH']).with_name(
+                  'relative-benchmark-summary.json'
+              )
+              summary_path.write_bytes(
+                  canonical_relative_benchmark_terminal_summary_bytes(summary)
+              )
+              summary_path.chmod(0o600)
+              record['relative_benchmark_summary_sha256'] = hashlib.sha256(
+                  summary_path.read_bytes()
+              ).hexdigest()
           status_path = Path(os.environ['STATUS_PATH'])
           status_path.write_bytes(json.dumps(record, sort_keys=True, separators=(',', ':')).encode())
           status_path.chmod(0o600)
@@ -206,6 +234,10 @@ jobs:
           if [ -f "$index_path" ]; then
             gcloud storage cp --quiet --no-clobber "$index_path" "${destination}/tqqq-v8-p3-evidence-index.json" >/dev/null
           fi
+          summary_path="${RUNNER_TEMP}/tqqq-v8-free-ohlcv/relative-benchmark-summary.json"
+          if [ -f "$summary_path" ]; then
+            gcloud storage cp --quiet --no-clobber "$summary_path" "${destination}/tqqq-v8-relative-benchmark-summary.json" >/dev/null
+          fi
       - name: Upload sanitized terminal status only
         if: always()
         uses: actions/upload-artifact@v7
@@ -216,6 +248,7 @@ jobs:
             ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-result.json
             ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-status.json
             ${{ runner.temp }}/tqqq-v8-free-ohlcv/p3-evidence-index.json
+            ${{ runner.temp }}/tqqq-v8-free-ohlcv/relative-benchmark-summary.json
           if-no-files-found: warn
           retention-days: 7
       - name: Record lifecycle boundary
