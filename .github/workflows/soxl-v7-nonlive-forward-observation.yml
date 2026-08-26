@@ -1,0 +1,186 @@
+name: SOXL V7 Non-Live Forward Observation
+
+on:
+  schedule:
+    # Tue--Sat UTC: evaluate the preceding fully closed XNYS session.
+    - cron: "45 2 * * 2-6"
+  workflow_dispatch:
+    inputs:
+      date_cutoff:
+        description: Optional exact completed XNYS session for a non-live replay.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: soxl-v7-nonlive-forward-observation
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install locked non-live runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Resolve exact completed XNYS session
+        id: session
+        env:
+          REQUESTED_DATE_CUTOFF: ${{ inputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from datetime import UTC, datetime
+
+          import exchange_calendars as xcals
+          import pandas as pd
+
+          requested = os.environ.get("REQUESTED_DATE_CUTOFF", "").strip()
+          calendar = xcals.get_calendar("XNYS")
+          now = datetime.now(UTC)
+          if requested:
+              session = calendar.date_to_session(pd.Timestamp(requested), direction="none")
+              if now < calendar.session_close(session):
+                  raise SystemExit("requested XNYS session is not complete")
+          else:
+              session = calendar.date_to_session(pd.Timestamp(now.date()), direction="previous")
+              if now < calendar.session_close(session):
+                  session = calendar.previous_session(session)
+          print(f"date_cutoff={pd.Timestamp(session).date().isoformat()}")
+          PY
+      - name: Authenticate for create-only lifecycle receipts
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Load the last immutable observation receipt
+        id: prior
+        env:
+          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          prefix="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward"
+          current="${prefix}/${DATE_CUTOFF}.json"
+          if gcloud storage ls "$current" >/dev/null 2>&1; then
+            echo "already_recorded=true" >> "$GITHUB_OUTPUT"
+            echo "SOXL_V7_NONLIVE_STATE=ALREADY_RECORDED" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          previous="$(gcloud storage ls "${prefix}/" 2>/dev/null | sort | awk -v current="$current" '$0 < current {candidate=$0} END {print candidate}')"
+          if [ -n "$previous" ]; then
+            gcloud storage cp --quiet "$previous" "${RUNNER_TEMP}/previous-soxl-v7-nonlive.json"
+            echo "previous_record=${RUNNER_TEMP}/previous-soxl-v7-nonlive.json" >> "$GITHUB_OUTPUT"
+          fi
+          echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+      - name: Acquire assured V7 P1 root or park
+        if: steps.prior.outputs.already_recorded != 'true'
+        id: p1
+        env:
+          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-v7-nonlive/p1-root"
+          ROOT="$root" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          from scripts.acquire_soxl_core_only_free_split_close_p1 import TwelveYahooSplitAdjustedCloseObserver
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_free_split_close_p1 import (
+              SoxlCoreOnlyFreeSplitCloseP1Error,
+              SoxlCoreOnlyFreeSplitCloseP1UnavailableError,
+              publish_soxl_core_only_free_split_close_p1_inputs,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
+              P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+          )
+
+          root = Path(os.environ["ROOT"])
+          result = {"status": "PARKED"}
+          try:
+              published = publish_soxl_core_only_free_split_close_p1_inputs(
+                  TwelveYahooSplitAdjustedCloseObserver(os.environ.get("TWELVE_DATA_API_KEY", "")),
+                  output_root=root,
+                  observed_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                  producer={
+                      "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+                      "commit_sha": os.environ["GITHUB_SHA"],
+                      "tree_sha": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+                      "tool": "soxl_v7_nonlive_forward_observation",
+                      "tool_version": "v1",
+                  },
+                  date_cutoff=os.environ["DATE_CUTOFF"],
+                  p2_contract=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+              )
+              result = {"status": "ACCEPTED", "manifest_sha256": published["manifest_sha256"]}
+          except (SoxlCoreOnlyFreeSplitCloseP1Error, SoxlCoreOnlyFreeSplitCloseP1UnavailableError):
+              pass
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"status={result['status']}\n")
+          print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Run exact V7 Shadow and simulated-Paper observation
+        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        env:
+          PREVIOUS_RECORD: ${{ steps.prior.outputs.previous_record }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-v7-nonlive/p1-root"
+          ues="${RUNNER_TEMP}/soxl-v7-nonlive/ues"
+          output="${RUNNER_TEMP}/soxl-v7-nonlive/record.json"
+          git clone --quiet --no-checkout https://github.com/QuantStrategyLab/UsEquityStrategies.git "$ues"
+          git -C "$ues" fetch --quiet --depth=1 origin 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+          git -C "$ues" checkout --quiet --detach 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+          args=(
+            --p1-root "$root"
+            --p2-candidate config/soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve.json
+            --ues-project "$ues"
+            --observed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --output "$output"
+          )
+          if [ -n "${PREVIOUS_RECORD:-}" ]; then
+            args+=(--previous-record "$PREVIOUS_RECORD")
+          fi
+          uv run --no-sync python scripts/run_soxl_v7_nonlive_forward_observation.py "${args[@]}"
+      - name: Create-only publish non-live receipt
+        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        env:
+          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          record="${RUNNER_TEMP}/soxl-v7-nonlive/record.json"
+          test -s "$record"
+          destination="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward/${DATE_CUTOFF}.json"
+          gcloud storage cp --quiet --no-clobber "$record" "$destination"
+          echo "SOXL_V7_NONLIVE_RECORD=CREATE_ONLY_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record a safe parking state when P1 is unavailable
+        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status != 'ACCEPTED'
+        run: |
+          echo "SOXL_V7_NONLIVE_STATE=PARKED_P1_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload sanitized non-live receipt
+        if: always() && steps.prior.outputs.already_recorded != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: soxl-v7-nonlive-forward-${{ steps.session.outputs.date_cutoff }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/soxl-v7-nonlive/record.json
+          if-no-files-found: ignore
+          retention-days: 35
