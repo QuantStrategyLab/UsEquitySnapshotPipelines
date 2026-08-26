@@ -47,6 +47,7 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v6_longterm_compoundi
 )
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_forward_confirmation_p4_evidence import (
     SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError,
+    SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete,
     build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan,
     build_soxl_core_only_v7_forward_confirmation_p4_evidence_summary,
 )
@@ -253,6 +254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             p2_profile=args.p2_profile,
             p4_policy=None if args.p4_policy is None else _read_json(args.p4_policy),
         )
+    except SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete:
+        result = _parked("p4_forward_window_not_complete")
     except (
         SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError,
         SoxlCoreOnlyFreeSplitCloseP3MaterializerError,

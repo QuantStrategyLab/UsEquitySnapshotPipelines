@@ -120,7 +120,7 @@ def test_plan_uses_only_the_first_fixed_post_freeze_window() -> None:
 
 
 def test_plan_parks_until_the_entire_fixed_forward_window_exists() -> None:
-    with pytest.raises(evidence.SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError):
+    with pytest.raises(evidence.SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete):
         evidence.build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan(
             _materialized(session_count=251),
             policy=_policy(),

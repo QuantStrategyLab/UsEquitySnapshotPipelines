@@ -3,6 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_forward_confirmation_p4_evidence import (
+    SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete,
+)
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "run_soxl_core_only_free_split_close_p3_evidence.py"
 
@@ -195,3 +200,34 @@ def test_v4_cli_parks_invalid_paths_without_echoing_them(capsys, tmp_path) -> No
         "status": "PARKED",
     }
     assert str(absent) not in json.dumps(output)
+
+
+def test_cli_reports_an_incomplete_p4_window_as_expected_waiting(monkeypatch, capsys, tmp_path) -> None:
+    module = _module()
+    path = tmp_path / "input.json"
+    args = SimpleNamespace(
+        p1_binding=path,
+        input_manifest=path,
+        closes_member=path,
+        assurance_member=path,
+        ues_project=path,
+        p2_candidate=path,
+        p2_profile="v7_forward_confirmation",
+        p4_policy=path,
+    )
+    monkeypatch.setattr(module, "_arguments", lambda _argv: args)
+    monkeypatch.setattr(module, "_read_json", lambda _path: {})
+    monkeypatch.setattr(module, "_read_member", lambda _path: b"{}")
+    monkeypatch.setattr(module, "_load_isolated_replay", lambda **_kwargs: lambda **_inner: {})
+    monkeypatch.setattr(
+        module,
+        "run_soxl_core_only_free_split_close_p3_offline_evidence",
+        lambda **_kwargs: (_ for _ in ()).throw(SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete("waiting")),
+    )
+
+    assert module.main([]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "failure_class": "p4_forward_window_not_complete",
+        "schema_version": module.RUN_SCHEMA,
+        "status": "PARKED",
+    }

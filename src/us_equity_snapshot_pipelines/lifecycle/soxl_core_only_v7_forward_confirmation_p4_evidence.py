@@ -45,8 +45,18 @@ class SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError(ValueError):
     """Fail-closed P4 error without raw price or account material."""
 
 
+class SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete(
+    SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError
+):
+    """The only expected non-error P4 waiting state: the fixed window is incomplete."""
+
+
 def _fail() -> None:
     raise SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError("invalid SOXL V7 P4 forward-confirmation input")
+
+
+def _window_incomplete() -> None:
+    raise SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete("SOXL V7 P4 forward window is incomplete")
 
 
 def _canonical(value: object) -> bytes:
@@ -132,7 +142,7 @@ def build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan(
         or not forward_dates
         or forward_dates[0] != P4_V7_FORWARD_CONFIRMATION_CONTRACT.first_forward_xnys_session
     ):
-        _fail()
+        _window_incomplete()
     selected_dates = forward_dates[:required_count]
     p1_identity = _mapping(payload["p1_identity"])
     p2_identity = _mapping(payload["p2_identity"])
@@ -302,6 +312,7 @@ __all__ = [
     "FORWARD_CONFIRMATION_PLAN_SCHEMA",
     "FORWARD_CONFIRMATION_SUMMARY_SCHEMA",
     "SoxlCoreOnlyV7ForwardConfirmationP4EvidenceError",
+    "SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete",
     "build_soxl_core_only_v7_forward_confirmation_p4_evidence_plan",
     "build_soxl_core_only_v7_forward_confirmation_p4_evidence_summary",
 ]
