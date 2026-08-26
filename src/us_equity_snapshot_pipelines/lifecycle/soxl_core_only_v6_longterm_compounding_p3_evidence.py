@@ -85,14 +85,14 @@ def _sessions_by_date(materialized: Mapping[str, object]) -> dict[str, dict[str,
     return result
 
 
-def build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(
-    materialized: Mapping[str, object],
+def _build_longterm_compounding_p3_evidence_plan(
+    materialized: Mapping[str, object], *, p2_contract: object
 ) -> dict[str, object]:
     """Build fixed folds/OOS plus one continuous long-horizon request per cost."""
     try:
         base = build_soxl_core_only_free_split_close_p3_evidence_plan(
             materialized,
-            p2_contract=P2_V6_LONGTERM_COMPOUNDING_CONTRACT,
+            p2_contract=p2_contract,
         )
     except SoxlCoreOnlyFreeSplitCloseP3EvidenceError as exc:
         raise SoxlCoreOnlyV6LongtermCompoundingP3EvidenceError(
@@ -128,17 +128,31 @@ def build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(
     return result
 
 
+def build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(
+    materialized: Mapping[str, object],
+) -> dict[str, object]:
+    """Build v6's fixed plan without permitting its identity to drift."""
+    return _build_longterm_compounding_p3_evidence_plan(
+        materialized,
+        p2_contract=P2_V6_LONGTERM_COMPOUNDING_CONTRACT,
+    )
+
+
 def _build_base_summary(
     *,
     materialized: Mapping[str, object],
     evidence_plan: Mapping[str, object],
     replay_executor: Callable[[Mapping[str, object]], Mapping[str, object]],
+    p2_contract: object,
 ) -> dict[str, object]:
-    expected_plan = build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan(materialized)
+    expected_plan = _build_longterm_compounding_p3_evidence_plan(
+        materialized,
+        p2_contract=p2_contract,
+    )
     if _mapping(evidence_plan) != expected_plan or not callable(replay_executor):
         _fail()
     summary = _load_module("soxl_core_only_p3_evidence_summary.py", "qsl_soxl_core_only_p3_v6_summary_core")
-    summary.P2_V3_CONTRACT = P2_V6_LONGTERM_COMPOUNDING_CONTRACT
+    summary.P2_V3_CONTRACT = p2_contract
     summary.MATERIALIZED_INPUT_SCHEMA = MATERIALIZED_INPUT_SCHEMA
     summary.build_soxl_core_only_p3_evidence_plan = partial(
         build_soxl_core_only_v6_longterm_compounding_p3_evidence_plan,
@@ -155,18 +169,22 @@ def _build_base_summary(
         ) from exc
 
 
-def build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary(
+def _build_longterm_compounding_p3_evidence_summary(
     *,
     materialized: Mapping[str, object],
     evidence_plan: Mapping[str, object],
     replay_executor: Callable[[Mapping[str, object]], Mapping[str, object]],
+    p2_contract: object,
 ) -> dict[str, object]:
-    """Return metrics-only v6 evidence; a later forward gate remains required."""
-    result = _mapping(_build_base_summary(
-        materialized=materialized,
-        evidence_plan=evidence_plan,
-        replay_executor=replay_executor,
-    ))
+    """Return fixed-plan metrics-only evidence for the supplied P2 identity."""
+    result = _mapping(
+        _build_base_summary(
+            materialized=materialized,
+            evidence_plan=evidence_plan,
+            replay_executor=replay_executor,
+            p2_contract=p2_contract,
+        )
+    )
     claimed_digest = result.pop("evidence_summary_sha256", None)
     if not isinstance(claimed_digest, str) or claimed_digest != _sha256(result):
         _fail()
@@ -230,6 +248,21 @@ def build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary(
     }
     result["evidence_summary_sha256"] = _sha256(result)
     return result
+
+
+def build_soxl_core_only_v6_longterm_compounding_p3_evidence_summary(
+    *,
+    materialized: Mapping[str, object],
+    evidence_plan: Mapping[str, object],
+    replay_executor: Callable[[Mapping[str, object]], Mapping[str, object]],
+) -> dict[str, object]:
+    """Return metrics-only v6 evidence; a later forward gate remains required."""
+    return _build_longterm_compounding_p3_evidence_summary(
+        materialized=materialized,
+        evidence_plan=evidence_plan,
+        replay_executor=replay_executor,
+        p2_contract=P2_V6_LONGTERM_COMPOUNDING_CONTRACT,
+    )
 
 
 __all__ = [

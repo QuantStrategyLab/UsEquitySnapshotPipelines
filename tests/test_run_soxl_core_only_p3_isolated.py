@@ -259,6 +259,20 @@ def test_stateful_replay_input_requires_ordered_complete_sessions() -> None:
         module._validate_replay_input(replay)
 
 
+def test_stateful_replay_target_weights_preserve_an_explicit_cash_reserve() -> None:
+    module = _module()
+
+    weights, cash_weight = module._target_asset_weights(
+        {"SOXL": 33_950.0, "SOXX": 24_250.0, "BOXX": 38_800.0},
+        equity=100_000.0,
+    )
+
+    assert weights == {"SOXL": 0.3395, "SOXX": 0.2425, "BOXX": 0.388}
+    assert cash_weight == pytest.approx(0.03)
+    with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
+        module._target_asset_weights({"SOXL": 60_000.0, "SOXX": 30_000.0, "BOXX": 20_000.0}, equity=100_000.0)
+
+
 def test_outer_replay_runner_binds_verified_source_replay(monkeypatch, tmp_path) -> None:
     module = _module()
     replay_path = tmp_path / "replay.json"
