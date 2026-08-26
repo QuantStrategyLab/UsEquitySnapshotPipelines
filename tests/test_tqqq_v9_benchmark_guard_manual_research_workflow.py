@@ -18,6 +18,7 @@ def test_v9_workflow_is_manual_candidate_bound_and_nonexecuting() -> None:
     assert "ALPACA_API_KEY_ID" not in workflow
     assert "ALPACA_API_SECRET_KEY" not in workflow
     assert "contract=P2_V9_CONTRACT" in workflow
+    assert "availability_diagnostic" in workflow
     assert "build_tqqq_p3_v9_evidence_index" in workflow
     assert "--no-clobber" in workflow
     assert "P4_P5_P6=NOT_AUTHORIZED" in workflow
