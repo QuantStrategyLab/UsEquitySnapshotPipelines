@@ -7,11 +7,11 @@ import hashlib
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from quant_platform_kit.common.models import PortfolioSnapshot, Position
@@ -33,6 +33,9 @@ from us_equity_strategies.entrypoints import (
     build_tqqq_core_only_p2_v2_research_decision,
 )
 
+from .tqqq_core_only_free_ohlcv_p1 import (
+    validate_tqqq_core_only_free_ohlcv_input_payload,
+)
 from .tqqq_core_only_p1_binding import (
     CANDIDATE_CONFIG_SHA256,
     P2_V2_CONTRACT,
@@ -43,9 +46,12 @@ from .tqqq_core_only_p1_binding import (
     P2_V5_UES_REVISION,
     P2_V7_CONTRACT,
     P2_V7_UES_REVISION,
+    P2_V8_CONTRACT,
+    P2_V8_UES_REVISION,
     TqqqCoreOnlyCandidateContract,
     _expected_xnys_sessions,
     resolve_tqqq_core_only_candidate_contract,
+    tqqq_core_only_expected_source_ids,
     tqqq_core_only_p1_binding_sha256_for_contract,
     validate_tqqq_core_only_input_manifest,
     validate_tqqq_core_only_p1_binding_for_contract,
@@ -59,8 +65,8 @@ from .tqqq_promotion_runner import (
     TqqqSwitchingTrace,
     TqqqWindowEvidence,
     TqqqWindowReplay,
-    _resolve_runner_revision,
     _p2_v7_long_horizon_bounds,
+    _resolve_runner_revision,
     build_tqqq_switching_characterization_contract,
     evaluate_tqqq_pre_result_acceptance,
     run_tqqq_promotion_research,
@@ -78,6 +84,7 @@ _P2_V2_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v2"
 _P2_V4_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v4"
 _P2_V5_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v5"
 _P2_V7_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v7"
+_P2_V8_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v8"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
@@ -240,6 +247,7 @@ def _validate_config(value: Mapping[str, Any]) -> dict[str, Any]:
         _P2_V4_CONFIG_SCHEMA,
         _P2_V5_CONFIG_SCHEMA,
         _P2_V7_CONFIG_SCHEMA,
+        _P2_V8_CONFIG_SCHEMA,
     }:
         candidate = copy.deepcopy(dict(value))
         risk_standard_id = "P2_CANDIDATE_SEMANTIC_BINDING"
@@ -288,10 +296,11 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
         P2_V4_CONTRACT.candidate_id: _P2_V4_CONFIG_SCHEMA,
         P2_V5_CONTRACT.candidate_id: _P2_V5_CONFIG_SCHEMA,
         P2_V7_CONTRACT.candidate_id: _P2_V7_CONFIG_SCHEMA,
+        P2_V8_CONTRACT.candidate_id: _P2_V8_CONFIG_SCHEMA,
     }[contract.candidate_id]
     if candidate.get("schema_version") != expected_schema:
         raise TqqqPromotionEvidenceError("invalid frozen P2 candidate")
-    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT, P2_V7_CONTRACT}:
+    if contract in {P2_V2_CONTRACT, P2_V4_CONTRACT, P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
         source = candidate.get("source")
         if (
             not isinstance(source, Mapping)
@@ -305,6 +314,8 @@ def _candidate_contract(candidate: Mapping[str, Any]) -> TqqqCoreOnlyCandidateCo
                 else P2_V5_UES_REVISION
                 if contract == P2_V5_CONTRACT
                 else P2_V7_UES_REVISION
+                if contract == P2_V7_CONTRACT
+                else P2_V8_UES_REVISION
             )
             or source.get("entrypoint") != _P2_V2_REPLAY_CALLABLE
         ):
@@ -400,7 +411,7 @@ def _plan_from_candidate(
             if isinstance(fold, Mapping)
             and fold.get("purge_sessions_after_train") == purge_days
         )
-        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
+        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
             rolling = plan["rolling_locked_oos"]
             if (
                 not isinstance(rolling, Mapping)
@@ -429,7 +440,7 @@ def _plan_from_candidate(
                 raise ValueError
             locked_start = sessions[-252]
             locked_end = cutoff
-            if contract == P2_V7_CONTRACT:
+            if contract in {P2_V7_CONTRACT, P2_V8_CONTRACT}:
                 continuous = plan["continuous_long_horizon"]
                 if (
                     not isinstance(continuous, Mapping)
@@ -484,14 +495,20 @@ def _validate_input(
     if not isinstance(candidate, Mapping):
         raise TqqqPromotionEvidenceError("missing frozen candidate")
     contract = _candidate_contract(candidate)
-    payload = _exact_mapping(value, {"binding", "input_manifest", "bars"}, "input payload")
+    payload = _exact_mapping(
+        value,
+        {"binding", "input_manifest", "bars", "assurance"}
+        if contract == P2_V8_CONTRACT
+        else {"binding", "input_manifest", "bars"},
+        "input payload",
+    )
     try:
-        binding = validate_tqqq_core_only_p1_binding_for_contract(
-            payload["binding"], contract
-        )
-        manifest_sha256 = validate_tqqq_core_only_input_manifest(
-            payload["input_manifest"], binding, contract=contract
-        )
+        if contract == P2_V8_CONTRACT:
+            manifest_sha256 = validate_tqqq_core_only_free_ohlcv_input_payload(payload)
+        else:
+            manifest_sha256 = ""
+        binding = validate_tqqq_core_only_p1_binding_for_contract(payload["binding"], contract)
+        manifest_sha256 = validate_tqqq_core_only_input_manifest(payload["input_manifest"], binding, contract=contract) if contract != P2_V8_CONTRACT else manifest_sha256
         manifest = validate_research_input_manifest(payload["input_manifest"])
     except (InvalidResearchInputEvidence, ValueError):
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
@@ -500,7 +517,7 @@ def _validate_input(
     try:
         plan = _plan_from_candidate(
             candidate, data_cutoff=str(identity["date_cutoff"])
-            if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}
+            if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}
             else None,
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -523,22 +540,36 @@ def _validate_input(
         raise TqqqPromotionEvidenceError("invalid bars schema")
     bars_bytes = _canonical(bars_payload)
     members = manifest["members"]
-    if (
-        len(members) != 1
-        or members[0]["path"] != "bars.json"
-        or members[0]["media_type"] != "application/json"
-        or members[0]["size_bytes"] != len(bars_bytes)
-        or members[0]["sha256"] != _sha256(bars_bytes)
-    ):
+    expected_members = (
+        {
+            "assurance.json": {
+                "path": "assurance.json",
+                "media_type": "application/json",
+                "size_bytes": len(_canonical(payload["assurance"])),
+                "sha256": _sha256(_canonical(payload["assurance"])),
+            },
+            "bars.json": {
+                "path": "bars.json",
+                "media_type": "application/json",
+                "size_bytes": len(bars_bytes),
+                "sha256": _sha256(bars_bytes),
+            },
+        }
+        if contract == P2_V8_CONTRACT
+        else {
+            "bars.json": {
+                "path": "bars.json",
+                "media_type": "application/json",
+                "size_bytes": len(bars_bytes),
+                "sha256": _sha256(bars_bytes),
+            }
+        }
+    )
+    if {member["path"]: member for member in members} != expected_members:
         raise TqqqPromotionEvidenceError("input identity mismatch")
     parsed: dict[str, tuple[_Bar, ...]] = {}
     sources = manifest["sources"]
-    expected_source_ids = {
-        "alpaca_sip_1day_adjustment_all:BOXX",
-        "alpaca_sip_1day_adjustment_all:QQQ",
-        "alpaca_sip_1day_adjustment_all:QQQM",
-        "alpaca_sip_1day_adjustment_all:TQQQ",
-    }
+    expected_source_ids = tqqq_core_only_expected_source_ids(contract)
     source_digests = {item["source_id"]: item["content_sha256"] for item in sources}
     if len(sources) != len(expected_source_ids) or set(source_digests) != expected_source_ids:
         raise TqqqPromotionEvidenceError("invalid provider source identities")
@@ -547,7 +578,7 @@ def _validate_input(
         rows = symbol_payload["bars"]
         if not isinstance(rows, list) or not rows:
             raise TqqqPromotionEvidenceError("missing immutable bars")
-        if source_digests[f"alpaca_sip_1day_adjustment_all:{symbol}"] != _sha256(
+        if contract != P2_V8_CONTRACT and source_digests[f"alpaca_sip_1day_adjustment_all:{symbol}"] != _sha256(
             _canonical(symbol_payload)
         ):
             raise TqqqPromotionEvidenceError("input identity mismatch")
@@ -594,7 +625,7 @@ def _validate_input(
     )
     if observed_locked_sessions != expected_locked_sessions:
         raise TqqqPromotionEvidenceError("locked OOS calendar identity mismatch")
-    if contract == P2_V7_CONTRACT:
+    if contract in {P2_V7_CONTRACT, P2_V8_CONTRACT}:
         if plan.long_horizon_start is None or plan.long_horizon_end is None:
             raise TqqqPromotionEvidenceError("long-horizon calendar identity mismatch")
         expected_long_sessions = tuple(
@@ -629,7 +660,7 @@ def _bound_data_cutoff(
         cutoff = identity["date_cutoff"]
     except (KeyError, TypeError, ValueError):
         raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding") from None
-    if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
+    if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
         if not isinstance(cutoff, str):
             raise TqqqPromotionEvidenceError("invalid TQQQ core-only input binding")
         return cutoff
@@ -1363,7 +1394,7 @@ def run_tqqq_promotion_evidence(
     locked = _locked_oos_window(result)
     metrics = locked.relative_metrics
     relative_benchmark_policy: dict[str, object] | None = None
-    if candidate.strategy_profile == P2_V7_CONTRACT.candidate_id:
+    if candidate.strategy_profile in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}:
         try:
             relative_benchmark_policy = evaluate_tqqq_v7_relative_benchmark_policy(result)
             verdict = str(relative_benchmark_policy["strategy_verdict"])

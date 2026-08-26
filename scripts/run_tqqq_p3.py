@@ -10,14 +10,15 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import (
+    verify_tqqq_core_only_free_ohlcv_p1_input_root,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import (
     P2_V2_CANDIDATE_ID,
     P2_V7_CONTRACT,
+    P2_V8_CONTRACT,
     resolve_tqqq_core_only_candidate_contract,
     verify_tqqq_core_only_input_root,
-)
-from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
-    run_tqqq_promotion_evidence,
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
     P3_STATUS,
@@ -25,6 +26,9 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
     validate_tqqq_p3_v7_result,
+)
+from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
+    run_tqqq_promotion_evidence,
 )
 
 _SOURCE_COMMIT = "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2"
@@ -83,11 +87,15 @@ def _read_json(path: Path) -> object:
 
 
 def _snapshot_payload(snapshot_root: Path) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "binding": _read_json(snapshot_root / "binding.json"),
         "input_manifest": _read_json(snapshot_root / "manifest.json"),
         "bars": _read_json(snapshot_root / "bars.json"),
     }
+    assurance = snapshot_root / "assurance.json"
+    if assurance.is_file():
+        payload["assurance"] = _read_json(assurance)
+    return payload
 
 
 def _candidate_contract(config_payload: object):
@@ -113,7 +121,7 @@ def _completed_evidence_summary(
     required_fields = (
         _COMPLETED_EVIDENCE_FIELDS
         | {"relative_benchmark_policy_sha256"}
-        if candidate_id == P2_V7_CONTRACT.candidate_id
+        if candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}
         else _COMPLETED_EVIDENCE_FIELDS
     )
     if (
@@ -133,7 +141,7 @@ def _completed_evidence_summary(
     ):
         raise OrchestratorContractError("invalid bound P3 completion")
     try:
-        if candidate_id == P2_V7_CONTRACT.candidate_id:
+        if candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}:
             result = validate_tqqq_p3_v7_result(
                 {
                     "evidence_sha256": value["evidence_sha256"],
@@ -196,8 +204,10 @@ def main(argv: list[str] | None = None) -> int:
         contract = _candidate_contract(config_payload)
         _require_replayable_candidate(contract)
         stage = "input_validation"
-        manifest_sha256 = verify_tqqq_core_only_input_root(
-            args.snapshot_root, contract=contract
+        manifest_sha256 = (
+            verify_tqqq_core_only_free_ohlcv_p1_input_root(args.snapshot_root)
+            if contract == P2_V8_CONTRACT
+            else verify_tqqq_core_only_input_root(args.snapshot_root, contract=contract)
         )
         input_payload = _snapshot_payload(args.snapshot_root)
         stage = "orchestrator_contract"
@@ -230,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                             "relative_benchmark_policy_sha256"
                         ]
                     }
-                    if contract.candidate_id == P2_V7_CONTRACT.candidate_id
+                    if contract.candidate_id in {P2_V7_CONTRACT.candidate_id, P2_V8_CONTRACT.candidate_id}
                     else {}
                 ),
             },

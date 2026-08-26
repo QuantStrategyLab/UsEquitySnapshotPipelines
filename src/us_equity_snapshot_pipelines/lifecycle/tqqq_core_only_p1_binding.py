@@ -39,7 +39,11 @@ P2_V5_UES_REVISION = P2_V2_UES_REVISION
 P2_V7_CANDIDATE_ID = "tqqq_core_only_p2_v7_relative_benchmark"
 P2_V7_CANDIDATE_CONFIG_SHA256 = "455fd66ad56734a291cfcfecacb63fef7bf7bfa5857f3a2f2f92bba169a18a12"
 P2_V7_UES_REVISION = P2_V2_UES_REVISION
+P2_V8_CANDIDATE_ID = "tqqq_core_only_p2_v8_free_ohlcv_relative_benchmark"
+P2_V8_CANDIDATE_CONFIG_SHA256 = "94cb9832bd32afc07b65922f684283c1cf55b9ffd0b0d798838ad7b96f11ee14"
+P2_V8_UES_REVISION = P2_V2_UES_REVISION
 INPUT_CONTRACT_ID = "tqqq_core_only_alpaca_sip_adjustment_all.v1"
+FREE_OHLCV_INPUT_CONTRACT_ID = "tqqq_core_only_free_split_adjusted_ohlcv_assured.v1"
 _INPUT_SCHEMA = "qsl.tqqq_core_only_p1_data_binding.v1"
 _UNIVERSE = ("QQQ", "TQQQ", "QQQM", "BOXX")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -91,12 +95,19 @@ P2_V7_CONTRACT = TqqqCoreOnlyCandidateContract(
     ues_revision=P2_V7_UES_REVISION,
     qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
 )
+P2_V8_CONTRACT = TqqqCoreOnlyCandidateContract(
+    candidate_id=P2_V8_CANDIDATE_ID,
+    config_sha256=P2_V8_CANDIDATE_CONFIG_SHA256,
+    ues_revision=P2_V8_UES_REVISION,
+    qpk_revision="730ad9f3983bd90cd75adecb67fcf483ffb96736",
+)
 _SUPPORTED_CONTRACTS = {
     _P2_V1_CONTRACT.candidate_id: _P2_V1_CONTRACT,
     P2_V2_CONTRACT.candidate_id: P2_V2_CONTRACT,
     P2_V4_CONTRACT.candidate_id: P2_V4_CONTRACT,
     P2_V5_CONTRACT.candidate_id: P2_V5_CONTRACT,
     P2_V7_CONTRACT.candidate_id: P2_V7_CONTRACT,
+    P2_V8_CONTRACT.candidate_id: P2_V8_CONTRACT,
 }
 
 
@@ -182,6 +193,30 @@ def _require_contract(
     return contract
 
 
+def tqqq_core_only_input_contract_id(contract: TqqqCoreOnlyCandidateContract) -> str:
+    """Return the immutable input contract identifier for a known candidate."""
+    return (
+        FREE_OHLCV_INPUT_CONTRACT_ID
+        if _require_contract(contract) == P2_V8_CONTRACT
+        else INPUT_CONTRACT_ID
+    )
+
+
+def tqqq_core_only_expected_source_ids(contract: TqqqCoreOnlyCandidateContract) -> frozenset[str]:
+    """Return the exact manifest source IDs without performing acquisition."""
+    frozen_contract = _require_contract(contract)
+    if frozen_contract == P2_V8_CONTRACT:
+        return frozenset(
+            f"{source_id}:{symbol}"
+            for source_id in (
+                "twelve_data_1day_split_adjusted",
+                "yahoo_finance_chart_1day_split_adjusted",
+            )
+            for symbol in _UNIVERSE
+        )
+    return frozenset(f"alpaca_sip_1day_adjustment_all:{symbol}" for symbol in _UNIVERSE)
+
+
 def build_tqqq_core_only_p1_binding_for_contract(
     contract: TqqqCoreOnlyCandidateContract,
     *,
@@ -195,13 +230,64 @@ def build_tqqq_core_only_p1_binding_for_contract(
     strategy parameter.
     """
     frozen_contract = _require_contract(contract)
-    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
+    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
         resolved_date_cutoff = _validate_p2_v5_date_cutoff(date_cutoff)
     elif date_cutoff is not None:
         raise TqqqCoreOnlyP1BindingError("unexpected TQQQ core-only date cutoff")
     else:
         resolved_date_cutoff = (
             "2026-08-04" if frozen_contract == P2_V4_CONTRACT else "2026-07-31"
+        )
+    data_identity: dict[str, object] = {
+        "calendar": {
+            "calendar_id": "XNYS",
+            "timezone": "America/New_York",
+            "source": "exchange_calendars",
+        },
+        "universe": list(_UNIVERSE),
+        "date_cutoff": resolved_date_cutoff,
+        "cost_assumptions": {
+            "turnover_cost_bps": 5.0,
+            "stress_turnover_cost_bps": [10.0, 15.0]
+            if frozen_contract == P2_V8_CONTRACT
+            else [10.0, 25.0],
+            "borrow_cost_bps": 0.0,
+            "cash_yield_assumption": 0.0,
+            "execution_timing": "next_complete_trading_session_after_signal_effective_date",
+        },
+        "retention": {
+            "policy": "PRIVATE_CLOUD_SHORT_TERM_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
+            "redistribution_allowed": False,
+            "long_term_retention_authorized": False,
+        },
+    }
+    if frozen_contract == P2_V8_CONTRACT:
+        data_identity.update(
+            {
+                "provider": "TWELVE_DATA_AND_YAHOO_FINANCE",
+                "adjustment": {
+                    "policy": "split_adjusted",
+                    "source": "Twelve Data canonical split-adjusted OHLCV verified by Yahoo Finance",
+                },
+                "assurance": {
+                    "canonical_source_id": "twelve_data_1day_split_adjusted",
+                    "verifier_source_id": "yahoo_finance_chart_1day_split_adjusted",
+                    "required_price_fields": ["open", "high", "low", "close"],
+                    "compare_volume": False,
+                    "price_relative_tolerance": 0.0001,
+                },
+            }
+        )
+    else:
+        data_identity.update(
+            {
+                "provider": "ALPACA_MARKET_DATA",
+                "feed": "SIP",
+                "adjustment": {
+                    "policy": "total_return_adjusted",
+                    "source": "ALPACA_MARKET_DATA adjustment=all(split,dividend,spin-off)",
+                },
+            }
         )
     return {
         "schema_version": _INPUT_SCHEMA,
@@ -214,33 +300,7 @@ def build_tqqq_core_only_p1_binding_for_contract(
             "revision": frozen_contract.ues_revision,
         },
         "cloud_storage": build_tqqq_core_only_p1_cloud_storage_binding(),
-        "data_identity": {
-            "provider": "ALPACA_MARKET_DATA",
-            "feed": "SIP",
-            "calendar": {
-                "calendar_id": "XNYS",
-                "timezone": "America/New_York",
-                "source": "exchange_calendars",
-            },
-            "adjustment": {
-                "policy": "total_return_adjusted",
-                "source": "ALPACA_MARKET_DATA adjustment=all(split,dividend,spin-off)",
-            },
-            "universe": list(_UNIVERSE),
-            "date_cutoff": resolved_date_cutoff,
-            "cost_assumptions": {
-                "turnover_cost_bps": 5.0,
-                "stress_turnover_cost_bps": [10.0, 25.0],
-                "borrow_cost_bps": 0.0,
-                "cash_yield_assumption": 0.0,
-                "execution_timing": "next_complete_trading_session_after_signal_effective_date",
-            },
-            "retention": {
-                "policy": "PRIVATE_CLOUD_SHORT_TERM_RESEARCH_SNAPSHOT_NO_REDISTRIBUTION",
-                "redistribution_allowed": False,
-                "long_term_retention_authorized": False,
-            },
-        },
+        "data_identity": data_identity,
     }
 
 
@@ -271,7 +331,7 @@ def validate_tqqq_core_only_p1_binding_for_contract(
     """Reject a binding that is not exact for its immutable candidate identity."""
     frozen_contract = _require_contract(contract)
     date_cutoff: str | None = None
-    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}:
+    if frozen_contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}:
         try:
             identity = value["data_identity"]
             if not isinstance(identity, Mapping):
@@ -315,12 +375,21 @@ def build_tqqq_core_only_input_manifest(
     """Build the future immutable-input manifest from one already-collected member."""
     frozen_contract = _require_contract(contract)
     frozen = validate_tqqq_core_only_p1_binding_for_contract(binding, frozen_contract)
+    normalized_source_content_sha256: Mapping[str, str]
+    if frozen_contract == P2_V8_CONTRACT:
+        normalized_source_content_sha256 = source_content_sha256
+    else:
+        normalized_source_content_sha256 = {
+            f"alpaca_sip_1day_adjustment_all:{symbol}": digest
+            for symbol, digest in source_content_sha256.items()
+        }
     if (
         not isinstance(member_bytes, bytes)
-        or set(source_content_sha256) != set(_UNIVERSE)
+        or set(normalized_source_content_sha256)
+        != tqqq_core_only_expected_source_ids(frozen_contract)
         or any(
             not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
-            for digest in source_content_sha256.values()
+            for digest in normalized_source_content_sha256.values()
         )
     ):
         raise TqqqCoreOnlyP1BindingError("invalid TQQQ core-only input member")
@@ -331,10 +400,14 @@ def build_tqqq_core_only_input_manifest(
         {
             "schema_version": "research_input_manifest.v1",
             "manifest_id": f"tqqq-core-only-{binding_digest[:24]}-{hashlib.sha256(member_bytes).hexdigest()[:24]}",
-            "research_input_contract_id": INPUT_CONTRACT_ID,
+            "research_input_contract_id": tqqq_core_only_input_contract_id(frozen_contract),
             "domain": "us_equity",
             "profile": frozen_contract.candidate_id,
-            "artifact_type": "immutable_adjusted_ohlcv_etf_only",
+            "artifact_type": (
+                "immutable_assured_split_adjusted_ohlcv_etf_only"
+                if frozen_contract == P2_V8_CONTRACT
+                else "immutable_adjusted_ohlcv_etf_only"
+            ),
             "observed_at": observed_at,
             "effective_at": observed_at,
             "as_of": observed_at,
@@ -350,12 +423,12 @@ def build_tqqq_core_only_input_manifest(
             },
             "sources": [
                 {
-                    "source_id": f"alpaca_sip_1day_adjustment_all:{symbol}",
+                    "source_id": source_id,
                     "revision": binding_digest,
                     "observed_at": observed_at,
-                    "content_sha256": source_content_sha256[symbol],
+                    "content_sha256": normalized_source_content_sha256[source_id],
                 }
-                for symbol in sorted(_UNIVERSE)
+                for source_id in sorted(tqqq_core_only_expected_source_ids(frozen_contract))
             ],
             "members": [
                 {
@@ -387,13 +460,18 @@ def validate_tqqq_core_only_input_manifest(
     identity = frozen["data_identity"]
     assert isinstance(identity, dict)
     binding_digest = tqqq_core_only_p1_binding_sha256_for_contract(frozen, frozen_contract)
-    expected_source_ids = {f"alpaca_sip_1day_adjustment_all:{symbol}" for symbol in _UNIVERSE}
+    expected_source_ids = tqqq_core_only_expected_source_ids(frozen_contract)
     sources = validated["sources"]
     if (
-        validated["research_input_contract_id"] != INPUT_CONTRACT_ID
+        validated["research_input_contract_id"] != tqqq_core_only_input_contract_id(frozen_contract)
         or validated["domain"] != "us_equity"
         or validated["profile"] != frozen_contract.candidate_id
-        or validated["artifact_type"] != "immutable_adjusted_ohlcv_etf_only"
+        or validated["artifact_type"]
+        != (
+            "immutable_assured_split_adjusted_ohlcv_etf_only"
+            if frozen_contract == P2_V8_CONTRACT
+            else "immutable_adjusted_ohlcv_etf_only"
+        )
         or validated["calendar"]
         != {
             **identity["calendar"],
@@ -627,7 +705,7 @@ def _validate_frozen_historical_coverage(
     expected_by_symbol = expected_tqqq_core_only_sessions_for_contract(
         contract,
         date_cutoff=identity.get("date_cutoff")
-        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT}
+        if contract in {P2_V5_CONTRACT, P2_V7_CONTRACT, P2_V8_CONTRACT}
         else None,
     )
     for symbol in _UNIVERSE:
@@ -796,7 +874,7 @@ def verify_tqqq_core_only_input_root(
         ):
             raise ValueError
         source_hashes = {source["source_id"]: source["content_sha256"] for source in manifest["sources"]}
-        if source_hashes != {
+        if frozen_contract != P2_V8_CONTRACT and source_hashes != {
             f"alpaca_sip_1day_adjustment_all:{symbol}": hashlib.sha256(_canonical(payload["symbols"][symbol])).hexdigest()
             for symbol in _UNIVERSE
         }:
