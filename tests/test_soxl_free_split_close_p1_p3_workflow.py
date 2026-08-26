@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "soxl-free-split-close-p1-p3-research.yml"
 V5_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "soxl-v5-longterm-drawdown-p1-p3-research.yml"
+V7_WORKFLOW = (
+    Path(__file__).parents[1]
+    / ".github"
+    / "workflows"
+    / "soxl-v7-longterm-compounding-cash-reserve-p1-p3-research.yml"
+)
 
 
 def test_v4_workflow_is_manual_market_data_research_without_broker_or_raw_artifact_upload() -> None:
@@ -37,6 +42,24 @@ def test_v5_workflow_is_manual_market_data_research_with_only_sanitized_relative
     assert "--p2-profile v5_longterm_drawdown" in workflow
     assert "longterm_compounding_gate" in workflow
     assert "SOXL_V5_P3_REVIEW=" in workflow
+    assert "actions/upload-artifact" not in workflow
+    assert "google-github-actions" not in workflow
+    assert "gcloud " not in workflow
+    assert "broker_order" not in workflow
+    assert "id-token: write" not in workflow
+
+
+def test_v7_workflow_is_manual_cash_reserve_research_without_promotion_or_execution() -> None:
+    workflow = V7_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" not in workflow
+    assert "environment: market-data-nonlive" in workflow
+    assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in workflow
+    assert "P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT" in workflow
+    assert "--p2-profile v7_longterm_compounding_cash_reserve" in workflow
+    assert "automatic_promotion" in workflow
+    assert "SOXL_V7_P3_REVIEW=" in workflow
     assert "actions/upload-artifact" not in workflow
     assert "google-github-actions" not in workflow
     assert "gcloud " not in workflow

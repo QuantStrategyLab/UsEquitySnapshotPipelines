@@ -387,6 +387,29 @@ def _validate_replay_input(value: object) -> dict[str, object]:
     }
 
 
+def _target_asset_weights(
+    target_values: Mapping[str, object], *, equity: float
+) -> tuple[dict[str, float], float]:
+    """Convert source target values into asset and retained-cash weights.
+
+    P2 source output is expressed in current-equity dollars.  The sum may be
+    below one when a frozen candidate deliberately keeps cash.  Normalizing
+    only the assets would silently remove that reserve and make P3 disagree
+    with the source plan, so cash remains an explicit residual weight.
+    """
+    if equity <= 0.0:
+        _fail()
+    weights = {
+        symbol: _finite(target_values[symbol], nonnegative=True) / equity
+        for symbol in _SYMBOLS
+    }
+    total_assets = sum(weights.values())
+    if total_assets <= 0.0 or total_assets > 1.0 + 1e-12:
+        _fail()
+    cash_weight = max(1.0 - total_assets, 0.0)
+    return weights, cash_weight
+
+
 def _source_stateful_replay(value: object, candidate: object) -> dict[str, object]:
     """Replay next-session target changes once inside the pinned UES process."""
     replay = _validate_replay_input(value)
@@ -403,6 +426,7 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
     cash = float(replay["initial_equity"])
     quantities = {symbol: 0.0 for symbol in _SYMBOLS}
     pending_weights: dict[str, float] | None = None
+    pending_cash_weight: float | None = None
     one_way_turnover = 0.0
     cost_total = 0.0
     decisions: list[dict[str, object]] = []
@@ -419,6 +443,8 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
         executed_turnover = 0.0
         executed_cost = 0.0
         if pending_weights is not None:
+            if pending_cash_weight is None:
+                _fail()
             current_weights = {symbol: market_values[symbol] / equity_before_trade for symbol in _SYMBOLS}
             executed_turnover = 0.5 * sum(
                 abs(pending_weights[symbol] - current_weights[symbol]) for symbol in _SYMBOLS
@@ -429,7 +455,7 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
                 raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL replay equity invalid")
             for symbol in _SYMBOLS:
                 quantities[symbol] = pending_weights[symbol] * equity_after_trade / prices[symbol]
-            cash = 0.0
+            cash = pending_cash_weight * equity_after_trade
             market_values = {symbol: quantities[symbol] * prices[symbol] for symbol in _SYMBOLS}
             one_way_turnover += executed_turnover
             cost_total += executed_cost
@@ -461,14 +487,7 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
         )
         summary = _summarize_source_decision(decision, as_of=as_of)
         target_values = _mapping(summary["target_values"])
-        total_target_value = sum(_finite(target_values[symbol], nonnegative=True) for symbol in _SYMBOLS)
-        if total_target_value <= 0.0:
-            _fail()
-        pending_weights = {
-            symbol: _finite(target_values[symbol], nonnegative=True) / total_target_value for symbol in _SYMBOLS
-        }
-        if not math.isclose(sum(pending_weights.values()), 1.0, rel_tol=0.0, abs_tol=1e-12):
-            _fail()
+        pending_weights, pending_cash_weight = _target_asset_weights(target_values, equity=equity)
         decisions.append(
             {
                 "signal_as_of": as_of.isoformat(),
@@ -482,6 +501,7 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
                 "executed_cost": executed_cost,
                 "decision": summary,
                 "pending_target_weights": pending_weights,
+                "pending_cash_weight": pending_cash_weight,
             }
         )
     result: dict[str, object] = {
