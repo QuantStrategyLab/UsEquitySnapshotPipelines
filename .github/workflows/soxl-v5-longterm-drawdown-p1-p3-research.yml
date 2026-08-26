@@ -190,7 +190,7 @@ jobs:
               output.write(f'status={status}\n')
               output.write(f'strategy_verdict={strategy_verdict}\n')
               output.write(f'evidence_summary_sha256={evidence_sha256}\n')
-            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write(f'SOXL_V5_P3_EVIDENCE_STATUS={"EVIDENCE_COMPLETE" if status == "SUCCESS" else status}\n')
               output.write(f'SOXL_V5_P3_STRATEGY_VERDICT={strategy_verdict}\n')
               if evidence_sha256:
