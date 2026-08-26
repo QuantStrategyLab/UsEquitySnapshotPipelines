@@ -13,13 +13,20 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ..lifecycle.tqqq_core_only_p1_binding import (
-    INPUT_CONTRACT_ID,
-    P2_V5_CONTRACT,
-)
 from ..lifecycle.soxl_core_only_p2_v3_contract import (
     INPUT_CONTRACT_ID as SOXL_CORE_ONLY_INPUT_CONTRACT_ID,
+)
+from ..lifecycle.soxl_core_only_p2_v3_contract import (
     P2_V3_CONTRACT,
+)
+from ..lifecycle.soxl_core_only_p2_v7_longterm_compounding_cash_reserve_contract import (
+    P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
+)
+from ..lifecycle.tqqq_core_only_p1_binding import (
+    FREE_OHLCV_INPUT_CONTRACT_ID,
+    INPUT_CONTRACT_ID,
+    P2_V5_CONTRACT,
+    P2_V9_CONTRACT,
 )
 
 STRATEGY_CANDIDATE_REGISTRY_SCHEMA = "qsl.strategy-candidate-registry.v1"
@@ -186,9 +193,40 @@ SOXL_SOXX_CORE_ONLY_P2_V3 = StrategyCandidate(
     ),
 )
 
+TQQQ_CORE_ONLY_P2_V9 = StrategyCandidate(
+    candidate_id=P2_V9_CONTRACT.candidate_id,
+    kind=SINGLE_STRATEGY,
+    config_sha256=P2_V9_CONTRACT.config_sha256,
+    data_contract_id=FREE_OHLCV_INPUT_CONTRACT_ID,
+    source_revisions=(
+        SourceRevision("QuantStrategyLab/QuantPlatformKit", P2_V9_CONTRACT.qpk_revision),
+        SourceRevision("QuantStrategyLab/QuantStrategyPlugins", "af1963e102d9fd42cd23622d1d2799d2ea654747"),
+        SourceRevision("QuantStrategyLab/UsEquityStrategies", P2_V9_CONTRACT.ues_revision),
+    ),
+)
+
+SOXL_SOXX_CORE_ONLY_P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE = StrategyCandidate(
+    candidate_id=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.candidate_id,
+    kind=SINGLE_STRATEGY,
+    config_sha256=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+    data_contract_id=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.input_contract_id,
+    source_revisions=(
+        SourceRevision(
+            "QuantStrategyLab/QuantPlatformKit",
+            P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.qpk_revision,
+        ),
+        SourceRevision(
+            "QuantStrategyLab/UsEquityStrategies",
+            P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.ues_revision,
+        ),
+    ),
+)
+
 CURRENT_RESEARCH_CANDIDATES: tuple[StrategyCandidate, ...] = (
     TQQQ_CORE_ONLY_P2_V5,
     SOXL_SOXX_CORE_ONLY_P2_V3,
+    TQQQ_CORE_ONLY_P2_V9,
+    SOXL_SOXX_CORE_ONLY_P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE,
 )
 
 
