@@ -59,31 +59,40 @@ jobs:
           batch="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance/settlement-observations.json"
           mkdir -p "$(dirname "$batch")"
           BATCH="$batch" uv run --no-sync python - <<'PY'
-          import json, os
+          import json, os, time
           from datetime import UTC, datetime
           from pathlib import Path
           from scripts.acquire_tqqq_core_only_free_ohlcv_p1 import TwelveYahooOhlcvObserver
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import observe_tqqq_core_only_free_ohlcv_settlement
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT, _expected_xnys_sessions
-          observed = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
           cutoffs = tuple(reversed(_expected_xnys_sessions(os.environ["DATE_CUTOFF"])[-3:]))
           observer = TwelveYahooOhlcvObserver(os.environ.get("TWELVE_DATA_API_KEY", ""))
-          observations = [
-              {
-                  "age_sessions": age,
-                  "observation": observe_tqqq_core_only_free_ohlcv_settlement(
-                      observer,
-                      observed_at=observed,
-                      date_cutoff=cutoff.isoformat(),
-                      contract=P2_V9_CONTRACT,
-                  ),
-              }
-              for age, cutoff in enumerate(cutoffs)
-          ]
+          observations = []
+          for age, cutoff in enumerate(cutoffs):
+              # Two four-symbol Twelve Data probes use the free-tier minute window.
+              # Start the final probe in a fresh window instead of treating its
+              # rate-limit response as a market-data conclusion.
+              if age == 2:
+                  time.sleep(60)
+              observations.append(
+                  {
+                      "age_sessions": age,
+                      "observation": observe_tqqq_core_only_free_ohlcv_settlement(
+                          observer,
+                          observed_at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                          date_cutoff=cutoff.isoformat(),
+                          contract=P2_V9_CONTRACT,
+                      ),
+                  }
+              )
           batch = {
               "schema_version": "qsl.tqqq-free-ohlcv-settlement-observation-batch.v1",
               "candidate": {"candidate_id": P2_V9_CONTRACT.candidate_id, "config_sha256": P2_V9_CONTRACT.config_sha256},
               "anchor_date_cutoff": os.environ["DATE_CUTOFF"],
+              "collection_policy": {
+                  "twelve_data_requests_before_rate_window_wait": 8,
+                  "rate_window_wait_seconds_before_t_plus_2": 60,
+              },
               "observations": observations,
               "no_order": True,
               "automatic_promotion": False,
@@ -145,4 +154,4 @@ jobs:
             ${{ runner.temp }}/tqqq-v9-free-ohlcv-assurance/settlement-observations.json
             ${{ runner.temp }}/tqqq-v9-free-ohlcv-assurance/settlement-tracks.json
           if-no-files-found: error
-          retention-days: 45
+          retention-days: 35
