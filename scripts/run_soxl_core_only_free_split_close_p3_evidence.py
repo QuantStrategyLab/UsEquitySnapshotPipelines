@@ -340,8 +340,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             p2_profile=args.p2_profile,
             p4_policy=None if args.p4_policy is None else _read_json(args.p4_policy),
             risk_observation_output=args.risk_observation_output,
-            risk_observation_v2_output=args.risk_observation_v2_output,
-            risk_observation_comparison_output=args.risk_observation_comparison_output,
+            # Keep the existing CLI test seam and callers that provide a
+            # legacy namespace compatible; argparse itself always supplies
+            # these two optional fields.
+            risk_observation_v2_output=getattr(args, "risk_observation_v2_output", None),
+            risk_observation_comparison_output=getattr(args, "risk_observation_comparison_output", None),
         )
     except SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete:
         result = _parked("p4_forward_window_not_complete")
