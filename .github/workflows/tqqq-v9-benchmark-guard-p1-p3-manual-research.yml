@@ -45,7 +45,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f"mandate_id={value['mandate_id']}\nmandate_receipt_sha256={value['mandate_receipt_sha256']}\n")
           PY
-      - name: Resolve immutable V9 date cutoff
+      - name: Resolve immutable settled V9 date cutoff
         id: binding
         run: |
           set -euo pipefail
@@ -53,7 +53,12 @@ jobs:
           import os
           from datetime import UTC, datetime, timedelta
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT, _expected_xnys_sessions, build_tqqq_core_only_p1_binding_for_contract
-          cutoff = _expected_xnys_sessions((datetime.now(UTC).date() - timedelta(days=1)).isoformat())[-1].isoformat()
+          # The free dual-source contract is intentionally used only after
+          # the calibration's T+2 settlement point.  This avoids treating a
+          # normal same-session vendor revision as a P1 source failure while
+          # retaining the existing exact two-source assurance gate.
+          completed_sessions = _expected_xnys_sessions((datetime.now(UTC).date() - timedelta(days=1)).isoformat())
+          cutoff = completed_sessions[-3].isoformat()
           build_tqqq_core_only_p1_binding_for_contract(P2_V9_CONTRACT, date_cutoff=cutoff)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'date_cutoff={cutoff}\n')
