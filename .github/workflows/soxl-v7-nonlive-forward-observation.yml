@@ -79,6 +79,7 @@ jobs:
           current="${prefix}/${DATE_CUTOFF}.json"
           state_dir="${RUNNER_TEMP}/soxl-v7-nonlive"
           listing="${state_dir}/prior-receipt-listing.txt"
+          listing_error="${state_dir}/prior-receipt-listing.err"
           mkdir -p "$state_dir"
           if gcloud storage ls "$current" >/dev/null 2>&1; then
             echo "already_recorded=true" >> "$GITHUB_OUTPUT"
@@ -86,7 +87,13 @@ jobs:
             echo "SOXL_V7_NONLIVE_STATE=ALREADY_RECORDED" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          if ! gcloud storage ls "${prefix}/" > "$listing" 2>/dev/null; then
+          if ! gcloud storage ls "${prefix}/" > "$listing" 2> "$listing_error"; then
+            if grep -Fq "matched no objects" "$listing_error"; then
+              echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+              echo "history_available=true" >> "$GITHUB_OUTPUT"
+              echo "SOXL_V7_NONLIVE_STATE=FIRST_RECEIPT_BOOTSTRAP" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             echo "already_recorded=false" >> "$GITHUB_OUTPUT"
             echo "history_available=false" >> "$GITHUB_OUTPUT"
             echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
