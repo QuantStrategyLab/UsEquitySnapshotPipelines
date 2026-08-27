@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -55,6 +56,10 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_longterm_compoundi
     SoxlCoreOnlyV7LongtermCompoundingCashReserveP3EvidenceError,
     build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan,
     build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_summary,
+)
+from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_long_horizon_risk_observation import (
+    SoxlCoreOnlyV7LongHorizonRiskObservationError,
+    build_soxl_core_only_v7_long_horizon_risk_observation,
 )
 
 RUN_SCHEMA = "qsl.soxl-soxx-core-only-free-split-close-p3-offline-run.v1"
@@ -101,6 +106,25 @@ def _read_member(path: Path) -> bytes:
         raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("invalid SOXL free-source offline P3 input") from exc
 
 
+def _write_private_risk_observation(path: Path, value: Mapping[str, object]) -> None:
+    """Create one caller-selected private file without publishing or replacing it."""
+    if not path.parent.is_dir() or path.exists():
+        raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("private SOXL risk observation output unavailable")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(_canonical(value))
+            output.write(b"\n")
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError(
+            "private SOXL risk observation output unavailable"
+        ) from exc
+
+
 def _load_isolated_replay(*, p2_profile: str = "v4") -> Callable[..., Mapping[str, object]]:
     if p2_profile not in _P2_PROFILES:
         raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("invalid SOXL free-source offline P3 profile")
@@ -137,6 +161,7 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
     isolated_replay: Callable[..., Mapping[str, object]],
     p2_profile: str = "v4",
     p4_policy: Mapping[str, object] | None = None,
+    risk_observation_output: Path | None = None,
 ) -> dict[str, object]:
     """Return a metrics-only P3 summary after every fixed replay succeeds."""
     if not callable(isolated_replay) or p2_profile not in _P2_PROFILES:
@@ -203,7 +228,12 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
                 policy=p4_policy,
             )
 
+    replay_cache: dict[bytes, Mapping[str, object]] = {}
+
     def execute(replay_input: Mapping[str, object]) -> Mapping[str, object]:
+        cache_key = _canonical(replay_input)
+        if cache_key in replay_cache:
+            return replay_cache[cache_key]
         with tempfile.TemporaryDirectory(prefix=f"qsl-soxl-{p2_profile}-p3-") as directory:
             input_path = Path(directory) / "replay-input.json"
             input_path.write_bytes(_canonical(replay_input))
@@ -214,13 +244,30 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
             )
         if not isinstance(result, Mapping):
             raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("isolated SOXL P3 runner unavailable")
+        replay_cache[cache_key] = result
         return result
 
-    return build_summary(
+    summary = build_summary(
         materialized=materialized,
         evidence_plan=plan,
         replay_executor=execute,
     )
+    if risk_observation_output is not None:
+        if p2_profile != "v7_longterm_compounding_cash_reserve":
+            raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("private SOXL risk observation profile unavailable")
+        try:
+            observation = build_soxl_core_only_v7_long_horizon_risk_observation(
+                materialized=materialized,
+                evidence_plan=plan,
+                evidence_summary=summary,
+                replay_executor=execute,
+            )
+        except SoxlCoreOnlyV7LongHorizonRiskObservationError as exc:
+            raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError(
+                "private SOXL risk observation unavailable"
+            ) from exc
+        _write_private_risk_observation(risk_observation_output, observation)
+    return summary
 
 
 def _arguments(argv: Sequence[str]) -> argparse.Namespace:
@@ -233,6 +280,7 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--p2-candidate", required=True, type=Path)
     parser.add_argument("--p2-profile", default="v4", choices=tuple(sorted(_P2_PROFILES)))
     parser.add_argument("--p4-policy", type=Path)
+    parser.add_argument("--risk-observation-output", type=Path)
     return parser.parse_args(argv)
 
 
@@ -253,6 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             isolated_replay=_load_isolated_replay(p2_profile=args.p2_profile),
             p2_profile=args.p2_profile,
             p4_policy=None if args.p4_policy is None else _read_json(args.p4_policy),
+            risk_observation_output=args.risk_observation_output,
         )
     except SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete:
         result = _parked("p4_forward_window_not_complete")
