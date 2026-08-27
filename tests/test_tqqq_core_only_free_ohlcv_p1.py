@@ -140,6 +140,32 @@ def test_unavailable_source_status_remains_distinct_from_healthy_source_disagree
     ) == "FREE_SOURCE_UNAVAILABLE"
 
 
+def test_assurance_observation_is_redacted_and_never_grants_execution(tmp_path: Path) -> None:
+    record = p1.observe_tqqq_core_only_free_ohlcv_assurance(
+        _Observer(divergent=True),
+        output_root=tmp_path / "parked",
+        observed_at="2026-08-26T02:00:00Z",
+        producer=_producer(),
+        date_cutoff=_CUTOFF,
+        contract=P2_V9_CONTRACT,
+    )
+
+    assert record["schema_version"] == "qsl.tqqq-free-ohlcv-assurance-observation.v1"
+    assert record["candidate"] == {
+        "candidate_id": P2_V9_CONTRACT.candidate_id,
+        "config_sha256": P2_V9_CONTRACT.config_sha256,
+    }
+    assert record["status"] == "PARKED"
+    assert record["reason_code"] == "FREE_SOURCE_DISAGREEMENT"
+    assert record["input_manifest_sha256"] == ""
+    assert record["no_order"] is True
+    assert record["automatic_promotion"] is False
+    diagnostic = record["availability_diagnostic"]
+    assert isinstance(diagnostic, dict)
+    assert diagnostic["reports"]["TQQQ"]["price_agreement"]["field_delta_bps"]["open"]["max_bps"] > 90.0
+    assert "bars" not in diagnostic["reports"]["TQQQ"]
+
+
 def test_v9_uses_the_same_two_source_p1_transport_but_a_distinct_identity(
     tmp_path: Path,
 ) -> None:
