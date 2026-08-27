@@ -62,6 +62,7 @@ _VERIFIER = YAHOO_FINANCE_DAILY_SOURCE_ID
 _OUTPUT_FILENAMES = frozenset({"binding.json", "bars.json", "assurance.json", "manifest.json"})
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _PRICE_FIELDS = ("open", "high", "low", "close")
+_ASSURANCE_OBSERVATION_SCHEMA = "qsl.tqqq-free-ohlcv-assurance-observation.v1"
 
 
 class TqqqCoreOnlyFreeOhlcvP1Error(ValueError):
@@ -293,6 +294,64 @@ def classify_tqqq_core_only_free_ohlcv_availability(value: object) -> str:
         ):
             return "FREE_SOURCE_DISAGREEMENT"
     return "FREE_SOURCE_UNAVAILABLE"
+
+
+def observe_tqqq_core_only_free_ohlcv_assurance(
+    observer: TqqqCoreOnlyFreeOhlcvObserver,
+    *,
+    output_root: str | Path,
+    observed_at: str,
+    producer: Mapping[str, object],
+    date_cutoff: str,
+    contract: TqqqCoreOnlyCandidateContract = P2_V8_CONTRACT,
+) -> dict[str, object]:
+    """Produce a redacted, non-promoting P1 assurance observation.
+
+    The supplied ``output_root`` is a runner-local staging directory required
+    by the immutable P1 publisher.  This helper never uploads or returns its
+    bars; callers may retain only the returned, source-safe observation.
+    ``VERIFIED`` means the frozen P1 gate accepted the observations, not that a
+    strategy was replayed, promoted, or authorized to trade.
+    """
+    cutoff = _cutoff(date_cutoff)
+    frozen_contract = _free_contract(contract)
+    status = "PARKED"
+    reason_code = "FREE_SOURCE_CONTRACT_FAILURE"
+    input_manifest_sha256 = ""
+    availability: dict[str, object] = {}
+    try:
+        result = publish_tqqq_core_only_free_ohlcv_p1_inputs(
+            observer,
+            output_root=output_root,
+            observed_at=observed_at,
+            producer=producer,
+            date_cutoff=cutoff,
+            contract=frozen_contract,
+        )
+        status = "VERIFIED"
+        reason_code = ""
+        input_manifest_sha256 = str(result["manifest_sha256"])
+    except TqqqCoreOnlyFreeOhlcvP1UnavailableError as exc:
+        observed_availability = exc.availability_diagnostic
+        if isinstance(observed_availability, Mapping):
+            availability = dict(observed_availability)
+            reason_code = classify_tqqq_core_only_free_ohlcv_availability(availability)
+    except TqqqCoreOnlyFreeOhlcvP1Error:
+        pass
+    return {
+        "schema_version": _ASSURANCE_OBSERVATION_SCHEMA,
+        "candidate": {
+            "candidate_id": frozen_contract.candidate_id,
+            "config_sha256": frozen_contract.config_sha256,
+        },
+        "date_cutoff": cutoff,
+        "status": status,
+        "reason_code": reason_code,
+        "input_manifest_sha256": input_manifest_sha256,
+        "availability_diagnostic": availability,
+        "no_order": True,
+        "automatic_promotion": False,
+    }
 
 
 def _nearest_rank_bps(values: list[float], percentile: int) -> float:
@@ -579,6 +638,7 @@ __all__ = [
     "TqqqCoreOnlyFreeOhlcvP1Error",
     "TqqqCoreOnlyFreeOhlcvP1UnavailableError",
     "classify_tqqq_core_only_free_ohlcv_availability",
+    "observe_tqqq_core_only_free_ohlcv_assurance",
     "publish_tqqq_core_only_free_ohlcv_p1_inputs",
     "validate_tqqq_core_only_free_ohlcv_assurance",
     "validate_tqqq_core_only_free_ohlcv_input_payload",
