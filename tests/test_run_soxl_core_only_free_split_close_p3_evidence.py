@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_forward_confirmation_p4_evidence import (
     SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete,
 )
@@ -173,6 +175,89 @@ def test_v7_facade_can_create_only_a_caller_selected_private_risk_observation(mo
     assert result == {"status": "SUCCESS", "profile": "v7"}
     assert json.loads(output.read_text(encoding="utf-8"))["raw_return_paths"] == "private-only"
     assert output.stat().st_mode & 0o777 == 0o600
+
+
+def test_v7_facade_writes_explicit_private_v1_v2_and_redacted_comparison_only(monkeypatch, tmp_path) -> None:
+    module = _module()
+    v1_output = tmp_path / "private-risk-observation-v1.json"
+    v2_output = tmp_path / "private-risk-observation-v2.json"
+    comparison_output = tmp_path / "private-risk-observation-comparison.json"
+    monkeypatch.setattr(module, "materialize_soxl_core_only_free_split_close_p3_input", lambda **_kwargs: {"v7": "ok"})
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan",
+        lambda _value: {"plan": "v7"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_summary",
+        lambda **_kwargs: {"status": "SUCCESS", "profile": "v7"},
+    )
+    v1 = {"schema": "qsl.long_horizon_risk_observation.v1", "raw_return_paths": "private-only"}
+    v2 = {"schema": "qsl.long_horizon_risk_observation.v2", "raw_return_paths": "private-only"}
+    comparison = {
+        "schema": "qsl.soxl_core_only_v7_long_horizon_risk_observation_comparison.v1",
+        "status": "CONSISTENT",
+        "comparison_sha256": "a" * 64,
+    }
+    monkeypatch.setattr(module, "build_soxl_core_only_v7_long_horizon_risk_observation", lambda **_kwargs: v1)
+    monkeypatch.setattr(module, "build_soxl_core_only_v7_long_horizon_risk_observation_v2", lambda **_kwargs: v2)
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_long_horizon_risk_observation_comparison",
+        lambda **_kwargs: comparison,
+    )
+
+    result = module.run_soxl_core_only_free_split_close_p3_offline_evidence(
+        binding={"binding": "v7"},
+        manifest={"manifest": "v7"},
+        closes_bytes=b"closes",
+        assurance_bytes=b"assurance",
+        ues_project=tmp_path / "ues",
+        p2_candidate_path=tmp_path / "candidate.json",
+        isolated_replay=lambda **_kwargs: {"isolated": "result"},
+        p2_profile="v7_longterm_compounding_cash_reserve",
+        risk_observation_output=v1_output,
+        risk_observation_v2_output=v2_output,
+        risk_observation_comparison_output=comparison_output,
+    )
+
+    assert result == {"status": "SUCCESS", "profile": "v7"}
+    assert json.loads(v1_output.read_text(encoding="utf-8"))["raw_return_paths"] == "private-only"
+    assert json.loads(v2_output.read_text(encoding="utf-8"))["raw_return_paths"] == "private-only"
+    comparison_payload = json.loads(comparison_output.read_text(encoding="utf-8"))
+    assert comparison_payload["status"] == "CONSISTENT"
+    assert "raw_return_paths" not in comparison_payload
+    for path in (v1_output, v2_output, comparison_output):
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_v7_facade_rejects_a_comparison_without_both_private_observations(monkeypatch, tmp_path) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "materialize_soxl_core_only_free_split_close_p3_input", lambda **_kwargs: {"v7": "ok"})
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan",
+        lambda _value: {"plan": "v7"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_summary",
+        lambda **_kwargs: {"status": "SUCCESS", "profile": "v7"},
+    )
+
+    with pytest.raises(module.SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError, match="requires both V1 and V2"):
+        module.run_soxl_core_only_free_split_close_p3_offline_evidence(
+            binding={"binding": "v7"},
+            manifest={"manifest": "v7"},
+            closes_bytes=b"closes",
+            assurance_bytes=b"assurance",
+            ues_project=tmp_path / "ues",
+            p2_candidate_path=tmp_path / "candidate.json",
+            isolated_replay=lambda **_kwargs: {"isolated": "result"},
+            p2_profile="v7_longterm_compounding_cash_reserve",
+            risk_observation_comparison_output=tmp_path / "comparison.json",
+        )
 
 
 def test_v7_forward_confirmation_facade_requires_and_binds_the_frozen_policy(monkeypatch, tmp_path) -> None:
