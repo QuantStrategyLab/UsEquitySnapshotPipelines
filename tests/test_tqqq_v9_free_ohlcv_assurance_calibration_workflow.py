@@ -19,6 +19,8 @@ def test_assurance_calibration_is_scheduled_observation_only_and_redacted() -> N
     assert "observe_tqqq_core_only_free_ohlcv_settlement" in workflow
     assert "build_tqqq_free_ohlcv_settlement_tracks.py" in workflow
     assert "Download prior redacted settlement observations" in workflow
+    assert 'zip" > "$archive"' in workflow
+    assert '--output "$archive"' not in workflow
     assert "P2_V9_CONTRACT" in workflow
     assert "time.sleep(60)" in workflow
     assert "twelve_data_requests_before_rate_window_wait" in workflow
