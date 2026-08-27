@@ -82,7 +82,7 @@ jobs:
           from datetime import UTC, datetime
           from pathlib import Path
           from scripts.acquire_tqqq_core_only_free_ohlcv_p1 import TwelveYahooOhlcvObserver
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import TqqqCoreOnlyFreeOhlcvP1Error, TqqqCoreOnlyFreeOhlcvP1UnavailableError, publish_tqqq_core_only_free_ohlcv_p1_inputs
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import TqqqCoreOnlyFreeOhlcvP1Error, TqqqCoreOnlyFreeOhlcvP1UnavailableError, classify_tqqq_core_only_free_ohlcv_availability, publish_tqqq_core_only_free_ohlcv_p1_inputs
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT
           observed = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
           status, manifest, reason, availability = 'PARKED', '', 'FREE_SOURCE_UNAVAILABLE', {}
@@ -106,6 +106,7 @@ jobs:
               observed_availability = getattr(exc, 'availability_diagnostic', None)
               if isinstance(observed_availability, dict):
                   availability = observed_availability
+                  reason = classify_tqqq_core_only_free_ohlcv_availability(availability)
           except TqqqCoreOnlyFreeOhlcvP1Error:
               reason = 'FREE_SOURCE_CONTRACT_FAILURE'
           record = {

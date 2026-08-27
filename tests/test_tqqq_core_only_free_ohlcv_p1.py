@@ -113,8 +113,31 @@ def test_v8_free_ohlcv_parks_when_a_mandatory_source_disagrees(tmp_path: Path) -
     assert agreement["first_price_divergent_session"] is not None
     assert agreement["price_divergent_fields"] == ["close", "high", "low", "open"]
     assert agreement["max_price_delta_bps"] > 90.0
+    assert agreement["field_delta_bps"]["open"] == {
+        "compared_session_count": len(_Observer()._sessions["TQQQ"]),
+        "divergent_session_count": 1,
+        "p50_nearest_rank_bps": 0.0,
+        "p95_nearest_rank_bps": 0.0,
+        "p99_nearest_rank_bps": 0.0,
+        "max_bps": 99.009901,
+    }
+    assert p1.classify_tqqq_core_only_free_ohlcv_availability(diagnostic) == "FREE_SOURCE_DISAGREEMENT"
     assert "bars" not in diagnostic["reports"]["TQQQ"]
     assert "close" not in agreement
+
+
+def test_unavailable_source_status_remains_distinct_from_healthy_source_disagreement() -> None:
+    assert p1.classify_tqqq_core_only_free_ohlcv_availability(
+        {
+            "status": "NOT_VERIFIED",
+            "reports": {
+                "TQQQ": {
+                    "source_statuses": {_CANONICAL: "UNAVAILABLE", _VERIFIER: SOURCE_OBSERVATION_READY},
+                    "findings": [],
+                }
+            },
+        }
+    ) == "FREE_SOURCE_UNAVAILABLE"
 
 
 def test_v9_uses_the_same_two_source_p1_transport_but_a_distinct_identity(

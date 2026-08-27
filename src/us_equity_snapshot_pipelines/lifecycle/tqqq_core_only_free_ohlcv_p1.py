@@ -61,6 +61,7 @@ _CANONICAL = TWELVE_DATA_DAILY_SOURCE_ID
 _VERIFIER = YAHOO_FINANCE_DAILY_SOURCE_ID
 _OUTPUT_FILENAMES = frozenset({"binding.json", "bars.json", "assurance.json", "manifest.json"})
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_PRICE_FIELDS = ("open", "high", "low", "close")
 
 
 class TqqqCoreOnlyFreeOhlcvP1Error(ValueError):
@@ -265,6 +266,43 @@ def _availability_diagnostic(
     }
 
 
+def classify_tqqq_core_only_free_ohlcv_availability(value: object) -> str:
+    """Classify a sanitized parked P1 report without selecting a data policy.
+
+    A provider outage and two healthy providers that disagree are operationally
+    different.  The distinction is safe to expose in terminal status and lets
+    a later, separately authorized calibration study work from evidence
+    instead of treating a disagreement as a missing secret or service.
+    """
+    if not isinstance(value, Mapping) or value.get("status") != "NOT_VERIFIED":
+        return "FREE_SOURCE_UNAVAILABLE"
+    reports = value.get("reports")
+    if not isinstance(reports, Mapping):
+        return "FREE_SOURCE_UNAVAILABLE"
+    for report in reports.values():
+        if not isinstance(report, Mapping):
+            continue
+        source_statuses = report.get("source_statuses")
+        findings = report.get("findings")
+        if (
+            isinstance(source_statuses, Mapping)
+            and source_statuses.get(_CANONICAL) == SOURCE_OBSERVATION_READY
+            and source_statuses.get(_VERIFIER) == SOURCE_OBSERVATION_READY
+            and isinstance(findings, list)
+            and "daily_bar_price_divergence" in findings
+        ):
+            return "FREE_SOURCE_DISAGREEMENT"
+    return "FREE_SOURCE_UNAVAILABLE"
+
+
+def _nearest_rank_bps(values: list[float], percentile: int) -> float:
+    if not values or percentile < 1 or percentile > 100:
+        raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
+    ordered = sorted(values)
+    position = max(0, math.ceil(len(ordered) * percentile / 100) - 1)
+    return round(ordered[position] * 10_000.0, 6)
+
+
 def _redacted_price_agreement(
     *,
     observations: tuple[DailyBarSourceObservation, ...],
@@ -288,20 +326,37 @@ def _redacted_price_agreement(
     max_relative_delta = 0.0
     first_divergent_session: str | None = None
     divergent_fields: set[str] = set()
+    deltas_by_field = {field_name: [] for field_name in _PRICE_FIELDS}
+    divergent_sessions_by_field = {field_name: 0 for field_name in _PRICE_FIELDS}
     for session_date in sorted(left_by_session):
         left_bar = left_by_session[session_date]
         right_bar = right_by_session[session_date]
-        for field_name in ("open", "high", "low", "close"):
+        for field_name in _PRICE_FIELDS:
             left_value = float(getattr(left_bar, field_name))
             right_value = float(getattr(right_bar, field_name))
             relative_delta = abs(left_value - right_value) / max(
                 abs(left_value), abs(right_value), 1e-12
             )
+            if not math.isfinite(relative_delta):
+                return {"status": "NOT_COMPARABLE"}
             max_relative_delta = max(max_relative_delta, relative_delta)
+            deltas_by_field[field_name].append(relative_delta)
             if relative_delta > price_relative_tolerance:
                 divergent_fields.add(field_name)
+                divergent_sessions_by_field[field_name] += 1
                 if first_divergent_session is None:
                     first_divergent_session = session_date
+    field_delta_bps = {
+        field_name: {
+            "compared_session_count": len(deltas_by_field[field_name]),
+            "divergent_session_count": divergent_sessions_by_field[field_name],
+            "p50_nearest_rank_bps": _nearest_rank_bps(deltas_by_field[field_name], 50),
+            "p95_nearest_rank_bps": _nearest_rank_bps(deltas_by_field[field_name], 95),
+            "p99_nearest_rank_bps": _nearest_rank_bps(deltas_by_field[field_name], 99),
+            "max_bps": _nearest_rank_bps(deltas_by_field[field_name], 100),
+        }
+        for field_name in _PRICE_FIELDS
+    }
     return {
         "status": "COMPARED",
         "price_relative_tolerance": price_relative_tolerance,
@@ -309,6 +364,9 @@ def _redacted_price_agreement(
         "max_price_delta_bps": max_relative_delta * 10_000.0,
         "first_price_divergent_session": first_divergent_session,
         "price_divergent_fields": sorted(divergent_fields),
+        # These are distribution summaries only: no OHLC values, rows, URLs,
+        # source payloads, credentials, or replacement thresholds are emitted.
+        "field_delta_bps": field_delta_bps,
     }
 
 
@@ -520,6 +578,7 @@ __all__ = [
     "TqqqCoreOnlyFreeOhlcvObserver",
     "TqqqCoreOnlyFreeOhlcvP1Error",
     "TqqqCoreOnlyFreeOhlcvP1UnavailableError",
+    "classify_tqqq_core_only_free_ohlcv_availability",
     "publish_tqqq_core_only_free_ohlcv_p1_inputs",
     "validate_tqqq_core_only_free_ohlcv_assurance",
     "validate_tqqq_core_only_free_ohlcv_input_payload",
