@@ -184,7 +184,7 @@ jobs:
           if [ -n "${PREVIOUS_RECORD:-}" ]; then
             args+=(--previous-record "$PREVIOUS_RECORD")
           fi
-          uv run --no-sync python scripts/run_soxl_v7_nonlive_forward_observation.py "${args[@]}"
+          uv run --no-sync python -m scripts.run_soxl_v7_nonlive_forward_observation "${args[@]}"
       - name: Create-only publish non-live receipt
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
         env:
