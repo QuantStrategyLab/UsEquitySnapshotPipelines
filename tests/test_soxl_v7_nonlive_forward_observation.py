@@ -222,7 +222,7 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert "FIRST_RECEIPT_BOOTSTRAP" in workflow
     assert 'grep -Fq "matched no objects" "$listing_error"' in workflow
     assert "history_available == 'true'" in workflow
-    assert "run_soxl_v7_nonlive_forward_observation.py" in workflow
+    assert "python -m scripts.run_soxl_v7_nonlive_forward_observation" in workflow
     assert "gcloud run" not in workflow.lower()
     assert "runtime_target_json" not in workflow.lower()
     assert "broker" not in workflow.lower()
