@@ -40,7 +40,7 @@ jobs:
           REQUESTED_DATE_CUTOFF: ${{ inputs.date_cutoff }}
         run: |
           set -euo pipefail
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          uv run --no-sync python - <<'PY' >> "$GITHUB_OUTPUT"
           import os
           from datetime import UTC, datetime
 

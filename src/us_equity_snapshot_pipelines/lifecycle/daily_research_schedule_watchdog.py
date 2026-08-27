@@ -126,8 +126,15 @@ def build_daily_research_schedule_watchdog_summary(
     expected_utc_date: str,
     tqqq_workflow_runs_response: object,
     soxl_workflow_runs_response: object,
+    additional_workflow_checks: Mapping[str, tuple[str, object]] | None = None,
 ) -> dict[str, object]:
-    """Assess both scheduled research workflows without mixing in P1/P3 state."""
+    """Assess scheduled workflow availability without mixing in P1/P3 state.
+
+    Additional checks are intentionally supplied as explicit workflow-id,
+    expected-date and Actions-response tuples.  This keeps the watchdog a
+    read-only control-plane observer while allowing it to cover non-live
+    forward/calibration workflows and the previous watchdog window itself.
+    """
 
     expected = _expected_date(expected_utc_date)
     workflows = [
@@ -142,6 +149,20 @@ def build_daily_research_schedule_watchdog_summary(
             expected_utc_date=expected,
         ),
     ]
+    if additional_workflow_checks is not None:
+        if not isinstance(additional_workflow_checks, Mapping):
+            _fail("invalid_additional_workflow_checks")
+        for workflow_id, check in additional_workflow_checks.items():
+            if not isinstance(check, tuple) or len(check) != 2:
+                _fail("invalid_additional_workflow_check")
+            additional_expected_date, workflow_runs_response = check
+            workflows.append(
+                assess_scheduled_research_workflow(
+                    workflow_id=workflow_id,
+                    workflow_runs_response=workflow_runs_response,
+                    expected_utc_date=additional_expected_date,
+                )
+            )
     reason_codes = sorted(
         {
             str(workflow["reason_code"])

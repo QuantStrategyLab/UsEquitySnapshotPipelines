@@ -1,11 +1,15 @@
 # 日更研究调度看门狗（仅控制面）
 
-此看门狗检查两个既有、无人值守的研究工作流是否在预定 UTC 日期真正产生了一次**成功结束**的 `schedule` run：
+此看门狗检查下列无人值守的 non-live 工作流是否在预定 UTC 日期真正产生了一次**成功结束**的 `schedule` run：
 
 - `TQQQ Daily P1-P3 Research`
 - `SOXL Daily P1-P3 Research`
+- `SOXL V7 Non-Live Forward Observation`
+- `TQQQ V9 Free OHLCV Assurance Calibration`
 
-它在每个周二至周六 UTC `11:20` 运行。TQQQ 的 P1 作业可使用 GitHub Actions 默认的六小时 job 窗口，定时任务也可能排队；因此该时间在两条研究工作流的计划启动窗口之后留出有界完成余量，避免把仍在运行的研究误报为失败。它仅通过 GitHub Actions 的只读元数据判断下列控制面状态：
+它还回查自身前一个应执行窗口（周二检查上周六；其余运行日检查前一天）。因此一次 GitHub cron 漏发会在下一次成功启动时明确报为 `SCHEDULED_RUN_MISSING`；该检查仍然不能自行启动、重试或修复任何工作流。
+
+它在每个周二至周六 UTC `11:20` 运行。TQQQ 的 P1 作业可使用 GitHub Actions 默认的六小时 job 窗口，定时任务也可能排队；因此该时间在四条 non-live 工作流的计划启动窗口之后留出有界完成余量，避免把仍在运行的研究误报为失败。它仅通过 GitHub Actions 的只读元数据判断下列控制面状态：
 
 - `OBSERVED / SCHEDULED_RUN_SUCCEEDED`：当天确有成功结束的定时工作流；
 - `PARKED / SCHEDULED_RUN_MISSING`：当天没有定时 run；

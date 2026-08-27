@@ -214,6 +214,7 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert 'cron: "45 2 * * 2-6"' in workflow
     assert "contents: read" in workflow
     assert "id-token: write" in workflow
+    assert 'uv run --no-sync python - <<\'PY\' >> "$GITHUB_OUTPUT"' in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
     assert "run_soxl_v7_nonlive_forward_observation.py" in workflow
     assert "gcloud run" not in workflow.lower()

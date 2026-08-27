@@ -100,6 +100,67 @@ def test_summary_requires_both_workflows() -> None:
     assert len(summary["workflows"]) == 2
 
 
+def test_summary_also_checks_forward_calibration_and_previous_watchdog_window() -> None:
+    summary = build_daily_research_schedule_watchdog_summary(
+        expected_utc_date=EXPECTED_DATE,
+        tqqq_workflow_runs_response=_response(),
+        soxl_workflow_runs_response=_response(),
+        additional_workflow_checks={
+            "soxl-v7-nonlive-forward-observation": (EXPECTED_DATE, _response()),
+            "tqqq-v9-free-ohlcv-assurance-calibration": (EXPECTED_DATE, _response()),
+            "daily-research-schedule-watchdog": ("2026-08-20", {"workflow_runs": []}),
+        },
+    )
+
+    assert summary["status"] == WATCHDOG_PARKED
+    assert summary["reason_codes"] == ["SCHEDULED_RUN_MISSING"]
+    assert [item["workflow_id"] for item in summary["workflows"]] == [
+        "tqqq-p1-p3-daily-research",
+        "soxl-p1-p3-daily-research",
+        "soxl-v7-nonlive-forward-observation",
+        "tqqq-v9-free-ohlcv-assurance-calibration",
+        "daily-research-schedule-watchdog",
+    ]
+
+
+def test_cli_accepts_all_scheduled_workflow_inputs(tmp_path) -> None:
+    paths = {}
+    for name in ("tqqq", "soxl", "soxl_v7", "tqqq_v9", "watchdog"):
+        path = tmp_path / f"{name}.json"
+        response = _response()
+        if name == "watchdog":
+            response["workflow_runs"][0]["created_at"] = "2026-08-20T11:20:00Z"  # type: ignore[index]
+        path.write_text(json.dumps(response), encoding="utf-8")
+        paths[name] = path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts/check_daily_research_schedule_watchdog.py")),
+            "--expected-utc-date",
+            EXPECTED_DATE,
+            "--tqqq-workflow-runs",
+            str(paths["tqqq"]),
+            "--soxl-workflow-runs",
+            str(paths["soxl"]),
+            "--soxl-v7-workflow-runs",
+            str(paths["soxl_v7"]),
+            "--tqqq-v9-assurance-workflow-runs",
+            str(paths["tqqq_v9"]),
+            "--watchdog-workflow-runs",
+            str(paths["watchdog"]),
+            "--watchdog-expected-utc-date",
+            "2026-08-20",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["status"] == WATCHDOG_OBSERVED
+
+
 def test_bad_github_response_is_rejected() -> None:
     try:
         assess_scheduled_research_workflow(
@@ -129,6 +190,14 @@ def test_cli_never_exposes_input_error(tmp_path) -> None:
             str(tqqq_path),
             "--soxl-workflow-runs",
             str(soxl_path),
+            "--soxl-v7-workflow-runs",
+            str(tqqq_path),
+            "--tqqq-v9-assurance-workflow-runs",
+            str(tqqq_path),
+            "--watchdog-workflow-runs",
+            str(tqqq_path),
+            "--watchdog-expected-utc-date",
+            "2026-08-20",
         ],
         check=False,
         capture_output=True,
