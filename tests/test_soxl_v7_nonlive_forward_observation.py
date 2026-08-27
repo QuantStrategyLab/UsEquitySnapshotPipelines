@@ -216,6 +216,10 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert "id-token: write" in workflow
     assert 'uv run --no-sync python - <<\'PY\' >> "$GITHUB_OUTPUT"' in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
+    assert "history_available" in workflow
+    assert "PREVIOUS_RECEIPT_UNAVAILABLE" in workflow
+    assert "PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" in workflow
+    assert "history_available == 'true'" in workflow
     assert "run_soxl_v7_nonlive_forward_observation.py" in workflow
     assert "gcloud run" not in workflow.lower()
     assert "runtime_target_json" not in workflow.lower()

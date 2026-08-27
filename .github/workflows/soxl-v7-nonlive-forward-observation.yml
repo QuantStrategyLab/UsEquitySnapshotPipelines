@@ -77,19 +77,36 @@ jobs:
           set -euo pipefail
           prefix="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward"
           current="${prefix}/${DATE_CUTOFF}.json"
+          state_dir="${RUNNER_TEMP}/soxl-v7-nonlive"
+          listing="${state_dir}/prior-receipt-listing.txt"
+          mkdir -p "$state_dir"
           if gcloud storage ls "$current" >/dev/null 2>&1; then
             echo "already_recorded=true" >> "$GITHUB_OUTPUT"
+            echo "history_available=true" >> "$GITHUB_OUTPUT"
             echo "SOXL_V7_NONLIVE_STATE=ALREADY_RECORDED" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          previous="$(gcloud storage ls "${prefix}/" 2>/dev/null | sort | awk -v current="$current" '$0 < current {candidate=$0} END {print candidate}')"
+          if ! gcloud storage ls "${prefix}/" > "$listing" 2>/dev/null; then
+            echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+            echo "history_available=false" >> "$GITHUB_OUTPUT"
+            echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          previous="$(sort "$listing" | awk -v current="$current" '$0 < current {candidate=$0} END {print candidate}')"
           if [ -n "$previous" ]; then
-            gcloud storage cp --quiet "$previous" "${RUNNER_TEMP}/previous-soxl-v7-nonlive.json"
-            echo "previous_record=${RUNNER_TEMP}/previous-soxl-v7-nonlive.json" >> "$GITHUB_OUTPUT"
+            previous_record="${state_dir}/previous-soxl-v7-nonlive.json"
+            if ! gcloud storage cp --quiet "$previous" "$previous_record" >/dev/null 2>&1; then
+              echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+              echo "history_available=false" >> "$GITHUB_OUTPUT"
+              echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "previous_record=${previous_record}" >> "$GITHUB_OUTPUT"
           fi
           echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+          echo "history_available=true" >> "$GITHUB_OUTPUT"
       - name: Acquire assured V7 P1 root or park
-        if: steps.prior.outputs.already_recorded != 'true'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true'
         id: p1
         env:
           DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
@@ -139,7 +156,7 @@ jobs:
           print(json.dumps(result, sort_keys=True, separators=(",", ":")))
           PY
       - name: Run exact V7 Shadow and simulated-Paper observation
-        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
         env:
           PREVIOUS_RECORD: ${{ steps.prior.outputs.previous_record }}
         run: |
@@ -162,7 +179,7 @@ jobs:
           fi
           uv run --no-sync python scripts/run_soxl_v7_nonlive_forward_observation.py "${args[@]}"
       - name: Create-only publish non-live receipt
-        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
         env:
           DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
         run: |
@@ -173,9 +190,36 @@ jobs:
           gcloud storage cp --quiet --no-clobber "$record" "$destination"
           echo "SOXL_V7_NONLIVE_RECORD=CREATE_ONLY_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
       - name: Record a safe parking state when P1 is unavailable
-        if: steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status != 'ACCEPTED'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status != 'ACCEPTED'
         run: |
           echo "SOXL_V7_NONLIVE_STATE=PARKED_P1_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record a safe parking state when predecessor receipt is unavailable
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available != 'true'
+        env:
+          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-v7-nonlive"
+          output="${root}/record.json"
+          mkdir -p "$root"
+          DATE_CUTOFF="$DATE_CUTOFF" OUTPUT="$output" uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          record = {
+              "automatic_promotion": False,
+              "date_cutoff": os.environ["DATE_CUTOFF"],
+              "live_authority_granted": False,
+              "no_order": True,
+              "reason_code": "PREVIOUS_RECEIPT_UNAVAILABLE",
+              "schema_version": "qsl.soxl-v7-nonlive-forward-terminal.v1",
+              "status": "PARKED",
+          }
+          Path(os.environ["OUTPUT"]).write_text(
+              json.dumps(record, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+          )
+          PY
       - name: Upload sanitized non-live receipt
         if: always() && steps.prior.outputs.already_recorded != 'true'
         uses: actions/upload-artifact@v7
