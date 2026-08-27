@@ -134,6 +134,47 @@ def test_v7_offline_facade_uses_the_cash_reserve_candidate_contract(monkeypatch,
     assert result == {"status": "SUCCESS", "profile": "v7"}
 
 
+def test_v7_facade_can_create_only_a_caller_selected_private_risk_observation(monkeypatch, tmp_path) -> None:
+    module = _module()
+    output = tmp_path / "private-risk-observation.json"
+    monkeypatch.setattr(module, "materialize_soxl_core_only_free_split_close_p3_input", lambda **_kwargs: {"v7": "ok"})
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_plan",
+        lambda _value: {"plan": "v7"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence_summary",
+        lambda **_kwargs: {"status": "SUCCESS", "profile": "v7"},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_soxl_core_only_v7_long_horizon_risk_observation",
+        lambda **kwargs: {
+            "schema": "qsl.long_horizon_risk_observation.v1",
+            "summary": kwargs["evidence_summary"],
+            "raw_return_paths": "private-only",
+        },
+    )
+
+    result = module.run_soxl_core_only_free_split_close_p3_offline_evidence(
+        binding={"binding": "v7"},
+        manifest={"manifest": "v7"},
+        closes_bytes=b"closes",
+        assurance_bytes=b"assurance",
+        ues_project=tmp_path / "ues",
+        p2_candidate_path=tmp_path / "candidate.json",
+        isolated_replay=lambda **_kwargs: {"isolated": "result"},
+        p2_profile="v7_longterm_compounding_cash_reserve",
+        risk_observation_output=output,
+    )
+
+    assert result == {"status": "SUCCESS", "profile": "v7"}
+    assert json.loads(output.read_text(encoding="utf-8"))["raw_return_paths"] == "private-only"
+    assert output.stat().st_mode & 0o777 == 0o600
+
+
 def test_v7_forward_confirmation_facade_requires_and_binds_the_frozen_policy(monkeypatch, tmp_path) -> None:
     module = _module()
     observed: dict[str, object] = {}
@@ -214,6 +255,7 @@ def test_cli_reports_an_incomplete_p4_window_as_expected_waiting(monkeypatch, ca
         p2_candidate=path,
         p2_profile="v7_forward_confirmation",
         p4_policy=path,
+        risk_observation_output=None,
     )
     monkeypatch.setattr(module, "_arguments", lambda _argv: args)
     monkeypatch.setattr(module, "_read_json", lambda _path: {})
