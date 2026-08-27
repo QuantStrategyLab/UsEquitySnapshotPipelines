@@ -16,12 +16,14 @@ def test_watchdog_is_read_only_scheduled_and_cannot_trigger_research() -> None:
     assert "contents: read" in workflow
     assert "id-token: write" not in workflow
     assert "gh api" in workflow
+    assert "soxl-v7-nonlive-forward-observation.yml" in workflow
+    assert "tqqq-v9-free-ohlcv-assurance-calibration.yml" in workflow
+    assert "daily-research-schedule-watchdog.yml/runs?event=schedule" in workflow
+    assert "watchdog_expected_date" in workflow
     assert "Install locked runtime" in workflow
     assert "uv sync --locked --no-dev --no-editable --python 3.11" in workflow
     assert "uv run --no-sync python scripts/check_daily_research_schedule_watchdog.py" in workflow
     assert "check_daily_research_schedule_watchdog.py" in workflow
-    assert "TQQQ Daily P1-P3 Research" not in workflow
-    assert "SOXL Daily P1-P3 Research" not in workflow
     assert "workflow run" not in workflow.lower()
     assert "ALPACA_API" not in workflow
     assert "gcloud" not in workflow.lower()

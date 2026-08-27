@@ -26,6 +26,10 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-utc-date", required=True)
     parser.add_argument("--tqqq-workflow-runs", type=Path, required=True)
     parser.add_argument("--soxl-workflow-runs", type=Path, required=True)
+    parser.add_argument("--soxl-v7-workflow-runs", type=Path, required=True)
+    parser.add_argument("--tqqq-v9-assurance-workflow-runs", type=Path, required=True)
+    parser.add_argument("--watchdog-workflow-runs", type=Path, required=True)
+    parser.add_argument("--watchdog-expected-utc-date", required=True)
     return parser.parse_args(argv)
 
 
@@ -43,6 +47,20 @@ def main(argv: list[str] | None = None) -> int:
             expected_utc_date=args.expected_utc_date,
             tqqq_workflow_runs_response=_read_json(args.tqqq_workflow_runs),
             soxl_workflow_runs_response=_read_json(args.soxl_workflow_runs),
+            additional_workflow_checks={
+                "soxl-v7-nonlive-forward-observation": (
+                    args.expected_utc_date,
+                    _read_json(args.soxl_v7_workflow_runs),
+                ),
+                "tqqq-v9-free-ohlcv-assurance-calibration": (
+                    args.expected_utc_date,
+                    _read_json(args.tqqq_v9_assurance_workflow_runs),
+                ),
+                "daily-research-schedule-watchdog": (
+                    args.watchdog_expected_utc_date,
+                    _read_json(args.watchdog_workflow_runs),
+                ),
+            },
         )
     except (DailyResearchScheduleWatchdogError, ValueError):
         print(

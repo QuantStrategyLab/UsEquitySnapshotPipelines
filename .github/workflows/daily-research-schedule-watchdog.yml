@@ -36,12 +36,25 @@ jobs:
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tqqq-p1-p3-daily-research.yml/runs?event=schedule&per_page=20" > "$RUNNER_TEMP/tqqq-scheduled-runs.json"
           gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/soxl-p1-p3-daily-research.yml/runs?event=schedule&per_page=20" > "$RUNNER_TEMP/soxl-scheduled-runs.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/soxl-v7-nonlive-forward-observation.yml/runs?event=schedule&per_page=20" > "$RUNNER_TEMP/soxl-v7-scheduled-runs.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tqqq-v9-free-ohlcv-assurance-calibration.yml/runs?event=schedule&per_page=20" > "$RUNNER_TEMP/tqqq-v9-assurance-scheduled-runs.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/daily-research-schedule-watchdog.yml/runs?event=schedule&per_page=20" > "$RUNNER_TEMP/watchdog-scheduled-runs.json"
       - name: Report late, missing, or failed scheduled research
         run: |
           set -euo pipefail
+          current_weekday="$(date -u +%u)"
+          if [ "$current_weekday" = '2' ]; then
+            watchdog_expected_date="$(date -u -d '3 days ago' +%F)"
+          else
+            watchdog_expected_date="$(date -u -d '1 day ago' +%F)"
+          fi
           uv run --no-sync python scripts/check_daily_research_schedule_watchdog.py \
             --expected-utc-date "$(date -u +%F)" \
             --tqqq-workflow-runs "$RUNNER_TEMP/tqqq-scheduled-runs.json" \
             --soxl-workflow-runs "$RUNNER_TEMP/soxl-scheduled-runs.json" \
+            --soxl-v7-workflow-runs "$RUNNER_TEMP/soxl-v7-scheduled-runs.json" \
+            --tqqq-v9-assurance-workflow-runs "$RUNNER_TEMP/tqqq-v9-assurance-scheduled-runs.json" \
+            --watchdog-workflow-runs "$RUNNER_TEMP/watchdog-scheduled-runs.json" \
+            --watchdog-expected-utc-date "$watchdog_expected_date" \
             | tee "$RUNNER_TEMP/daily-research-schedule-watchdog.json"
           cat "$RUNNER_TEMP/daily-research-schedule-watchdog.json" >> "$GITHUB_STEP_SUMMARY"
