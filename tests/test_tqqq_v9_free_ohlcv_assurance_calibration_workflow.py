@@ -20,7 +20,9 @@ def test_assurance_calibration_is_scheduled_observation_only_and_redacted() -> N
     assert "build_tqqq_free_ohlcv_settlement_tracks.py" in workflow
     assert "Download prior redacted settlement observations" in workflow
     assert "P2_V9_CONTRACT" in workflow
-    assert "retention-days: 45" in workflow
+    assert "time.sleep(60)" in workflow
+    assert "twelve_data_requests_before_rate_window_wait" in workflow
+    assert "retention-days: 35" in workflow
     assert "settlement-observations.json" in workflow
     assert "settlement-tracks.json" in workflow
     assert "p1-root" not in workflow
