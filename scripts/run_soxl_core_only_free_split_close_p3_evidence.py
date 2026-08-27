@@ -59,7 +59,9 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_longterm_compoundi
 )
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_v7_long_horizon_risk_observation import (
     SoxlCoreOnlyV7LongHorizonRiskObservationError,
+    build_soxl_core_only_v7_long_horizon_risk_observation_comparison,
     build_soxl_core_only_v7_long_horizon_risk_observation,
+    build_soxl_core_only_v7_long_horizon_risk_observation_v2,
 )
 
 RUN_SCHEMA = "qsl.soxl-soxx-core-only-free-split-close-p3-offline-run.v1"
@@ -162,6 +164,8 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
     p2_profile: str = "v4",
     p4_policy: Mapping[str, object] | None = None,
     risk_observation_output: Path | None = None,
+    risk_observation_v2_output: Path | None = None,
+    risk_observation_comparison_output: Path | None = None,
 ) -> dict[str, object]:
     """Return a metrics-only P3 summary after every fixed replay succeeds."""
     if not callable(isolated_replay) or p2_profile not in _P2_PROFILES:
@@ -252,21 +256,53 @@ def run_soxl_core_only_free_split_close_p3_offline_evidence(
         evidence_plan=plan,
         replay_executor=execute,
     )
-    if risk_observation_output is not None:
+    if risk_observation_comparison_output is not None and (
+        risk_observation_output is None or risk_observation_v2_output is None
+    ):
+        raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError(
+            "private SOXL risk observation comparison requires both V1 and V2 outputs"
+        )
+    if any(
+        output is not None
+        for output in (risk_observation_output, risk_observation_v2_output, risk_observation_comparison_output)
+    ):
         if p2_profile != "v7_longterm_compounding_cash_reserve":
             raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError("private SOXL risk observation profile unavailable")
         try:
-            observation = build_soxl_core_only_v7_long_horizon_risk_observation(
+            observation_v1 = build_soxl_core_only_v7_long_horizon_risk_observation(
                 materialized=materialized,
                 evidence_plan=plan,
                 evidence_summary=summary,
                 replay_executor=execute,
             )
+            observation_v2 = (
+                build_soxl_core_only_v7_long_horizon_risk_observation_v2(
+                    materialized=materialized,
+                    evidence_plan=plan,
+                    evidence_summary=summary,
+                    replay_executor=execute,
+                )
+                if risk_observation_v2_output is not None or risk_observation_comparison_output is not None
+                else None
+            )
+            comparison = (
+                build_soxl_core_only_v7_long_horizon_risk_observation_comparison(
+                    v1_observation=observation_v1,
+                    v2_observation=observation_v2,
+                )
+                if risk_observation_comparison_output is not None and observation_v2 is not None
+                else None
+            )
         except SoxlCoreOnlyV7LongHorizonRiskObservationError as exc:
             raise SoxlCoreOnlyFreeSplitCloseP3OfflineEvidenceError(
                 "private SOXL risk observation unavailable"
             ) from exc
-        _write_private_risk_observation(risk_observation_output, observation)
+        if risk_observation_output is not None:
+            _write_private_risk_observation(risk_observation_output, observation_v1)
+        if risk_observation_v2_output is not None and observation_v2 is not None:
+            _write_private_risk_observation(risk_observation_v2_output, observation_v2)
+        if risk_observation_comparison_output is not None and comparison is not None:
+            _write_private_risk_observation(risk_observation_comparison_output, comparison)
     return summary
 
 
@@ -281,6 +317,8 @@ def _arguments(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--p2-profile", default="v4", choices=tuple(sorted(_P2_PROFILES)))
     parser.add_argument("--p4-policy", type=Path)
     parser.add_argument("--risk-observation-output", type=Path)
+    parser.add_argument("--risk-observation-v2-output", type=Path)
+    parser.add_argument("--risk-observation-comparison-output", type=Path)
     return parser.parse_args(argv)
 
 
@@ -302,6 +340,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             p2_profile=args.p2_profile,
             p4_policy=None if args.p4_policy is None else _read_json(args.p4_policy),
             risk_observation_output=args.risk_observation_output,
+            risk_observation_v2_output=args.risk_observation_v2_output,
+            risk_observation_comparison_output=args.risk_observation_comparison_output,
         )
     except SoxlCoreOnlyV7ForwardConfirmationP4WindowIncomplete:
         result = _parked("p4_forward_window_not_complete")

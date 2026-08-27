@@ -153,6 +153,35 @@ def test_builds_private_p3_observation_with_true_oos_cost_stress_and_paired_boot
     assert result["observation_sha256"] == observation.calculate_soxl_core_only_v7_long_horizon_risk_observation_sha256(
         result
     )
+    v2 = observation.build_soxl_core_only_v7_long_horizon_risk_observation_v2(
+        materialized=materialized,
+        evidence_plan=plan,
+        evidence_summary=summary,
+        replay_executor=lambda replay_input: replays[(int(replay_input["cost_bps"]), len(replay_input["sessions"]))],
+    )
+    assert v2["schema"] == "qsl.long_horizon_risk_observation.v2"
+    assert v2["candidate"] == result["candidate"]
+    assert v2["source_evidence"] == result["source_evidence"]
+    assert v2["scenario_paths"] == result["scenario_paths"]
+    assert v2["risk_capability"] == {
+        "portfolio_scope": "SINGLE_CANDIDATE",
+        "return_evaluation": "REPLAY_REQUIRED",
+        "cashflow_treatment": "NOT_APPLICABLE",
+        "risk_factor_coverage": ["CONCENTRATION", "LEVERAGE", "VOLATILITY"],
+    }
+    assert v2["benchmark_policy"]["return_basis"] == "SPLIT_ADJUSTED_PRICE_RETURN"
+    assert v2["observation_sha256"] == observation.calculate_soxl_core_only_v7_long_horizon_risk_observation_v2_sha256(v2)
+    comparison = observation.build_soxl_core_only_v7_long_horizon_risk_observation_comparison(
+        v1_observation=result,
+        v2_observation=v2,
+    )
+    assert comparison["status"] == "CONSISTENT"
+    assert comparison["v1_observation_sha256"] == result["observation_sha256"]
+    assert comparison["v2_observation_sha256"] == v2["observation_sha256"]
+    assert "returns" not in json.dumps(comparison, sort_keys=True).lower()
+    assert comparison[
+        "comparison_sha256"
+    ] == observation.calculate_soxl_core_only_v7_long_horizon_risk_observation_comparison_sha256(comparison)
 
 
 def test_mismatched_replay_receipt_fails_closed(monkeypatch) -> None:

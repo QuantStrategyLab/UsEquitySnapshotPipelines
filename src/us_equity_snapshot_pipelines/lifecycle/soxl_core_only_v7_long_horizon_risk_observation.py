@@ -26,6 +26,8 @@ from .soxl_core_only_v7_longterm_compounding_cash_reserve_p3_evidence import (
 )
 
 RISK_OBSERVATION_SCHEMA = "qsl.long_horizon_risk_observation.v1"
+RISK_OBSERVATION_V2_SCHEMA = "qsl.long_horizon_risk_observation.v2"
+RISK_OBSERVATION_COMPARISON_SCHEMA = "qsl.soxl_core_only_v7_long_horizon_risk_observation_comparison.v1"
 _ISOLATED_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-isolated-replay-result.v1"
 _STATEFUL_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-result.v1"
 _REPLAY_INPUT_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-input.v1"
@@ -39,6 +41,18 @@ _BOOTSTRAP_COST_BPS = 10
 _BOOTSTRAP_BLOCK_SESSIONS = 21
 _BOOTSTRAP_PATH_COUNT = 8
 _MAX_RETURN_BPS = 100_000
+_BENCHMARK_POLICY_DEFINITION = {
+    "benchmark_id": _OBSERVED_BENCHMARK_ID,
+    "benchmark_kind": "UNLEVERED_REFERENCE",
+    "calendar_id": "XNYS",
+    "currency": "USD",
+    # The source contract contains split-adjusted closes, not a dividend-aware
+    # total-return series.  Keep that distinction explicit in V2.
+    "return_basis": "SPLIT_ADJUSTED_PRICE_RETURN",
+    "sessions_per_year": _OBSERVED_SESSIONS_PER_YEAR,
+    "price_field": "split_adjusted_close",
+    "benchmark_cost_bps": 0,
+}
 
 
 class SoxlCoreOnlyV7LongHorizonRiskObservationError(ValueError):
@@ -66,6 +80,22 @@ def calculate_soxl_core_only_v7_long_horizon_risk_observation_sha256(value: Mapp
     """Return the digest compatible with QRS's private observation contract."""
     payload = _mapping(value)
     payload.pop("observation_sha256", None)
+    return _sha256(payload)
+
+
+def calculate_soxl_core_only_v7_long_horizon_risk_observation_v2_sha256(value: Mapping[str, object]) -> str:
+    """Return the digest compatible with QRS's generic private V2 contract."""
+    payload = _mapping(value)
+    payload.pop("observation_sha256", None)
+    return _sha256(payload)
+
+
+def calculate_soxl_core_only_v7_long_horizon_risk_observation_comparison_sha256(
+    value: Mapping[str, object],
+) -> str:
+    """Return the digest of a redacted V1/V2 consistency receipt."""
+    payload = _mapping(value)
+    payload.pop("comparison_sha256", None)
     return _sha256(payload)
 
 
@@ -398,9 +428,101 @@ def build_soxl_core_only_v7_long_horizon_risk_observation(
     return result
 
 
+def build_soxl_core_only_v7_long_horizon_risk_observation_v2(
+    *,
+    materialized: Mapping[str, object],
+    evidence_plan: Mapping[str, object],
+    evidence_summary: Mapping[str, object],
+    replay_executor: Callable[[Mapping[str, object]], Mapping[str, object]],
+) -> dict[str, object]:
+    """Build the generic V2 observation without pretending its scaling is linear.
+
+    SOXL daily leverage, dynamic cash reserve, and the frozen replay mechanics
+    require a dedicated replay composer for every proposed scale.  V2 carries
+    that fact as ``REPLAY_REQUIRED`` so the generic control plane parks rather
+    than extrapolating a linear risk scale from this path.
+    """
+    v1 = build_soxl_core_only_v7_long_horizon_risk_observation(
+        materialized=materialized,
+        evidence_plan=evidence_plan,
+        evidence_summary=evidence_summary,
+        replay_executor=replay_executor,
+    )
+    result: dict[str, object] = {
+        "schema": RISK_OBSERVATION_V2_SCHEMA,
+        "candidate": v1["candidate"],
+        "source_evidence": v1["source_evidence"],
+        "risk_capability": {
+            "portfolio_scope": "SINGLE_CANDIDATE",
+            "return_evaluation": "REPLAY_REQUIRED",
+            "cashflow_treatment": "NOT_APPLICABLE",
+            "risk_factor_coverage": ["CONCENTRATION", "LEVERAGE", "VOLATILITY"],
+        },
+        "benchmark_policy": {
+            "benchmark_id": _OBSERVED_BENCHMARK_ID,
+            "benchmark_kind": "UNLEVERED_REFERENCE",
+            "calendar_id": "XNYS",
+            "currency": "USD",
+            "return_basis": "SPLIT_ADJUSTED_PRICE_RETURN",
+            "definition_sha256": _sha256(_BENCHMARK_POLICY_DEFINITION),
+            "sessions_per_year": _OBSERVED_SESSIONS_PER_YEAR,
+        },
+        "scenario_paths": v1["scenario_paths"],
+        "observation_sha256": "",
+    }
+    result["observation_sha256"] = calculate_soxl_core_only_v7_long_horizon_risk_observation_v2_sha256(result)
+    return result
+
+
+def build_soxl_core_only_v7_long_horizon_risk_observation_comparison(
+    *,
+    v1_observation: Mapping[str, object],
+    v2_observation: Mapping[str, object],
+) -> dict[str, object]:
+    """Return one no-path receipt proving that parallel V1/V2 inputs agree."""
+    v1 = _mapping(v1_observation)
+    v2 = _mapping(v2_observation)
+    v1_digest = _digest(v1.get("observation_sha256"))
+    v2_digest = _digest(v2.get("observation_sha256"))
+    if (
+        v1.get("schema") != RISK_OBSERVATION_SCHEMA
+        or v2.get("schema") != RISK_OBSERVATION_V2_SCHEMA
+        or v1_digest != calculate_soxl_core_only_v7_long_horizon_risk_observation_sha256(v1)
+        or v2_digest != calculate_soxl_core_only_v7_long_horizon_risk_observation_v2_sha256(v2)
+        or v1.get("candidate") != v2.get("candidate")
+        or v1.get("source_evidence") != v2.get("source_evidence")
+        or v1.get("scenario_paths") != v2.get("scenario_paths")
+    ):
+        _fail()
+    candidate = _mapping(v1.get("candidate"))
+    candidate_id = candidate.get("candidate_id")
+    if not isinstance(candidate_id, str):
+        _fail()
+    result: dict[str, object] = {
+        "schema": RISK_OBSERVATION_COMPARISON_SCHEMA,
+        "candidate_id": candidate_id,
+        "source_evidence_sha256": _sha256(v1["source_evidence"]),
+        "scenario_paths_sha256": _sha256(v1["scenario_paths"]),
+        "v1_observation_sha256": v1_digest,
+        "v2_observation_sha256": v2_digest,
+        "status": "CONSISTENT",
+        "comparison_sha256": "",
+    }
+    result["comparison_sha256"] = calculate_soxl_core_only_v7_long_horizon_risk_observation_comparison_sha256(
+        result
+    )
+    return result
+
+
 __all__ = [
     "RISK_OBSERVATION_SCHEMA",
+    "RISK_OBSERVATION_V2_SCHEMA",
+    "RISK_OBSERVATION_COMPARISON_SCHEMA",
     "SoxlCoreOnlyV7LongHorizonRiskObservationError",
     "build_soxl_core_only_v7_long_horizon_risk_observation",
+    "build_soxl_core_only_v7_long_horizon_risk_observation_v2",
+    "build_soxl_core_only_v7_long_horizon_risk_observation_comparison",
     "calculate_soxl_core_only_v7_long_horizon_risk_observation_sha256",
+    "calculate_soxl_core_only_v7_long_horizon_risk_observation_v2_sha256",
+    "calculate_soxl_core_only_v7_long_horizon_risk_observation_comparison_sha256",
 ]
