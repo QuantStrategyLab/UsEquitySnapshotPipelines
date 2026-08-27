@@ -122,7 +122,7 @@ jobs:
             fi
             [ -n "$artifact_id" ] || continue
             archive="$prior_dir/$run_id.zip"
-            if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" --output "$archive"; then
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$archive"; then
               continue
             fi
             if unzip -Z1 "$archive" | grep -qx 'settlement-observations.json'; then
