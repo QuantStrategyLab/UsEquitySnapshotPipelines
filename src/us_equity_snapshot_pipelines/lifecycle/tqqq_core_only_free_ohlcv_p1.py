@@ -63,6 +63,8 @@ _OUTPUT_FILENAMES = frozenset({"binding.json", "bars.json", "assurance.json", "m
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _PRICE_FIELDS = ("open", "high", "low", "close")
 _ASSURANCE_OBSERVATION_SCHEMA = "qsl.tqqq-free-ohlcv-assurance-observation.v1"
+_SETTLEMENT_OBSERVATION_SCHEMA = "qsl.tqqq-free-ohlcv-settlement-observation.v1"
+_SETTLEMENT_TRACK_SCHEMA = "qsl.tqqq-free-ohlcv-settlement-track.v1"
 
 
 class TqqqCoreOnlyFreeOhlcvP1Error(ValueError):
@@ -354,6 +356,211 @@ def observe_tqqq_core_only_free_ohlcv_assurance(
     }
 
 
+def observe_tqqq_core_only_free_ohlcv_settlement(
+    observer: TqqqCoreOnlyFreeOhlcvObserver,
+    *,
+    observed_at: str,
+    date_cutoff: str,
+    contract: TqqqCoreOnlyCandidateContract = P2_V8_CONTRACT,
+) -> dict[str, object]:
+    """Observe one completed session without publishing or retaining bars.
+
+    This narrow probe exists only to establish whether the two fixed providers
+    converge after a completed session.  It requests exactly one session per
+    symbol, emits source-safe hashes and field-delta statistics, and carries
+    no authority to choose a source, relax a policy, build a P1 input, replay,
+    or promote a strategy.
+    """
+    cutoff = _cutoff(date_cutoff)
+    frozen_contract = _free_contract(contract)
+    reports: dict[str, object] = {}
+    observations_by_symbol: dict[str, tuple[DailyBarSourceObservation, ...]] = {}
+    try:
+        for symbol in _UNIVERSE:
+            observations = tuple(
+                observer.observe_daily_bars(
+                    source_id=source,
+                    symbol=symbol,
+                    start_date=cutoff,
+                    date_cutoff=cutoff,
+                )
+                for source in (_CANONICAL, _VERIFIER)
+            )
+            for observation in observations:
+                if observation.status != SOURCE_OBSERVATION_READY:
+                    continue
+                snapshot = observation.snapshot
+                if (
+                    snapshot is None
+                    or len(snapshot.bars) != 1
+                    or snapshot.bars[0].session_date != cutoff
+                ):
+                    raise TqqqCoreOnlyFreeOhlcvP1Error(
+                        "invalid free OHLCV settlement observation"
+                    )
+            observations_by_symbol[symbol] = observations
+            reports[symbol] = assess_multisource_daily_bars(
+                _policy(frozen_contract, symbol, cutoff), observations
+            )
+        availability = _availability_diagnostic(
+            contract=frozen_contract,
+            cutoff=cutoff,
+            reports=reports,
+            observations_by_symbol=observations_by_symbol,
+        )
+    except Exception:
+        return {
+            "schema_version": _SETTLEMENT_OBSERVATION_SCHEMA,
+            "candidate": {
+                "candidate_id": frozen_contract.candidate_id,
+                "config_sha256": frozen_contract.config_sha256,
+            },
+            "date_cutoff": cutoff,
+            "observed_at": observed_at,
+            "request_window": {"start_date": cutoff, "end_date": cutoff},
+            "status": "PARKED",
+            "reason_code": "FREE_SOURCE_CONTRACT_FAILURE",
+            "availability_diagnostic": {},
+            "no_order": True,
+            "automatic_promotion": False,
+        }
+    return {
+        "schema_version": _SETTLEMENT_OBSERVATION_SCHEMA,
+        "candidate": {
+            "candidate_id": frozen_contract.candidate_id,
+            "config_sha256": frozen_contract.config_sha256,
+        },
+        "date_cutoff": cutoff,
+        "observed_at": observed_at,
+        "request_window": {"start_date": cutoff, "end_date": cutoff},
+        "status": "VERIFIED" if availability["status"] == "VERIFIED" else "PARKED",
+        "reason_code": ""
+        if availability["status"] == "VERIFIED"
+        else classify_tqqq_core_only_free_ohlcv_availability(availability),
+        "availability_diagnostic": availability,
+        "no_order": True,
+        "automatic_promotion": False,
+    }
+
+
+def _settlement_fingerprint(value: Mapping[str, object]) -> str:
+    """Hash only source-safe evidence needed to compare a repeated probe."""
+    diagnostic = value.get("availability_diagnostic")
+    if not isinstance(diagnostic, Mapping):
+        raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement observation")
+    reports = diagnostic.get("reports")
+    if not isinstance(reports, Mapping) or set(reports) != set(_UNIVERSE):
+        raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement observation")
+    evidence_reports: dict[str, object] = {}
+    for symbol in _UNIVERSE:
+        report = reports[symbol]
+        if not isinstance(report, Mapping) or "bars" in report:
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement observation")
+        snapshots = report.get("source_snapshot_sha256")
+        if snapshots is not None and (
+            not isinstance(snapshots, Mapping)
+            or any(
+                not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+                for digest in snapshots.values()
+            )
+        ):
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement observation")
+        agreement = report.get("price_agreement")
+        if not isinstance(agreement, Mapping):
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement observation")
+        evidence_reports[symbol] = {
+            "status": report.get("status"),
+            "findings": report.get("findings"),
+            "source_statuses": report.get("source_statuses"),
+            "source_snapshot_sha256": snapshots,
+            "price_agreement": dict(agreement),
+        }
+    return hashlib.sha256(
+        _canonical(
+            {
+                "date_cutoff": value.get("date_cutoff"),
+                "status": value.get("status"),
+                "reason_code": value.get("reason_code"),
+                "reports": evidence_reports,
+            }
+        )
+    ).hexdigest()
+
+
+def build_tqqq_core_only_free_ohlcv_settlement_track(
+    observations_by_age: Mapping[int, Mapping[str, object]],
+    *,
+    contract: TqqqCoreOnlyCandidateContract = P2_V8_CONTRACT,
+) -> dict[str, object]:
+    """Summarize T+0/T+1/T+2 probes without interpreting a trading policy."""
+    frozen_contract = _free_contract(contract)
+    if not observations_by_age or any(age not in {0, 1, 2} for age in observations_by_age):
+        raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement track")
+    date_cutoff: str | None = None
+    trace: dict[str, object] = {}
+    for age in sorted(observations_by_age):
+        observation = observations_by_age[age]
+        if (
+            observation.get("schema_version") != _SETTLEMENT_OBSERVATION_SCHEMA
+            or observation.get("candidate")
+            != {
+                "candidate_id": frozen_contract.candidate_id,
+                "config_sha256": frozen_contract.config_sha256,
+            }
+            or observation.get("no_order") is not True
+            or observation.get("automatic_promotion") is not False
+            or not isinstance(observation.get("observed_at"), str)
+            or not isinstance(observation.get("date_cutoff"), str)
+        ):
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement track")
+        observed_cutoff = _cutoff(observation["date_cutoff"])
+        if date_cutoff is None:
+            date_cutoff = observed_cutoff
+        elif observed_cutoff != date_cutoff:
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement track")
+        request_window = observation.get("request_window")
+        if request_window != {"start_date": observed_cutoff, "end_date": observed_cutoff}:
+            raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV settlement track")
+        fingerprint = _settlement_fingerprint(observation)
+        trace[str(age)] = {
+            "observed_at": observation["observed_at"],
+            "status": observation.get("status"),
+            "reason_code": observation.get("reason_code"),
+            "evidence_fingerprint_sha256": fingerprint,
+        }
+    assert date_cutoff is not None
+    settlement_state = "PENDING_T_PLUS_2"
+    revision_detected = False
+    if "1" in trace and "2" in trace:
+        revision_detected = trace["1"]["evidence_fingerprint_sha256"] != trace["2"]["evidence_fingerprint_sha256"]
+        if revision_detected:
+            settlement_state = "REVISED_OR_UNSETTLED"
+        elif trace["2"]["status"] == "VERIFIED":
+            settlement_state = "SETTLED_VERIFIED"
+        elif trace["2"]["reason_code"] == "FREE_SOURCE_DISAGREEMENT":
+            settlement_state = "PERSISTENT_CROSS_SOURCE_DISAGREEMENT"
+        else:
+            settlement_state = "SETTLED_SOURCE_UNAVAILABLE"
+    if "0" in trace and "1" in trace:
+        revision_detected = revision_detected or (
+            trace["0"]["evidence_fingerprint_sha256"]
+            != trace["1"]["evidence_fingerprint_sha256"]
+        )
+    return {
+        "schema_version": _SETTLEMENT_TRACK_SCHEMA,
+        "candidate": {
+            "candidate_id": frozen_contract.candidate_id,
+            "config_sha256": frozen_contract.config_sha256,
+        },
+        "date_cutoff": date_cutoff,
+        "observations": trace,
+        "settlement_state": settlement_state,
+        "revision_detected": revision_detected,
+        "no_order": True,
+        "automatic_promotion": False,
+    }
+
+
 def _nearest_rank_bps(values: list[float], percentile: int) -> float:
     if not values or percentile < 1 or percentile > 100:
         raise TqqqCoreOnlyFreeOhlcvP1Error("invalid free OHLCV availability")
@@ -639,6 +846,8 @@ __all__ = [
     "TqqqCoreOnlyFreeOhlcvP1UnavailableError",
     "classify_tqqq_core_only_free_ohlcv_availability",
     "observe_tqqq_core_only_free_ohlcv_assurance",
+    "observe_tqqq_core_only_free_ohlcv_settlement",
+    "build_tqqq_core_only_free_ohlcv_settlement_track",
     "publish_tqqq_core_only_free_ohlcv_p1_inputs",
     "validate_tqqq_core_only_free_ohlcv_assurance",
     "validate_tqqq_core_only_free_ohlcv_input_payload",

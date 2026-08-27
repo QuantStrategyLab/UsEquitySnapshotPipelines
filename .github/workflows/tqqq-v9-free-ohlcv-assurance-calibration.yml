@@ -13,6 +13,7 @@ on:
     - cron: "30 2 * * 2-6"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -48,52 +49,100 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"date_cutoff={cutoff}\n")
           PY
-      - name: Observe redacted source assurance only
-        id: assurance
+      - name: Observe redacted T+0 T+1 T+2 source settlement only
+        id: probes
         env:
           DATE_CUTOFF: ${{ steps.binding.outputs.date_cutoff }}
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         run: |
           set -euo pipefail
-          root="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance/p1-root"
-          status="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance/p1-status.json"
-          mkdir -p "$(dirname "$root")"
-          ROOT="$root" STATUS="$status" uv run --no-sync python - <<'PY'
-          import json, os, subprocess
+          batch="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance/settlement-observations.json"
+          mkdir -p "$(dirname "$batch")"
+          BATCH="$batch" uv run --no-sync python - <<'PY'
+          import json, os
           from datetime import UTC, datetime
           from pathlib import Path
           from scripts.acquire_tqqq_core_only_free_ohlcv_p1 import TwelveYahooOhlcvObserver
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import observe_tqqq_core_only_free_ohlcv_assurance
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import observe_tqqq_core_only_free_ohlcv_settlement
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V9_CONTRACT, _expected_xnys_sessions
           observed = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-          record = observe_tqqq_core_only_free_ohlcv_assurance(
-              TwelveYahooOhlcvObserver(os.environ.get("TWELVE_DATA_API_KEY", "")),
-              output_root=os.environ["ROOT"],
-              observed_at=observed,
-              date_cutoff=os.environ["DATE_CUTOFF"],
-              producer={
-                  "repository": os.environ["GITHUB_REPOSITORY"],
-                  "commit_sha": os.environ["GITHUB_SHA"],
-                  "tree_sha": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
-                  "tool": "tqqq_free_ohlcv_assurance_observation",
-                  "tool_version": "v1",
-              },
-              contract=P2_V9_CONTRACT,
-          )
-          Path(os.environ["STATUS"]).write_bytes(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
+          cutoffs = tuple(reversed(_expected_xnys_sessions(os.environ["DATE_CUTOFF"])[-3:]))
+          observer = TwelveYahooOhlcvObserver(os.environ.get("TWELVE_DATA_API_KEY", ""))
+          observations = [
+              {
+                  "age_sessions": age,
+                  "observation": observe_tqqq_core_only_free_ohlcv_settlement(
+                      observer,
+                      observed_at=observed,
+                      date_cutoff=cutoff.isoformat(),
+                      contract=P2_V9_CONTRACT,
+                  ),
+              }
+              for age, cutoff in enumerate(cutoffs)
+          ]
+          batch = {
+              "schema_version": "qsl.tqqq-free-ohlcv-settlement-observation-batch.v1",
+              "candidate": {"candidate_id": P2_V9_CONTRACT.candidate_id, "config_sha256": P2_V9_CONTRACT.config_sha256},
+              "anchor_date_cutoff": os.environ["DATE_CUTOFF"],
+              "observations": observations,
+              "no_order": True,
+              "automatic_promotion": False,
+          }
+          Path(os.environ["BATCH"]).write_bytes(json.dumps(batch, sort_keys=True, separators=(",", ":")).encode())
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"status={record['status']}\nreason_code={record['reason_code']}\n")
+              anchor = observations[0]["observation"]
+              out.write(f"status={anchor['status']}\nreason_code={anchor['reason_code']}\n")
           PY
+      - name: Download prior redacted settlement observations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prior_dir="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance/prior"
+          mkdir -p "$prior_dir"
+          count=0
+          run_ids="$prior_dir/run-ids.txt"
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tqqq-v9-free-ohlcv-assurance-calibration.yml/runs?status=success&per_page=10" --jq '.workflow_runs[] | .id' > "$run_ids"; then
+            echo 'SETTLEMENT_HISTORY=UNAVAILABLE; using current observation only' >> "$GITHUB_STEP_SUMMARY"
+            : > "$run_ids"
+          fi
+          while IFS= read -r run_id; do
+            [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
+            if ! artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.expired == false and (.name | startswith("tqqq-v9-free-ohlcv-assurance-"))) | .id' | head -n 1)"; then
+              continue
+            fi
+            [ -n "$artifact_id" ] || continue
+            archive="$prior_dir/$run_id.zip"
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" --output "$archive"; then
+              continue
+            fi
+            if unzip -Z1 "$archive" | grep -qx 'settlement-observations.json'; then
+              unzip -p "$archive" settlement-observations.json > "$prior_dir/$run_id.json"
+              count=$((count + 1))
+              [ "$count" -ge 2 ] && break
+            fi
+          done < "$run_ids"
+      - name: Build redacted settlement tracks only
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/tqqq-v9-free-ohlcv-assurance"
+          args=(--current "$root/settlement-observations.json")
+          for prior in "$root"/prior/*.json; do
+            [ -e "$prior" ] && args+=(--prior "$prior")
+          done
+          uv run --no-sync python scripts/build_tqqq_free_ohlcv_settlement_tracks.py "${args[@]}" --output "$root/settlement-tracks.json"
       - name: Record observation-only boundary
         run: |
           printf 'STATUS=%s\nREASON=%s\nDATE_CUTOFF=%s\nAUTHORITY=OBSERVATION_ONLY_NO_ORDER\n' \
-            '${{ steps.assurance.outputs.status }}' \
-            '${{ steps.assurance.outputs.reason_code }}' \
+            '${{ steps.probes.outputs.status }}' \
+            '${{ steps.probes.outputs.reason_code }}' \
             '${{ steps.binding.outputs.date_cutoff }}' >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload redacted assurance observation only
+      - name: Upload redacted settlement observations only
         uses: actions/upload-artifact@v7
         with:
           name: tqqq-v9-free-ohlcv-assurance-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tqqq-v9-free-ohlcv-assurance/p1-status.json
+          path: |
+            ${{ runner.temp }}/tqqq-v9-free-ohlcv-assurance/settlement-observations.json
+            ${{ runner.temp }}/tqqq-v9-free-ohlcv-assurance/settlement-tracks.json
           if-no-files-found: error
           retention-days: 45
