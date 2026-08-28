@@ -60,6 +60,8 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "volatility_delever_price_rebound_enabled = ${PLUGIN_VOLATILITY_DELEVER_PRICE_REBOUND_ENABLED}" in workflow
     assert "position_control" in workflow
     assert "notification" in workflow
+    assert "market regime strategy artifact must remain notification-only until promotion evidence passes" in workflow
+    assert "market regime artifact must be mountable as strategy metadata" not in workflow
     assert "write_strategy_plugin_release_manifest" in workflow
     assert (
         workflow.count("from us_equity_snapshot_pipelines.artifacts import normalize_strategy_plugin_gcs_prefix") == 4
