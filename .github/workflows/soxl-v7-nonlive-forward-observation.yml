@@ -87,36 +87,76 @@ jobs:
             echo "SOXL_V7_NONLIVE_STATE=ALREADY_RECORDED" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          previous_record=""
           if ! gcloud storage ls "${prefix}/" > "$listing" 2> "$listing_error"; then
             if grep -Fq "matched no objects" "$listing_error"; then
-              echo "already_recorded=false" >> "$GITHUB_OUTPUT"
               echo "history_available=true" >> "$GITHUB_OUTPUT"
               echo "SOXL_V7_NONLIVE_STATE=FIRST_RECEIPT_BOOTSTRAP" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "already_recorded=false" >> "$GITHUB_OUTPUT"
-            echo "history_available=false" >> "$GITHUB_OUTPUT"
-            echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          previous="$(sort "$listing" | awk -v current="$current" '$0 < current {candidate=$0} END {print candidate}')"
-          if [ -n "$previous" ]; then
-            previous_record="${state_dir}/previous-soxl-v7-nonlive.json"
-            if ! gcloud storage cp --quiet "$previous" "$previous_record" >/dev/null 2>&1; then
+            else
               echo "already_recorded=false" >> "$GITHUB_OUTPUT"
               echo "history_available=false" >> "$GITHUB_OUTPUT"
               echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
+          else
+            previous="$(sort "$listing" | awk -v current="$current" '$0 < current {candidate=$0} END {print candidate}')"
+            if [ -n "$previous" ]; then
+              previous_record="${state_dir}/previous-soxl-v7-nonlive.json"
+              if ! gcloud storage cp --quiet "$previous" "$previous_record" >/dev/null 2>&1; then
+                echo "already_recorded=false" >> "$GITHUB_OUTPUT"
+                echo "history_available=false" >> "$GITHUB_OUTPUT"
+                echo "SOXL_V7_NONLIVE_STATE=PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            fi
+          fi
+          echo "history_available=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$previous_record" ]; then
             echo "previous_record=${previous_record}" >> "$GITHUB_OUTPUT"
           fi
-          echo "already_recorded=false" >> "$GITHUB_OUTPUT"
-          echo "history_available=true" >> "$GITHUB_OUTPUT"
+          DATE_CUTOFF="$DATE_CUTOFF" PREVIOUS_RECORD="$previous_record" uv run --no-sync python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation import (
+              SoxlV7NonliveForwardObservationError,
+              next_soxl_v7_nonlive_observation_session,
+          )
+
+          requested = os.environ["DATE_CUTOFF"]
+          path = os.environ.get("PREVIOUS_RECORD", "")
+          try:
+              previous = json.loads(Path(path).read_text(encoding="utf-8")) if path else None
+              if previous is not None and not isinstance(previous, dict):
+                  raise SoxlV7NonliveForwardObservationError("invalid previous record")
+              observation = next_soxl_v7_nonlive_observation_session(
+                  requested_completed_session=requested,
+                  previous_record=previous,
+              )
+          except (OSError, json.JSONDecodeError, SoxlV7NonliveForwardObservationError):
+              print("already_recorded=false")
+              print("history_available=false")
+              print("observation_date_cutoff=")
+              print("backfill_pending=false")
+          else:
+              if observation is None:
+                  print("already_recorded=true")
+                  print("observation_date_cutoff=")
+                  print("backfill_pending=false")
+              else:
+                  print("already_recorded=false")
+                  print(f"observation_date_cutoff={observation}")
+                  print(f"backfill_pending={str(observation != requested).lower()}")
+          PY
+          if grep -Fxq "backfill_pending=true" "$GITHUB_OUTPUT"; then
+            echo "SOXL_V7_NONLIVE_STATE=BACKFILL_MISSING_XNYS_SESSION" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Acquire assured V7 P1 root or park
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true'
         id: p1
         env:
-          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+          DATE_CUTOFF: ${{ steps.prior.outputs.observation_date_cutoff }}
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         run: |
           set -euo pipefail
@@ -188,7 +228,7 @@ jobs:
       - name: Create-only publish non-live receipt
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
         env:
-          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+          DATE_CUTOFF: ${{ steps.prior.outputs.observation_date_cutoff }}
         run: |
           set -euo pipefail
           record="${RUNNER_TEMP}/soxl-v7-nonlive/record.json"
@@ -203,7 +243,7 @@ jobs:
       - name: Record a safe parking state when predecessor receipt is unavailable
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available != 'true'
         env:
-          DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+          DATE_CUTOFF: ${{ steps.prior.outputs.observation_date_cutoff || steps.session.outputs.date_cutoff }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/soxl-v7-nonlive"
@@ -231,7 +271,7 @@ jobs:
         if: always() && steps.prior.outputs.already_recorded != 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: soxl-v7-nonlive-forward-${{ steps.session.outputs.date_cutoff }}-${{ github.run_id }}
+          name: soxl-v7-nonlive-forward-${{ steps.prior.outputs.observation_date_cutoff || steps.session.outputs.date_cutoff }}-${{ github.run_id }}
           path: ${{ runner.temp }}/soxl-v7-nonlive/record.json
           if-no-files-found: ignore
           retention-days: 35
