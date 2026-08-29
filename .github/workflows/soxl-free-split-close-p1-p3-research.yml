@@ -60,7 +60,11 @@ jobs:
 
           root = Path(os.environ['ROOT'])
           observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-          result = {'status': 'PARKED', 'reason': 'P1_CONTRACT_OR_SOURCE_UNAVAILABLE'}
+          result = {
+              'status': 'PARKED',
+              'reason': 'P1_CONTRACT_OR_SOURCE_UNAVAILABLE',
+              'reason_code': 'FREE_SOURCE_ASSURANCE_NOT_VERIFIED',
+          }
           try:
               published = publish_soxl_core_only_free_split_close_p1_inputs(
                   TwelveYahooSplitAdjustedCloseObserver(os.environ.get('TWELVE_DATA_API_KEY', '')),
@@ -81,18 +85,21 @@ jobs:
                   'status': 'ACCEPTED',
                   'manifest_sha256': published['manifest_sha256'],
                   'candidate_id': P2_V4_FREE_SPLIT_CLOSE_CONTRACT.candidate_id,
+                  'reason_code': '',
               }
-          except SoxlCoreOnlyFreeSplitCloseP1UnavailableError:
-              pass
+          except SoxlCoreOnlyFreeSplitCloseP1UnavailableError as exc:
+              result['reason_code'] = exc.reason_code
           except SoxlCoreOnlyFreeSplitCloseP1Error:
               pass
           encoded = json.dumps(result, sort_keys=True, separators=(',', ':')).encode('utf-8')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f"status={result['status']}\n")
               output.write(f"manifest_sha256={result.get('manifest_sha256', '')}\n")
+              output.write(f"reason_code={result['reason_code']}\n")
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write(f"SOXL_V4_P1_STATUS={result['status']}\n")
               output.write(f"SOXL_V4_P1_TERMINAL_SHA256={hashlib.sha256(encoded).hexdigest()}\n")
+              output.write(f"SOXL_V4_P1_REASON_CODE={result['reason_code']}\n")
               if result.get('manifest_sha256'):
                   output.write(f"SOXL_V4_P1_MANIFEST_SHA256={result['manifest_sha256']}\n")
           print('SOXL_V4_P1_TERMINAL=' + encoded.decode('utf-8'))

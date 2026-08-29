@@ -64,6 +64,13 @@ _PRICE_RELATIVE_TOLERANCE = 0.0001
 _OUTPUT_FILENAMES = frozenset({"closes.json", "assurance.json", "binding.json", "manifest.json"})
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
+SOXL_FREE_SOURCE_REASON_XNYS_SESSION_NOT_COMPLETE = "XNYS_SESSION_NOT_COMPLETE"
+SOXL_FREE_SOURCE_REASON_YAHOO_SETTLEMENT_LAG = "YAHOO_SETTLEMENT_LAG"
+SOXL_FREE_SOURCE_REASON_PROVIDER_UNAVAILABLE = "FREE_SOURCE_PROVIDER_UNAVAILABLE"
+SOXL_FREE_SOURCE_REASON_SESSION_COVERAGE_MISMATCH = "FREE_SOURCE_SESSION_COVERAGE_MISMATCH"
+SOXL_FREE_SOURCE_REASON_PRICE_AGREEMENT_NOT_VERIFIED = "FREE_SOURCE_PRICE_AGREEMENT_NOT_VERIFIED"
+SOXL_FREE_SOURCE_REASON_ASSURANCE_NOT_VERIFIED = "FREE_SOURCE_ASSURANCE_NOT_VERIFIED"
+
 
 class SoxlCoreOnlyFreeSplitCloseP1Error(ValueError):
     """Sanitized failure for a v4 P1 identity or immutable input root."""
@@ -71,6 +78,15 @@ class SoxlCoreOnlyFreeSplitCloseP1Error(ValueError):
 
 class SoxlCoreOnlyFreeSplitCloseP1UnavailableError(SoxlCoreOnlyFreeSplitCloseP1Error):
     """Both mandatory sources did not produce an assured P1 input."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = SOXL_FREE_SOURCE_REASON_ASSURANCE_NOT_VERIFIED,
+    ) -> None:
+        self.reason_code = reason_code
+        super().__init__(message)
 
 
 class SoxlCoreOnlyFreeSplitCloseObserver(Protocol):
@@ -177,7 +193,10 @@ def validate_soxl_core_only_free_split_close_completed_session(
     except (AttributeError, TypeError, ValueError) as exc:
         raise SoxlCoreOnlyFreeSplitCloseP1Error("XNYS calendar is unavailable") from exc
     if pd.Timestamp(observed) < closing:
-        raise SoxlCoreOnlyFreeSplitCloseP1UnavailableError("SOXL free-source session is not complete")
+        raise SoxlCoreOnlyFreeSplitCloseP1UnavailableError(
+            "SOXL free-source session is not complete",
+            reason_code=SOXL_FREE_SOURCE_REASON_XNYS_SESSION_NOT_COMPLETE,
+        )
     return cutoff
 
 
@@ -311,6 +330,47 @@ def _close_series_from_snapshot(
     if not isinstance(normalized, list):
         raise SoxlCoreOnlyFreeSplitCloseP1Error("invalid SOXL free-source close series")
     return normalized, hashlib.sha256(canonical).hexdigest()
+
+
+def _source_snapshot_sessions(observation: DailyBarSourceObservation) -> tuple[date, ...] | None:
+    if observation.status != SOURCE_OBSERVATION_READY or observation.snapshot is None:
+        return None
+    try:
+        return tuple(date.fromisoformat(bar.session_date) for bar in observation.snapshot.bars)
+    except (TypeError, ValueError):
+        return None
+
+
+def classify_soxl_core_only_free_split_close_unavailability(
+    *,
+    observations: tuple[DailyBarSourceObservation, DailyBarSourceObservation],
+    expected_sessions: tuple[date, ...],
+) -> str:
+    """Classify a rejected two-source P1 without disclosing provider payloads.
+
+    A verifier that has every expected session except the completed cutoff is
+    the ordinary settlement-delay case.  It remains non-publishable, but is
+    safe for the scheduler to retry on its next planned cycle.  Every other
+    failure stays in a broader, fail-closed class; this helper never changes
+    the required sources, price tolerance, or publication decision.
+    """
+
+    if not expected_sessions:
+        return SOXL_FREE_SOURCE_REASON_ASSURANCE_NOT_VERIFIED
+    by_source = {observation.source_id: observation for observation in observations}
+    canonical = by_source.get(_CANONICAL_SOURCE_ID)
+    verifier = by_source.get(_VERIFIER_SOURCE_ID)
+    if canonical is None or verifier is None:
+        return SOXL_FREE_SOURCE_REASON_ASSURANCE_NOT_VERIFIED
+    canonical_sessions = _source_snapshot_sessions(canonical)
+    verifier_sessions = _source_snapshot_sessions(verifier)
+    if canonical_sessions is None or verifier_sessions is None:
+        return SOXL_FREE_SOURCE_REASON_PROVIDER_UNAVAILABLE
+    if canonical_sessions == expected_sessions and verifier_sessions == expected_sessions[:-1]:
+        return SOXL_FREE_SOURCE_REASON_YAHOO_SETTLEMENT_LAG
+    if canonical_sessions != expected_sessions or verifier_sessions != expected_sessions:
+        return SOXL_FREE_SOURCE_REASON_SESSION_COVERAGE_MISMATCH
+    return SOXL_FREE_SOURCE_REASON_PRICE_AGREEMENT_NOT_VERIFIED
 
 
 def _closes_bytes(series: Mapping[str, list[dict[str, object]]]) -> bytes:
@@ -649,7 +709,13 @@ def publish_soxl_core_only_free_split_close_p1_inputs(
         except Exception:  # noqa: BLE001 - never leak transport/provider detail from the P1 boundary
             raise SoxlCoreOnlyFreeSplitCloseP1Error("data-only source observation failed") from None
         if report.status != DATA_ASSURANCE_STATUS_VERIFIED or not report.can_publish_research_input:
-            raise SoxlCoreOnlyFreeSplitCloseP1UnavailableError("SOXL free-source assurance not verified")
+            raise SoxlCoreOnlyFreeSplitCloseP1UnavailableError(
+                "SOXL free-source assurance not verified",
+                reason_code=classify_soxl_core_only_free_split_close_unavailability(
+                    observations=observations,
+                    expected_sessions=expected[symbol],
+                ),
+            )
         canonical_observation = observations[0]
         series, digest = _close_series_from_snapshot(
             symbol=symbol,
@@ -782,6 +848,12 @@ def verify_soxl_core_only_free_split_close_p1_input_root(
 
 
 __all__ = [
+    "SOXL_FREE_SOURCE_REASON_ASSURANCE_NOT_VERIFIED",
+    "SOXL_FREE_SOURCE_REASON_PRICE_AGREEMENT_NOT_VERIFIED",
+    "SOXL_FREE_SOURCE_REASON_PROVIDER_UNAVAILABLE",
+    "SOXL_FREE_SOURCE_REASON_SESSION_COVERAGE_MISMATCH",
+    "SOXL_FREE_SOURCE_REASON_XNYS_SESSION_NOT_COMPLETE",
+    "SOXL_FREE_SOURCE_REASON_YAHOO_SETTLEMENT_LAG",
     "SoxlCoreOnlyFreeSplitCloseObserver",
     "SoxlCoreOnlyFreeSplitCloseP1Error",
     "SoxlCoreOnlyFreeSplitCloseP1UnavailableError",
@@ -789,11 +861,12 @@ __all__ = [
     "build_soxl_core_only_free_split_close_p1_binding",
     "canonical_soxl_core_only_free_split_close_p1_binding_bytes",
     "canonical_soxl_core_only_free_split_close_series_bytes",
+    "classify_soxl_core_only_free_split_close_unavailability",
     "publish_soxl_core_only_free_split_close_p1_inputs",
     "soxl_core_only_free_split_close_p1_binding_sha256",
+    "validate_soxl_core_only_free_split_close_assurance_member",
     "validate_soxl_core_only_free_split_close_completed_session",
     "validate_soxl_core_only_free_split_close_input_manifest",
-    "validate_soxl_core_only_free_split_close_assurance_member",
     "validate_soxl_core_only_free_split_close_p1_binding",
     "verify_soxl_core_only_free_split_close_p1_input_root",
 ]
