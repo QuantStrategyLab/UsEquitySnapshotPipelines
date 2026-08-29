@@ -19,6 +19,7 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation 
     build_soxl_v7_nonlive_forward_inputs,
     build_soxl_v7_nonlive_forward_policy,
     build_soxl_v7_nonlive_forward_record,
+    next_soxl_v7_nonlive_observation_session,
 )
 
 
@@ -191,6 +192,42 @@ def test_v7_receipt_chain_binds_and_verifies_its_predecessor() -> None:
         _record(count=2, previous=tampered)
 
 
+def test_v7_schedule_backfills_one_missing_xnys_session_before_newer_data() -> None:
+    first = _record(count=1)
+
+    assert next_soxl_v7_nonlive_observation_session(
+        requested_completed_session=_forward_dates(3)[-1],
+        previous_record=first,
+    ) == _forward_dates(2)[-1]
+
+
+def test_v7_schedule_bootstraps_from_frozen_window_and_detects_caught_up() -> None:
+    assert next_soxl_v7_nonlive_observation_session(
+        requested_completed_session=_forward_dates(3)[-1],
+        previous_record=None,
+    ) == _forward_dates(1)[-1]
+
+    latest = _record(count=3)
+    assert (
+        next_soxl_v7_nonlive_observation_session(
+            requested_completed_session=_forward_dates(3)[-1],
+            previous_record=latest,
+        )
+        is None
+    )
+
+
+def test_v7_schedule_rejects_a_tampered_previous_chain() -> None:
+    tampered = _record(count=1)
+    tampered["last_observed_session"] = _forward_dates(2)[-1]
+
+    with pytest.raises(SoxlV7NonliveForwardObservationError):
+        next_soxl_v7_nonlive_observation_session(
+            requested_completed_session=_forward_dates(3)[-1],
+            previous_record=tampered,
+        )
+
+
 def test_full_v7_window_requires_human_live_review() -> None:
     record = _record(count=252)
     controller = record["controller"]
@@ -220,6 +257,10 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert "PREVIOUS_RECEIPT_UNAVAILABLE" in workflow
     assert "PARKED_PREVIOUS_RECEIPT_UNAVAILABLE" in workflow
     assert "FIRST_RECEIPT_BOOTSTRAP" in workflow
+    assert "BACKFILL_MISSING_XNYS_SESSION" in workflow
+    assert "next_soxl_v7_nonlive_observation_session" in workflow
+    assert "observation_date_cutoff" in workflow
+    assert "steps.prior.outputs.observation_date_cutoff" in workflow
     assert 'grep -Fq "matched no objects" "$listing_error"' in workflow
     assert "history_available == 'true'" in workflow
     assert "python -m scripts.run_soxl_v7_nonlive_forward_observation" in workflow

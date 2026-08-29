@@ -274,6 +274,56 @@ def _previous_state(
     return observed, previous_state, clean, receipt
 
 
+def next_soxl_v7_nonlive_observation_session(
+    *,
+    requested_completed_session: str,
+    previous_record: Mapping[str, object] | None,
+) -> str | None:
+    """Return the one safe P4 session to record, or ``None`` when caught up.
+
+    The durable receipt chain advances by exactly one XNYS session.  A market
+    data outage must therefore be backfilled before a newer session can be
+    recorded; otherwise the next receipt would have a non-contiguous index
+    and permanently park the forward observer.  This function only resolves
+    a date from already-validated receipt state.  It has no market-data,
+    storage, broker, deployment, or execution dependency.
+    """
+
+    requested = _session_date(requested_completed_session)
+    if _expected_sessions(requested, requested) != (requested,):
+        _fail("requested observation session is not an XNYS session")
+    first = P4_V7_FORWARD_CONFIRMATION_CONTRACT.first_forward_xnys_session
+    if requested < first:
+        _fail("requested observation session precedes the frozen window")
+
+    if previous_record is None:
+        next_session = first
+    else:
+        policy = build_soxl_v7_nonlive_forward_policy()
+        observed, _, _, receipt = _previous_state(previous_record, policy=policy)
+        if receipt is None:
+            _fail("invalid previous non-live receipt")
+        value = _mapping(previous_record)
+        last = _session_date(value.get("last_observed_session"))
+        sessions_value = value.get("observation_sessions")
+        if not isinstance(sessions_value, list):
+            _fail("invalid previous observation sessions")
+        sessions = tuple(_session_date(item) for item in sessions_value)
+        if (
+            not sessions
+            or sessions[0] != first
+            or sessions != _expected_sessions(sessions[0], sessions[-1])
+            or len(sessions) != observed
+            or last != sessions[-1]
+            or receipt["observation_session"] != last
+            or receipt["observation_index"] != observed
+        ):
+            _fail("invalid previous observation chain")
+        next_session = pd.Timestamp(_CALENDAR.next_session(pd.Timestamp(last))).date().isoformat()
+
+    return next_session if next_session <= requested else None
+
+
 def _evidence_digest(value: object | None, label: str, *, required: bool) -> str | None:
     if value is None and not required:
         return None
@@ -421,4 +471,5 @@ __all__ = [
     "build_soxl_v7_nonlive_forward_inputs",
     "build_soxl_v7_nonlive_forward_policy",
     "build_soxl_v7_nonlive_forward_record",
+    "next_soxl_v7_nonlive_observation_session",
 ]
