@@ -19,6 +19,8 @@ def test_v8_free_ohlcv_workflow_is_manual_nonexecution_and_does_not_use_alpaca()
     assert "--no-clobber" in workflow
     assert "build_tqqq_p3_v8_evidence_index" in workflow
     assert "build_relative_benchmark_terminal_summary" in workflow
+    assert "availability_diagnostic" in workflow
+    assert "classify_tqqq_core_only_free_ohlcv_availability" in workflow
     assert "relative-benchmark-policy.v1.json" in workflow
     assert "Create-only upload of sanitized V8 P3 metadata" in workflow
     assert "exit_code=0" in workflow

@@ -77,16 +77,20 @@ jobs:
           from datetime import UTC, datetime
           from pathlib import Path
           from scripts.acquire_tqqq_core_only_free_ohlcv_p1 import TwelveYahooOhlcvObserver
-          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import TqqqCoreOnlyFreeOhlcvP1Error, TqqqCoreOnlyFreeOhlcvP1UnavailableError, publish_tqqq_core_only_free_ohlcv_p1_inputs
+          from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import TqqqCoreOnlyFreeOhlcvP1Error, TqqqCoreOnlyFreeOhlcvP1UnavailableError, classify_tqqq_core_only_free_ohlcv_availability, publish_tqqq_core_only_free_ohlcv_p1_inputs
           from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_p1_binding import P2_V8_CONTRACT
           observed = datetime.now(UTC).replace(microsecond=0).isoformat().replace('+00:00','Z')
-          status, manifest, reason = 'PARKED', '', 'FREE_SOURCE_UNAVAILABLE'
+          status, manifest, reason, availability = 'PARKED', '', 'FREE_SOURCE_UNAVAILABLE', {}
           try:
               result = publish_tqqq_core_only_free_ohlcv_p1_inputs(TwelveYahooOhlcvObserver(os.environ.get('TWELVE_DATA_API_KEY','')), output_root=os.environ['ROOT'], observed_at=observed, date_cutoff=os.environ['DATE_CUTOFF'], producer={'repository':'QuantStrategyLab/UsEquitySnapshotPipelines','commit_sha':os.environ['GITHUB_SHA'],'tree_sha':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),'tool':'tqqq_core_only_free_ohlcv_p1','tool_version':'v1'})
               status, manifest, reason = 'ACCEPTED', result['manifest_sha256'], ''
-          except TqqqCoreOnlyFreeOhlcvP1UnavailableError: pass
+          except TqqqCoreOnlyFreeOhlcvP1UnavailableError as exc:
+              observed_availability = getattr(exc, 'availability_diagnostic', None)
+              if isinstance(observed_availability, dict):
+                  availability = observed_availability
+                  reason = classify_tqqq_core_only_free_ohlcv_availability(availability)
           except TqqqCoreOnlyFreeOhlcvP1Error: reason = 'FREE_SOURCE_CONTRACT_FAILURE'
-          record={'schema_version':'qsl.tqqq-p2-v8-p1-manual-status.v1','candidate':{'candidate_id':P2_V8_CONTRACT.candidate_id,'config_sha256':P2_V8_CONTRACT.config_sha256},'date_cutoff':os.environ['DATE_CUTOFF'],'status':status,'reason_code':reason,'input_manifest_sha256':manifest}
+          record={'schema_version':'qsl.tqqq-p2-v8-p1-manual-status.v1','candidate':{'candidate_id':P2_V8_CONTRACT.candidate_id,'config_sha256':P2_V8_CONTRACT.config_sha256},'date_cutoff':os.environ['DATE_CUTOFF'],'status':status,'reason_code':reason,'input_manifest_sha256':manifest,'availability_diagnostic':availability}
           Path(os.environ['STATUS']).write_bytes(json.dumps(record,sort_keys=True,separators=(',',':')).encode())
           with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write(f'status={status}\nmanifest_sha256={manifest}\n')
           PY
