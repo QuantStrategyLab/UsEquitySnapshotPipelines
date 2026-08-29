@@ -179,7 +179,11 @@ jobs:
           )
 
           root = Path(os.environ["ROOT"])
-          result = {"status": "PARKED"}
+          result = {
+              "reason_code": "FREE_SOURCE_ASSURANCE_NOT_VERIFIED",
+              "retry_disposition": "PARK_AND_DIAGNOSE",
+              "status": "PARKED",
+          }
           try:
               published = publish_soxl_core_only_free_split_close_p1_inputs(
                   TwelveYahooSplitAdjustedCloseObserver(os.environ.get("TWELVE_DATA_API_KEY", "")),
@@ -195,11 +199,22 @@ jobs:
                   date_cutoff=os.environ["DATE_CUTOFF"],
                   p2_contract=P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT,
               )
-              result = {"status": "ACCEPTED", "manifest_sha256": published["manifest_sha256"]}
-          except (SoxlCoreOnlyFreeSplitCloseP1Error, SoxlCoreOnlyFreeSplitCloseP1UnavailableError):
+              result = {
+                  "manifest_sha256": published["manifest_sha256"],
+                  "reason_code": "",
+                  "retry_disposition": "NONE",
+                  "status": "ACCEPTED",
+              }
+          except SoxlCoreOnlyFreeSplitCloseP1UnavailableError as exc:
+              result["reason_code"] = exc.reason_code
+              if exc.reason_code == "YAHOO_SETTLEMENT_LAG":
+                  result["retry_disposition"] = "RETRY_NEXT_SCHEDULED_SESSION"
+          except SoxlCoreOnlyFreeSplitCloseP1Error:
               pass
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"status={result['status']}\n")
+              output.write(f"reason_code={result['reason_code']}\n")
+              output.write(f"retry_disposition={result['retry_disposition']}\n")
           print(json.dumps(result, sort_keys=True, separators=(",", ":")))
           PY
       - name: Run exact V7 Shadow and simulated-Paper observation
@@ -238,8 +253,14 @@ jobs:
           echo "SOXL_V7_NONLIVE_RECORD=CREATE_ONLY_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
       - name: Record a safe parking state when P1 is unavailable
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status != 'ACCEPTED'
+        env:
+          P1_REASON_CODE: ${{ steps.p1.outputs.reason_code }}
+          P1_RETRY_DISPOSITION: ${{ steps.p1.outputs.retry_disposition }}
         run: |
+          set -euo pipefail
           echo "SOXL_V7_NONLIVE_STATE=PARKED_P1_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
+          echo "SOXL_V7_P1_REASON_CODE=${P1_REASON_CODE:-FREE_SOURCE_ASSURANCE_NOT_VERIFIED}" >> "$GITHUB_STEP_SUMMARY"
+          echo "SOXL_V7_P1_RETRY_DISPOSITION=${P1_RETRY_DISPOSITION:-PARK_AND_DIAGNOSE}" >> "$GITHUB_STEP_SUMMARY"
       - name: Record a safe parking state when predecessor receipt is unavailable
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available != 'true'
         env:

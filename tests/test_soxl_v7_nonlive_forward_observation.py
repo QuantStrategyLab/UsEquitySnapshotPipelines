@@ -261,6 +261,9 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert "next_soxl_v7_nonlive_observation_session" in workflow
     assert "observation_date_cutoff" in workflow
     assert "steps.prior.outputs.observation_date_cutoff" in workflow
+    assert "YAHOO_SETTLEMENT_LAG" in workflow
+    assert "RETRY_NEXT_SCHEDULED_SESSION" in workflow
+    assert "SOXL_V7_P1_REASON_CODE" in workflow
     assert 'grep -Fq "matched no objects" "$listing_error"' in workflow
     assert "history_available == 'true'" in workflow
     assert "python -m scripts.run_soxl_v7_nonlive_forward_observation" in workflow

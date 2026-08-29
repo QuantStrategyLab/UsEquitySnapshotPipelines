@@ -21,6 +21,7 @@ def test_v4_workflow_is_manual_market_data_research_without_broker_or_raw_artifa
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in workflow
     assert "run_soxl_core_only_free_split_close_p3_evidence.py" in workflow
     assert "SOXL_V4_P1_TERMINAL=" in workflow
+    assert "SOXL_V4_P1_REASON_CODE=" in workflow
     assert "SOXL_V4_P3_REVIEW=" in workflow
     assert "metrics_fields" in workflow
     assert "actions/upload-artifact" not in workflow
@@ -42,6 +43,7 @@ def test_v5_workflow_is_manual_market_data_research_with_only_sanitized_relative
     assert "--p2-profile v5_longterm_drawdown" in workflow
     assert "longterm_compounding_gate" in workflow
     assert "SOXL_V5_P3_REVIEW=" in workflow
+    assert "SOXL_V5_P1_REASON_CODE=" in workflow
     assert "actions/upload-artifact" not in workflow
     assert "google-github-actions" not in workflow
     assert "gcloud " not in workflow

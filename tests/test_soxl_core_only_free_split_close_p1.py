@@ -45,10 +45,12 @@ class _AssuredObserver:
         self,
         *,
         missing_symbol: str | None = None,
+        missing_all_verifier_latest: bool = False,
         divergent_symbol: str | None = None,
     ) -> None:
         self._expected = expected_soxl_core_only_sessions(_CUTOFF)
         self._missing_symbol = missing_symbol
+        self._missing_all_verifier_latest = missing_all_verifier_latest
         self._divergent_symbol = divergent_symbol
         self.requests: list[dict[str, str]] = []
 
@@ -69,7 +71,9 @@ class _AssuredObserver:
             }
         )
         sessions = self._expected[symbol]
-        if source_id == _VERIFIER and symbol == self._missing_symbol:
+        if source_id == _VERIFIER and (
+            symbol == self._missing_symbol or self._missing_all_verifier_latest
+        ):
             sessions = sessions[:-1]
         offset = {"SOXL": 10.0, "SOXX": 100.0, "BOXX": 20.0}[symbol]
         bars = []
@@ -210,13 +214,19 @@ def test_publisher_requires_two_source_close_agreement_then_writes_a_private_roo
     }
 
 
-@pytest.mark.parametrize("kwargs", ({"missing_symbol": "SOXX"}, {"divergent_symbol": "SOXL"}))
+@pytest.mark.parametrize(
+    ("kwargs", "expected_reason_code"),
+    (
+        ({"missing_symbol": "SOXX"}, p1.SOXL_FREE_SOURCE_REASON_YAHOO_SETTLEMENT_LAG),
+        ({"divergent_symbol": "SOXL"}, p1.SOXL_FREE_SOURCE_REASON_PRICE_AGREEMENT_NOT_VERIFIED),
+    ),
+)
 def test_publisher_parks_incomplete_or_disagreeing_sources_without_a_root(
-    tmp_path: Path, kwargs: Mapping[str, str]
+    tmp_path: Path, kwargs: Mapping[str, str], expected_reason_code: str
 ) -> None:
     output_root = tmp_path / "parked-p1"
 
-    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1UnavailableError, match="not verified"):
+    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1UnavailableError, match="not verified") as raised:
         p1.publish_soxl_core_only_free_split_close_p1_inputs(
             _AssuredObserver(**kwargs),
             output_root=output_root,
@@ -225,6 +235,23 @@ def test_publisher_parks_incomplete_or_disagreeing_sources_without_a_root(
             date_cutoff=_CUTOFF,
         )
 
+    assert raised.value.reason_code == expected_reason_code
+    assert not output_root.exists()
+
+
+def test_publisher_classifies_an_exact_yahoo_settlement_lag_without_a_root(tmp_path: Path) -> None:
+    output_root = tmp_path / "settlement-lag-p1"
+
+    with pytest.raises(p1.SoxlCoreOnlyFreeSplitCloseP1UnavailableError) as raised:
+        p1.publish_soxl_core_only_free_split_close_p1_inputs(
+            _AssuredObserver(missing_all_verifier_latest=True),
+            output_root=output_root,
+            observed_at="2026-08-19T00:00:00Z",
+            producer=_producer(),
+            date_cutoff=_CUTOFF,
+        )
+
+    assert raised.value.reason_code == p1.SOXL_FREE_SOURCE_REASON_YAHOO_SETTLEMENT_LAG
     assert not output_root.exists()
 
 
