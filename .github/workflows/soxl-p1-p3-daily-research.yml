@@ -167,6 +167,77 @@ jobs:
           gcloud storage cp --quiet --no-clobber "$root/binding.json" "$root/bars.json" "$root/manifest.json" "${destination}/" >/dev/null
           gcloud storage cp --quiet --no-clobber "$root/p1-complete.json" "${destination}/p1-complete.json" >/dev/null
           printf 'SOXL_P1_REMOTE_COMPLETION=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Build optional verified decision-data projection
+        if: steps.acquire.outputs.status == 'ACCEPTED'
+        id: decision_projection
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-daily-research/p1-root"
+          projection_root="${RUNNER_TEMP}/soxl-daily-research/decision-price-series"
+          ROOT="$root" PROJECTION_ROOT="$projection_root" uv run --no-sync python - <<'PY'
+          import os
+          import subprocess
+
+          from us_equity_snapshot_pipelines.lifecycle.decision_data_projection import (
+              extract_soxl_bars_daily_series,
+              publish_verified_daily_price_series_projection,
+          )
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p1_publisher import (
+              verify_soxl_core_only_input_root,
+          )
+
+          result = {"status": "PARKED"}
+          try:
+              published = publish_verified_daily_price_series_projection(
+                  parent_root=os.environ["ROOT"],
+                  output_root=os.environ["PROJECTION_ROOT"],
+                  parent_verifier=verify_soxl_core_only_input_root,
+                  strategy_scope="soxl_soxx_trend_income",
+                  series_extractor=extract_soxl_bars_daily_series,
+                  producer={
+                      "repository": os.environ["GITHUB_REPOSITORY"],
+                      "commit_sha": os.environ["GITHUB_SHA"],
+                      "tree_sha": subprocess.check_output(
+                          ["git", "rev-parse", "HEAD^{tree}"], text=True
+                      ).strip(),
+                      "tool": "verified_daily_decision_data_projection",
+                      "tool_version": "v1",
+                  },
+              )
+              result = {"status": "PUBLISHED", "manifest_sha256": published["manifest_sha256"]}
+          # The projection is an observer-stage artifact.  It must not alter
+          # the accepted P1/P3 research path when unavailable.
+          except Exception:
+              pass
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"status={result['status']}\n")
+              if result.get("manifest_sha256"):
+                  output.write(f"manifest_sha256={result['manifest_sha256']}\n")
+          print(result["status"])
+          PY
+      - name: Create-only upload verified decision-data projection
+        if: steps.decision_projection.outputs.status == 'PUBLISHED'
+        env:
+          PROJECTION_MANIFEST_SHA256: ${{ steps.decision_projection.outputs.manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-daily-research/decision-price-series"
+          destination="gs://qsl-runtime-logs-shared/decision-data-projections/v1/us_equity/soxl_soxx_trend_income/${PROJECTION_MANIFEST_SHA256}"
+          if gcloud storage ls "${destination}/" >/dev/null 2>&1; then
+            printf 'DECISION_DATA_PROJECTION_STATUS=PARKED\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Upload the data member before the manifest.  Consumers treat the
+          # immutable manifest as the visibility/commit record.
+          if gcloud storage cp --quiet --no-clobber "$root/decision-price-series.json" "${destination}/decision-price-series.json" >/dev/null \
+            && gcloud storage cp --quiet --no-clobber "$root/manifest.json" "${destination}/manifest.json" >/dev/null; then
+            printf 'DECISION_DATA_PROJECTION_STATUS=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'DECISION_DATA_PROJECTION_STATUS=PARKED\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Record parked optional decision-data projection
+        if: steps.acquire.outputs.status == 'ACCEPTED' && steps.decision_projection.outputs.status != 'PUBLISHED'
+        run: echo 'DECISION_DATA_PROJECTION_STATUS=PARKED' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P1 terminal status
         if: always()
         uses: actions/upload-artifact@v7

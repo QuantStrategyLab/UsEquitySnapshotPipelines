@@ -79,6 +79,23 @@ independently-authorized P5 scheduler, not P5 execution or permission.  No raw
 bars are copied into GitHub artifacts and the controller does not extend the
 configured retention period.
 
+### 可选的通用决策数据投影
+
+在 accepted P1 写入完成后，工作流还会尝试生成一个**独立、私有、create-only**
+的日线投影。它先验证原生 P1 root 与 `bars.json` 成员哈希，提取
+`QQQ`/`TQQQ` 的收盘价与成交量，再次验证父 root 后才生成通用
+`decision-price-series.json` 与其 manifest。投影 manifest 绑定父 P1 manifest
+SHA-256；数据对象先上传、manifest 最后上传，因此 manifest 才是消费者可见的
+完成标记。
+
+该对象位于私有的
+`decision-data-projections/v1/us_equity/tqqq_growth_income/` 前缀，和原 P1
+使用同一短期、不可公开的行情存储边界。它不把 GCS 路径、bars 或凭据传给控制台，
+也不修改 P1、P3、策略参数、P4/P5/P6 或任何订单。当前为
+`artifact_optional` 观察阶段：投影验证或上传失败只记录
+`DECISION_DATA_PROJECTION_STATUS=PARKED`，不能中断既有 P1/P3；后续执行适配器
+必须独立验证这一投影，才可消费它。
+
 After the create-only P3 status write succeeds, the same sanitized terminal
 record is also retained as a short-lived Actions artifact. It contains only
 the candidate identity, immutable input/config digests, date cutoff, and P3

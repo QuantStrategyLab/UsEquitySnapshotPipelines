@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 WORKFLOW = Path(".github/workflows/tqqq-p1-p3-daily-research.yml")
 GITIGNORE = Path(".gitignore")
 
@@ -58,6 +57,12 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "daily-health.json" in workflow
     assert "p1-terminal-status.json" in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
+    assert "Build optional verified decision-data projection" in workflow
+    assert "extract_tqqq_bars_daily_series" in workflow
+    assert 'strategy_scope="tqqq_growth_income"' in workflow
+    assert "decision-data-projections/v1/us_equity/tqqq_growth_income/${PROJECTION_MANIFEST_SHA256}" in workflow
+    assert '"$root/decision-price-series.json" "${destination}/decision-price-series.json"' in workflow
+    assert "DECISION_DATA_PROJECTION_STATUS=PARKED" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "Upload sanitized P3 terminal status" in workflow
     assert "Upload sanitized P1 terminal status" in workflow
