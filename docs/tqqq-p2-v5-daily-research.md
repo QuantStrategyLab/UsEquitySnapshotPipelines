@@ -96,6 +96,11 @@ SHA-256；数据对象先上传、manifest 最后上传，因此 manifest 才是
 `DECISION_DATA_PROJECTION_STATUS=PARKED`，不能中断既有 P1/P3；后续执行适配器
 必须独立验证这一投影，才可消费它。
 
+scheduled workflow 会把投影的最终状态送入既有的只读控制台来源：只有
+`PARKED` 会变成有界的 `decision_data_projection_parked` attention code，
+`PUBLISHED` 不增加控制台细节。这个新增状态不含投影的 GCS URI、manifest
+digest、bars、凭据、策略改动或执行权限。
+
 After the create-only P3 status write succeeds, the same sanitized terminal
 record is also retained as a short-lived Actions artifact. It contains only
 the candidate identity, immutable input/config digests, date cutoff, and P3

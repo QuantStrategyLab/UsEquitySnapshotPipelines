@@ -64,6 +64,7 @@ _P3_FAILURE_CLASSES = frozenset(
         "runtime_internal_failure",
     }
 )
+_DECISION_PROJECTION_STATUSES = frozenset({"PUBLISHED", "PARKED", "NOT_ATTEMPTED"})
 
 
 class TqqqDailyControlPlaneSourceError(ValueError):
@@ -92,7 +93,7 @@ def _timestamp(value: object) -> str:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise TqqqDailyControlPlaneSourceError("invalid computed timestamp")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value)
     except ValueError as exc:
         raise TqqqDailyControlPlaneSourceError("invalid computed timestamp") from exc
     return value
@@ -109,6 +110,31 @@ def _p1_provider_retry_state(value: object) -> str:
     if state not in _P1_PROVIDER_RETRY_STATES:
         raise TqqqDailyControlPlaneSourceError("invalid P1 provider retry state")
     return state
+
+
+def _decision_projection_errors(p1_status: str, value: object) -> list[str]:
+    """Return only a bounded attention code; never a storage location or data."""
+
+    if value in (None, ""):
+        # Preserve the v1 source API for older callers while the workflow is
+        # being wired. The scheduled route always supplies an explicit state.
+        return []
+    status = str(value).strip().upper()
+    if status not in _DECISION_PROJECTION_STATUSES:
+        raise TqqqDailyControlPlaneSourceError("invalid decision-data projection status")
+    if p1_status != "ACCEPTED":
+        if status != "NOT_ATTEMPTED":
+            raise TqqqDailyControlPlaneSourceError(
+                "unaccepted P1 cannot carry a decision-data projection status"
+            )
+        return []
+    if status == "PUBLISHED":
+        return []
+    if status == "PARKED":
+        return ["decision_data_projection_parked"]
+    raise TqqqDailyControlPlaneSourceError(
+        "accepted P1 requires a terminal decision-data projection status"
+    )
 
 
 def _with_p1_provider_retry_note(
@@ -162,6 +188,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
     p3_status: object = None,
     p3_evidence_sha256: object = None,
     p3_failure_class: object = None,
+    decision_projection_status: object = None,
 ) -> dict[str, object]:
     """Return one sanitized, non-execution source snapshot.
 
@@ -181,6 +208,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
     p1_reason = str(p1_reason_code or "").strip().upper()
     p3 = str(p3_status or "").strip()
     failure_class = str(p3_failure_class or "").strip()
+    projection_errors = _decision_projection_errors(p1, decision_projection_status)
 
     if p1 not in _P1_STATUSES:
         return {
@@ -199,7 +227,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
                     source_revision=revision,
                 )
             ],
-            "errors": ["p1_terminal_missing"],
+            "errors": ["p1_terminal_missing", *projection_errors],
         }
 
     provider_retry_state = _p1_provider_retry_state(p1_provider_retry_state)
@@ -248,8 +276,11 @@ def build_tqqq_daily_control_plane_source_snapshot(
                 )
             ],
             "errors": [
-                "p1_deferred_"
-                f"{'operator_attention_' if needs_operator_attention else ''}{rendered_reason}"
+                (
+                    "p1_deferred_"
+                    f"{'operator_attention_' if needs_operator_attention else ''}{rendered_reason}"
+                ),
+                *projection_errors,
             ],
         }
 
@@ -282,7 +313,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
                     source_revision=revision,
                 )
             ],
-            "errors": [f"p1_quarantined_{rendered_reason}"],
+            "errors": [f"p1_quarantined_{rendered_reason}", *projection_errors],
         }
 
     if manifest_digest is None:
@@ -328,7 +359,7 @@ def build_tqqq_daily_control_plane_source_snapshot(
                 source_revision=revision,
             )
         ],
-        "errors": errors,
+        "errors": [*errors, *projection_errors],
     }
 
 

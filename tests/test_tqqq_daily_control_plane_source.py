@@ -11,7 +11,6 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_daily_control_plane_source impo
 )
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import P3_STATUS
 
-
 NOW = "2026-08-19T03:00:00Z"
 REVISION = "a" * 40
 MANIFEST = "b" * 64
@@ -194,6 +193,18 @@ def test_accepted_p1_with_sanitized_parked_p3_remains_parked() -> None:
     assert snapshot["errors"] == ["p3_parked"]
 
 
+def test_parked_decision_projection_surfaces_only_a_bounded_attention_code() -> None:
+    snapshot = _build(decision_projection_status="PARKED")
+
+    assert snapshot["errors"] == ["decision_data_projection_parked"]
+    assert set(snapshot["candidates"][0]["evidence"]) == {
+        "p1_input_digest",
+        "p2_config_digest",
+        "p3_evidence_id",
+        "source_revision",
+    }
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -227,6 +238,18 @@ def test_accepted_p1_with_sanitized_parked_p3_remains_parked() -> None:
         (
             {"p1_provider_retry_state": "SIP_403_EXHAUSTED"},
             "exhausted P1 retry cannot be accepted",
+        ),
+        ({"decision_projection_status": "unknown"}, "invalid decision-data projection status"),
+        (
+            {
+                "p1_status": "DEFERRED",
+                "p1_reason_code": "INPUT_UNAVAILABLE",
+                "p1_manifest_sha256": "",
+                "p3_status": "",
+                "p3_evidence_sha256": "",
+                "decision_projection_status": "PUBLISHED",
+            },
+            "unaccepted P1 cannot carry a decision-data projection status",
         ),
     ],
 )
