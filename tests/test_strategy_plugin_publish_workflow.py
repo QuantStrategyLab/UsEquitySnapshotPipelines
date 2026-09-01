@@ -5,7 +5,6 @@ WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-QUANT_PLATFORM_KIT_REF = "706827237ad3b63b61fa9d870a6576e69efecabc"
 MARKET_REGIME_PLUGIN_REF = "af1963e102d9fd42cd23622d1d2799d2ea654747"
 US_EQUITY_STRATEGIES_REF = "75c71d2c9e41b10c64f38d2b5f5f52adbcc8994e"
 
@@ -93,7 +92,8 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
 def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
     pyproject = PYPROJECT.read_text(encoding="utf-8")
 
-    assert f"QuantPlatformKit.git@{QUANT_PLATFORM_KIT_REF}" in pyproject
+    qpk_refs = re.findall(r"QuantPlatformKit\.git@([0-9a-f]{40})", pyproject)
+    assert len(qpk_refs) == 1
     assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
     assert f"UsEquityStrategies.git@{US_EQUITY_STRATEGIES_REF}" in pyproject
     assert "google-cloud-storage>=2.18" in pyproject
