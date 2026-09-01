@@ -34,6 +34,12 @@ def test_soxl_daily_research_defers_unavailable_p1_and_requires_remote_completio
     assert "p1-complete.json" in workflow
     assert "verify_soxl_core_only_p1_remote_completion" in workflow
     assert "gcloud storage cp --quiet --no-clobber" in workflow
+    assert "Build optional verified decision-data projection" in workflow
+    assert "extract_soxl_bars_daily_series" in workflow
+    assert 'strategy_scope="soxl_soxx_trend_income"' in workflow
+    assert "decision-data-projections/v1/us_equity/soxl_soxx_trend_income/${PROJECTION_MANIFEST_SHA256}" in workflow
+    assert '"$root/decision-price-series.json" "${destination}/decision-price-series.json"' in workflow
+    assert "DECISION_DATA_PROJECTION_STATUS=PARKED" in workflow
     assert "strategy_performance.v2.json" in workflow
     assert "build_soxl_p3_strategy_performance.py" in workflow
     assert "actions/upload-artifact@v7" in workflow
