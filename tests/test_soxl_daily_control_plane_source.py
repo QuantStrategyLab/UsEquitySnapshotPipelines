@@ -4,7 +4,9 @@ import pytest
 
 from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
 from us_equity_snapshot_pipelines.lifecycle.soxl_daily_control_plane_source import (
-    SOURCE_ID, SOURCE_SCHEMA_VERSION, SoxlDailyControlPlaneSourceError,
+    SOURCE_ID,
+    SOURCE_SCHEMA_VERSION,
+    SoxlDailyControlPlaneSourceError,
     build_soxl_daily_control_plane_source_snapshot,
 )
 
@@ -48,10 +50,28 @@ def test_deferred_and_parked_states_never_publish_digests() -> None:
     assert parked["errors"] == ["p3_parked"]
 
 
+def test_parked_decision_projection_sets_attention_without_storage_metadata() -> None:
+    snapshot = _build(decision_projection_status="PARKED")
+
+    assert snapshot["errors"] == ["decision_data_projection_parked"]
+    assert set(snapshot["candidates"][0]["evidence"]) == {
+        "p1_input_digest",
+        "p2_config_digest",
+        "p3_evidence_id",
+        "source_revision",
+    }
+
+
 @pytest.mark.parametrize("kwargs", [
     {"p2_config_sha256": "d" * 64},
     {"p1_manifest_sha256": "", "p3_status": "SUCCESS"},
     {"p3_status": "PARKED", "p3_evidence_sha256": "", "p3_failure_class": "unsafe"},
+    {"decision_projection_status": "unsafe"},
+    {
+        "p1_status": "DEFERRED", "p1_reason_code": "INPUT_UNAVAILABLE",
+        "p1_manifest_sha256": "", "p3_status": "", "p3_evidence_sha256": "",
+        "decision_projection_status": "PUBLISHED",
+    },
 ])
 def test_invalid_terminal_state_fails_closed(kwargs: dict[str, object]) -> None:
     with pytest.raises(SoxlDailyControlPlaneSourceError):

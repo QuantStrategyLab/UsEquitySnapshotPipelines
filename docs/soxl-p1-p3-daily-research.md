@@ -31,6 +31,13 @@ upload problem records `DECISION_DATA_PROJECTION_STATUS=PARKED` while the
 existing accepted P1/P3 path continues.  A later execution adapter must verify
 the projection independently before it could consume it.
 
+For TQQQ and SOXL alike, the scheduled workflow forwards only the terminal
+state to the existing read-only control-plane source.  A parked projection
+becomes the bounded `decision_data_projection_parked` attention code; a
+published projection adds no console detail.  Neither state contains a storage
+URI, manifest digest, raw bars, credential, strategy change, or execution
+authority.
+
 The fixed Alpaca SIP transport has one small exception for a transient HTTP
 `403`: it waits 60 seconds and resubmits the exact same request once.  Its
 source, cutoff, parameters, and data identity remain unchanged.  A second
@@ -45,6 +52,7 @@ data, orders, or authority.
 Only an accepted root reaches P3.  P3 checks the remote completion marker,
 uses an exact detached UES source revision, runs the fixed evidence plan, and
 uploads metrics-and-hashes plus the fixed OOS performance observation.  It
-does not write orders or authorize P4, P5, or P6.  A future control-plane
-source registration may read the sanitized performance artifact for issue-only
-AI diagnosis after at least two completed records exist.
+does not write orders or authorize P4, P5, or P6.  Its control-plane source is
+now limited to the sanitized P1/P3 terminal state and bounded attention codes;
+it does not expose the performance artifact.  Issue-only AI diagnosis still
+requires at least two completed records.

@@ -1,4 +1,4 @@
-"""Write the sanitized source snapshot used by the Settings control console."""
+"""Write the bounded SOXL P1/P3 source snapshot for the control plane."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
-from us_equity_snapshot_pipelines.lifecycle.tqqq_daily_control_plane_source import (
-    build_tqqq_daily_control_plane_source_snapshot,
+from us_equity_snapshot_pipelines.lifecycle.soxl_daily_control_plane_source import (
+    build_soxl_daily_control_plane_source_snapshot,
 )
 
 
@@ -18,7 +18,6 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--p1-status", required=True)
     parser.add_argument("--p1-reason-code", default="")
-    parser.add_argument("--p1-provider-retry-state", default="NOT_TRIGGERED")
     parser.add_argument("--p1-manifest-sha256", default="")
     parser.add_argument("--p2-config-sha256", required=True)
     parser.add_argument("--p3-status", default="")
@@ -30,12 +29,11 @@ def _arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = _arguments()
-    snapshot = build_tqqq_daily_control_plane_source_snapshot(
+    snapshot = build_soxl_daily_control_plane_source_snapshot(
         computed_at=args.computed_at,
         source_revision=args.source_revision,
         p1_status=args.p1_status,
         p1_reason_code=args.p1_reason_code,
-        p1_provider_retry_state=args.p1_provider_retry_state,
         p1_manifest_sha256=args.p1_manifest_sha256,
         p2_config_sha256=args.p2_config_sha256,
         p3_status=args.p3_status,
@@ -43,8 +41,10 @@ def main() -> None:
         p3_failure_class=args.p3_failure_class,
         decision_projection_status=args.decision_projection_status,
     )
-    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    args.output.write_text(encoded, encoding="utf-8")
+    args.output.write_text(
+        json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

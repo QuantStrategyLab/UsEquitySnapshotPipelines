@@ -26,6 +26,7 @@ jobs:
       status: ${{ steps.acquire.outputs.status }}
       reason_code: ${{ steps.acquire.outputs.reason_code }}
       provider_retry_state: ${{ steps.acquire.outputs.provider_retry_state }}
+      decision_projection_status: ${{ steps.decision_projection_terminal.outputs.status }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -217,6 +218,7 @@ jobs:
           PY
       - name: Create-only upload verified decision-data projection
         if: steps.decision_projection.outputs.status == 'PUBLISHED'
+        id: decision_projection_upload
         env:
           PROJECTION_MANIFEST_SHA256: ${{ steps.decision_projection.outputs.manifest_sha256 }}
         run: |
@@ -225,6 +227,7 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/decision-data-projections/v1/us_equity/soxl_soxx_trend_income/${PROJECTION_MANIFEST_SHA256}"
           if gcloud storage ls "${destination}/" >/dev/null 2>&1; then
             printf 'DECISION_DATA_PROJECTION_STATUS=PARKED\n' >> "$GITHUB_STEP_SUMMARY"
+            printf 'status=PARKED\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Upload the data member before the manifest.  Consumers treat the
@@ -232,12 +235,33 @@ jobs:
           if gcloud storage cp --quiet --no-clobber "$root/decision-price-series.json" "${destination}/decision-price-series.json" >/dev/null \
             && gcloud storage cp --quiet --no-clobber "$root/manifest.json" "${destination}/manifest.json" >/dev/null; then
             printf 'DECISION_DATA_PROJECTION_STATUS=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
+            printf 'status=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_OUTPUT"
           else
             printf 'DECISION_DATA_PROJECTION_STATUS=PARKED\n' >> "$GITHUB_STEP_SUMMARY"
+            printf 'status=PARKED\n' >> "$GITHUB_OUTPUT"
           fi
       - name: Record parked optional decision-data projection
         if: steps.acquire.outputs.status == 'ACCEPTED' && steps.decision_projection.outputs.status != 'PUBLISHED'
         run: echo 'DECISION_DATA_PROJECTION_STATUS=PARKED' >> "$GITHUB_STEP_SUMMARY"
+      - name: Resolve sanitized decision-data projection terminal state
+        if: always()
+        id: decision_projection_terminal
+        env:
+          P1_STATUS: ${{ steps.acquire.outputs.status }}
+          BUILD_STATUS: ${{ steps.decision_projection.outputs.status }}
+          UPLOAD_STATUS: ${{ steps.decision_projection_upload.outputs.status }}
+        run: |
+          set -euo pipefail
+          status=NOT_ATTEMPTED
+          if [ "$P1_STATUS" = 'ACCEPTED' ]; then
+            if [ "$BUILD_STATUS" = 'PUBLISHED' ] && [ "$UPLOAD_STATUS" = 'CREATE_ONLY_COMPLETE' ]; then
+              status=PUBLISHED
+            else
+              status=PARKED
+            fi
+          fi
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          printf 'DECISION_DATA_PROJECTION_TERMINAL_STATUS=%s\n' "$status" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P1 terminal status
         if: always()
         uses: actions/upload-artifact@v7
@@ -255,6 +279,7 @@ jobs:
     outputs:
       status: ${{ steps.terminal.outputs.status }}
       evidence_summary_sha256: ${{ steps.terminal.outputs.evidence_summary_sha256 }}
+      failure_class: ${{ steps.terminal.outputs.failure_class }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -323,14 +348,17 @@ jobs:
           if result.get('status') == 'SUCCESS' and isinstance(result.get('evidence_summary_sha256'), str):
               status = 'SUCCESS'
               evidence = result['evidence_summary_sha256']
+              failure_class = ''
           elif set(result) == {'schema_version', 'status', 'failure_class'} and result['status'] == 'PARKED':
               status = 'PARKED'
               evidence = ''
+              failure_class = result['failure_class']
           else:
               raise SystemExit('invalid sanitized SOXL P3 terminal result')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'status={status}\n')
               output.write(f'evidence_summary_sha256={evidence}\n')
+              output.write(f'failure_class={failure_class}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write(f'SOXL_P3_STATUS={status}\n')
               if evidence:
@@ -366,3 +394,119 @@ jobs:
           path: ${{ runner.temp }}/soxl-daily-research/strategy_performance.v2.json
           if-no-files-found: error
           retention-days: 35
+
+  publish-control-plane:
+    needs: [p1, p3]
+    if: always()
+    runs-on: ubuntu-latest
+    environment: market-data-nonlive
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install locked snapshot builder
+        run: |
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Build one sanitized control-plane source snapshot
+        env:
+          P1_JOB_RESULT: ${{ needs.p1.result }}
+          P1_STATUS: ${{ needs.p1.outputs.status }}
+          P1_REASON_CODE: ${{ needs.p1.outputs.reason_code }}
+          P1_MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
+          DECISION_PROJECTION_STATUS: ${{ needs.p1.outputs.decision_projection_status }}
+          P3_JOB_RESULT: ${{ needs.p3.result }}
+          P3_STATUS: ${{ needs.p3.outputs.status }}
+          P3_EVIDENCE_SHA256: ${{ needs.p3.outputs.evidence_summary_sha256 }}
+          P3_FAILURE_CLASS: ${{ needs.p3.outputs.failure_class }}
+        run: |
+          set -euo pipefail
+          output_path="${RUNNER_TEMP}/soxl-daily-research/control-plane-source.json"
+          mkdir -p "$(dirname "$output_path")"
+          config_sha256="$(uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p2_v3_contract import P2_V3_CONTRACT
+
+          candidate = json.loads(Path('config/soxl_soxx_core_only_p2_v3.json').read_text(encoding='utf-8'))
+          canonical = json.dumps(
+              candidate, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False
+          ).encode('utf-8')
+          digest = hashlib.sha256(canonical).hexdigest()
+          if digest != P2_V3_CONTRACT.config_sha256:
+              raise SystemExit('unexpected SOXL P2 v3 candidate policy')
+          print(digest)
+          PY
+          )"
+          p1_status="$P1_STATUS"
+          p1_reason_code="$P1_REASON_CODE"
+          p1_manifest_sha256="$P1_MANIFEST_SHA256"
+          decision_projection_status="$DECISION_PROJECTION_STATUS"
+          if [ "$P1_JOB_RESULT" != 'success' ]; then
+            p1_status=''
+            p1_reason_code=''
+            p1_manifest_sha256=''
+            decision_projection_status=NOT_ATTEMPTED
+          fi
+          p3_status="$P3_STATUS"
+          p3_evidence_sha256="$P3_EVIDENCE_SHA256"
+          p3_failure_class="$P3_FAILURE_CLASS"
+          if [ "$P3_JOB_RESULT" != 'success' ]; then
+            p3_status=''
+            p3_evidence_sha256=''
+            p3_failure_class=''
+          fi
+          uv run --no-sync python scripts/build_soxl_daily_control_plane_source_snapshot.py \
+            --output "$output_path" \
+            --computed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --source-revision "$GITHUB_SHA" \
+            --p1-status "$p1_status" \
+            --p1-reason-code "$p1_reason_code" \
+            --p1-manifest-sha256 "$p1_manifest_sha256" \
+            --p2-config-sha256 "$config_sha256" \
+            --p3-status "$p3_status" \
+            --p3-evidence-sha256 "$p3_evidence_sha256" \
+            --p3-failure-class "$p3_failure_class" \
+            --decision-projection-status "$decision_projection_status"
+          python -m json.tool "$output_path"
+          printf 'CONTROL_PLANE_SOURCE_STATUS=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish source snapshot to the read-only control plane
+        env:
+          CONTROL_PLANE_SYNC_URL: ${{ vars.QSL_CONTROL_PLANE_SYNC_URL }}
+          CONTROL_PLANE_SYNC_TOKEN: ${{ secrets.CONTROL_PLANE_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONTROL_PLANE_SYNC_URL:-}" ] || [ -z "${CONTROL_PLANE_SYNC_TOKEN:-}" ]; then
+            echo 'QSL_CONTROL_PLANE_SYNC_URL and CONTROL_PLANE_SYNC_TOKEN are required for the control-plane publisher.' >&2
+            exit 2
+          fi
+          output_path="${RUNNER_TEMP}/soxl-daily-research/control-plane-source.json"
+          response_path="${RUNNER_TEMP}/soxl-daily-research/control-plane-response.json"
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --connect-timeout 10 \
+            --request POST \
+            --header "Authorization: Bearer ${CONTROL_PLANE_SYNC_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --header 'User-Agent: QuantStrategyLab-UESP-SOXL-ControlPlane/1' \
+            --data-binary "@$output_path" \
+            --output "$response_path" \
+            "${CONTROL_PLANE_SYNC_URL%/}/api/internal/sync-control-plane-source"
+          python - "$response_path" <<'PY'
+          import json
+          import sys
+
+          response = json.loads(open(sys.argv[1], encoding='utf-8').read())
+          if response != {
+              'ok': True,
+              'source_id': 'uesp.soxl_daily_research',
+              'schema_version': 'qsl_control_plane_source_snapshot.v1',
+              'candidate_count': 1,
+              'generated_at': response.get('generated_at'),
+          } or not isinstance(response['generated_at'], str):
+              raise SystemExit('unexpected control-plane source response')
+          PY
+          printf 'CONTROL_PLANE_SOURCE_STATUS=PUBLISHED\n' >> "$GITHUB_STEP_SUMMARY"

@@ -63,6 +63,9 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "decision-data-projections/v1/us_equity/tqqq_growth_income/${PROJECTION_MANIFEST_SHA256}" in workflow
     assert '"$root/decision-price-series.json" "${destination}/decision-price-series.json"' in workflow
     assert "DECISION_DATA_PROJECTION_STATUS=PARKED" in workflow
+    assert "decision_projection_terminal" in workflow
+    assert "DECISION_DATA_PROJECTION_TERMINAL_STATUS" in workflow
+    assert "--decision-projection-status" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "Upload sanitized P3 terminal status" in workflow
     assert "Upload sanitized P1 terminal status" in workflow
@@ -110,6 +113,7 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "id-token: write" not in publisher_job
     assert "build_tqqq_daily_control_plane_source_snapshot.py" in publisher_job
     assert "--p1-provider-retry-state" in publisher_job
+    assert "DECISION_PROJECTION_STATUS" in publisher_job
     assert "--data-binary \"@$output_path\"" in publisher_job
     assert "broker" not in workflow.lower()
     assert "placeorder" not in workflow.lower()

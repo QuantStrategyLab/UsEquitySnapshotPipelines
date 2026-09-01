@@ -23,6 +23,7 @@ _P3_FAILURE_CLASSES = frozenset({
     "orchestrator_contract_failure", "risk_contract_failure",
     "evidence_validation_failure", "runtime_internal_failure",
 })
+_DECISION_PROJECTION_STATUSES = frozenset({"PUBLISHED", "PARKED", "NOT_ATTEMPTED"})
 
 
 class SoxlDailyControlPlaneSourceError(ValueError):
@@ -47,10 +48,31 @@ def _timestamp(value: object) -> str:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise SoxlDailyControlPlaneSourceError("invalid computed timestamp")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value)
     except ValueError as exc:
         raise SoxlDailyControlPlaneSourceError("invalid computed timestamp") from exc
     return value
+
+
+def _decision_projection_errors(p1_status: str, value: object) -> list[str]:
+    if value in (None, ""):
+        return []
+    status = str(value).strip().upper()
+    if status not in _DECISION_PROJECTION_STATUSES:
+        raise SoxlDailyControlPlaneSourceError("invalid decision-data projection status")
+    if p1_status != "ACCEPTED":
+        if status != "NOT_ATTEMPTED":
+            raise SoxlDailyControlPlaneSourceError(
+                "unaccepted P1 cannot carry a decision-data projection status"
+            )
+        return []
+    if status == "PUBLISHED":
+        return []
+    if status == "PARKED":
+        return ["decision_data_projection_parked"]
+    raise SoxlDailyControlPlaneSourceError(
+        "accepted P1 requires a terminal decision-data projection status"
+    )
 
 
 def _candidate(*, lifecycle: dict[str, str], recommendation: dict[str, str],
@@ -71,6 +93,7 @@ def build_soxl_daily_control_plane_source_snapshot(
     p1_manifest_sha256: object, p2_config_sha256: object,
     p3_status: object = None, p3_evidence_sha256: object = None,
     p3_failure_class: object = None, p1_reason_code: object = None,
+    decision_projection_status: object = None,
 ) -> dict[str, object]:
     """Build a metrics-free, research-only SOXL control-plane snapshot."""
     timestamp, revision = _timestamp(computed_at), _revision(source_revision)
@@ -79,13 +102,14 @@ def build_soxl_daily_control_plane_source_snapshot(
     manifest, evidence = _digest(p1_manifest_sha256, "P1 manifest digest"), _digest(p3_evidence_sha256, "P3 evidence digest")
     p1, p3 = str(p1_status or "").strip().upper(), str(p3_status or "").strip()
     reason = str(p1_reason_code or "").strip().lower()
+    projection_errors = _decision_projection_errors(p1, decision_projection_status)
     base = {"schema_version": SOURCE_SCHEMA_VERSION, "source_id": SOURCE_ID,
             "generated_at": timestamp, "computed_at": timestamp, "data_status": "ready"}
     if p1 not in _P1_STATUSES:
         base["candidates"] = [_candidate(lifecycle={"stage": "P1", "status": "parked"},
             recommendation={"code": "park", "reason": "P1 did not produce a terminal status."},
             manifest=None, evidence=None, revision=revision)]
-        base["errors"] = ["p1_terminal_missing"]
+        base["errors"] = ["p1_terminal_missing", *projection_errors]
         return base
     if p1 == "DEFERRED":
         if manifest or p3 or evidence:
@@ -95,7 +119,7 @@ def build_soxl_daily_control_plane_source_snapshot(
         base["candidates"] = [_candidate(lifecycle={"stage": "P1", "status": "deferred"},
             recommendation={"code": "defer", "reason": f"P1 deferred: {reason}; retry on the next scheduled session."},
             manifest=None, evidence=None, revision=revision)]
-        base["errors"] = [f"p1_deferred_{reason}"]
+        base["errors"] = [f"p1_deferred_{reason}", *projection_errors]
         return base
     if p1 == "QUARANTINED":
         if manifest or p3 or evidence or not reason:
@@ -103,7 +127,7 @@ def build_soxl_daily_control_plane_source_snapshot(
         base["candidates"] = [_candidate(lifecycle={"stage": "P1", "status": "parked"},
             recommendation={"code": "park", "reason": f"P1 quarantined: {reason}."},
             manifest=None, evidence=None, revision=revision)]
-        base["errors"] = [f"p1_quarantined_{reason}"]
+        base["errors"] = [f"p1_quarantined_{reason}", *projection_errors]
         return base
     if manifest is None:
         raise SoxlDailyControlPlaneSourceError("accepted P1 requires a manifest digest")
@@ -121,7 +145,7 @@ def build_soxl_daily_control_plane_source_snapshot(
         raise SoxlDailyControlPlaneSourceError("invalid P3 terminal state")
     base["candidates"] = [_candidate(lifecycle=lifecycle, recommendation=recommendation,
         manifest=manifest, evidence=evidence, revision=revision)]
-    base["errors"] = errors
+    base["errors"] = [*errors, *projection_errors]
     return base
 
 
