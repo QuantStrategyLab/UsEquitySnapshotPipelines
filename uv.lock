@@ -783,7 +783,7 @@ source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=0
 [[package]]
 name = "quant-strategy-plugins"
 version = "0.1.7"
-source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=af1963e102d9fd42cd23622d1d2799d2ea654747#af1963e102d9fd42cd23622d1d2799d2ea654747" }
+source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=a261447bad9bb13525692d41348c98df4f67766c#a261447bad9bb13525692d41348c98df4f67766c" }
 dependencies = [
     { name = "pandas" },
     { name = "yfinance" },
@@ -903,7 +903,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=08eed913248953986224e09ea3a8dd9f5ebedc4e" },
-    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=af1963e102d9fd42cd23622d1d2799d2ea654747" },
+    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=a261447bad9bb13525692d41348c98df4f67766c" },
     { name = "requests", extras = ["socks"], specifier = ">=2.31" },
     { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=d72fdc9feaa6a9bfe3d91cad240b54c19556d5f1" },
     { name = "yfinance", specifier = ">=0.2.40" },
