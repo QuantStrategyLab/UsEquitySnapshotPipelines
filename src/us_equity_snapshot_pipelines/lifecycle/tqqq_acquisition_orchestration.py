@@ -35,8 +35,13 @@ from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 from . import tqqq_promotion_runner as promotion_runner
 from .soxl_acquisition_orchestration import OFFICIAL_IBAPI_PROVENANCE_SHA256
+from .tqqq_evidence_risk_mandate import (
+    TqqqEvidenceRiskMandateError,
+    load_tqqq_evidence_risk_mandate,
+)
 from .tqqq_promotion_evidence import (
     _SIGNAL_MODEL,
+    _sync_directory,
     TqqqPromotionEvidenceError,
     run_tqqq_promotion_diagnostic,
     run_tqqq_promotion_evidence,
@@ -121,6 +126,13 @@ def _canonical(value: Any) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _park_risk_consumption(session: object, failure_code: str) -> None:
+    try:
+        session.park(failure_code)  # type: ignore[attr-defined]
+    except TqqqEvidenceRiskMandateError:
+        pass
 
 
 FROZEN_XNYS_SESSIONS = tuple(
@@ -1048,6 +1060,9 @@ def orchestrate_existing_tqqq_snapshot_promotion(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str,
+    risk_authority_receipt_path: str | Path | None = None,
+    risk_authority_source_revision: str | None = None,
+    risk_consumption_store_path: str | Path | None = None,
     source_checkout: Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
@@ -1075,6 +1090,15 @@ def orchestrate_existing_tqqq_snapshot_promotion(
         or _installed_vcs_revision("us-equity-strategies") != UES_REVISION
     ):
         raise TqqqOrchestrationError("installed dependency identity mismatch")
+    try:
+        risk_mandate_session = load_tqqq_evidence_risk_mandate(
+            authority_receipt_path=risk_authority_receipt_path,
+            authority_source_revision=risk_authority_source_revision,
+            consumption_store_path=risk_consumption_store_path,
+            logical_evaluation_time=now,
+        )
+    except TqqqEvidenceRiskMandateError as exc:
+        raise TqqqOrchestrationError("evidence risk authority unavailable") from exc
     bars, manifest = _load_existing_tqqq_snapshot(
         Path(run_root),
         expected_snapshot_digest=snapshot_digest,
@@ -1172,6 +1196,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 output_dir=evidence_root,
                 generated_at=now.isoformat().replace("+00:00", "Z"),
                 mandate_receipt_sha256=consumption.receipt_digest,
+                risk_mandate_session=risk_mandate_session,
+                defer_risk_completion=True,
             )
             failure_stage = "promotion_evidence_result_validation"
             failure_class = "promotion_evidence_result_invalid"
@@ -1237,6 +1263,9 @@ def orchestrate_existing_tqqq_snapshot_promotion(
             if validate_evidence_package_v2(evidence_payload, base_dir=evidence_root):
                 raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
+            _park_risk_consumption(
+                risk_mandate_session, "OUTER_EVIDENCE_VALIDATION_FAILED"
+            )
             if isinstance(exc, TqqqPromotionEvidenceError):
                 failure_stage = "promotion_evidence_contract"
                 failure_class = "promotion_evidence_contract_failed"
@@ -1258,7 +1287,9 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 recoverability=recoverability,
             ) from exc
         _seal_private_tree(temporary)
+        risk_mandate_session.complete()
         _publish_noreplace(temporary, published_root)
+        _sync_directory(published_root.parent)
         temporary = None
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
@@ -1269,8 +1300,10 @@ def orchestrate_existing_tqqq_snapshot_promotion(
             "rerun_count": 1,
         }
     except TqqqOrchestrationError:
+        _park_risk_consumption(risk_mandate_session, "OUTER_EVIDENCE_FAILED")
         raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        _park_risk_consumption(risk_mandate_session, "OUTER_EVIDENCE_FAILED")
         raise TqqqOrchestrationError("snapshot-only TQQQ orchestration failed") from exc
     finally:
         if temporary is not None:
@@ -1293,6 +1326,9 @@ def orchestrate_tqqq_promotion(
     runner_revision: str,
     runner_tree_sha: str,
     session_class: str = "paper",
+    risk_authority_receipt_path: str | Path | None = None,
+    risk_authority_source_revision: str | None = None,
+    risk_consumption_store_path: str | Path | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Publish exact input, consume one mandate, then invoke existing evidence once."""
@@ -1313,6 +1349,15 @@ def orchestrate_tqqq_promotion(
     now = now.astimezone(UTC).replace(microsecond=0)
     if _require_timestamp(authority.retention_expires_at, "retention expiry") <= now:
         raise TqqqOrchestrationError("retention authority is expired")
+    try:
+        risk_mandate_session = load_tqqq_evidence_risk_mandate(
+            authority_receipt_path=risk_authority_receipt_path,
+            authority_source_revision=risk_authority_source_revision,
+            consumption_store_path=risk_consumption_store_path,
+            logical_evaluation_time=now,
+        )
+    except TqqqEvidenceRiskMandateError as exc:
+        raise TqqqOrchestrationError("evidence risk authority unavailable") from exc
     observed_at = now.isoformat().replace("+00:00", "Z")
     bars = _strict_bars(results)
     input_payload, bars_bytes, manifest_bytes, manifest_sha256 = _input_payload(
@@ -1338,6 +1383,7 @@ def orchestrate_tqqq_promotion(
     old_umask = os.umask(0o077)
     run_root = Path(output_root) / manifest_sha256
     published = False
+    temporary_evidence: Path | None = None
     try:
         snapshot = _publish_input(
             output_root,
@@ -1377,7 +1423,11 @@ def orchestrate_tqqq_promotion(
             input_digest=manifest_sha256,
             authority_id=authority.authority_receipt_sha256,
         )
-        evidence_root = run_root / "evidence"
+        temporary_evidence = Path(
+            tempfile.mkdtemp(prefix=".evidence.", dir=run_root)
+        )
+        os.chmod(temporary_evidence, 0o700)
+        evidence_root = temporary_evidence
         failure_stage = "promotion_evidence_runner"
         failure_class = "promotion_runner_failed"
         try:
@@ -1387,6 +1437,8 @@ def orchestrate_tqqq_promotion(
                 output_dir=evidence_root,
                 generated_at=observed_at,
                 mandate_receipt_sha256=consumption.receipt_digest,
+                risk_mandate_session=risk_mandate_session,
+                defer_risk_completion=True,
             )
             failure_stage = "promotion_evidence_result_validation"
             failure_class = "promotion_evidence_result_invalid"
@@ -1454,6 +1506,9 @@ def orchestrate_tqqq_promotion(
             ):
                 raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
+            _park_risk_consumption(
+                risk_mandate_session, "OUTER_EVIDENCE_VALIDATION_FAILED"
+            )
             try:
                 artifact_count = sum(path.is_file() for path in evidence_root.rglob("*"))
             except OSError:
@@ -1466,6 +1521,11 @@ def orchestrate_tqqq_promotion(
                 failure_stage=failure_stage,
                 failure_class=failure_class,
             ) from exc
+        _seal_private_tree(evidence_root)
+        risk_mandate_session.complete()
+        _publish_noreplace(temporary_evidence, run_root / "evidence")
+        _sync_directory(run_root)
+        temporary_evidence = None
         _seal_private_tree(run_root)
         return {
             "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
@@ -1480,14 +1540,33 @@ def orchestrate_tqqq_promotion(
             "rerun_count": 1,
         }
     except TqqqOrchestrationError:
+        _park_risk_consumption(risk_mandate_session, "OUTER_EVIDENCE_FAILED")
+        if temporary_evidence is not None and temporary_evidence.exists():
+            try:
+                shutil.rmtree(temporary_evidence)
+            except OSError:
+                pass
+            temporary_evidence = None
         if published and run_root.exists() and not run_root.is_symlink():
             _seal_private_tree(run_root)
         raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        _park_risk_consumption(risk_mandate_session, "OUTER_EVIDENCE_FAILED")
+        if temporary_evidence is not None and temporary_evidence.exists():
+            try:
+                shutil.rmtree(temporary_evidence)
+            except OSError:
+                pass
+            temporary_evidence = None
         if published and run_root.exists() and not run_root.is_symlink():
             _seal_private_tree(run_root)
         raise TqqqOrchestrationError("TQQQ promotion orchestration failed") from exc
     finally:
+        if temporary_evidence is not None and temporary_evidence.exists():
+            try:
+                shutil.rmtree(temporary_evidence)
+            except OSError:
+                pass
         os.umask(old_umask)
 
 

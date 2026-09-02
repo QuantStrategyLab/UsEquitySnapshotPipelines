@@ -9,12 +9,9 @@ from pathlib import Path
 import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_p2_v2_synthetic_evidence as synthetic_evidence
+import us_equity_snapshot_pipelines.lifecycle.tqqq_evidence_risk_mandate as risk_mandate
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
-import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner as promotion_runner
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
-from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_strategy_performance import (
-    build_tqqq_p3_strategy_performance,
-)
 
 
 def _load_script_module():
@@ -23,7 +20,22 @@ def _load_script_module():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.TqqqEvidenceRiskMandateSession = _VerifiedRiskSession
+    module.load_tqqq_evidence_risk_mandate = lambda **_kwargs: _RISK_SESSION
     return module
+
+
+class _VerifiedRiskSession:
+    is_verified = True
+
+    def complete(self) -> None:
+        pass
+
+    def park(self, _failure_code: str) -> None:
+        pass
+
+
+_RISK_SESSION = _VerifiedRiskSession()
 
 
 def _canonical(value: object) -> bytes:
@@ -139,10 +151,12 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
             "--snapshot-root", str(snapshot),
             "--config", str(config_path),
             "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir", str(tmp_path / "output"),
         ]
     ) == 0
     assert captured["input_payload"] == input_payload
+    assert captured["risk_mandate_session"] is _RISK_SESSION
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "1" * 64,
         "status": "EVIDENCE_V2_COMPLETE",
@@ -180,6 +194,7 @@ def test_cli_emits_the_versioned_v7_policy_and_terminal_digests(
         [
             "--snapshot-root", str(snapshot), "--config", str(config_path),
             "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir", str(tmp_path / "output"),
         ]
     ) == 0
@@ -228,6 +243,7 @@ def test_cli_uses_the_v9_free_ohlcv_verification_route(
             str(config_path),
             "--mandate-receipt-sha256",
             "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(tmp_path / "output"),
         ]
@@ -241,6 +257,18 @@ def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     module = _load_script_module()
+    events: list[str] = []
+
+    class _TrackingRiskSession(_VerifiedRiskSession):
+        def complete(self) -> None:
+            events.append("complete")
+
+        def park(self, failure_code: str) -> None:
+            events.append(f"park:{failure_code}")
+
+    risk_session = _TrackingRiskSession()
+    module.TqqqEvidenceRiskMandateSession = _TrackingRiskSession
+    module.load_tqqq_evidence_risk_mandate = lambda **_kwargs: risk_session
     snapshot = tmp_path / "snapshot"
     _write_canonical_snapshot(snapshot)
     config_path = tmp_path / "config.json"
@@ -262,11 +290,13 @@ def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding
             str(config_path),
             "--mandate-receipt-sha256",
             "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(tmp_path / "output"),
         ]
     ) == 2
     assert calls == 1
+    assert events == ["park:CLI_EVIDENCE_FAILED"]
     assert json.loads(capsys.readouterr().out) == {
         "complete_evidence": False,
         "failure_class": "orchestrator_contract_failure",
@@ -275,6 +305,58 @@ def test_cli_parks_instead_of_accepting_completion_for_a_different_input_binding
         "stage": "orchestrator_contract",
         "status": "PARKED",
     }
+
+
+def test_cli_does_not_publish_when_canonical_completion_fails(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    events: list[str] = []
+
+    class _CompletionFails(_VerifiedRiskSession):
+        def complete(self) -> None:
+            events.append("complete")
+            raise risk_mandate.TqqqEvidenceRiskMandateError("completion failed")
+
+        def park(self, failure_code: str) -> None:
+            events.append(f"park:{failure_code}")
+
+    session = _CompletionFails()
+    module.TqqqEvidenceRiskMandateSession = _CompletionFails
+    module.load_tqqq_evidence_risk_mandate = lambda **_kwargs: session
+    snapshot = tmp_path / "snapshot"
+    input_payload = _write_canonical_snapshot(snapshot)
+    manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
+        input_payload["input_manifest"], input_payload["binding"]
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
+    module.run_tqqq_promotion_evidence = lambda **_kwargs: _completed_evidence_result(
+        manifest_sha256
+    )
+    output = tmp_path / "must-not-exist"
+
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(snapshot),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            "--logical-evaluation-time",
+            "2026-09-02T10:00:00Z",
+            "--output-dir",
+            str(output),
+        ]
+    ) == 2
+    assert events == ["complete", "park:CLI_EVIDENCE_FAILED"]
+    assert not output.exists()
+    assert not tuple(tmp_path.glob(f".{output.name}.*"))
+    result = json.loads(capsys.readouterr().out)
+    assert result["failure_class"] == "risk_contract_failure"
+    assert result["replay_started"] is True
+    assert result["status"] == "PARKED"
 
 
 def test_cli_sanitizes_unexpected_replay_failure_as_runtime_park(
@@ -300,6 +382,7 @@ def test_cli_sanitizes_unexpected_replay_failure_as_runtime_park(
             str(config_path),
             "--mandate-receipt-sha256",
             "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(tmp_path / "output"),
         ]
@@ -342,6 +425,7 @@ def test_cli_rejects_tampered_source_identity_before_evidence_replay(
             "--snapshot-root", str(snapshot),
             "--config", str(config_path),
             "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir", str(tmp_path / "output"),
         ]
     ) == 2
@@ -379,6 +463,7 @@ def test_cli_parks_historical_v2_before_reading_snapshot_or_starting_replay(
             str(config_path),
             "--mandate-receipt-sha256",
             "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(output),
         ]
@@ -395,18 +480,89 @@ def test_cli_parks_historical_v2_before_reading_snapshot_or_starting_replay(
     }
 
 
-def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
+def test_cli_parks_before_replay_when_evidence_risk_authority_is_missing(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    module = _load_script_module()
+    module.load_tqqq_evidence_risk_mandate = (
+        risk_mandate.load_tqqq_evidence_risk_mandate
+    )
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
+    calls = 0
+
+    def run_evidence(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("replay must not start")
+
+    module.run_tqqq_promotion_evidence = run_evidence
+    assert module.main(
+        [
+            "--snapshot-root", str(tmp_path / "unreadable"),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
+            "--output-dir", str(tmp_path / "output"),
+        ]
+    ) == 2
+    assert calls == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "risk_contract_failure",
+        "replay_started": False,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "risk_contract",
+        "status": "PARKED",
+    }
+
+
+@pytest.mark.parametrize(
+    ("logical_time_args", "expected_stage"),
+    (([], "input_validation"), (["--logical-evaluation-time", "invalid"], "risk_contract")),
+)
+def test_cli_rejects_missing_or_invalid_logical_time_before_replay(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    logical_time_args: list[str],
+    expected_stage: str,
+) -> None:
+    module = _load_script_module()
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"candidate_id":"tqqq_core_only_p2_v1"}', encoding="utf-8")
+    calls = 0
+
+    def run_evidence(**_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("replay must not start")
+
+    module.run_tqqq_promotion_evidence = run_evidence
+    assert module.main(
+        [
+            "--snapshot-root",
+            str(tmp_path / "must-not-read"),
+            "--config",
+            str(config_path),
+            "--mandate-receipt-sha256",
+            "2" * 64,
+            *logical_time_args,
+            "--output-dir",
+            str(tmp_path / "must-not-exist"),
+        ]
+    ) == 2
+    assert calls == 0
+    assert not (tmp_path / "must-not-exist").exists()
+    result = json.loads(capsys.readouterr().out)
+    assert result["replay_started"] is False
+    assert result["stage"] == expected_stage
+
+
+def test_cli_parks_v4_before_synthetic_replay_without_verified_risk_authority(
     capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise the complete v4 P3 path without provider access or real bars."""
     module = _load_script_module()
-    snapshot = tmp_path / "synthetic-snapshot"
-    input_payload = _write_canonical_snapshot(snapshot, p1_binding.P2_V4_CONTRACT)
-    config_path = tmp_path / "p2-v4.json"
-    config_path.write_bytes(
-        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v4.json").read_bytes()
-    )
-    output = tmp_path / "evidence"
+    config_path = Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v4.json"
     calls = 0
     public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
 
@@ -421,63 +577,29 @@ def test_cli_runs_complete_v4_p3_evidence_from_synthetic_input(
         "build_tqqq_core_only_p2_v2_research_decision",
         tracked_public_adapter,
     )
-    # This fixture verifies only the synthetic replay contract.  A preceding
-    # test must not make that result depend on the checkout cleanliness guard.
-    monkeypatch.setattr(evidence, "_resolve_runner_revision", lambda: "a" * 40)
-    monkeypatch.setattr(promotion_runner, "_resolve_runner_revision", lambda: "a" * 40)
+    module.load_tqqq_evidence_risk_mandate = (
+        risk_mandate.load_tqqq_evidence_risk_mandate
+    )
 
     assert module.main(
         [
-            "--snapshot-root",
-            str(snapshot),
-            "--config",
-            str(config_path),
-            "--mandate-receipt-sha256",
-            "2" * 64,
-            "--output-dir",
-            str(output),
+            "--snapshot-root", str(tmp_path / "must-not-read"),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
+            "--output-dir", str(tmp_path / "must-not-exist"),
         ]
-    ) == 0
-
-    assert calls > 0
-    summary = json.loads(capsys.readouterr().out)
-    evidence_package = json.loads(
-        (output / "strategy-evidence-package.v2.json").read_text(encoding="utf-8")
-    )
-    backtest = json.loads(
-        (output / "artifacts" / "backtest.json").read_text(encoding="utf-8")
-    )
-    frozen_config = json.loads(
-        (output / "artifacts" / "config.json").read_text(encoding="utf-8")
-    )
-    terminal = json.loads(
-        (output / "promotion-research-result.v1.json").read_text(encoding="utf-8")
-    )
-    expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
-        input_payload["input_manifest"],
-        input_payload["binding"],
-        contract=p1_binding.P2_V4_CONTRACT,
-    )
-
-    assert summary["status"] == "EVIDENCE_V2_COMPLETE"
-    assert evidence_package["strategy"] == {
-        "profile": "tqqq_core_only_p2_v4",
-        "domain": "us_equity",
-        "source_revision": p1_binding.P2_V4_UES_REVISION,
+    ) == 2
+    assert calls == 0
+    assert not (tmp_path / "must-not-exist").exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "risk_contract_failure",
+        "replay_started": False,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "risk_contract",
+        "status": "PARKED",
     }
-    assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
-    assert frozen_config["candidate"] == json.loads(config_path.read_text(encoding="utf-8"))
-    assert backtest["strategy_execution"] == {
-        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
-        "ues_revision": p1_binding.P2_V4_UES_REVISION,
-    }
-    assert terminal["status"] == "EVIDENCE_V2_COMPLETE"
-    assert terminal["authority_scope"] == "RESEARCH_ONLY"
-    assert terminal["human_acceptance"] is None
-    assert terminal["no_order"] is True
-    assert terminal["size_zero_required"] is True
-    assert not (output / "bars.json").exists()
-
 
 def test_p2_v2_synthetic_evidence_calls_public_adapter_and_binds_artifact(
     tmp_path: Path,
@@ -501,22 +623,13 @@ def test_p2_v2_synthetic_evidence_calls_public_adapter_and_binds_artifact(
     assert package["no_order"] is True
 
 
-def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
+def test_cli_parks_v5_before_synthetic_replay_without_verified_risk_authority(
     capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """P2 v5 extends only the verified cutoff; it remains offline and no-order."""
     module = _load_script_module()
-    snapshot = tmp_path / "synthetic-v5-snapshot"
-    input_payload = _write_canonical_snapshot(
-        snapshot, p1_binding.P2_V5_CONTRACT, date_cutoff="2026-08-18"
-    )
-    config_path = tmp_path / "p2-v5.json"
-    config_path.write_bytes(
-        (Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v5.json").read_bytes()
-    )
-    output = tmp_path / "evidence-v5"
-    public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
+    config_path = Path(__file__).parents[1] / "config" / "tqqq_core_only_p2_v5.json"
     calls = 0
+    public_adapter = evidence.build_tqqq_core_only_p2_v2_research_decision
 
     @wraps(public_adapter)
     def tracked_public_adapter(context):
@@ -529,93 +642,28 @@ def test_cli_runs_complete_v5_p3_evidence_from_binding_anchored_synthetic_input(
         "build_tqqq_core_only_p2_v2_research_decision",
         tracked_public_adapter,
     )
-    monkeypatch.setattr(evidence, "_resolve_runner_revision", lambda: "a" * 40)
-    monkeypatch.setattr(promotion_runner, "_resolve_runner_revision", lambda: "a" * 40)
+    module.load_tqqq_evidence_risk_mandate = (
+        risk_mandate.load_tqqq_evidence_risk_mandate
+    )
 
     assert module.main(
         [
-            "--snapshot-root",
-            str(snapshot),
-            "--config",
-            str(config_path),
-            "--mandate-receipt-sha256",
-            "2" * 64,
-            "--output-dir",
-            str(output),
+            "--snapshot-root", str(tmp_path / "must-not-read"),
+            "--config", str(config_path),
+            "--mandate-receipt-sha256", "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
+            "--output-dir", str(tmp_path / "must-not-exist"),
         ]
-    ) == 0
-
-    summary = json.loads(capsys.readouterr().out)
-    assert calls > 0
-    assert summary["status"] == "EVIDENCE_V2_COMPLETE"
-    assert summary["verdict"] in {
-        "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
-        "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
-        "INCONCLUSIVE_DATA_OR_EXECUTION",
-    }
-    evidence_path = output / "strategy-evidence-package.v2.json"
-    evidence_bytes = evidence_path.read_bytes()
-    evidence_package = json.loads(evidence_bytes)
-    backtest = json.loads(
-        (output / "artifacts" / "backtest.json").read_text(encoding="utf-8")
-    )
-    frozen_config = json.loads(
-        (output / "artifacts" / "config.json").read_text(encoding="utf-8")
-    )
-    terminal = json.loads(
-        (output / "promotion-research-result.v1.json").read_text(encoding="utf-8")
-    )
-    expected_manifest_sha256 = p1_binding.validate_tqqq_core_only_input_manifest(
-        input_payload["input_manifest"],
-        input_payload["binding"],
-        contract=p1_binding.P2_V5_CONTRACT,
-    )
-
-    assert summary["status"] == terminal["status"] == "EVIDENCE_V2_COMPLETE"
-    assert summary["verdict"] == terminal["verdict"]
-    assert summary["evidence_sha256"] == terminal["evidence_sha256"] == hashlib.sha256(
-        evidence_bytes
-    ).hexdigest()
-    assert terminal["input_manifest_sha256"] == expected_manifest_sha256
-    assert evidence_package["strategy"] == {
-        "profile": "tqqq_core_only_p2_v5",
-        "domain": "us_equity",
-        "source_revision": p1_binding.P2_V5_UES_REVISION,
-    }
-    assert evidence_package["input_provenance"]["manifest_sha256"] == expected_manifest_sha256
-    assert frozen_config["candidate"] == json.loads(config_path.read_text(encoding="utf-8"))
-    assert backtest["strategy_execution"] == {
-        "callable": "us_equity_strategies.entrypoints.build_tqqq_core_only_p2_v2_research_decision",
-        "ues_revision": p1_binding.P2_V5_UES_REVISION,
-    }
-    for artifact_name, digest_name in {
-        "config": "config_sha256",
-        "data_manifest": "data_manifest_sha256",
-        "backtest": "backtest_sha256",
-        "risk": "risk_sha256",
-        "information_coefficient": "information_coefficient_sha256",
-        "cost_model": "cost_model_sha256",
-    }.items():
-        artifact = evidence_package["artifacts"][artifact_name]
-        artifact_bytes = (output / artifact["path"]).read_bytes()
-        assert artifact["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
-        assert evidence_package["digests"][digest_name] == artifact["sha256"]
-    assert terminal["authority_scope"] == "RESEARCH_ONLY"
-    assert terminal["human_acceptance"] is None
-    assert terminal["no_order"] is True
-    assert terminal["size_zero_required"] is True
-    assert not (output / "bars.json").exists()
-    performance = build_tqqq_p3_strategy_performance(
-        evidence_package=evidence_package,
-        expected_evidence_sha256=summary["evidence_sha256"],
-        producer_revision="f" * 40,
-        computed_at="2026-08-19T04:00:00Z",
-    )
-    assert performance["strategy_profile"] == "tqqq_core_only_p2_v5"
-    assert performance["authority"] == {
-        "research_only": True,
-        "no_order": True,
-        "p4_p5_p6_authorized": False,
+    ) == 2
+    assert calls == 0
+    assert not (tmp_path / "must-not-exist").exists()
+    assert json.loads(capsys.readouterr().out) == {
+        "complete_evidence": False,
+        "failure_class": "risk_contract_failure",
+        "replay_started": False,
+        "source_commit": "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2",
+        "stage": "risk_contract",
+        "status": "PARKED",
     }
 
 
@@ -661,6 +709,7 @@ def test_cli_emits_allowlisted_sanitized_typed_failure(
             str(config_path),
             "--mandate-receipt-sha256",
             "2" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(tmp_path / "output"),
         ]

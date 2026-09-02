@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
+from quant_platform_kit.strategy_contracts import PositionTarget, StrategyDecision
 
 
 def _digest(value: object) -> str:
@@ -224,3 +226,41 @@ def test_static_consumer_rejects_tampered_or_mixed_source_identity() -> None:
 
     with pytest.raises(evidence.TqqqPromotionEvidenceError, match="input binding"):
         evidence._validate_input(payload, {"candidate": _candidate()})
+
+
+def test_evidence_path_uses_only_public_evidence_risk_gate() -> None:
+    source = inspect.getsource(evidence)
+
+    assert "build_risk_engine" not in source
+    assert source.count("risk_mandate_session.assess(") == 1
+
+
+def test_decision_weights_reject_unknown_and_benchmark_targets() -> None:
+    for symbol, weight in (("UNKNOWN", 0.0), ("QQQ", 0.0)):
+        with pytest.raises(evidence.TqqqPromotionEvidenceError, match="target"):
+            evidence._ImmutableReplayProducer._decision_weights(
+                StrategyDecision(
+                    positions=(PositionTarget(symbol=symbol, target_weight=weight),)
+                ),
+                100_000.0,
+            )
+
+
+def test_public_evidence_entry_rejects_forged_session_before_replay(
+    tmp_path: Path,
+) -> None:
+    forged = object.__new__(evidence.TqqqEvidenceRiskMandateSession)
+    output = tmp_path / "must-not-exist"
+
+    with pytest.raises(evidence.TqqqEvidenceRiskMandateError, match="unverified"):
+        evidence.run_tqqq_promotion_evidence(
+            input_payload={},
+            config_payload={},
+            output_dir=output,
+            mandate_receipt_sha256="0" * 64,
+            risk_mandate_session=forged,
+            generated_at="2026-09-02T10:00:00Z",
+            defer_risk_completion=True,
+        )
+
+    assert not output.exists()
