@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
+import tempfile
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from us_equity_snapshot_pipelines.lifecycle.tqqq_core_only_free_ohlcv_p1 import (
@@ -28,9 +31,16 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_evidence_index import (
 from us_equity_snapshot_pipelines.lifecycle.tqqq_p3_v7_evidence_index import (
     validate_tqqq_p3_v7_result,
 )
+from us_equity_snapshot_pipelines.lifecycle.tqqq_evidence_risk_mandate import (
+    TqqqEvidenceRiskMandateError,
+    TqqqEvidenceRiskMandateSession,
+    load_tqqq_evidence_risk_mandate,
+)
 from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
+    _sync_directory,
     run_tqqq_promotion_evidence,
 )
+from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
 
 _SOURCE_COMMIT = "6f346ac1b4fbff7b3d190b8c86d2d6701346e3a2"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -50,6 +60,7 @@ _FAILURE_CLASSIFICATIONS = {
     "OrchestratorContractError": ("orchestrator_contract_failure", "orchestrator_contract"),
     "TqqqPromotionContractError": ("orchestrator_contract_failure", "orchestrator_contract"),
     "RiskContractError": ("risk_contract_failure", "risk_contract"),
+    "TqqqEvidenceRiskMandateError": ("risk_contract_failure", "risk_contract"),
     "EvidenceValidationError": ("evidence_validation_failure", "evidence_validation"),
     "TqqqPromotionEvidenceError": ("evidence_validation_failure", "evidence_validation"),
     "RuntimeInternalError": ("runtime_internal_failure", "runtime_internal"),
@@ -76,6 +87,10 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--snapshot-root", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--mandate-receipt-sha256", required=True)
+    parser.add_argument("--risk-authority-receipt", type=Path)
+    parser.add_argument("--risk-authority-source-revision")
+    parser.add_argument("--risk-consumption-store", type=Path)
+    parser.add_argument("--logical-evaluation-time", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     return parser.parse_args(argv)
 
@@ -85,6 +100,23 @@ def _read_json(path: Path) -> object:
         return json.loads(path.read_bytes())
     except (OSError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid immutable snapshot") from exc
+
+
+def _logical_evaluation_time(value: object) -> datetime:
+    if type(value) is not str or not value.endswith("Z"):
+        raise TqqqEvidenceRiskMandateError("invalid logical evaluation time")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TqqqEvidenceRiskMandateError("invalid logical evaluation time") from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or parsed.microsecond != 0
+        or parsed.astimezone(UTC).isoformat().replace("+00:00", "Z") != value
+    ):
+        raise TqqqEvidenceRiskMandateError("invalid logical evaluation time")
+    return parsed.astimezone(UTC)
 
 
 def _snapshot_payload(snapshot_root: Path) -> dict[str, object]:
@@ -207,12 +239,29 @@ def _failure_payload(error: Exception, *, stage: str, replay_started: bool) -> d
 def main(argv: list[str] | None = None) -> int:
     stage = "input_validation"
     replay_started = False
+    risk_mandate_session: TqqqEvidenceRiskMandateSession | None = None
+    temporary_output: Path | None = None
     try:
         args = _arguments(list(sys.argv[1:] if argv is None else argv))
         stage = "config_contract"
         config_payload = _read_json(args.config)
         contract = _candidate_contract(config_payload)
         _require_replayable_candidate(contract)
+        stage = "risk_contract"
+        logical_evaluation_time = _logical_evaluation_time(
+            args.logical_evaluation_time
+        )
+        risk_mandate_session = load_tqqq_evidence_risk_mandate(
+            authority_receipt_path=args.risk_authority_receipt,
+            authority_source_revision=args.risk_authority_source_revision,
+            consumption_store_path=args.risk_consumption_store,
+            logical_evaluation_time=logical_evaluation_time,
+        )
+        if (
+            type(risk_mandate_session) is not TqqqEvidenceRiskMandateSession
+            or risk_mandate_session.is_verified is not True
+        ):
+            raise TqqqEvidenceRiskMandateError("unverified evidence risk session")
         stage = "input_validation"
         manifest_sha256 = (
             verify_tqqq_core_only_free_ohlcv_p1_input_root(
@@ -222,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
             else verify_tqqq_core_only_input_root(args.snapshot_root, contract=contract)
         )
         input_payload = _snapshot_payload(args.snapshot_root)
+        if args.output_dir.exists() or args.output_dir.is_symlink():
+            raise OrchestratorContractError("fresh evidence output is required")
+        args.output_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary_output = Path(
+            tempfile.mkdtemp(
+                prefix=f".{args.output_dir.name}.", dir=args.output_dir.parent
+            )
+        )
         stage = "orchestrator_contract"
         replay_started = True
         result = _completed_evidence_summary(
@@ -229,12 +286,29 @@ def main(argv: list[str] | None = None) -> int:
                 input_payload=input_payload,
                 config_payload=config_payload,
                 mandate_receipt_sha256=args.mandate_receipt_sha256,
-                output_dir=args.output_dir,
+                risk_mandate_session=risk_mandate_session,
+                generated_at=args.logical_evaluation_time,
+                defer_risk_completion=True,
+                output_dir=temporary_output,
             ),
             expected_input_manifest_sha256=manifest_sha256,
             candidate_id=contract.candidate_id,
         )
+        risk_mandate_session.complete()
+        _publish_noreplace(temporary_output, args.output_dir)
+        _sync_directory(args.output_dir.parent)
+        temporary_output = None
     except Exception as error:
+        if risk_mandate_session is not None:
+            try:
+                risk_mandate_session.park("CLI_EVIDENCE_FAILED")
+            except TqqqEvidenceRiskMandateError:
+                pass
+        if temporary_output is not None and temporary_output.exists():
+            try:
+                shutil.rmtree(temporary_output)
+            except OSError:
+                pass
         print(json.dumps(_failure_payload(error, stage=stage, replay_started=replay_started), sort_keys=True))
         return 2
     print(

@@ -21,7 +21,6 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_platform_kit.risk.engine import build_risk_engine
 from quant_platform_kit.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
@@ -65,6 +64,11 @@ from .tqqq_core_only_p1_binding import (
     validate_tqqq_core_only_input_manifest,
     validate_tqqq_core_only_p1_binding_for_contract,
 )
+from .tqqq_evidence_risk_mandate import (
+    AUTHORITY_RECEIPT_SHA256,
+    TqqqEvidenceRiskMandateError,
+    TqqqEvidenceRiskMandateSession,
+)
 from .tqqq_promotion_runner import (
     _EXACT_COMMON_ELIGIBILITY,
     TqqqEpisodeSummary,
@@ -98,6 +102,7 @@ _P2_V9_CONFIG_SCHEMA = "qsl.tqqq-core-only-p2-candidate.v9"
 _ALLOWED_COST_SCENARIOS = frozenset({5, 10, 15, 25})
 _ORDERABLE_ASSETS = ("TQQQ", "QQQM", "BOXX")
 _ASSET_FACTORS = {"TQQQ": 3, "QQQM": 1, "BOXX": 1}
+_SIGNAL_MODEL = "ues_tqqq_growth_income_core_parity_5loss_20xnys_defensive_cooldown"
 _BOXX_FIRST_ELIGIBLE_SESSION = date(2022, 12, 28)
 _TQQQ_REPLAY_CALLABLE = (
     "us_equity_strategies.entrypoints._build_tqqq_growth_income_decision"
@@ -843,11 +848,13 @@ class _ImmutableReplayProducer:
         candidate: CandidateRiskIdentity,
         identity: TqqqPromotionIdentity,
         replay_callable: Callable[[StrategyContext], StrategyDecision],
+        risk_mandate_session: TqqqEvidenceRiskMandateSession,
     ) -> None:
         self.config = config
         self.candidate = candidate
         self.identity = identity
         self._replay_callable = replay_callable
+        self._risk_mandate_session = risk_mandate_session
         self.qqq = bars["QQQ"]
         self.prices = {
             symbol: {row.session: row for row in bars[symbol]}
@@ -867,6 +874,14 @@ class _ImmutableReplayProducer:
     @property
     def switching_traces(self) -> tuple[TqqqSwitchingTrace, ...]:
         return tuple(self._switching_traces)
+
+    def risk_evidence(self) -> dict[str, object]:
+        decisions = sum(item["decisions"] for item in self._scenario_counts.values())
+        assessments = sum(item["assessments"] for item in self._scenario_counts.values())
+        if decisions != assessments:
+            raise TqqqPromotionEvidenceError("risk assessment count mismatch")
+        receipt = self._risk_mandate_session.seal(expected_decision_count=decisions)
+        return {**receipt, "scenario_counts": self.scenario_counts}
 
     def _reset(self, scenario: int, prior_state_sha256: str) -> None:
         if scenario not in _ALLOWED_COST_SCENARIOS:
@@ -1071,12 +1086,16 @@ class _ImmutableReplayProducer:
         if not isinstance(decision, StrategyDecision) or equity <= 0.0:
             raise TqqqPromotionEvidenceError("invalid UES core-parity target")
         targets = {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
+        observed: set[str] = set()
         for position in decision.positions:
             symbol = getattr(position, "symbol", None)
             if symbol in {"cash", "CASH"}:
                 continue
             if symbol not in targets:
-                continue
+                raise TqqqPromotionEvidenceError("invalid UES core-parity target")
+            if symbol in observed:
+                raise TqqqPromotionEvidenceError("invalid UES core-parity target")
+            observed.add(symbol)
             weight = getattr(position, "target_weight", None)
             if weight is None:
                 value = getattr(position, "target_value", None)
@@ -1084,6 +1103,8 @@ class _ImmutableReplayProducer:
                     raise TqqqPromotionEvidenceError("invalid UES core-parity target")
                 weight = _finite(value, "target value") / equity
             targets[symbol] = _finite(weight, "target weight")
+            if targets[symbol] < 0.0:
+                raise TqqqPromotionEvidenceError("invalid UES core-parity target")
         _ImmutableReplayProducer._allocation(targets)
         return targets
 
@@ -1091,6 +1112,8 @@ class _ImmutableReplayProducer:
     def _assessment(self, signal_index: int, execution_session: date, equity: float) -> dict[str, float]:
         """Build one candidate decision, then assess it exactly once."""
         state = self._state
+        if state.parked:
+            return {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
         signal_session = self.qqq[signal_index].session
         if signal_index + 1 < 252:
             raise TqqqPromotionEvidenceError("insufficient candidate warmup")
@@ -1115,7 +1138,7 @@ class _ImmutableReplayProducer:
         if market_regime_control is not None:
             state.market_regime_control_sha256 = _digest(market_regime_control)
         portfolio = PortfolioSnapshot(
-            as_of=datetime.now(UTC),
+            as_of=self._risk_mandate_session.logical_evaluation_time,
             total_equity=equity,
             buying_power=state.cash,
             cash_balance=state.cash,
@@ -1138,25 +1161,53 @@ class _ImmutableReplayProducer:
         )
         decision = self._replay_callable(context)
         targets = self._decision_weights(decision, equity)
-        assessment = build_risk_engine().assess(StrategyDecision(positions=tuple(PositionTarget(symbol=symbol, target_weight=weight) for symbol, weight in sorted(targets.items()) if weight > 0.0)), portfolio, market_data=context.market_data)
+        gate_decision = StrategyDecision(
+            positions=tuple(
+                PositionTarget(symbol=symbol, target_weight=weight)
+                for symbol, weight in sorted(targets.items())
+            )
+        )
+        current_weights = self._current_weights(signal_session, equity)
+        account_drawdown = max(
+            0.0, 1.0 - equity / max(state.high_water_equity, equity)
+        )
+        source_identity_sha256 = _digest(
+            {
+                "execution_session": execution_session.isoformat(),
+                "scenario": self._scenario,
+                "signal_session": signal_session.isoformat(),
+                "state_sha256": self._state_sha256,
+            }
+        )
+        risk_mandate_session = self._risk_mandate_session
+        assessment = risk_mandate_session.assess(
+            gate_decision,
+            market_data=context.market_data,
+            equity=equity,
+            current_weights=current_weights,
+            account_drawdown_fraction=account_drawdown,
+            source_identity_sha256=source_identity_sha256,
+        )
         state.decision_count += 1
         state.assessment_count += 1
         self._scenario_counts[self._scenario]["decisions"] += 1
         self._scenario_counts[self._scenario]["assessments"] += 1
         intended = self._allocation(targets)
-        approved = assessment.action == "approve"
+        approved = assessment.approved
         executed = intended if approved else self._allocation({})
         if approved:
             signal_state = "entry" if targets["TQQQ"] or targets["QQQM"] else "idle"
             signal_regime = "RISK_ON" if signal_state == "entry" else "DEFENSIVE"
         else:
+            self._park("RISK_ENGINE_NON_APPROVE", execution_session)
             signal_state = "risk_engine_non_approve"
             signal_regime = "DEFENSIVE"
         self._switching_traces.append(TqqqSwitchingTrace(
             signal_session=signal_session, execution_session=execution_session,
             signal_state=signal_state, signal_regime=signal_regime,
-            intended_allocation=intended, risk_disposition="APPROVE" if approved else "REJECT",
-            risk_reason_codes=() if approved else (assessment.reason,), replay_target_allocation=executed, executed_allocation=executed,
+            intended_allocation=intended, risk_disposition="APPROVE" if approved else "PARK",
+            risk_reason_codes=() if approved else assessment.reason_codes,
+            replay_target_allocation=executed, executed_allocation=executed,
         ))
         return targets if approved else {symbol: 0.0 for symbol in _ORDERABLE_ASSETS}
 
@@ -1272,9 +1323,18 @@ class _ImmutableReplayProducer:
         )
 
 
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _private_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
+    _sync_directory(path.parent)
 
 
 def _write_private(path: Path, payload: bytes) -> dict[str, str]:
@@ -1292,6 +1352,7 @@ def _write_private(path: Path, payload: bytes) -> dict[str, str]:
             os.fsync(handle.fileno())
     finally:
         os.close(descriptor)
+    _sync_directory(path.parent)
     return {"path": path.as_posix(), "sha256": _sha256(payload)}
 
 
@@ -1367,13 +1428,11 @@ def _result_artifacts(
             artifacts / "risk.json",
             _canonical(
                 {
-                    "schema_version": "tqqq_etf_only_risk_evidence.v1",
-                    "status": "PASS",
-                    "risk_engine_exactly_once": True,
-                    "scenario_counts": replay.scenario_counts,
-                    "candidate_controls": "RiskEngine only; no endogenous stop or cooldown",
-                    "authority_scope": "RESEARCH_ONLY",
-                    "no_order": True,
+                    "schema_version": "tqqq_evidence_risk_assessment_chain.v1",
+                    "consumption": replay.risk_evidence(),
+                    "candidate_controls": (
+                        "QPK assess_with_evidence only; no endogenous stop or cooldown"
+                    ),
                     "size_zero_required": True,
                 }
             ),
@@ -1413,6 +1472,7 @@ def _run_tqqq_promotion_replay(
     input_payload: Mapping[str, Any],
     config_payload: Mapping[str, Any],
     mandate_receipt_sha256: str,
+    risk_mandate_session: TqqqEvidenceRiskMandateSession,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any],
@@ -1461,8 +1521,23 @@ def _run_tqqq_promotion_replay(
         candidate_profile=contract.candidate_id,
         candidate_variant=contract.candidate_id,
     )
+    risk_candidate = CandidateRiskIdentity(
+        strategy_profile="tqqq_core_parity_v1",
+        account_mode="single_strategy_account_v1",
+        strategy_revision=contract.ues_revision,
+        runner_revision=runner_revision,
+        config_sha256=config_sha256,
+        input_manifest_sha256=manifest_sha256,
+        authority_receipt_sha256=AUTHORITY_RECEIPT_SHA256,
+    )
+    risk_mandate_session.start(risk_candidate)
     replay = _ImmutableReplayProducer(
-        bars, candidate_config, candidate, identity, replay_callable
+        bars,
+        candidate_config,
+        risk_candidate,
+        identity,
+        replay_callable,
+        risk_mandate_session,
     )
     result = run_tqqq_promotion_research(identity, plan, replay, candidate_config["cost_assumptions"])
     return (
@@ -1484,12 +1559,9 @@ def run_tqqq_promotion_diagnostic(
     config_payload: Mapping[str, Any],
     mandate_receipt_sha256: str,
 ) -> None:
-    """Execute the frozen replay without writing promotion evidence."""
-    _run_tqqq_promotion_replay(
-        input_payload=input_payload,
-        config_payload=config_payload,
-        mandate_receipt_sha256=mandate_receipt_sha256,
-    )
+    """Fail closed: diagnostics cannot consume evidence-only risk authority."""
+    del input_payload, config_payload, mandate_receipt_sha256
+    raise TqqqPromotionEvidenceError("diagnostic replay lacks evidence risk authority")
 
 
 def run_tqqq_promotion_evidence(
@@ -1498,10 +1570,22 @@ def run_tqqq_promotion_evidence(
     config_payload: Mapping[str, Any],
     output_dir: str | Path,
     mandate_receipt_sha256: str,
-    generated_at: str | None = None,
+    risk_mandate_session: TqqqEvidenceRiskMandateSession,
+    generated_at: str,
+    defer_risk_completion: bool,
 ) -> dict[str, str]:
     """Execute the frozen replay once and write no provider bars to evidence."""
 
+    if (
+        type(risk_mandate_session) is not TqqqEvidenceRiskMandateSession
+        or risk_mandate_session.is_verified is not True
+        or defer_risk_completion is not True
+        or generated_at
+        != risk_mandate_session.logical_evaluation_time.isoformat().replace(
+            "+00:00", "Z"
+        )
+    ):
+        raise TqqqEvidenceRiskMandateError("unverified evidence risk session")
     output_root = Path(output_dir)
     if output_root.exists() and any(output_root.iterdir()):
         raise TqqqPromotionEvidenceError("output directory must be empty")
@@ -1520,6 +1604,7 @@ def run_tqqq_promotion_evidence(
             input_payload=input_payload,
             config_payload=config_payload,
             mandate_receipt_sha256=mandate_receipt_sha256,
+            risk_mandate_session=risk_mandate_session,
         )
     )
     _private_directory(output_root)
@@ -1667,6 +1752,30 @@ def run_tqqq_promotion_evidence(
         output_root / "promotion-research-result.v1.json",
         _canonical(terminal_payload),
     )
+    try:
+        if (
+            hashlib.sha256(
+                (output_root / "strategy-evidence-package.v2.json").read_bytes()
+            ).hexdigest()
+            != evidence_record["sha256"]
+            or hashlib.sha256(
+                (output_root / "promotion-research-result.v1.json").read_bytes()
+            ).hexdigest()
+            != terminal_record["sha256"]
+        ):
+            raise TqqqEvidenceRiskMandateError("evidence readback mismatch")
+    except OSError as exc:
+        try:
+            risk_mandate_session.park("EVIDENCE_READBACK_FAILED")
+        except TqqqEvidenceRiskMandateError:
+            pass
+        raise TqqqEvidenceRiskMandateError("evidence readback failed") from exc
+    except TqqqEvidenceRiskMandateError:
+        try:
+            risk_mandate_session.park("EVIDENCE_READBACK_FAILED")
+        except TqqqEvidenceRiskMandateError:
+            pass
+        raise
     completion: dict[str, str] = {
         "evidence_sha256": evidence_record["sha256"],
         "promotion_result_sha256": terminal_record["sha256"],

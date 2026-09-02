@@ -14,6 +14,29 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
 )
 
 
+class _VerifiedRiskSession:
+    is_verified = True
+
+    def complete(self) -> None:
+        pass
+
+    def park(self, _failure_code: str) -> None:
+        pass
+
+
+_RISK_SESSION = _VerifiedRiskSession()
+
+
+@pytest.fixture(autouse=True)
+def _verified_risk_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "TqqqEvidenceRiskMandateSession", _VerifiedRiskSession)
+    monkeypatch.setattr(
+        cli,
+        "load_tqqq_evidence_risk_mandate",
+        lambda **_kwargs: _RISK_SESSION,
+    )
+
+
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -84,6 +107,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
         }
 
     monkeypatch.setattr(cli, "run_tqqq_promotion_evidence", write_evidence)
+    output = tmp_path / "evidence"
 
     assert cli.main(
         [
@@ -93,10 +117,16 @@ def test_cli_consumes_only_preserved_snapshot_layout(
             str(config),
             "--mandate-receipt-sha256",
             "e" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
-            str(tmp_path / "evidence"),
+            str(output),
         ]
     ) == 0
+    captured_output = captured.pop("output_dir")
+    assert isinstance(captured_output, Path)
+    assert captured_output.parent == output.parent
+    assert captured_output.name.startswith(f".{output.name}.")
+    assert output.is_dir()
     assert captured == {
         "input_payload": {
             "binding": json.loads((snapshot / "binding.json").read_bytes()),
@@ -104,8 +134,10 @@ def test_cli_consumes_only_preserved_snapshot_layout(
             "bars": json.loads((snapshot / "bars.json").read_bytes()),
         },
         "config_payload": {"candidate_id": "tqqq_core_only_p2_v1"},
+        "defer_risk_completion": True,
+        "generated_at": "2026-09-02T10:00:00Z",
         "mandate_receipt_sha256": "e" * 64,
-        "output_dir": tmp_path / "evidence",
+        "risk_mandate_session": _RISK_SESSION,
     }
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "a" * 64,
@@ -138,6 +170,7 @@ def test_cli_parks_without_exposing_failure_details(
             str(config),
             "--mandate-receipt-sha256",
             "e" * 64,
+            "--logical-evaluation-time", "2026-09-02T10:00:00Z",
             "--output-dir",
             str(tmp_path / "evidence"),
         ]
@@ -164,3 +197,26 @@ def test_cli_has_no_legacy_or_acquisition_imports() -> None:
         "placeorder",
     ):
         assert forbidden not in source
+
+
+def test_orchestrators_forward_verified_risk_session_to_evidence() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "src"
+        / "us_equity_snapshot_pipelines"
+        / "lifecycle"
+        / "tqqq_acquisition_orchestration.py"
+    ).read_text(encoding="utf-8")
+
+    assert source.count("risk_mandate_session=risk_mandate_session") == 2
+    assert source.count("load_tqqq_evidence_risk_mandate(") == 2
+    assert source.index("risk_mandate_session.complete()") < source.index(
+        "_publish_noreplace(temporary, published_root)"
+    )
+    direct_completion = source.rindex("risk_mandate_session.complete()")
+    assert direct_completion < source.index(
+        '_publish_noreplace(temporary_evidence, run_root / "evidence")'
+    )
+    assert 'tempfile.mkdtemp(prefix=".evidence.", dir=run_root)' in source
+    assert "_sync_directory(published_root.parent)" in source
+    assert "_sync_directory(run_root)" in source
