@@ -14,7 +14,7 @@ import us_equity_snapshot_pipelines.lifecycle.tqqq_evidence_risk_mandate as mand
 import quant_platform_kit.risk.gate as qpk_gate
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.risk.contracts import RiskAction
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyDecision
 
 
 AUTHORITY_DIGEST = "c0c5020fbe64057b735f987b3bcc490dfe708304b58f01d57cd581344afb44c8"

@@ -11,7 +11,7 @@ import pytest
 
 from quant_platform_kit.data.research_input import research_input_manifest_sha256
 from quant_platform_kit.risk.contracts import RiskAction
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyDecision
 
 from us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner import (
     SOXL_PROMOTION_ASSETS,

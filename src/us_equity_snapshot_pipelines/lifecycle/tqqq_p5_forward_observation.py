@@ -20,7 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from quant_platform_kit.common.models import PortfolioSnapshot
-from quant_platform_kit.strategy_contracts import StrategyContext
+from quant_platform_kit.common.strategy_contracts import StrategyContext
 from us_equity_strategies.entrypoints import build_tqqq_core_only_p2_v2_research_decision
 
 from .tqqq_core_only_p1_binding import (

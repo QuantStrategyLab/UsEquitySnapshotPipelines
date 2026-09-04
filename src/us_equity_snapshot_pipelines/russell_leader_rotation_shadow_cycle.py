@@ -113,7 +113,7 @@ def _evaluate_variant(
     shadow_variants: bool,
 ) -> Any:
     from quant_platform_kit.common.models import PortfolioSnapshot
-    from quant_platform_kit.strategy_contracts import StrategyContext
+    from quant_platform_kit.common.strategy_contracts import StrategyContext
 
     runtime_config: dict[str, Any] = {"leader_rotation_profile_variant": active_variant}
     if shadow_variants:
