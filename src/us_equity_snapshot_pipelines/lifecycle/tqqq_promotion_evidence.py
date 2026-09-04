@@ -21,7 +21,7 @@ from quant_platform_kit.data.research_input import (
     validate_research_input_manifest,
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,

@@ -24,7 +24,7 @@ from quant_platform_kit.data.research_input import (
 )
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.risk.gate import assess_with_evidence
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyContext, StrategyDecision
 from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestOrchestrator
 from quant_platform_kit.strategy_lifecycle.contracts import (
     BacktestResult,

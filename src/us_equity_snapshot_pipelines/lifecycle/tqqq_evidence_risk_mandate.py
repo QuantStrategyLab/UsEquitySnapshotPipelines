@@ -23,13 +23,13 @@ from quant_platform_kit.common.capital_base import (
 )
 from quant_platform_kit.risk import assess_with_evidence
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from quant_platform_kit.strategy_contracts import StrategyDecision
+from quant_platform_kit.common.strategy_contracts import StrategyDecision
 
 AUTHORITY_RECEIPT_SHA256 = (
     "c0c5020fbe64057b735f987b3bcc490dfe708304b58f01d57cd581344afb44c8"
 )
 AUTHORITY_SOURCE_REVISION = "ca259ebde6967309771d61f75af33d036239678a"
-QPK_SOURCE_REVISION = "b13e28759a880dcb446dbfbc580dc032333b065e"
+QPK_SOURCE_REVISION = "7f140f07ac89f0b4b88347a903906825dde11c39"
 CANONICAL_AUTHORITY_LEDGER_PATH = Path(
     "/var/lib/quantstrategylab/risk-authority-ledgers/v1"
 ) / f"{AUTHORITY_RECEIPT_SHA256}.sqlite3"

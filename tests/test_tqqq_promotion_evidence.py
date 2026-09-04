@@ -10,7 +10,7 @@ import pytest
 
 import us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence as evidence
 from us_equity_snapshot_pipelines.lifecycle import tqqq_core_only_p1_binding as p1_binding
-from quant_platform_kit.strategy_contracts import PositionTarget, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyDecision
 
 
 def _digest(value: object) -> str:

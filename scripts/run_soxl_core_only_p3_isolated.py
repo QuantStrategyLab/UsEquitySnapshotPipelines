@@ -246,7 +246,7 @@ def _source_decision(value: object, candidate: object) -> dict[str, object]:
     p2 = validate_p2_candidate(candidate)
     try:
         from quant_platform_kit.common.models import PortfolioSnapshot, Position
-        from quant_platform_kit.strategy_contracts import StrategyContext
+        from quant_platform_kit.common.strategy_contracts import StrategyContext
         from us_equity_strategies.entrypoints import (
             build_soxl_soxx_core_only_p2_v2_research_decision,
         )
@@ -416,7 +416,7 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
     p2 = validate_p2_candidate(candidate)
     try:
         from quant_platform_kit.common.models import PortfolioSnapshot, Position
-        from quant_platform_kit.strategy_contracts import StrategyContext
+        from quant_platform_kit.common.strategy_contracts import StrategyContext
         from us_equity_strategies.entrypoints import (
             build_soxl_soxx_core_only_p2_v2_research_decision,
         )

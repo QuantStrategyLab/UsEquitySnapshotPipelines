@@ -98,7 +98,7 @@ def _evaluate_variant(
 ) -> Any:
     """Evaluate the strategy with a given set of runtime config overrides."""
     from quant_platform_kit.common.models import PortfolioSnapshot
-    from quant_platform_kit.strategy_contracts import StrategyContext
+    from quant_platform_kit.common.strategy_contracts import StrategyContext
 
     return entrypoint.evaluate(
         StrategyContext(
