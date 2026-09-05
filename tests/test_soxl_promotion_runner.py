@@ -663,9 +663,28 @@ def test_qqq_gap_stop_precedes_pending_order_and_blocks_same_session_reentry(mon
     assert state.lots["QQQ"] == []
     assert gate.call_count == 1
     assert state.assessment_count == 1
+    gap_proceeds = 100.0 * 94.0
+    stop_cost = gap_proceeds * 5.0 / 10_000.0
+    remaining_equity = gap_proceeds - stop_cost
+    rebalance_cost = remaining_equity * 0.35 * 5.0 / 10_000.0
+    assert state.costs_paid == pytest.approx(stop_cost + rebalance_cost)
+    assert state.cash == pytest.approx((remaining_equity - rebalance_cost) * 0.65)
+    assert runner._equity(state, runner._prices(index, "open")) == pytest.approx(
+        gap_proceeds - state.costs_paid
+    )
+    assert state.quantities["BOXX"] == pytest.approx(
+        sum(lot.quantity for lot in state.lots["BOXX"])
+    )
+    assert state.stop_count == 1
+    assert state.trade_count == 2
+    assert state.pending_target is None
 
 
-def test_new_open_lot_is_not_stopped_by_same_sessions_pre_entry_low(monkeypatch) -> None:
+@pytest.mark.parametrize("total_cost_bps", [0.0, 5.0])
+@pytest.mark.parametrize("low, stopped", [(90.0, True), (95.0, True), (96.0, False)])
+def test_new_open_lot_obeys_same_session_stop_and_cash_conservation(
+    monkeypatch, low, stopped, total_cost_bps
+) -> None:
     input_payload, config = _payloads()
     runner = SoxlPromotionRunner(
         input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
@@ -676,19 +695,136 @@ def test_new_open_lot_is_not_stopped_by_same_sessions_pre_entry_low(monkeypatch)
     state.quantities = {symbol: 0.0 for symbol in SOXL_PROMOTION_ASSETS}
     state.lots = {symbol: [] for symbol in SOXL_PROMOTION_ASSETS}
     state.pending_target = {"SOXL": 0.10}
+    gate = Mock(side_effect=lambda decision, *args, **kwargs: _approve(decision))
     monkeypatch.setattr(
         "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.assess_with_evidence",
-        lambda decision, *args, **kwargs: _approve(decision),
+        gate,
     )
     index = _session_index(input_payload["sessions"], "2024-11-29")
-    session = input_payload["sessions"][index]
-    session["bars"]["SOXL"].update(open=100.0, high=102.0, low=90.0, close=101.0)
+    session = runner.sessions[index]
+    session["bars"]["SOXL"].update(open=100.0, high=102.0, low=low, close=101.0)
+
+    runner._execute_open(index, state, total_cost_bps=total_cost_bps)
+
+    entry_cost = 100_000.0 * 0.10 * total_cost_bps / 10_000.0
+    entry_quantity = (100_000.0 - entry_cost) * 0.10 / 100.0
+    stop_proceeds = entry_quantity * 95.0 if stopped else 0.0
+    stop_cost = stop_proceeds * total_cost_bps / 10_000.0
+    assert state.quantities["SOXL"] == pytest.approx(0.0 if stopped else entry_quantity)
+    assert state.cash == pytest.approx(
+        (100_000.0 - entry_cost) * 0.90 + stop_proceeds - stop_cost
+    )
+    assert state.costs_paid == pytest.approx(entry_cost + stop_cost)
+    expected_pnl = entry_quantity * (-5.0 if stopped else 1.0)
+    assert runner._equity(state, runner._prices(index, "close")) == pytest.approx(
+        100_000.0 + expected_pnl - state.costs_paid
+    )
+    assert sum(lot.quantity for lot in state.lots["SOXL"]) == pytest.approx(
+        state.quantities["SOXL"]
+    )
+    if not stopped:
+        assert state.lots["SOXL"][0].entry_price == 100.0
+        assert state.lots["SOXL"][0].stop_price == 95.0
+    assert state.stop_count == int(stopped)
+    assert state.trade_count == 1 + int(stopped)
+    assert state.stopped_today == ({"SOXL"} if stopped else set())
+    assert state.pending_target is None
+    assert gate.call_count == int(stopped)
+    assert state.assessment_count == int(stopped)
+
+
+@pytest.mark.parametrize("pending_target", [{}, {"SOXL": 0.05}, None])
+def test_open_exit_precedes_intraday_stop_of_only_remaining_shares(monkeypatch, pending_target) -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    state = runner._initial_state()
+    state.cash = 90_000.0
+    state.quantities["SOXL"] = 100.0
+    state.lots["SOXL"] = [runner._lot(100.0, 100.0)]
+    state.pending_target = pending_target
+    gate = Mock(side_effect=lambda decision, *args, **kwargs: _approve(decision))
+    monkeypatch.setattr(runner_module, "assess_with_evidence", gate)
+    index = _session_index(runner.sessions, "2024-11-29")
+    runner.sessions[index]["bars"]["SOXL"].update(open=100.0, high=102.0, low=90.0, close=101.0)
 
     runner._execute_open(index, state, total_cost_bps=5.0)
 
-    assert state.quantities["SOXL"] > 0.0
-    assert len(state.lots["SOXL"]) == 1
-    assert state.stop_count == 0
+    if pending_target is None:
+        rebalance_cost, residual_quantity = 0.0, 100.0
+    else:
+        target_weight = pending_target.get("SOXL", 0.0)
+        rebalance_cost = 100_000.0 * (0.10 - target_weight) * 5.0 / 10_000.0
+        residual_quantity = (100_000.0 - rebalance_cost) * target_weight / 100.0
+    stop_cost = residual_quantity * 95.0 * 5.0 / 10_000.0
+    stopped = residual_quantity > 0.0
+    assert state.quantities["SOXL"] == 0.0
+    assert state.lots["SOXL"] == []
+    assert state.costs_paid == pytest.approx(rebalance_cost + stop_cost)
+    assert state.cash == pytest.approx(
+        100_000.0 - residual_quantity * 5.0 - rebalance_cost - stop_cost
+    )
+    assert state.stop_count == int(stopped)
+    assert state.trade_count == int(pending_target is not None) + int(stopped)
+    assert state.stopped_today == ({"SOXL"} if stopped else set())
+    assert gate.call_count == int(stopped)
+    assert state.pending_target is None
+
+
+def test_rejected_gap_stop_control_cannot_reach_pending_open_buy(monkeypatch) -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    state = runner._initial_state()
+    state.cash = 90_000.0
+    state.quantities["SOXL"] = 100.0
+    state.lots["SOXL"] = [runner._lot(100.0, 100.0)]
+    state.pending_target = {"SOXL": 0.15, "BOXX": 0.35}
+    gate = Mock(return_value=SimpleNamespace(assessment=SimpleNamespace(outcome="REJECT")))
+    monkeypatch.setattr(runner_module, "assess_with_evidence", gate)
+    index = _session_index(runner.sessions, "2024-11-29")
+    runner.sessions[index]["bars"]["SOXL"].update(open=94.0, high=96.0, low=90.0, close=93.0)
+
+    with pytest.raises(SoxlPromotionContractError, match="risk control assessment rejected"):
+        runner._execute_open(index, state, total_cost_bps=5.0)
+
+    assert state.cash == 90_000.0
+    assert state.quantities["SOXL"] == 100.0
+    assert state.quantities["BOXX"] == 0.0
+    assert sum(lot.quantity for lot in state.lots["SOXL"]) == 100.0
+    assert state.trade_count == state.stop_count == state.costs_paid == 0
+    assert state.pending_target == {"SOXL": 0.15, "BOXX": 0.35}
+    assert state.assessment_count == gate.call_count == 1
+
+
+def test_rejected_close_decision_cannot_schedule_an_open_buy(monkeypatch) -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    state = runner._initial_state()
+    monkeypatch.setattr(
+        runner_module, "build_semiconductor_rotation_indicators_from_history",
+        lambda **kwargs: {"SOXL": {}, "SOXX": {}},
+    )
+    evaluator = Mock(return_value=SimpleNamespace(
+        assessment=SimpleNamespace(outcome="REJECT"),
+        decision=StrategyDecision(positions=(PositionTarget(symbol="SOXL", target_weight=0.10),)),
+    ))
+    monkeypatch.setattr(runner_module, "evaluate_soxl_soxx_trend_income_promotion_research", evaluator)
+    index = _session_index(runner.sessions, "2024-11-29")
+
+    with pytest.raises(SoxlPromotionContractError, match="candidate decision assessment rejected"):
+        state.pending_target = runner._evaluate_close(index, state)
+
+    assert state.pending_target is None
+    assert not any(state.quantities.values())
+    assert not any(state.lots.values())
+    assert state.cash == 100_000.0
+    assert state.trade_count == state.costs_paid == 0
+    assert state.assessment_count == evaluator.call_count == 1
 
 
 def test_qqq_to_qqqi_transition_executes_next_open_with_full_half_l1_cost(monkeypatch) -> None:
