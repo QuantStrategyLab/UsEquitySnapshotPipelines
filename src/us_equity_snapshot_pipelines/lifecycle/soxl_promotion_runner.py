@@ -973,22 +973,27 @@ class SoxlPromotionRunner:
         if half_l1 > 1e-12:
             state.trade_count += 1
 
-    def _execute_open(self, index: int, state: _PortfolioState, *, total_cost_bps: float) -> None:
-        state.stopped_today.clear()
-        opens = self._prices(index, "open")
-        lows = self._prices(index, "low")
+    def _execute_stops(
+        self,
+        index: int,
+        state: _PortfolioState,
+        *,
+        opens: Mapping[str, float],
+        trigger_prices: Mapping[str, float],
+        total_cost_bps: float,
+    ) -> None:
         triggered: dict[str, tuple[float, float]] = {}
         for symbol in SOXL_PROMOTION_ASSETS:
             if not state.lots[symbol]:
                 continue
-            if symbol not in opens or symbol not in lows:
+            if symbol not in opens or symbol not in trigger_prices:
                 raise SoxlPromotionContractError("held asset is not point-in-time eligible")
             executable_stop = max(lot.stop_price for lot in state.lots[symbol])
             execution_price = (
                 opens[symbol]
                 if opens[symbol] <= executable_stop
                 else executable_stop
-                if lows[symbol] <= executable_stop
+                if trigger_prices[symbol] <= executable_stop
                 else None
             )
             if execution_price is not None:
@@ -1009,6 +1014,14 @@ class SoxlPromotionRunner:
                 state.trade_count += 1
                 state.stop_count += 1
                 state.stopped_today.add(symbol)
+
+    def _execute_open(self, index: int, state: _PortfolioState, *, total_cost_bps: float) -> None:
+        state.stopped_today.clear()
+        opens = self._prices(index, "open")
+        # Opening gaps precede pending orders; later lows cannot rewrite open fills.
+        self._execute_stops(
+            index, state, opens=opens, trigger_prices=opens, total_cost_bps=total_cost_bps
+        )
         if state.pending_target is not None:
             executable = {
                 symbol: weight
@@ -1017,6 +1030,11 @@ class SoxlPromotionRunner:
             }
             self._rebalance(state, opens, executable, total_cost_bps)
             state.pending_target = None
+        # Stops apply to every remaining lot, including lots just bought at the open.
+        self._execute_stops(
+            index, state, opens=opens, trigger_prices=self._prices(index, "low"),
+            total_cost_bps=total_cost_bps,
+        )
 
     def _state_digest(self, state: _PortfolioState) -> str:
         return _sha256_json(
