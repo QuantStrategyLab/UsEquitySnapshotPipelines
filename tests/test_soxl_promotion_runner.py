@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import statistics
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -941,6 +943,58 @@ def test_breakers_are_persistent_and_fail_closed(monkeypatch) -> None:
     assert state.account_parked is True
     assert runner._evaluate_close(index + 1, state) == {}
     assert gate.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "daily_returns, expected_sortino_multiple",
+    [
+        ((0.02, -0.01, 0.02, -0.01), 1.0 / math.sqrt(2.0)),
+        ((0.125, -0.0625, 0.0, 0.125), 1.5),
+        ((-0.125, -0.125, -0.125), -1.0),
+        ((-0.125,), -1.0),
+        ((-0.125, 0.0, 0.0, 0.0), -0.5),
+        ((0.125, 0.0625), 0.0),
+        ((0.0, 0.0, 0.0), 0.0),
+        ((), 0.0),
+    ],
+    ids=["mixed", "positive-and-zero-count", "constant-negative", "one-negative",
+         "zero-returns-count", "no-downside", "all-zero", "empty-returns"],
+)
+def test_window_sortino_uses_full_sample_zero_target_rms_without_changing_sharpe_or_ir(
+    daily_returns, expected_sortino_multiple
+) -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    equities = [100_000.0]
+    benchmark_equities = [100_000.0]
+    benchmark_returns = []
+    for index, daily_return in enumerate(daily_returns):
+        equities.append(equities[-1] * (1.0 + daily_return))
+        benchmark_return = 0.03125 if index % 2 == 0 else -0.0625
+        benchmark_returns.append(benchmark_return)
+        benchmark_equities.append(benchmark_equities[-1] * (1.0 + benchmark_return))
+    count = len(equities)
+
+    window = runner._window_metrics(
+        date(2025, 8, 4), date(2026, 8, 4), equities, benchmark_equities,
+        [0.0] * count, [0.0] * count, [0] * count, [0] * count, runner._initial_state(),
+    )
+
+    # No downside / no observations retain the existing conservative finite zero,
+    # not an estimated positive score or infinite evidence metric.
+    expected_sortino = expected_sortino_multiple * math.sqrt(252.0)
+    assert math.isfinite(window.result.sortino_ratio)
+    assert window.result.sortino_ratio == pytest.approx(expected_sortino)
+    assert window.to_dict()["result"]["sortino_ratio"] == pytest.approx(expected_sortino)
+    assert window.result.observation_count == count
+    excess = [left - right for left, right in zip(daily_returns, benchmark_returns)]
+    for values, actual in ((daily_returns, window.result.sharpe_ratio),
+                           (excess, window.information_ratio)):
+        deviation = statistics.pstdev(values) if len(values) > 1 else 0.0
+        expected = statistics.fmean(values) / deviation * math.sqrt(252.0) if deviation else 0.0
+        assert actual == pytest.approx(expected)
 
 
 def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
