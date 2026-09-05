@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import math
+import statistics
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -13,16 +17,22 @@ from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_runner import (
     TqqqPromotionPlan,
     TqqqPromotionRunner,
     TqqqWindowReplay,
+    _annualized_ratio,
     _canonical_sha256,
     _cost_scenarios,
     _p2_v5_oos_bounds,
     _p2_v7_long_horizon_bounds,
     _params,
+    _relative_metrics,
     _timing_sha256,
     _validate_identity,
     _validate_plan,
     build_tqqq_frozen_trial_ledger,
     build_tqqq_switching_characterization_contract,
+)
+
+from us_equity_snapshot_pipelines.lifecycle.tqqq_promotion_evidence import (
+    _canonical as canonical_evidence_bytes,
 )
 
 
@@ -304,3 +314,64 @@ def test_custom_candidate_identity_propagates_to_runner_output(
     )
 
     assert result.strategy_profile == identity.candidate_profile
+
+
+@pytest.mark.parametrize(
+    "daily_returns, expected_sortino_multiple",
+    [
+        ((0.02, -0.01, 0.02, -0.01), 1.0 / math.sqrt(2.0)),
+        ((0.125, -0.0625, 0.0, 0.125), 1.5),
+        ((-0.125, -0.125, -0.125), -1.0),
+        ((-0.125,), -1.0),
+        ((-0.125, 0.0, 0.0, 0.0), -0.5),
+        ((0.125, 0.0625), 0.0),
+        ((0.0, 0.0, 0.0), 0.0),
+    ],
+    ids=["mixed", "positive-and-zero-count", "constant-negative", "one-negative",
+         "zero-returns-count", "no-downside", "all-zero"],
+)
+def test_relative_metrics_sortino_uses_full_sample_zero_target_rms(
+    daily_returns, expected_sortino_multiple
+) -> None:
+    strategy_equity = [100_000.0]
+    benchmark_equity = [100_000.0]
+    benchmark_returns = []
+    for index, daily_return in enumerate(daily_returns):
+        strategy_equity.append(strategy_equity[-1] * (1.0 + daily_return))
+        benchmark_return = 0.03125 if index % 2 == 0 else -0.0625
+        benchmark_returns.append(benchmark_return)
+        benchmark_equity.append(benchmark_equity[-1] * (1.0 + benchmark_return))
+    # Fixed metric inputs only: no candidate execution or replay validation bypass.
+    replay = TqqqWindowReplay(
+        start_date=date(2025, 8, 4), end_date=date(2026, 8, 4),
+        prior_state_sha256="e" * 64, final_state_sha256="f" * 64,
+        strategy_equity=tuple(strategy_equity),
+        qqq_total_return_equity=tuple(benchmark_equity),
+        boxx_total_return_equity=(100_000.0,) * len(strategy_equity),
+        asset_weights=(), turnover=0.0, trade_count=0,
+        decision_count=1, risk_assessment_count=1, warmup_sessions=257,
+        episode_summary=replace(_episode_summary(), episode_session_count=len(daily_returns)),
+        sessions=(),
+    )
+
+    metrics = _relative_metrics(replay)
+    wire = json.loads(canonical_evidence_bytes(metrics))
+
+    # No downside retains a finite-zero sentinel, not an estimated positive score.
+    expected_sortino = expected_sortino_multiple * math.sqrt(252.0)
+    assert math.isfinite(metrics.sortino_ratio)
+    assert metrics.sortino_ratio == pytest.approx(expected_sortino)
+    assert wire["sortino_ratio"] == pytest.approx(expected_sortino)
+    assert len(replay.strategy_equity) - 1 == len(daily_returns)
+    excess = tuple(left - right for left, right in zip(daily_returns, benchmark_returns))
+    for values, actual in ((daily_returns, metrics.sharpe_ratio),
+                           (excess, metrics.information_ratio)):
+        deviation = statistics.pstdev(values) if len(values) > 1 else 0.0
+        expected = statistics.fmean(values) / deviation * math.sqrt(252.0) if deviation else 0.0
+        assert actual == pytest.approx(expected)
+
+
+def test_empty_ratio_retains_finite_zero_sentinel() -> None:
+    # Full replay validation separately requires at least two aligned equity points.
+    assert _annualized_ratio((), downside_only=True) == 0.0
+    assert _annualized_ratio(()) == 0.0

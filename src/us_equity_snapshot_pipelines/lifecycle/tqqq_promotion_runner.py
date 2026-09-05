@@ -1637,10 +1637,17 @@ def _returns(equity: tuple[float, ...]) -> tuple[float, ...]:
 
 
 def _annualized_ratio(values: tuple[float, ...], *, downside_only: bool = False) -> float:
-    denominator_values = tuple(min(value, 0.0) for value in values) if downside_only else values
-    if len(denominator_values) < 2:
+    """Use full-sample RMS shortfall for daily zero-MAR Sortino, then annualize.
+
+    Empty samples or zero deviation retain the finite-zero sentinel, not an
+    estimated score. Ordinary Sharpe/IR retain population standard deviation.
+    """
+    if not values:
         return 0.0
-    denominator = statistics.pstdev(denominator_values)
+    if downside_only:
+        denominator = math.sqrt(statistics.fmean(min(value, 0.0) ** 2 for value in values))
+    else:
+        denominator = statistics.pstdev(values) if len(values) > 1 else 0.0
     return statistics.fmean(values) / denominator * math.sqrt(252.0) if denominator > 0.0 else 0.0
 
 
