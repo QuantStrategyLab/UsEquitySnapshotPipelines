@@ -1124,6 +1124,7 @@ class SoxlPromotionRunner:
             benchmark_equities
         )
         sharpe = _annualized_ratio(returns)
+        # Daily MAR is zero; positive and zero returns remain in the sample.
         downside = [min(value, 0.0) for value in returns]
         sortino = _annualized_ratio(returns, denominator_values=downside)
         volatility = statistics.pstdev(returns) * math.sqrt(252.0) if len(returns) > 1 else 0.0
@@ -1271,10 +1272,17 @@ def _cagr(start_value: float, end_value: float, start: date, end: date) -> float
 
 
 def _annualized_ratio(values: Sequence[float], *, denominator_values: Sequence[float] | None = None) -> float:
+    """Annualize daily ratios; explicit shortfalls use RMS for zero-target Sortino.
+
+    Empty samples or zero deviation retain the conservative finite-zero sentinel,
+    not an estimated score. Sharpe and information ratio keep population std.
+    """
     if not values:
         return 0.0
-    denominator = denominator_values if denominator_values is not None else values
-    deviation = statistics.pstdev(denominator) if len(denominator) > 1 else 0.0
+    if denominator_values is not None:
+        deviation = math.sqrt(statistics.fmean(value * value for value in denominator_values)) if denominator_values else 0.0
+    else:
+        deviation = statistics.pstdev(values) if len(values) > 1 else 0.0
     return statistics.fmean(values) / deviation * math.sqrt(252.0) if deviation > 0.0 else 0.0
 
 
