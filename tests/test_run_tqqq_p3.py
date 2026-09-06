@@ -159,7 +159,7 @@ def test_cli_passes_canonical_p1_root_to_evidence_consumer(
     assert captured["risk_mandate_session"] is _RISK_SESSION
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "1" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
     }
 
@@ -202,7 +202,7 @@ def test_cli_emits_the_versioned_v7_policy_and_terminal_digests(
         "evidence_sha256": "1" * 64,
         "promotion_result_sha256": "2" * 64,
         "relative_benchmark_policy_sha256": "4" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
     }
 

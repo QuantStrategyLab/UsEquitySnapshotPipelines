@@ -32,7 +32,7 @@ def _p3_producer() -> dict[str, str]:
 def _result() -> dict[str, str]:
     return {
         "evidence_sha256": "e" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
     }
 
@@ -59,7 +59,7 @@ def test_builds_canonical_nonlive_index_with_only_bound_metadata() -> None:
         "nonlive_scope_record": _nonlive_scope_record(),
         "p1_manifest_sha256": "f" * 64,
         "p3_evidence_sha256": "e" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
         "input_producer": _input_producer(),
         "producer": _p3_producer(),

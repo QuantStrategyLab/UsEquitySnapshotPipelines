@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         if not 0 <= exit_code <= 255:
             raise ValueError("invalid P3 exit code")
         terminal = validate_tqqq_p3_terminal(_read_json(args.p3_result, "P3 result"))
-        if (exit_code == 0) != (terminal["status"] == "EVIDENCE_V2_COMPLETE"):
+        if (exit_code == 0) != (terminal["status"] == "EVIDENCE_V3_COMPLETE"):
             raise TqqqP3RecoveryError("P3 exit and terminal status disagree")
         record = build_tqqq_p3_recovery_record(
             plan=_read_json(args.plan, "recovery plan"),

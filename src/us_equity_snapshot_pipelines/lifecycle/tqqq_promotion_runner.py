@@ -259,7 +259,7 @@ class TqqqQqqRelativeMetrics:
     trade_count: int
     win_rate: float
     profit_factor: float
-    information_coefficient: float
+    benchmark_return_correlation: float | None
 
 
 @dataclass(frozen=True)
@@ -1936,7 +1936,7 @@ def _relative_metrics(replay: TqqqWindowReplay) -> TqqqQqqRelativeMetrics:
         trade_count=replay.trade_count,
         win_rate=sum(value > 0.0 for value in strategy_returns) / len(strategy_returns),
         profit_factor=profit_factor,
-        information_coefficient=_correlation(strategy_returns, benchmark_returns),
+        benchmark_return_correlation=_correlation(strategy_returns, benchmark_returns),
     )
 
 

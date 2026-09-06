@@ -194,7 +194,7 @@ def _tqqq_p3_terminal(value: object, candidate: StrategyCandidate, p1: Mapping[s
     if not isinstance(nested, Mapping):
         _fail("invalid TQQQ P3 result")
     status = nested.get("status")
-    if status == "EVIDENCE_V2_COMPLETE":
+    if status == "EVIDENCE_V3_COMPLETE":
         return {"status": P3_COMPLETE, "evidence_sha256": _digest(nested.get("evidence_sha256"), "TQQQ P3 evidence digest")}
     if status == "PARKED":
         return {"status": P3_PARKED, "evidence_sha256": ""}

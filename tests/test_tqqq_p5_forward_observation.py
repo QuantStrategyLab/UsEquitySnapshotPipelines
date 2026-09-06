@@ -97,7 +97,7 @@ def _daily_status(*, manifest_sha256: str, date_cutoff: str = "2026-08-18") -> d
         "p1_health_sha256": "c" * 64,
         "p3_terminal": {
             "evidence_sha256": "d" * 64,
-            "status": "EVIDENCE_V2_COMPLETE",
+            "status": "EVIDENCE_V3_COMPLETE",
             "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
         },
     }

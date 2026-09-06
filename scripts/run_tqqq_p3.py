@@ -315,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "evidence_sha256": result["evidence_sha256"],
-                "status": "EVIDENCE_V2_COMPLETE",
+                "status": "EVIDENCE_V3_COMPLETE",
                 "verdict": result["verdict"],
                 **(
                     {
