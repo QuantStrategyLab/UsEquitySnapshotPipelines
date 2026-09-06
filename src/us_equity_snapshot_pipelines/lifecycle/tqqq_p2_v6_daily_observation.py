@@ -150,7 +150,7 @@ def _daily_status_source(value: object) -> tuple[str, str, str]:
         status["schema_version"] != "qsl.tqqq-daily-research-status.v1"
         or dict(candidate)
         != {"candidate_id": P2_V5_CONTRACT.candidate_id, "config_sha256": P2_V5_CONTRACT.config_sha256}
-        or terminal["status"] != "EVIDENCE_V2_COMPLETE"
+        or terminal["status"] != "EVIDENCE_V3_COMPLETE"
     ):
         _fail("invalid_daily_status")
     return (

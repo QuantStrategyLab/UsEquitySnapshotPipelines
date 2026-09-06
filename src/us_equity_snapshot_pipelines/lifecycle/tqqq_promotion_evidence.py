@@ -136,6 +136,17 @@ _CORE_FIELDS = (
     "risk_assessment",
 )
 
+
+# Fixed producer semantics: allocation weights are not prediction scores with future labels.
+_TQQQ_INFORMATION_COEFFICIENT_NOT_APPLICABLE = {
+    "status": "not_applicable",
+    "reason_code": "no_prediction_target",
+    "reason": (
+        "This TQQQ allocation producer defines target weights, "
+        "not predictive scores and future labels."
+    ),
+}
+
 class TqqqPromotionEvidenceError(ValueError):
     """Fail-closed error without provider bars or account material."""
 
@@ -1441,8 +1452,9 @@ def _result_artifacts(
             artifacts / "information-coefficient.json",
             _canonical(
                 {
-                    "schema_version": "tqqq_information_coefficient.v1",
-                    "information_coefficient": locked.relative_metrics.information_coefficient,
+                    "schema_version": "tqqq_information_coefficient.v2",
+                    "benchmark_return_correlation": locked.relative_metrics.benchmark_return_correlation,
+                    "information_coefficient": dict(_TQQQ_INFORMATION_COEFFICIENT_NOT_APPLICABLE),
                     "information_ratio": locked.relative_metrics.information_ratio,
                     "alpha": locked.relative_metrics.alpha,
                     "beta": locked.relative_metrics.beta,
@@ -1633,8 +1645,9 @@ def run_tqqq_promotion_evidence(
     else:
         verdict = evaluate_tqqq_pre_result_acceptance(result, "NOT_COMPARABLE")
     generated = _timestamp(generated_at)
+    information_coefficient = dict(_TQQQ_INFORMATION_COEFFICIENT_NOT_APPLICABLE)
     evidence: dict[str, Any] = {
-        "schema_version": "strategy_evidence_package.v2",
+        "schema_version": "strategy_evidence_package.v3",
         "evidence_package_id": f"tqqq_p2_{candidate.candidate_sha256[:12]}",
         "generated_at": generated,
         "requested_stage": "research_backtest_only",
@@ -1678,7 +1691,7 @@ def run_tqqq_promotion_evidence(
             "annualized_volatility": metrics.annualized_volatility,
             "calmar_ratio": metrics.calmar_ratio,
             "information_ratio": metrics.information_ratio,
-            "information_coefficient": metrics.information_coefficient,
+            "information_coefficient": dict(information_coefficient),
             "var_95": metrics.var_95,
             "cvar_95": metrics.cvar_95,
             "turnover": metrics.turnover,
@@ -1725,11 +1738,11 @@ def run_tqqq_promotion_evidence(
     if issues:
         raise TqqqPromotionEvidenceError("evidence package validation failed:" + ";".join(issues))
     evidence_bytes = canonical_evidence_package_v2_bytes(evidence)
-    evidence_record = _write_private(output_root / "strategy-evidence-package.v2.json", evidence_bytes)
+    evidence_record = _write_private(output_root / "strategy-evidence-package.v3.json", evidence_bytes)
     terminal_payload: dict[str, object] = {
         "schema_version": "tqqq_promotion_research_result.v1",
         "generated_at": generated,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": verdict,
         "candidate_identity_sha256": candidate.candidate_sha256,
         "input_manifest_sha256": manifest_sha256,
@@ -1755,7 +1768,7 @@ def run_tqqq_promotion_evidence(
     try:
         if (
             hashlib.sha256(
-                (output_root / "strategy-evidence-package.v2.json").read_bytes()
+                (output_root / "strategy-evidence-package.v3.json").read_bytes()
             ).hexdigest()
             != evidence_record["sha256"]
             or hashlib.sha256(

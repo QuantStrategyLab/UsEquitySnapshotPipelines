@@ -36,7 +36,7 @@ def _tqqq_p1(*, status: str = "ACCEPTED", cutoff: str = "2026-08-21") -> dict[st
     }
 
 
-def _tqqq_p3(*, cutoff: str = "2026-08-21", status: str = "EVIDENCE_V2_COMPLETE") -> dict[str, object]:
+def _tqqq_p3(*, cutoff: str = "2026-08-21", status: str = "EVIDENCE_V3_COMPLETE") -> dict[str, object]:
     terminal: dict[str, object] = {
         "status": status,
         "evidence_sha256": "c" * 64,

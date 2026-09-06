@@ -80,13 +80,13 @@ def _p3(value: object) -> dict[str, str]:
             }
         ),
     )
-    if p3["status"] != "EVIDENCE_V2_COMPLETE" or p3["verdict"] not in _VERDICTS:
+    if p3["status"] != "EVIDENCE_V3_COMPLETE" or p3["verdict"] not in _VERDICTS:
         _fail()
     return {
         "evidence_sha256": _digest(p3["evidence_sha256"]),
         "promotion_result_sha256": _digest(p3["promotion_result_sha256"]),
         "relative_benchmark_policy_sha256": _digest(p3["relative_benchmark_policy_sha256"]),
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": str(p3["verdict"]),
     }
 

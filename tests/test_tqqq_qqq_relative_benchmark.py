@@ -42,7 +42,7 @@ def _metrics(**overrides: object) -> TqqqQqqRelativeMetrics:
         "trade_count": 3,
         "win_rate": 0.6,
         "profit_factor": 1.5,
-        "information_coefficient": 0.8,
+        "benchmark_return_correlation": 0.8,
     }
     values.update(overrides)
     return TqqqQqqRelativeMetrics(**values)

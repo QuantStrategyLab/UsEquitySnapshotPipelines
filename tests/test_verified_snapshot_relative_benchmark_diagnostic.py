@@ -22,7 +22,7 @@ def _terminal() -> dict[str, str]:
         "evidence_sha256": _digest("evidence"),
         "promotion_result_sha256": _digest("promotion"),
         "relative_benchmark_policy_sha256": _digest("policy"),
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
     }
 

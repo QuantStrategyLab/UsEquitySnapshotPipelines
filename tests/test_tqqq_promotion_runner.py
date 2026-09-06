@@ -375,3 +375,49 @@ def test_empty_ratio_retains_finite_zero_sentinel() -> None:
     # Full replay validation separately requires at least two aligned equity points.
     assert _annualized_ratio((), downside_only=True) == 0.0
     assert _annualized_ratio(()) == 0.0
+
+def test_relative_metrics_records_benchmark_return_correlation_not_prediction_ic() -> None:
+    """Allocation replay correlates returns to QQQ; it does not estimate prediction IC."""
+
+    strategy_equity = [100_000.0, 101_000.0, 99_000.0, 102_000.0]
+    replay = TqqqWindowReplay(
+        start_date=date(2025, 8, 4), end_date=date(2026, 8, 4),
+        prior_state_sha256="e" * 64, final_state_sha256="f" * 64,
+        strategy_equity=tuple(strategy_equity),
+        qqq_total_return_equity=tuple(strategy_equity),
+        boxx_total_return_equity=(100_000.0,) * len(strategy_equity),
+        asset_weights=(), turnover=0.0, trade_count=0,
+        decision_count=1, risk_assessment_count=1, warmup_sessions=257,
+        episode_summary=replace(_episode_summary(), episode_session_count=3),
+        sessions=(),
+    )
+
+    metrics = _relative_metrics(replay)
+    wire = json.loads(canonical_evidence_bytes(metrics))
+
+    assert metrics.benchmark_return_correlation == pytest.approx(1.0)
+    assert wire["benchmark_return_correlation"] == pytest.approx(1.0)
+    assert not hasattr(metrics, "information_coefficient")
+    assert "information_coefficient" not in wire
+
+
+def test_tqqq_evidence_producer_declares_prediction_ic_not_applicable() -> None:
+    from pathlib import Path
+
+    from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_evidence as evidence
+
+    assert evidence._TQQQ_INFORMATION_COEFFICIENT_NOT_APPLICABLE == {
+        "status": "not_applicable",
+        "reason_code": "no_prediction_target",
+        "reason": (
+            "This TQQQ allocation producer defines target weights, "
+            "not predictive scores and future labels."
+        ),
+    }
+    source = Path(evidence.__file__).read_text(encoding="utf-8")
+    assert "strategy_evidence_package.v3" in source
+    assert "tqqq_information_coefficient.v2" in source
+    assert "strategy-evidence-package.v3.json" in source
+    assert "EVIDENCE_V3_COMPLETE" in source
+    assert "strategy-evidence-package.v2.json" not in source
+    assert "tqqq_information_coefficient.v1" not in source

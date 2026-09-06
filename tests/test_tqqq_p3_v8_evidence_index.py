@@ -33,7 +33,7 @@ def _result(*, verdict: str = "PASS_PENDING_FORWARD_CONFIRMATION") -> dict[str, 
         "evidence_sha256": "1" * 64,
         "promotion_result_sha256": "2" * 64,
         "relative_benchmark_policy_sha256": "3" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": verdict,
     }
 

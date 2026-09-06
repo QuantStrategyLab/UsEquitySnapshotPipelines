@@ -24,7 +24,7 @@ def _p3_result() -> dict[str, str]:
         "evidence_sha256": "1" * 64,
         "promotion_result_sha256": "2" * 64,
         "relative_benchmark_policy_sha256": "3" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
     }
 

@@ -27,7 +27,7 @@ def _metrics(*, calmar_ratio: float = 3.0) -> TqqqQqqRelativeMetrics:
         information_ratio=1.0, sharpe_ratio=1.0, sortino_ratio=1.0,
         calmar_ratio=calmar_ratio, annualized_volatility=0.2, var_95=-0.03,
         cvar_95=-0.04, turnover=0.2, trade_count=3, win_rate=0.6,
-        profit_factor=1.5, information_coefficient=0.8,
+        profit_factor=1.5, benchmark_return_correlation=0.8,
     )
 
 

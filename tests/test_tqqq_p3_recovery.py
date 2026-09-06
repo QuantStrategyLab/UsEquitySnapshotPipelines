@@ -47,7 +47,7 @@ def _parked_terminal(
 def _completed_terminal() -> dict[str, object]:
     return {
         "evidence_sha256": "d" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "INCONCLUSIVE_DATA_OR_EXECUTION",
     }
 

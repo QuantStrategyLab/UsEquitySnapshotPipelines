@@ -11,7 +11,7 @@ from typing import Any
 from .tqqq_core_only_p1_binding import CANDIDATE_CONFIG_SHA256, CANDIDATE_ID
 
 SCHEMA_VERSION = "qsl.tqqq-p1-p3-evidence-index.v1"
-P3_STATUS = "EVIDENCE_V2_COMPLETE"
+P3_STATUS = "EVIDENCE_V3_COMPLETE"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _RUN_NUMBER = re.compile(r"^[1-9][0-9]*$")

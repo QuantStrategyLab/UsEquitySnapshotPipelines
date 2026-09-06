@@ -1220,7 +1220,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 raise ValueError("invalid evidence identity")
             failure_stage = "promotion_evidence_artifact_readback"
             failure_class = "promotion_evidence_artifact_readback_failed"
-            evidence_bytes = (evidence_root / "strategy-evidence-package.v2.json").read_bytes()
+            evidence_bytes = (evidence_root / "strategy-evidence-package.v3.json").read_bytes()
             terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
             evidence_payload = json.loads(evidence_bytes)
             terminal_payload = json.loads(terminal_bytes)
@@ -1240,7 +1240,8 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 hashlib.sha256(evidence_bytes).hexdigest() != evidence["evidence_sha256"]
                 or hashlib.sha256(terminal_bytes).hexdigest()
                 != evidence["promotion_result_sha256"]
-                or terminal_payload.get("status") != "EVIDENCE_V2_COMPLETE"
+                or terminal_payload.get("status") != "EVIDENCE_V3_COMPLETE"
+                or evidence_payload.get("schema_version") != "strategy_evidence_package.v3"
                 or terminal_payload.get("candidate_identity_sha256")
                 != evidence["candidate_identity_sha256"]
                 or terminal_payload.get("input_manifest_sha256") != snapshot_digest
@@ -1292,7 +1293,7 @@ def orchestrate_existing_tqqq_snapshot_promotion(
         _sync_directory(published_root.parent)
         temporary = None
         return {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": len(TQQQ_PROMOTION_ASSETS),
             "snapshot_digest": snapshot_digest,
             "evidence_digest": evidence["evidence_sha256"],
@@ -1461,7 +1462,7 @@ def orchestrate_tqqq_promotion(
                 raise ValueError("invalid evidence identity")
             failure_stage = "promotion_evidence_artifact_readback"
             failure_class = "promotion_evidence_artifact_readback_failed"
-            evidence_bytes = (evidence_root / "strategy-evidence-package.v2.json").read_bytes()
+            evidence_bytes = (evidence_root / "strategy-evidence-package.v3.json").read_bytes()
             terminal_bytes = (evidence_root / "promotion-research-result.v1.json").read_bytes()
             evidence_payload = json.loads(evidence_bytes)
             terminal_payload = json.loads(terminal_bytes)
@@ -1481,7 +1482,8 @@ def orchestrate_tqqq_promotion(
                 hashlib.sha256(evidence_bytes).hexdigest() != evidence["evidence_sha256"]
                 or hashlib.sha256(terminal_bytes).hexdigest()
                 != evidence["promotion_result_sha256"]
-                or terminal_payload.get("status") != "EVIDENCE_V2_COMPLETE"
+                or terminal_payload.get("status") != "EVIDENCE_V3_COMPLETE"
+                or evidence_payload.get("schema_version") != "strategy_evidence_package.v3"
                 or terminal_payload.get("candidate_identity_sha256")
                 != evidence["candidate_identity_sha256"]
                 or terminal_payload.get("input_manifest_sha256") != manifest_sha256
@@ -1528,7 +1530,7 @@ def orchestrate_tqqq_promotion(
         temporary_evidence = None
         _seal_private_tree(run_root)
         return {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": len(TQQQ_PROMOTION_ASSETS),
             "execution_authorized": False,
             "no_order": True,

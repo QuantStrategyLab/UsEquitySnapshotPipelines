@@ -141,7 +141,7 @@ def test_cli_consumes_only_preserved_snapshot_layout(
     }
     assert json.loads(capsys.readouterr().out) == {
         "evidence_sha256": "a" * 64,
-        "status": "EVIDENCE_V2_COMPLETE",
+        "status": "EVIDENCE_V3_COMPLETE",
         "verdict": "REJECT_NEGATIVE_STRATEGY_EVIDENCE",
     }
 
