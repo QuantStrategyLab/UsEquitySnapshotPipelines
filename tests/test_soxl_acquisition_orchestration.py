@@ -119,8 +119,8 @@ def _published_snapshot(
     def run(*, output_dir, **_kwargs):
         output = Path(output_dir)
         output.mkdir()
-        evidence = output / "strategy-evidence-package.v2.json"
-        evidence.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        evidence = output / "strategy-evidence-package.v3.json"
+        evidence.write_text('{"schema_version":"strategy_evidence_package.v3"}')
         return {
             "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
             "cost_stress_25bp_sha256": "4" * 64,
@@ -128,7 +128,7 @@ def _published_snapshot(
         }
 
     monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
-    monkeypatch.setattr(orchestration, "validate_evidence_package_v2", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(orchestration, "validate_strategy_evidence_payload", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         orchestration.promotion_runner,
         "_resolve_runner_revision",
@@ -155,6 +155,39 @@ def _allow_pinned_dependency_provenance(monkeypatch: pytest.MonkeyPatch) -> None
             "us-equity-strategies": orchestration.promotion_runner._UES_REVISION,
         }[distribution_name],
     )
+
+
+@pytest.mark.parametrize("existing_snapshot", [False, True])
+def test_old_payload_cannot_be_relabelled_by_v3_filename(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, existing_snapshot: bool,
+) -> None:
+    if existing_snapshot:
+        snapshot, digest = _published_snapshot(monkeypatch, tmp_path)
+        _allow_pinned_dependency_provenance(monkeypatch)
+
+    def run(*, output_dir, **_kwargs):
+        root = Path(output_dir)
+        root.mkdir()
+        path = root / "strategy-evidence-package.v3.json"
+        path.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        return {"evidence_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
+    # Even a dispatcher accepting legacy v2 cannot authorize this v3 producer path.
+    monkeypatch.setattr(orchestration, "validate_strategy_evidence_payload", lambda *_a, **_k: [])
+    monkeypatch.setattr(orchestration.promotion_runner, "_resolve_runner_revision", lambda: RUNNER_REVISION)
+    kwargs = {
+        "authority": _fresh_authority(),
+        "output_root": tmp_path / "version-check",
+        "runner_revision": RUNNER_REVISION,
+        "runner_tree_sha": RUNNER_TREE_SHA,
+        "clock": lambda: datetime(2026, 8, 10, 15, 0, tzinfo=UTC),
+    }
+    with pytest.raises(SoxlOrchestrationError, match="evidence package validation failed"):
+        if existing_snapshot:
+            orchestrate_existing_soxl_snapshot(snapshot, expected_snapshot_digest=digest, **kwargs)
+        else:
+            orchestrate_soxl_promotion(_results(), **kwargs)
 
 
 def test_exact_results_publish_content_addressed_snapshot_then_consume_one_rerun(
@@ -224,8 +257,8 @@ def test_exact_results_publish_content_addressed_snapshot_then_consume_one_rerun
         ]
         output = Path(output_dir)
         output.mkdir()
-        evidence = output / "strategy-evidence-package.v2.json"
-        evidence.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        evidence = output / "strategy-evidence-package.v3.json"
+        evidence.write_text('{"schema_version":"strategy_evidence_package.v3"}')
         return {
             "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
             "cost_stress_25bp_sha256": "4" * 64,
@@ -234,7 +267,7 @@ def test_exact_results_publish_content_addressed_snapshot_then_consume_one_rerun
 
     def validate(evidence, *, base_dir):
         events.append("validate")
-        assert evidence["schema_version"] == "strategy_evidence_package.v2"
+        assert evidence["schema_version"] == "strategy_evidence_package.v3"
         assert Path(base_dir).name == "evidence"
         return []
 
@@ -242,7 +275,7 @@ def test_exact_results_publish_content_addressed_snapshot_then_consume_one_rerun
     monkeypatch.setattr(orchestration, "ResearchMandateAuthorityGuard", Guard)
     monkeypatch.setattr(orchestration, "publish_soxl_pit_input", publish)
     monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
-    monkeypatch.setattr(orchestration, "validate_evidence_package_v2", validate)
+    monkeypatch.setattr(orchestration, "validate_strategy_evidence_payload", validate)
     monkeypatch.setattr(
         orchestration.promotion_runner,
         "_resolve_runner_revision",
@@ -260,7 +293,7 @@ def test_exact_results_publish_content_addressed_snapshot_then_consume_one_rerun
 
     assert events == ["prepare", "issue", "publish", "consume", "run", "validate"]
     assert result == {
-        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "asset_count": 9,
         "snapshot_digest": result["snapshot_digest"],
         "evidence_digest": result["evidence_digest"],
@@ -374,8 +407,8 @@ def test_existing_snapshot_validates_then_consumes_one_fresh_mandate_and_runs_on
         ]
         output = Path(output_dir)
         output.mkdir()
-        evidence = output / "strategy-evidence-package.v2.json"
-        evidence.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        evidence = output / "strategy-evidence-package.v3.json"
+        evidence.write_text('{"schema_version":"strategy_evidence_package.v3"}')
         return {
             "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
             "cost_stress_25bp_sha256": "4" * 64,
@@ -384,13 +417,13 @@ def test_existing_snapshot_validates_then_consumes_one_fresh_mandate_and_runs_on
 
     def validate(evidence, *, base_dir):
         events.append("validate")
-        assert evidence["schema_version"] == "strategy_evidence_package.v2"
+        assert evidence["schema_version"] == "strategy_evidence_package.v3"
         assert Path(base_dir).name == "evidence"
         return []
 
     monkeypatch.setattr(orchestration, "ResearchMandateAuthorityGuard", Guard)
     monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
-    monkeypatch.setattr(orchestration, "validate_evidence_package_v2", validate)
+    monkeypatch.setattr(orchestration, "validate_strategy_evidence_payload", validate)
 
     result = orchestrate_existing_soxl_snapshot(
         snapshot,
@@ -403,7 +436,7 @@ def test_existing_snapshot_validates_then_consumes_one_fresh_mandate_and_runs_on
     )
 
     assert events == ["issue", "consume", "run", "validate"]
-    assert result["status"] == "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE"
+    assert result["status"] == "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE"
     assert result["snapshot_digest"] == snapshot_digest
     assert result["rerun_count"] == 1
 
@@ -434,8 +467,8 @@ def test_existing_snapshot_compatible_ancestor_binds_fresh_current_runner(
         observed_config.update(config_payload)
         output = Path(output_dir)
         output.mkdir()
-        evidence = output / "strategy-evidence-package.v2.json"
-        evidence.write_text('{"schema_version":"strategy_evidence_package.v2"}')
+        evidence = output / "strategy-evidence-package.v3.json"
+        evidence.write_text('{"schema_version":"strategy_evidence_package.v3"}')
         return {
             "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
             "cost_stress_25bp_sha256": "4" * 64,
@@ -445,7 +478,7 @@ def test_existing_snapshot_compatible_ancestor_binds_fresh_current_runner(
     monkeypatch.setattr(orchestration, "run_soxl_promotion_research", run)
     monkeypatch.setattr(
         orchestration,
-        "validate_evidence_package_v2",
+        "validate_strategy_evidence_payload",
         lambda *_args, **_kwargs: [],
     )
 
@@ -465,7 +498,7 @@ def test_existing_snapshot_compatible_ancestor_binds_fresh_current_runner(
     assert observed_config["runner_revision"] == current_revision
     assert observed_config["candidate_identity"]["runner_revision"] == current_revision
     assert observed_config["mandate_provenance"]["runner_revision"] == current_revision
-    assert result["status"] == "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE"
+    assert result["status"] == "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE"
     assert result["rerun_count"] == 1
 
 

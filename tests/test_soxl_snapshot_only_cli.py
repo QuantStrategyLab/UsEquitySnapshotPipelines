@@ -49,7 +49,7 @@ def test_snapshot_only_cli_emits_only_sanitized_terminal(monkeypatch, capsys) ->
         module,
         "orchestrate_existing_soxl_snapshot",
         lambda *_args, **_kwargs: {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 9,
             "snapshot_digest": "a" * 64,
             "evidence_digest": "2" * 64,
@@ -66,7 +66,7 @@ def test_snapshot_only_cli_emits_only_sanitized_terminal(monkeypatch, capsys) ->
         "mandate_receipt_digest": "3" * 64,
         "rerun_count": 1,
         "snapshot_digest": "a" * 64,
-        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
 
 

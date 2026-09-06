@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
     print(json.dumps(terminal, sort_keys=True, separators=(",", ":")))
     return 0 if terminal["status"] in {
-        "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "IMMUTABLE_NEGATIVE_STRATEGY_EVIDENCE",
     } else 1
 

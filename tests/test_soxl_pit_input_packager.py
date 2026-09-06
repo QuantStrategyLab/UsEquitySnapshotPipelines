@@ -449,6 +449,7 @@ def test_identity_binding_and_publication_fail_closed(tmp_path: Path) -> None:
         ("candidate_id", "wrong", "candidate identity"),
         ("source_contract_sha256", "0" * 64, "source contract identity"),
         ("qpk_revision", "0" * 40, "QPK revision"),
+        ("qpk_revision", "730ad9f3983bd90cd75adecb67fcf483ffb96736", "QPK revision"),
         ("runner_revision", "0" * 40, "producer and runner revision"),
     )
     for index, (field, value, message) in enumerate(mutations):

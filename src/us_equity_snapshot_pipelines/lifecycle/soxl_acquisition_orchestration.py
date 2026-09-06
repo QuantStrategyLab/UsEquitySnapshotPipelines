@@ -19,7 +19,7 @@ from quant_platform_kit.data.research_mandate import ResearchMandateAuthorityGua
 from quant_platform_kit.ibkr import StrictAdjustedHistoryResult
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
-    validate_evidence_package_v2,
+    validate_strategy_evidence_payload,
 )
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
@@ -959,18 +959,19 @@ def orchestrate_soxl_promotion(
                 mandate_receipt_digest=consumption.receipt_digest,
                 evidence_artifact_count=evidence_artifact_count,
             ) from exc
-        evidence_path = evidence_root / "strategy-evidence-package.v2.json"
+        evidence_path = evidence_root / "strategy-evidence-package.v3.json"
         evidence_bytes = evidence_path.read_bytes()
         evidence = json.loads(evidence_bytes)
         if (
             not isinstance(evidence, dict)
-            or validate_evidence_package_v2(evidence, base_dir=evidence_root)
+            or evidence.get("schema_version") != "strategy_evidence_package.v3"
+            or validate_strategy_evidence_payload(evidence, base_dir=evidence_root)
             or hashlib.sha256(evidence_bytes).hexdigest() != run_result["evidence_sha256"]
         ):
             raise SoxlOrchestrationError("evidence package validation failed")
         _seal_private_tree(run_root)
         return {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": len(SOXL_PROMOTION_ASSETS),
             "snapshot_digest": snapshot["package_manifest_sha256"],
             "evidence_digest": run_result["evidence_sha256"],
@@ -1098,18 +1099,19 @@ def orchestrate_existing_soxl_snapshot(
                 mandate_receipt_digest=consumption.receipt_digest,
                 evidence_artifact_count=evidence_artifact_count,
             ) from exc
-        evidence_path = evidence_root / "strategy-evidence-package.v2.json"
+        evidence_path = evidence_root / "strategy-evidence-package.v3.json"
         evidence_bytes = evidence_path.read_bytes()
         evidence = json.loads(evidence_bytes)
         if (
             not isinstance(evidence, dict)
-            or validate_evidence_package_v2(evidence, base_dir=evidence_root)
+            or evidence.get("schema_version") != "strategy_evidence_package.v3"
+            or validate_strategy_evidence_payload(evidence, base_dir=evidence_root)
             or hashlib.sha256(evidence_bytes).hexdigest() != run_result["evidence_sha256"]
         ):
             raise SoxlOrchestrationError("evidence package validation failed")
         _seal_private_tree(run_root)
         return {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": len(SOXL_PROMOTION_ASSETS),
             "snapshot_digest": snapshot_digest,
             "evidence_digest": run_result["evidence_sha256"],

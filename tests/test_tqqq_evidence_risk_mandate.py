@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import tomllib
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -184,6 +185,38 @@ def test_loader_accepts_only_the_frozen_receipt_and_source_revision(tmp_path: Pa
             consumption_store_path=tmp_path / "tampered.sqlite3",
             logical_evaluation_time=logical_time,
         )
+
+
+def test_runtime_qpk_revision_matches_manifest_lock_and_installed_package() -> None:
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    lock = tomllib.loads((root / "uv.lock").read_text())
+    dependency = next(
+        item for item in project["project"]["dependencies"]
+        if item.startswith("quant-platform-kit @")
+    )
+    package = next(item for item in lock["package"] if item["name"] == "quant-platform-kit")
+    direct_url = json.loads(
+        mandate.importlib.metadata.distribution("quant-platform-kit").read_text("direct_url.json")
+    )
+    assert dependency.rsplit("@", 1)[1] == mandate.QPK_SOURCE_REVISION
+    assert package["source"]["git"].rsplit("#", 1)[1] == mandate.QPK_SOURCE_REVISION
+    assert direct_url["vcs_info"]["commit_id"] == mandate.QPK_SOURCE_REVISION
+    mandate._validate_qpk_revision()
+
+
+@pytest.mark.parametrize("expected_revision", ("7f140f07ac89f0b4b88347a903906825dde11c39", "0" * 40))
+def test_wrong_runtime_qpk_revision_rejects_without_consuming_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, expected_revision: str
+) -> None:
+    # Keep actual installed metadata; only the incompatible expectation is synthetic.
+    monkeypatch.setattr(mandate, "QPK_SOURCE_REVISION", expected_revision)
+    ledger = mandate.CANONICAL_AUTHORITY_LEDGER_PATH
+    before = ledger.read_bytes()
+    with pytest.raises(mandate.TqqqEvidenceRiskMandateError, match="QPK source revision mismatch"):
+        _load(tmp_path, datetime.now(UTC).replace(microsecond=0))
+    assert ledger.read_bytes() == before == b""
+    assert list(ledger.parent.iterdir()) == [ledger]
 
 
 def test_session_cannot_be_constructed_or_forged_without_loader(tmp_path: Path) -> None:

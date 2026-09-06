@@ -34,13 +34,15 @@ from quant_platform_kit.strategy_lifecycle.contracts import (
 )
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
-    validate_evidence_package_v2,
+    validate_strategy_evidence_payload,
 )
 from quant_platform_kit.strategy_lifecycle.performance_store import PerformanceStore
 from us_equity_strategies.entrypoints import evaluate_soxl_soxx_trend_income_promotion_research
 from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
 
-from .soxl_pit_input_packager import FIRST_ELIGIBLE_SESSION, INPUT_CONTRACT_ID, MANDATE_ID
+from .soxl_pit_input_packager import (
+    FIRST_ELIGIBLE_SESSION, INPUT_CONTRACT_ID, MANDATE_ID, QPK_REVISION as _QPK_REVISION,
+)
 from .soxl_pit_regime_component_producer import (
     CANDIDATE_ID,
     CORE_ONLY_CONFIG_SHA256,
@@ -61,8 +63,7 @@ SOXL_PROMOTION_ASSETS = (
     "QQQI",
     "QQQ",
 )
-_QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
-_UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
+_UES_REVISION = "33d8c09a9aa517cde94f36d2f67e526c340ea6e9"
 _PROFILE = "soxl_soxx_trend_income"
 _DOMAIN = "us_equity"
 _MIN_INDICATOR_SESSIONS = 420
@@ -274,7 +275,7 @@ class WindowEvidence:
     var_95: float
     cvar_95: float
     information_ratio: float
-    information_coefficient: float
+    benchmark_return_correlation: float | None
     costs_paid: float
     assessment_count: int
     state_digest_sha256: str
@@ -295,7 +296,7 @@ class WindowEvidence:
             "var_95": self.var_95,
             "cvar_95": self.cvar_95,
             "information_ratio": self.information_ratio,
-            "information_coefficient": self.information_coefficient,
+            "benchmark_return_correlation": self.benchmark_return_correlation,
             "costs_paid": self.costs_paid,
             "assessment_count": self.assessment_count,
             "state_digest_sha256": self.state_digest_sha256,
@@ -1130,7 +1131,7 @@ class SoxlPromotionRunner:
         volatility = statistics.pstdev(returns) * math.sqrt(252.0) if len(returns) > 1 else 0.0
         excess = [left - right for left, right in zip(returns, benchmark_returns)]
         information_ratio = _annualized_ratio(excess)
-        information_coefficient = _correlation(returns, benchmark_returns)
+        benchmark_return_correlation = _correlation(returns, benchmark_returns)
         positive_benchmark = [index for index, value in enumerate(benchmark_returns) if value > 0.0]
         benchmark_up = sum(benchmark_returns[index] for index in positive_benchmark)
         strategy_up = sum(returns[index] for index in positive_benchmark)
@@ -1188,7 +1189,7 @@ class SoxlPromotionRunner:
             var_95=var_95,
             cvar_95=cvar_95,
             information_ratio=information_ratio,
-            information_coefficient=information_coefficient,
+            benchmark_return_correlation=benchmark_return_correlation,
             costs_paid=sum(costs),
             assessment_count=sum(assessments),
             state_digest_sha256=self._state_digest(state),
@@ -1286,16 +1287,17 @@ def _annualized_ratio(values: Sequence[float], *, denominator_values: Sequence[f
     return statistics.fmean(values) / deviation * math.sqrt(252.0) if deviation > 0.0 else 0.0
 
 
-def _correlation(left: Sequence[float], right: Sequence[float]) -> float:
+def _correlation(left: Sequence[float], right: Sequence[float]) -> float | None:
+    """Benchmark-return diagnostic only; undefined samples are not estimates."""
     if len(left) < 2 or len(left) != len(right):
-        return 0.0
+        return None
     left_mean = statistics.fmean(left)
     right_mean = statistics.fmean(right)
     numerator = sum((x - left_mean) * (y - right_mean) for x, y in zip(left, right))
     denominator = math.sqrt(
         sum((x - left_mean) ** 2 for x in left) * sum((y - right_mean) ** 2 for y in right)
     )
-    return numerator / denominator if denominator > 0.0 else 0.0
+    return numerator / denominator if denominator > 0.0 else None
 
 
 def _quantile(values: Sequence[float], fraction: float) -> float:
@@ -1492,7 +1494,7 @@ def run_soxl_promotion_research(
     backtest_record = _write_canonical(
         artifacts_root / "backtest.json",
         {
-            "schema_version": "soxl_promotion_backtest.v2",
+            "schema_version": "soxl_promotion_backtest.v3",
             "availability_contract_sha256": availability_contract_sha256,
             "availability_segments": availability_segments,
             "ordered_variants": list(_ORDERED_VARIANTS),
@@ -1559,12 +1561,19 @@ def run_soxl_promotion_research(
     primary = primary_runner.window_evidence(
         primary_runner.locked_oos_start, primary_runner.locked_oos_end, 5.0
     )
+    # Fixed producer semantics, not a data-dependent exemption or caller option.
+    information_coefficient = {
+        "status": "not_applicable",
+        "reason_code": "no_prediction_target",
+        "reason": "This SOXL allocation producer defines target weights, not predictive scores and future labels.",
+    }
     variant_information = {}
     for variant_id in _ORDERED_VARIANTS:
         runner = runners[variant_id]
         window = runner.window_evidence(runner.locked_oos_start, runner.locked_oos_end, 5.0)
         variant_information[variant_id] = {
-            "information_coefficient": window.information_coefficient,
+            "information_coefficient": dict(information_coefficient),
+            "benchmark_return_correlation": window.benchmark_return_correlation,
             "information_ratio": window.information_ratio,
             "upside_capture": window.upside_capture,
             "upside_participation": window.upside_participation,
@@ -1572,8 +1581,9 @@ def run_soxl_promotion_research(
     information_record = _write_canonical(
         artifacts_root / "information-coefficient.json",
         {
-            "schema_version": "soxl_information_coefficient.v1",
-            "information_coefficient": primary.information_coefficient,
+            "schema_version": "soxl_information_coefficient.v2",
+            "benchmark_return_correlation": primary.benchmark_return_correlation,
+            "information_coefficient": dict(information_coefficient),
             "information_ratio": primary.information_ratio,
             "upside_capture": primary.upside_capture,
             "upside_participation": primary.upside_participation,
@@ -1625,7 +1635,7 @@ def run_soxl_promotion_research(
         _write_canonical(output_root / "promotion-research-result.v1.json", terminal_payload)
         raise SoxlPromotionContractError(f"promotion acceptance failed: {risk_status}")
     evidence: dict[str, Any] = {
-        "schema_version": "strategy_evidence_package.v2",
+        "schema_version": "strategy_evidence_package.v3",
         "evidence_package_id": f"soxl_p3_{primary_runner.candidate_identity.candidate_sha256[:12]}",
         "generated_at": generated,
         "requested_stage": "research_backtest_only",
@@ -1669,7 +1679,7 @@ def run_soxl_promotion_research(
             "annualized_volatility": primary.result.volatility,
             "calmar_ratio": primary.result.calmar_ratio,
             "information_ratio": primary.information_ratio,
-            "information_coefficient": primary.information_coefficient,
+            "information_coefficient": dict(information_coefficient),
             "var_95": primary.var_95,
             "cvar_95": primary.cvar_95,
             "turnover": primary.turnover,
@@ -1710,11 +1720,11 @@ def run_soxl_promotion_research(
         },
     }
     _refresh_evidence_digests(evidence)
-    if validate_evidence_package_v2(evidence, base_dir=output_root):
+    if validate_strategy_evidence_payload(evidence, base_dir=output_root):
         terminal_payload["status"] = "EVIDENCE_INVALID"
         _write_canonical(output_root / "promotion-research-result.v1.json", terminal_payload)
         raise SoxlPromotionContractError("evidence package validation failed")
-    evidence_path = output_root / "strategy-evidence-package.v2.json"
+    evidence_path = output_root / "strategy-evidence-package.v3.json"
     evidence_path.write_bytes(canonical_evidence_package_v2_bytes(evidence))
     terminal_record = _write_canonical(
         output_root / "promotion-research-result.v1.json", terminal_payload
