@@ -36,8 +36,8 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_pit_regime_component_producer i
 import us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner as runner_module
 
 
-QPK_REVISION = "730ad9f3983bd90cd75adecb67fcf483ffb96736"
-UES_REVISION = "15df2a42df5d230cfb03a7cb655fd4b226956681"
+QPK_REVISION = "5c916917626707c4ee798c6b45a5d43609019816"
+UES_REVISION = "33d8c09a9aa517cde94f36d2f67e526c340ea6e9"
 RUNNER_REVISION = "c" * 40
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 VARIANTS = ("explicit_qqq_fallback", "cash_origin")
@@ -1000,7 +1000,22 @@ def test_window_sortino_uses_full_sample_zero_target_rms_without_changing_sharpe
 def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from us_equity_snapshot_pipelines.lifecycle import soxl_acquisition_orchestration as orchestration
+    from test_soxl_acquisition_orchestration import _authority
+
     input_payload, config = _payloads()
+    # Dependency provenance is real; the market replay below remains synthetic.
+    generated_config = orchestration._config_without_authority(
+        source_contract_sha256=SOURCE_CONTRACT_SHA256,
+        runner_revision=RUNNER_REVISION,
+        authority=_authority(),
+    )
+    assert generated_config["qpk_revision"] == config["qpk_revision"] == (
+        orchestration._installed_vcs_revision("quant-platform-kit")
+    )
+    assert generated_config["strategy_revision"] == config["strategy_revision"] == (
+        orchestration._installed_vcs_revision("us-equity-strategies")
+    )
     replay = Mock()
 
     def replay_window(runner, start, end, cost):
@@ -1016,11 +1031,23 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
         generated_at="2026-08-05T12:00:00Z",
     )
 
-    evidence_path = tmp_path / "strategy-evidence-package.v2.json"
+    evidence_path = tmp_path / "strategy-evidence-package.v3.json"
     stress_25_path = tmp_path / "artifacts" / "cost-stress-25bp.json"
     assert evidence_path.is_file()
     assert stress_25_path.is_file()
     evidence = json.loads(evidence_path.read_text())
+    information = json.loads((tmp_path / "artifacts" / "information-coefficient.json").read_text())
+    declaration = evidence["metrics"]["information_coefficient"]
+    assert declaration["status"] == "not_applicable"
+    assert declaration["reason_code"] == "no_prediction_target"
+    assert declaration["reason"].strip()
+    assert "value" not in declaration
+    assert information["schema_version"] == "soxl_information_coefficient.v2"
+    assert information["information_coefficient"] == declaration
+    assert information["benchmark_return_correlation"] == pytest.approx(0.1)
+    assert all(item["information_coefficient"] == declaration
+               for item in information["variants"].values())
+    assert not (tmp_path / "strategy-evidence-package.v2.json").exists()
     stress_25 = json.loads(stress_25_path.read_text())
     config_artifact = json.loads((tmp_path / "artifacts" / "config.json").read_text())
     backtest_artifact = json.loads((tmp_path / "artifacts" / "backtest.json").read_text())
@@ -1033,7 +1060,7 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
     assert config_artifact["availability_contract"] == AVAILABILITY_CONTRACT
     assert config_artifact["ordered_variants"] == list(VARIANTS)
     assert config_artifact["initial_weights"] == {}
-    assert backtest_artifact["schema_version"] == "soxl_promotion_backtest.v2"
+    assert backtest_artifact["schema_version"] == "soxl_promotion_backtest.v3"
     availability_sha256 = hashlib.sha256(canonical_json_bytes(AVAILABILITY_CONTRACT)).hexdigest()
     assert backtest_artifact["availability_contract_sha256"] == availability_sha256
     assert backtest_artifact["availability_segments"]["pre_qqqi"]["observed_qqqi"] is False
@@ -1063,10 +1090,38 @@ def test_producer_uses_qpk_orchestrator_and_writes_truthful_25bp_artifact(
         "size_zero_required": True,
         "no_order": True,
     }
-    from quant_platform_kit.strategy_lifecycle import validate_evidence_package_v2
+    from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import validate_strategy_evidence_payload
 
-    assert validate_evidence_package_v2(evidence, base_dir=tmp_path) == ()
+    assert validate_strategy_evidence_payload(evidence, base_dir=tmp_path) == []
     assert replay.call_count == 32
+
+
+def test_tracking_benchmark_does_not_create_prediction_ic() -> None:
+    input_payload, config = _payloads()
+    runner = SoxlPromotionRunner(input_payload, config, variant_id=VARIANTS[0])
+    equities = [100.0, 102.0, 99.0, 103.0]
+    window = runner._window_metrics(
+        date(2025, 8, 4), date(2026, 8, 4), equities, equities,
+        [0.0] * 4, [0.0] * 4, [0] * 4, [0] * 4, runner._initial_state(),
+    )
+    assert window.benchmark_return_correlation == pytest.approx(1.0)
+    assert "information_coefficient" not in window.to_dict()
+
+
+@pytest.mark.parametrize("field,old_revision", [
+    ("qpk_revision", "730ad9f3983bd90cd75adecb67fcf483ffb96736"),
+    ("strategy_revision", "15df2a42df5d230cfb03a7cb655fd4b226956681"),
+])
+def test_new_producer_rejects_old_candidate_dependency_identity(field, old_revision) -> None:
+    input_payload, config = _payloads()
+    config[field] = old_revision
+    with pytest.raises(SoxlPromotionContractError, match="candidate revision or profile mismatch"):
+        SoxlPromotionRunner(input_payload, config, variant_id=VARIANTS[0])
+
+
+@pytest.mark.parametrize("left,right", [([], []), ([1.0], [1.0]), ([0.0, 0.0], [1.0, 2.0])])
+def test_undefined_benchmark_correlation_is_not_a_numeric_estimate(left, right) -> None:
+    assert runner_module._correlation(left, right) is None
 
 
 def test_producer_fails_proxy_sensitive_when_variant_direction_reverses(
@@ -1118,7 +1173,7 @@ def test_producer_does_not_persist_pass_when_evidence_validation_fails(
         lambda _runner, start, end, cost: _synthetic_window(start, end, cost),
     )
     monkeypatch.setattr(
-        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.validate_evidence_package_v2",
+        "us_equity_snapshot_pipelines.lifecycle.soxl_promotion_runner.validate_strategy_evidence_payload",
         lambda *_args, **_kwargs: ("invalid evidence",),
     )
 
@@ -1132,7 +1187,7 @@ def test_producer_does_not_persist_pass_when_evidence_validation_fails(
 
     terminal_artifact = json.loads((tmp_path / "promotion-research-result.v1.json").read_text())
     assert terminal_artifact["status"] == "EVIDENCE_INVALID"
-    assert not (tmp_path / "strategy-evidence-package.v2.json").exists()
+    assert not (tmp_path / "strategy-evidence-package.v3.json").exists()
 
 
 def _synthetic_window(
@@ -1189,7 +1244,7 @@ def _synthetic_window(
         var_95=-0.02,
         cvar_95=-0.03,
         information_ratio=0.8,
-        information_coefficient=0.1,
+        benchmark_return_correlation=0.1,
         costs_paid=100.0,
         assessment_count=10,
         state_digest_sha256="2" * 64,

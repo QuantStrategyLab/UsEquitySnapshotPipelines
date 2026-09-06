@@ -169,6 +169,7 @@ class _FakeRuntimeApp:
         )
 
 
+@pytest.mark.parametrize("evidence_version", ["V2", "V3"])
 @pytest.mark.parametrize(
     ("session_args", "expected_port", "expected_session_class"),
     [
@@ -183,6 +184,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
     session_args,
     expected_port,
     expected_session_class,
+    evidence_version,
 ) -> None:
     app = _FakeRuntimeApp()
     events = []
@@ -213,7 +215,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         assert kwargs["authority"].authority_receipt_sha256 == "1" * 64
         assert kwargs["session_class"] == expected_session_class
         return {
-            "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+            "status": f"VALIDATED_EVIDENCE_{evidence_version}_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
             "asset_count": 9,
             "snapshot_digest": "5" * 64,
             "evidence_digest": "6" * 64,
@@ -234,7 +236,7 @@ def test_cli_connects_once_and_passes_results_to_single_orchestration(
         "mandate_receipt_digest": "7" * 64,
         "rerun_count": 1,
         "snapshot_digest": "5" * 64,
-        "status": "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "status": f"VALIDATED_EVIDENCE_{evidence_version}_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
     }
     assert len(app.connect_calls) == 1
     assert app.connect_calls[0][0:2] == ("127.0.0.1", expected_port)

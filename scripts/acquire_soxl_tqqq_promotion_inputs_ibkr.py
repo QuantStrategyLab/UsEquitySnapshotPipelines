@@ -317,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(terminal, sort_keys=True, separators=(",", ":")))
     return 0 if status in {
         "VALIDATED_EVIDENCE_V2_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
+        "VALIDATED_EVIDENCE_V3_AWAITING_HUMAN_PROMOTION_ACCEPTANCE",
         "IMMUTABLE_NEGATIVE_STRATEGY_EVIDENCE",
     } else 1
 
