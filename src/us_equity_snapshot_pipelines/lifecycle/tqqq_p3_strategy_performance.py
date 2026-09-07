@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
-    validate_evidence_package_v2,
+    validate_strategy_evidence_payload,
 )
 
 from .tqqq_core_only_p1_binding import P2_V5_CONTRACT
@@ -86,7 +86,7 @@ def _validate_research_only_evidence(
     evidence: Mapping[str, Any], *, expected_evidence_sha256: str
 ) -> tuple[dict[str, float], dict[str, str], str, str]:
     try:
-        issues = validate_evidence_package_v2(evidence)
+        issues = validate_strategy_evidence_payload(evidence)
     except (TypeError, ValueError) as exc:
         raise TqqqP3StrategyPerformanceError("invalid P3 evidence package") from exc
     if issues:
