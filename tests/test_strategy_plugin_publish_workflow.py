@@ -1,11 +1,18 @@
+import json
 import re
+import sys
+from importlib.metadata import distribution
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-MARKET_REGIME_PLUGIN_REF = "a261447bad9bb13525692d41348c98df4f67766c"
+MARKET_REGIME_PLUGIN_REF = "8e6333f8c829748d7dfea4275dbd4cf963f7ffa0"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -192,3 +199,76 @@ def test_russell_live_ledger_workflow_upload_artifact_guard() -> None:
     assert "uses: actions/upload-artifact@v4" in workflow
     assert "if-no-files-found: error" in workflow
     assert "retention-days: 7" in workflow
+
+
+def test_installed_strategy_plugin_revision_matches_manifest() -> None:
+    source = json.loads(distribution("quant-strategy-plugins").read_text("direct_url.json"))
+    assert source["vcs_info"]["commit_id"] == MARKET_REGIME_PLUGIN_REF
+
+
+@pytest.mark.parametrize("plugin", ["crisis", "taco"])
+@pytest.mark.parametrize("status,confidence", [
+    ("ok", "nan"), ("ok", "inf"), ("ok", "-inf"), ("ok", None),
+    ("advisory", 0.8), ("ok", 0.8),
+])
+def test_installed_ai_audit_keeps_consumer_routing_and_feedback_boundaries(monkeypatch, plugin, status, confidence):
+    from quant_strategy_plugins import ai_audit
+    from us_equity_snapshot_pipelines.research.crisis_response_shadow_plugin import build_crisis_response_shadow_signal
+    from us_equity_snapshot_pipelines.research.taco_rebound_shadow_plugin import build_taco_rebound_shadow_signal
+
+    output = json.dumps({
+        "verdict": "review", "confidence": confidence, "summary": "synthetic opinion",
+        "mode": "live", "final_route_unchanged": False,
+        "execution_controls": {"broker_order_allowed": True},
+    })
+    calls = []
+
+    class Gateway:
+        def __init__(self, _config):
+            pass
+
+        def analyze(self, *_args, **_kwargs):
+            calls.append("analyze")
+            return SimpleNamespace(
+                success=status == "ok", provider="openai", model="synthetic-model",
+                output=output, note="advisory" if status == "advisory" else "", error="",
+                raw={"status": status, "policy_verdict": "advisory" if status == "advisory" else "eligible",
+                     "output": output},
+            )
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("research audit must not execute")
+
+    monkeypatch.setitem(sys.modules, "ai_gateway_client", SimpleNamespace(
+        AiGatewayClient=Gateway, GatewayConfig=SimpleNamespace(from_env=lambda: object()),
+    ))
+    monkeypatch.setenv("CODEX_AUDIT_SERVICE_URL", "https://gateway.invalid")
+    monkeypatch.setattr(ai_audit, "build_ai_audit_endpoints", lambda **_: (
+        ai_audit.AiAuditEndpoint("primary", "", model="synthetic-model"),
+    ))
+    feedback = []
+    monkeypatch.setattr(ai_audit, "_report_shadow_disagreement", lambda **fields: feedback.append(fields))
+    dates = pd.bdate_range("2025-01-02", periods=230)
+    prices = pd.DataFrame([
+        {"symbol": symbol, "as_of": date, "close": 100.0 + offset * 0.01, "volume": 1000}
+        for symbol in ("QQQ", "TQQQ", "SPY") for offset, date in enumerate(dates)
+    ])
+    build = build_crisis_response_shadow_signal if plugin == "crisis" else build_taco_rebound_shadow_signal
+    options = {"events": (), "as_of": str(dates[-1].date()), "start_date": "2025-01-02"}
+    original = build(prices, **options)
+    assert calls == []  # The existing default remains AI-disabled.
+    payload = build(prices, **options, ai_audit_enabled=True, ai_audit_codex_enabled=False)
+    audit = payload["ai_audit"]
+    assert audit["status"] == status
+    assert audit["confidence"] == (0.8 if confidence == 0.8 else None)
+    assert calls == ["analyze"]
+    assert len(feedback) == (1 if status == "ok" and confidence == 0.8 else 0)
+    assert audit["final_route_unchanged"] is True
+    assert audit["mode"] == "shadow_only"
+    for key in ("broker_order_allowed", "live_allocation_mutation_allowed", "allocation_recommendation_allowed"):
+        assert audit["execution_controls"][key] is False
+    for key in ("canonical_route", "suggested_action", "risk_multiplier_suggestion", "would_trade_if_enabled"):
+        assert payload.get(key) == original.get(key)
+    for key in ("broker_order_allowed", "live_allocation_mutation_allowed"):
+        assert payload["execution_controls"][key] is False
+    json.dumps(audit, allow_nan=False)
