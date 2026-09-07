@@ -421,3 +421,41 @@ def test_tqqq_evidence_producer_declares_prediction_ic_not_applicable() -> None:
     assert "EVIDENCE_V3_COMPLETE" in source
     assert "strategy-evidence-package.v2.json" not in source
     assert "tqqq_information_coefficient.v1" not in source
+
+
+def test_tqqq_v3_paths_use_evidence_dispatcher_not_legacy_v2_validator() -> None:
+    """v3 packages require the SOXL-style dispatcher; legacy v2 API hard-rejects them."""
+    from pathlib import Path
+
+    from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
+        validate_evidence_package_v2,
+        validate_strategy_evidence_payload,
+    )
+    from us_equity_snapshot_pipelines.lifecycle import (
+        tqqq_acquisition_orchestration as orchestration,
+        tqqq_p3_strategy_performance as performance,
+        tqqq_promotion_evidence as evidence,
+    )
+
+    legacy_issues = validate_evidence_package_v2(
+        {"schema_version": "strategy_evidence_package.v3"}
+    )
+    assert any(
+        issue == "schema_version must equal strategy_evidence_package.v2"
+        for issue in legacy_issues
+    )
+    dispatcher_issues = validate_strategy_evidence_payload(
+        {"schema_version": "strategy_evidence_package.v3"}
+    )
+    assert dispatcher_issues  # Routing v3 must not accept an incomplete package.
+    assert "schema_version must equal strategy_evidence_package.v2" not in dispatcher_issues
+    assert "schema_version is unsupported" not in dispatcher_issues
+
+    legacy_payload = {"schema_version": "strategy_evidence_package.v2"}
+    assert validate_strategy_evidence_payload(legacy_payload) == list(validate_evidence_package_v2(legacy_payload))
+
+    for module in (evidence, orchestration, performance):
+        assert getattr(module, "validate_strategy_evidence_payload", None) is validate_strategy_evidence_payload
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "validate_strategy_evidence_payload" in source
+        assert "validate_evidence_package_v2" not in source

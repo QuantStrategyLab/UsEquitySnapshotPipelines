@@ -25,7 +25,7 @@ from quant_platform_kit.common.strategy_contracts import PositionTarget, Strateg
 from quant_platform_kit.strategy_lifecycle.contracts import PurgedWalkForwardFold
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
     canonical_evidence_package_v2_bytes,
-    validate_evidence_package_v2,
+    validate_strategy_evidence_payload,
 )
 from quant_strategy_plugins.benchmark_drawdown_guard import (
     build_benchmark_drawdown_guard_signal,
@@ -1734,7 +1734,7 @@ def run_tqqq_promotion_evidence(
         },
     }
     _refresh_digests(evidence)
-    issues = validate_evidence_package_v2(evidence, base_dir=output_root)
+    issues = validate_strategy_evidence_payload(evidence, base_dir=output_root)
     if issues:
         raise TqqqPromotionEvidenceError("evidence package validation failed:" + ";".join(issues))
     evidence_bytes = canonical_evidence_package_v2_bytes(evidence)

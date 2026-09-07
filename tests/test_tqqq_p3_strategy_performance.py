@@ -52,7 +52,7 @@ def _expected_digest(value: dict[str, object]) -> str:
 def _build(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> dict[str, object]:
     evidence = _evidence()
     evidence.update(overrides)
-    monkeypatch.setattr(performance, "validate_evidence_package_v2", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(performance, "validate_strategy_evidence_payload", lambda *_args, **_kwargs: ())
     return performance.build_tqqq_p3_strategy_performance(
         evidence_package=evidence,
         expected_evidence_sha256=_expected_digest(evidence),
@@ -104,7 +104,7 @@ def test_builds_only_the_bounded_research_metrics_projection(
 
 def test_rejects_misbound_or_non_research_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     evidence = _evidence()
-    monkeypatch.setattr(performance, "validate_evidence_package_v2", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(performance, "validate_strategy_evidence_payload", lambda *_args, **_kwargs: ())
 
     with pytest.raises(performance.TqqqP3StrategyPerformanceError, match="P3 evidence digest mismatch"):
         performance.build_tqqq_p3_strategy_performance(
@@ -129,9 +129,26 @@ def test_rejects_non_numeric_watcher_metrics(monkeypatch: pytest.MonkeyPatch) ->
     metrics = dict(evidence["metrics"])
     metrics["sharpe_ratio"] = "not-a-number"
     evidence["metrics"] = metrics
-    monkeypatch.setattr(performance, "validate_evidence_package_v2", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(performance, "validate_strategy_evidence_payload", lambda *_args, **_kwargs: ())
 
     with pytest.raises(performance.TqqqP3StrategyPerformanceError, match="invalid sharpe"):
+        performance.build_tqqq_p3_strategy_performance(
+            evidence_package=evidence,
+            expected_evidence_sha256=_expected_digest(evidence),
+            producer_revision=PRODUCER_REVISION,
+            computed_at=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    ["strategy_evidence_package.v2", "strategy_evidence_package.v3", "strategy_evidence_package.v4"],
+)
+def test_real_validator_rejects_incomplete_or_unsupported_evidence(schema_version: str) -> None:
+    evidence = _evidence()
+    evidence["schema_version"] = schema_version
+
+    with pytest.raises(performance.TqqqP3StrategyPerformanceError, match="invalid P3 evidence package"):
         performance.build_tqqq_p3_strategy_performance(
             evidence_package=evidence,
             expected_evidence_sha256=_expected_digest(evidence),

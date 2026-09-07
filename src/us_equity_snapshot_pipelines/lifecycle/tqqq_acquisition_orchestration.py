@@ -28,7 +28,7 @@ from quant_platform_kit.data.research_mandate import ResearchMandateAuthorityGua
 from quant_platform_kit.ibkr import StrictAdjustedHistoryResult
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.strategy_lifecycle.evidence_package_v2 import (
-    validate_evidence_package_v2,
+    validate_strategy_evidence_payload,
 )
 
 from us_equity_snapshot_pipelines.tqqq_r1_snapshot import _publish_noreplace
@@ -1261,7 +1261,9 @@ def orchestrate_existing_tqqq_snapshot_promotion(
                 raise TypeError("invalid evidence readback")
             failure_stage = "promotion_evidence_referenced_artifact_validation"
             failure_class = "referenced_artifact_validation_failed"
-            if validate_evidence_package_v2(evidence_payload, base_dir=evidence_root):
+            if validate_strategy_evidence_payload(
+                evidence_payload, base_dir=evidence_root
+            ):
                 raise ValueError("invalid referenced evidence artifacts")
         except Exception as exc:
             _park_risk_consumption(
@@ -1503,7 +1505,7 @@ def orchestrate_tqqq_promotion(
                 raise ValueError("invalid evidence readback")
             failure_stage = "promotion_evidence_referenced_artifact_validation"
             failure_class = "referenced_artifact_validation_failed"
-            if validate_evidence_package_v2(
+            if validate_strategy_evidence_payload(
                 evidence_payload, base_dir=evidence_root
             ):
                 raise ValueError("invalid referenced evidence artifacts")
