@@ -22,10 +22,12 @@ def test_publish_snapshot_artifacts_requires_main_ci_before_publish() -> None:
     assert "inputs.execute_publish == true" in workflow
     assert '--price-start "2022-01-01"' in workflow
     assert "Upload lifecycle market history" in workflow
+    assert "SOXL,SOXX,BOXX" in workflow
     assert workflow.index("Validate lifecycle market history") < workflow.index("Upload generated artifacts")
     assert workflow.index("Validate lifecycle market history") < workflow.index("Publish or print GCS plan")
     assert "us-equity-market-history-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "downloaded_price_history.csv" in workflow
+    assert '--extra-history-symbols "QQQ,AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO,SOXL,SOXX,BOXX"' in workflow
 
 
 def test_publish_strategy_plugins_uses_shared_ci_gate_job() -> None:
