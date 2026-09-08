@@ -14,7 +14,7 @@ WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-MARKET_REGIME_PLUGIN_REF = "88a1a67d7454ac1f91a6017561e9a638aa43ca20"
+MARKET_REGIME_PLUGIN_REF = "6b76d512c8273deb804c0770a203558284778399"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -240,6 +240,10 @@ def test_installed_sdk_keeps_plugin_ai_optional_and_advisory(monkeypatch, plugin
             assert payload["mode"] == "review_only"
             assert payload["model"] == "gpt-6-astra"
             assert payload["source_repository"] == "QuantStrategyLab/UsEquitySnapshotPipelines"
+            user_input = json.loads(payload["prompt"].split("\n\nUSER:\n", 1)[1])
+            field = "would_trade_if_enabled" if plugin == "crisis" else "manual_review_required"
+            assert original[field] is False
+            assert user_input[field] == "False"
             response = {"job_id": "synthetic-job"}
         else:
             assert request.full_url == "https://gateway.invalid/v1/ai/execute/jobs/synthetic-job"
