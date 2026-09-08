@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install package
-        run: python -m pip install -e '.[test]' 'ruff==0.15.9'
+        run: python -m pip install -e '.[test,ai]' 'ruff==0.15.9'
       - name: Run Ruff
         run: python -m ruff check .
       - name: Verify isolated locked TQQQ runtime
@@ -53,10 +53,12 @@ jobs:
             uv sync --project "$GITHUB_WORKSPACE" --locked --python "$TARGET_PYTHON" \
               --no-editable --reinstall-package us-equity-snapshot-pipelines
           "$target/.venv/bin/python" -I -c '
+          import importlib.util
           from importlib.metadata import distribution
           from us_equity_snapshot_pipelines.lifecycle import tqqq_promotion_runner
 
           assert distribution("us-equity-snapshot-pipelines").version
+          assert importlib.util.find_spec("ai_gateway_client") is None
           assert tqqq_promotion_runner._PROFILE == "tqqq_core_only_p2_v1"
           assert tqqq_promotion_runner._COST_SCENARIOS_BPS == (5, 10, 25)
           assert (
