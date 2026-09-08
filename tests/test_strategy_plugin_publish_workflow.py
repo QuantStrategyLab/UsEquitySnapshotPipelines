@@ -1,6 +1,8 @@
 import json
+import io
 import re
 import sys
+import tomllib
 from importlib.metadata import distribution
 from types import SimpleNamespace
 
@@ -12,7 +14,7 @@ WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-MARKET_REGIME_PLUGIN_REF = "7c6618004a70e73a1b9243b9773fc725767c4592"
+MARKET_REGIME_PLUGIN_REF = "88a1a67d7454ac1f91a6017561e9a638aa43ca20"
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -204,6 +206,79 @@ def test_russell_live_ledger_workflow_upload_artifact_guard() -> None:
 def test_installed_strategy_plugin_revision_matches_manifest() -> None:
     source = json.loads(distribution("quant-strategy-plugins").read_text("direct_url.json"))
     assert source["vcs_info"]["commit_id"] == MARKET_REGIME_PLUGIN_REF
+
+
+@pytest.mark.parametrize("plugin", ["crisis", "taco"])
+def test_installed_sdk_keeps_plugin_ai_optional_and_advisory(monkeypatch, plugin):
+    from ai_gateway_client import gateway_client
+    from quant_strategy_plugins import ai_audit
+    from us_equity_snapshot_pipelines.research.crisis_response_shadow_plugin import build_crisis_response_shadow_signal
+    from us_equity_snapshot_pipelines.research.taco_rebound_shadow_plugin import build_taco_rebound_shadow_signal
+
+    sdk_source = json.loads(distribution("ai-gateway-client").read_text("direct_url.json"))
+    requirement = next(item for item in distribution("quant-strategy-plugins").requires if item.startswith("ai-gateway-client"))
+    sdk_url = requirement.split("@", 1)[1].split(";", 1)[0].strip()
+    project = tomllib.loads(PYPROJECT.read_text())["project"]
+    sdk_requirement = next(item for item in project["optional-dependencies"]["ai"] if item.startswith("ai-gateway-client"))
+    assert sdk_requirement.split("@", 1)[1].strip() == sdk_url
+    assert sdk_source["vcs_info"]["commit_id"] == sdk_url.rsplit("@", 1)[1]
+    assert not any(item.startswith("ai-gateway-client") or "[ai]" in item for item in project["dependencies"])
+    assert gateway_client.AiGatewayClient.__module__ == "ai_gateway_client.gateway_client"
+    monkeypatch.delenv("CODEX_AUDIT_SERVICE_URL", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_SOURCE_REPO", "QuantStrategyLab/UsEquitySnapshotPipelines")
+    monkeypatch.setattr(gateway_client, "_fetch_oidc_token", lambda _audience: "synthetic")
+    monkeypatch.setattr(gateway_client.time, "sleep", lambda _seconds: None)
+    calls = []
+    feedback = []
+    monkeypatch.setattr(ai_audit, "_report_shadow_disagreement", lambda **fields: feedback.append(fields))
+
+    def urlopen(request, **_kwargs):
+        calls.append((request.get_method(), request.full_url))
+        if request.get_method() == "POST":
+            assert request.full_url == "https://gateway.invalid/v1/ai/execute/jobs"
+            payload = json.loads(request.data)
+            assert payload["mode"] == "review_only"
+            assert payload["model"] == "gpt-6-astra"
+            assert payload["source_repository"] == "QuantStrategyLab/UsEquitySnapshotPipelines"
+            response = {"job_id": "synthetic-job"}
+        else:
+            assert request.full_url == "https://gateway.invalid/v1/ai/execute/jobs/synthetic-job"
+            response = {"status": "succeeded", "output": json.dumps({
+                "verdict": "review", "confidence": 0.8, "summary": "synthetic opinion",
+                "mode": "live", "execution_controls": {"broker_order_allowed": True},
+            })}
+        return io.BytesIO(json.dumps(response).encode())
+
+    monkeypatch.setattr(gateway_client.urllib.request, "urlopen", urlopen)
+    dates = pd.bdate_range("2025-01-02", periods=230)
+    prices = pd.DataFrame([
+        {"symbol": symbol, "as_of": date, "close": 100.0 + offset * 0.01, "volume": 1000}
+        for symbol in ("QQQ", "TQQQ", "SPY") for offset, date in enumerate(dates)
+    ])
+    build = build_crisis_response_shadow_signal if plugin == "crisis" else build_taco_rebound_shadow_signal
+    options = {"events": (), "as_of": str(dates[-1].date()), "start_date": "2025-01-02"}
+    original = build(prices, **options)
+    assert "ai_audit" not in original
+    ai_options = {"ai_audit_enabled": True, "ai_audit_codex_enabled": True, "ai_audit_codex_model": "gpt-6-astra"}
+    unavailable = build(prices, **options, **ai_options)["ai_audit"]
+    assert unavailable["status"] == "skipped"
+    assert unavailable["skip_reason"] == "gateway_unavailable"
+    assert calls == []
+
+    monkeypatch.setenv("CODEX_AUDIT_SERVICE_URL", "https://gateway.invalid")
+    payload = build(prices, **options, **ai_options)
+    audit = payload["ai_audit"]
+    assert audit["status"] == "advisory"
+    assert audit["summary"] == "synthetic opinion"
+    assert audit["mode"] == "shadow_only"
+    assert audit["final_route_unchanged"] is True
+    assert len(audit["attempts"]) == 1
+    assert [method for method, _url in calls] == ["POST", "GET"]
+    assert feedback == []
+    for key in ("broker_order_allowed", "live_allocation_mutation_allowed", "allocation_recommendation_allowed"):
+        assert audit["execution_controls"][key] is False
+    for key in ("canonical_route", "suggested_action", "risk_multiplier_suggestion", "would_trade_if_enabled"):
+        assert payload.get(key) == original.get(key)
 
 
 @pytest.mark.parametrize("plugin", ["crisis", "taco"])

@@ -14,6 +14,11 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "ai-gateway-client"
+version = "0.1.0"
+source = { git = "https://github.com/QuantStrategyLab/AIAuditBridge.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a#65c8bcf432f578f657c12d5dab0e16ebec0bef5a" }
+
+[[package]]
 name = "beautifulsoup4"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -783,10 +788,15 @@ source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=5
 [[package]]
 name = "quant-strategy-plugins"
 version = "0.1.7"
-source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=7c6618004a70e73a1b9243b9773fc725767c4592#7c6618004a70e73a1b9243b9773fc725767c4592" }
+source = { git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=88a1a67d7454ac1f91a6017561e9a638aa43ca20#88a1a67d7454ac1f91a6017561e9a638aa43ca20" }
 dependencies = [
     { name = "pandas" },
     { name = "yfinance" },
+]
+
+[package.optional-dependencies]
+ai = [
+    { name = "ai-gateway-client" },
 ]
 
 [[package]]
@@ -892,23 +902,29 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ai = [
+    { name = "ai-gateway-client" },
+    { name = "quant-strategy-plugins", extra = ["ai"] },
+]
 test = [
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "ai-gateway-client", marker = "extra == 'ai'", git = "https://github.com/QuantStrategyLab/AIAuditBridge.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a" },
     { name = "exchange-calendars", specifier = "==4.13.2" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=5c916917626707c4ee798c6b45a5d43609019816" },
-    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=7c6618004a70e73a1b9243b9773fc725767c4592" },
+    { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=88a1a67d7454ac1f91a6017561e9a638aa43ca20" },
+    { name = "quant-strategy-plugins", extras = ["ai"], marker = "extra == 'ai'" },
     { name = "requests", extras = ["socks"], specifier = ">=2.31" },
     { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=33d8c09a9aa517cde94f36d2f67e526c340ea6e9" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
-provides-extras = ["test"]
+provides-extras = ["ai", "test"]
 
 [[package]]
 name = "us-equity-strategies"

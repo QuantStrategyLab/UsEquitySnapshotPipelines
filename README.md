@@ -36,6 +36,20 @@ Direct runtime strategy code such as TQQQ/SOXL profiles and Smart DCA lives in U
 
 UsEquityStrategies and US execution platforms consume only promoted artifacts and runtime-enabled profiles.
 
+## Optional AI audit client
+
+`python -m pip install -e '.[ai]'` installs the existing gateway SDK through the pinned
+QuantStrategyPlugins AI extra. The default install does not include this SDK; use
+`python -m pip install -e '.[test,ai]'` for the full test suite, including its synthetic
+SDK integration checks.
+The AI extra also declares the same SDK Git URL directly for resolver compatibility
+with transitive URL dependencies; it does not introduce another SDK implementation.
+
+Installation does not enable crisis/TACO AI audits or change publishing workflows,
+permissions, service configuration, model settings, or execution authority. AI audits
+remain disabled by default; when explicitly enabled without a gateway URL, they are
+skipped. Codex output remains advisory and cannot modify routes or write shadow feedback.
+
 ## What the artifacts are for
 
 Snapshot artifacts are used to make strategy decisions reproducible: ranking inputs, feature snapshots, manifests, validation summaries, and promotion evidence. They are not marketing claims. Before a downstream repository promotes a profile, review the latest artifacts across short, medium, and long windows where applicable.
