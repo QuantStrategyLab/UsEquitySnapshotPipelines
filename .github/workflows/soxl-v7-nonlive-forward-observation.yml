@@ -10,6 +10,11 @@ on:
         description: Optional exact completed XNYS session for a non-live replay.
         required: false
         type: string
+      publish_only:
+        description: Publish an existing immutable record without observing again.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,6 +78,7 @@ jobs:
         id: prior
         env:
           DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
+          PUBLISH_ONLY: ${{ inputs.publish_only }}
         run: |
           set -euo pipefail
           prefix="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward"
@@ -80,12 +86,19 @@ jobs:
           state_dir="${RUNNER_TEMP}/soxl-v7-nonlive"
           listing="${state_dir}/prior-receipt-listing.txt"
           listing_error="${state_dir}/prior-receipt-listing.err"
+          record="${state_dir}/record.json"
           mkdir -p "$state_dir"
           if gcloud storage ls "$current" >/dev/null 2>&1; then
+            gcloud storage cp --quiet "$current" "$record"
             echo "already_recorded=true" >> "$GITHUB_OUTPUT"
             echo "history_available=true" >> "$GITHUB_OUTPUT"
             echo "SOXL_V7_NONLIVE_STATE=ALREADY_RECORDED" >> "$GITHUB_STEP_SUMMARY"
             exit 0
+          fi
+          if [ "${PUBLISH_ONLY:-false}" = "true" ]; then
+            echo "SOXL_V7_NONLIVE_STATE=PUBLISH_ONLY_RECORD_MISSING" >> "$GITHUB_STEP_SUMMARY"
+            echo "PUBLISH_ONLY_RECORD_MISSING" >&2
+            exit 2
           fi
           previous_record=""
           if ! gcloud storage ls "${prefix}/" > "$listing" 2> "$listing_error"; then
@@ -153,7 +166,7 @@ jobs:
             echo "SOXL_V7_NONLIVE_STATE=BACKFILL_MISSING_XNYS_SESSION" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Acquire assured V7 P1 root or park
-        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && inputs.publish_only != true
         id: p1
         env:
           DATE_CUTOFF: ${{ steps.prior.outputs.observation_date_cutoff }}
@@ -218,7 +231,7 @@ jobs:
           print(json.dumps(result, sort_keys=True, separators=(",", ":")))
           PY
       - name: Run exact V7 Shadow and simulated-Paper observation
-        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED' && inputs.publish_only != true
         env:
           PREVIOUS_RECORD: ${{ steps.prior.outputs.previous_record }}
         run: |
@@ -241,7 +254,7 @@ jobs:
           fi
           uv run --no-sync python -m scripts.run_soxl_v7_nonlive_forward_observation "${args[@]}"
       - name: Create-only publish non-live receipt
-        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED' && inputs.publish_only != true
         env:
           DATE_CUTOFF: ${{ steps.prior.outputs.observation_date_cutoff }}
         run: |
@@ -251,6 +264,67 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward/${DATE_CUTOFF}.json"
           gcloud storage cp --quiet --no-clobber "$record" "$destination"
           echo "SOXL_V7_NONLIVE_RECORD=CREATE_ONLY_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build V7 forward control-plane source
+        if: steps.prior.outputs.already_recorded == 'true' || (steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED')
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/soxl-v7-nonlive"
+          uv run --no-sync python scripts/build_soxl_v7_forward_control_plane_source.py \
+            --record "${root}/record.json" \
+            --output "${root}/control-plane-source.json" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: Publish V7 forward source to the read-only control plane
+        if: steps.prior.outputs.already_recorded == 'true' || (steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED')
+        env:
+          CONTROL_PLANE_SYNC_URL: ${{ vars.QSL_CONTROL_PLANE_SYNC_URL }}
+          CONTROL_PLANE_SYNC_TOKEN: ${{ secrets.CONTROL_PLANE_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONTROL_PLANE_SYNC_URL:-}" ] || [ -z "${CONTROL_PLANE_SYNC_TOKEN:-}" ]; then
+            echo 'QSL_CONTROL_PLANE_SYNC_URL and CONTROL_PLANE_SYNC_TOKEN are required.' >&2
+            exit 2
+          fi
+          SOURCE="${RUNNER_TEMP}/soxl-v7-nonlive/control-plane-source.json" \
+          RESPONSE="${RUNNER_TEMP}/soxl-v7-nonlive/control-plane-response.json" \
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE"]).read_bytes()
+          generated_at = json.loads(source)["generated_at"]
+          request = urllib.request.Request(
+              os.environ["CONTROL_PLANE_SYNC_URL"].rstrip("/")
+              + "/api/internal/sync-control-plane-source",
+              data=source,
+              headers={
+                  "Authorization": "Bearer " + os.environ["CONTROL_PLANE_SYNC_TOKEN"],
+                  "Content-Type": "application/json",
+                  "User-Agent": "QuantStrategyLab-UESP-SOXL-V7-Forward/1",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  payload = json.loads(response.read())
+          except Exception:
+              raise SystemExit("control-plane source sync failed") from None
+          expected = {
+              "ok": True,
+              "source_id": "uesp-soxl-v7-nonlive-forward",
+              "schema_version": "qsl_control_plane_source_snapshot.v1",
+              "candidate_count": 1,
+              "generated_at": generated_at,
+          }
+          if payload != expected or not isinstance(payload["generated_at"], str):
+              raise SystemExit("unexpected control-plane source response")
+          Path(os.environ["RESPONSE"]).write_text(
+              json.dumps(payload, sort_keys=True, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+          echo "SOXL_V7_CONTROL_PLANE_SOURCE=PUBLISHED" >> "$GITHUB_STEP_SUMMARY"
       - name: Record a safe parking state when P1 is unavailable
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status != 'ACCEPTED'
         env:
@@ -258,9 +332,11 @@ jobs:
           P1_RETRY_DISPOSITION: ${{ steps.p1.outputs.retry_disposition }}
         run: |
           set -euo pipefail
-          echo "SOXL_V7_NONLIVE_STATE=PARKED_P1_UNAVAILABLE" >> "$GITHUB_STEP_SUMMARY"
-          echo "SOXL_V7_P1_REASON_CODE=${P1_REASON_CODE:-FREE_SOURCE_ASSURANCE_NOT_VERIFIED}" >> "$GITHUB_STEP_SUMMARY"
-          echo "SOXL_V7_P1_RETRY_DISPOSITION=${P1_RETRY_DISPOSITION:-PARK_AND_DIAGNOSE}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "SOXL_V7_NONLIVE_STATE=PARKED_P1_UNAVAILABLE"
+            echo "SOXL_V7_P1_REASON_CODE=${P1_REASON_CODE:-FREE_SOURCE_ASSURANCE_NOT_VERIFIED}"
+            echo "SOXL_V7_P1_RETRY_DISPOSITION=${P1_RETRY_DISPOSITION:-PARK_AND_DIAGNOSE}"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Record a safe parking state when predecessor receipt is unavailable
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available != 'true'
         env:

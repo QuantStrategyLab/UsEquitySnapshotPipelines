@@ -39,6 +39,8 @@ from .soxl_core_only_p4_v7_forward_confirmation_contract import (
 
 
 NONLIVE_FORWARD_OBSERVATION_SCHEMA = "soxl_v7_nonlive_forward_observation.v2"
+SOXL_V7_CONTROL_PLANE_SOURCE_ID = "uesp-soxl-v7-nonlive-forward"
+CONTROL_PLANE_SOURCE_SCHEMA = "qsl_control_plane_source_snapshot.v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CALENDAR = xcals.get_calendar("XNYS")
 _PAPER_REPLAY_SCHEMA = "qsl.soxl-core-only-p3-stateful-replay-input.v1"
@@ -464,12 +466,228 @@ def build_soxl_v7_nonlive_forward_record(
     return record
 
 
+def build_soxl_v7_forward_control_plane_source(
+    record: Mapping[str, object],
+    *,
+    generated_at: str,
+) -> dict[str, object]:
+    """Project one validated immutable V7 record into the existing web source shape."""
+
+    value = _mapping(record)
+    expected_fields = {
+        "schema_version",
+        "candidate_id",
+        "candidate_config_sha256",
+        "p4_policy_sha256",
+        "observed_at",
+        "last_observed_session",
+        "p1_manifest_sha256",
+        "observation_sessions",
+        "shadow_observation_sha256",
+        "simulated_paper_observation_sha256",
+        "forward_observation_receipt",
+        "controller",
+        "clean_sessions_since_pause",
+        "no_order",
+        "broker_dependency",
+        "permission_effect",
+        "live_authority_granted",
+        "record_sha256",
+    }
+    if set(value) != expected_fields:
+        _fail()
+    claimed_record_sha256 = _digest(value.get("record_sha256"), "record digest")
+    if claimed_record_sha256 != _sha256(
+        {key: item for key, item in value.items() if key != "record_sha256"}
+    ):
+        _fail("invalid record digest")
+    if (
+        value.get("schema_version") != NONLIVE_FORWARD_OBSERVATION_SCHEMA
+        or value.get("candidate_id")
+        != P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.candidate_id
+        or value.get("candidate_config_sha256")
+        != P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256
+        or value.get("p4_policy_sha256")
+        != P4_V7_FORWARD_CONFIRMATION_CONTRACT.policy_config_sha256
+        or value.get("no_order") is not True
+        or value.get("broker_dependency") is not False
+        or value.get("permission_effect") != "none"
+        or value.get("live_authority_granted") is not False
+    ):
+        _fail()
+    observed_at = _timestamp(value.get("observed_at"))
+    projected_at = _timestamp(generated_at)
+    observed_time = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    projected_time = datetime.fromisoformat(projected_at.replace("Z", "+00:00"))
+    age_seconds = int((projected_time - observed_time).total_seconds())
+    if age_seconds < 0:
+        _fail("projection timestamp precedes observation")
+
+    sessions_value = value.get("observation_sessions")
+    if not isinstance(sessions_value, list) or not sessions_value:
+        _fail("invalid observation sessions")
+    sessions = tuple(_session_date(item) for item in sessions_value)
+    if (
+        sessions[0] != P4_V7_FORWARD_CONFIRMATION_CONTRACT.first_forward_xnys_session
+        or sessions != _expected_sessions(sessions[0], sessions[-1])
+        or len(sessions) > P4_V7_FORWARD_CONFIRMATION_CONTRACT.forward_session_count
+        or value.get("last_observed_session") != sessions[-1]
+    ):
+        _fail("invalid observation sessions")
+
+    policy = build_soxl_v7_nonlive_forward_policy()
+    try:
+        receipt = validate_forward_observation_receipt(
+            _mapping(value.get("forward_observation_receipt")),
+            policy=policy,
+        )
+    except InvalidForwardObservationReceipt as exc:
+        raise SoxlV7NonliveForwardObservationError(
+            "invalid SOXL V7 non-live forward observation"
+        ) from exc
+    p1_manifest = _digest(value.get("p1_manifest_sha256"), "P1 manifest")
+    expected_dependencies = {
+        "p1_manifest": p1_manifest,
+        "p2_config": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+        "p3_evidence": P4_V7_FORWARD_CONFIRMATION_CONTRACT.baseline_p3_evidence_summary_sha256,
+        "risk_policy": P4_V7_FORWARD_CONFIRMATION_CONTRACT.policy_config_sha256,
+        "strategy_release": _strategy_release_identity_sha256(),
+        "plugin_bundle": _sha256({"plugin_bundle": "none"}),
+    }
+    if (
+        receipt["dependency_digests"] != expected_dependencies
+        or receipt["observation_session"] != sessions[-1]
+        or receipt["observation_index"] != len(sessions)
+    ):
+        _fail("invalid observation receipt binding")
+
+    controller = _mapping(value.get("controller"))
+    controller_fields = {
+        "schema_version",
+        "candidate_id",
+        "strategy_profile",
+        "domain",
+        "benchmark_symbol",
+        "state",
+        "non_live_actions",
+        "notifications",
+        "reasons",
+        "observations_completed",
+        "required_trading_sessions",
+        "historical_evidence_ref",
+        "live_action",
+        "no_order",
+        "live_authority_granted",
+    }
+    states = {
+        "PARKED",
+        "FORWARD_ACTIVE",
+        "PAUSED",
+        "FORWARD_COMPLETE_HUMAN_REVIEW",
+        "MANUAL_HOLD",
+        "IDENTITY_MISMATCH",
+        "RISK_BLOCKED",
+        "REVOKED",
+        "SUPERSEDED",
+    }
+    if (
+        set(controller) != controller_fields
+        or controller.get("candidate_id") != policy.candidate_id
+        or controller.get("strategy_profile") != policy.strategy_profile
+        or controller.get("domain") != policy.domain
+        or controller.get("benchmark_symbol") != policy.benchmark_symbol
+        or controller.get("state") not in states
+        or type(controller.get("observations_completed")) is not int
+        or controller.get("observations_completed") != len(sessions)
+        or type(controller.get("required_trading_sessions")) is not int
+        or controller.get("required_trading_sessions") != policy.required_trading_sessions
+        or controller.get("historical_evidence_ref")
+        != "sha256:" + P4_V7_FORWARD_CONFIRMATION_CONTRACT.baseline_p3_evidence_summary_sha256
+        or controller.get("live_action") != "human_approval_required"
+        or controller.get("no_order") is not True
+        or controller.get("live_authority_granted") is not False
+    ):
+        _fail("invalid observation controller")
+    state = str(controller["state"])
+    if (
+        state == "FORWARD_COMPLETE_HUMAN_REVIEW"
+        and len(sessions) != policy.required_trading_sessions
+    ) or (
+        state == "FORWARD_ACTIVE"
+        and len(sessions) >= policy.required_trading_sessions
+    ):
+        _fail("observation state and count disagree")
+    shadow_digest = value.get("shadow_observation_sha256")
+    paper_digest = value.get("simulated_paper_observation_sha256")
+    if shadow_digest is not None:
+        _digest(shadow_digest, "Shadow observation digest")
+    if paper_digest is not None:
+        _digest(paper_digest, "simulated Paper observation digest")
+    if state in {"FORWARD_ACTIVE", "FORWARD_COMPLETE_HUMAN_REVIEW"} and (
+        shadow_digest is None or paper_digest is None
+    ):
+        _fail("active observation evidence is missing")
+    if state in {"FORWARD_ACTIVE"}:
+        lifecycle = {"stage": "P4", "status": "shadow"}
+        recommendation = {
+            "code": "auto_shadow_evaluation",
+            "reason": "V7 non-live forward observation remains active.",
+        }
+    elif state == "FORWARD_COMPLETE_HUMAN_REVIEW":
+        lifecycle = {"stage": "P4", "status": "evidence_pending"}
+        recommendation = {
+            "code": "keep_research",
+            "reason": "V7 fixed forward window completed; evidence remains research-only.",
+        }
+    else:
+        lifecycle = {"stage": "P4", "status": "parked"}
+        recommendation = {
+            "code": "park",
+            "reason": "V7 non-live forward observation is paused or blocked.",
+        }
+    candidate = {
+        "candidate_id": policy.candidate_id,
+        "candidate_kind": "individual",
+        "domain": policy.domain,
+        "lifecycle": lifecycle,
+        "evidence": {
+            "p1_input_digest": p1_manifest,
+            "p2_config_digest": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.config_sha256,
+            "p3_evidence_id": P4_V7_FORWARD_CONFIRMATION_CONTRACT.baseline_p3_evidence_summary_sha256,
+            "source_revision": P2_V7_LONGTERM_COMPOUNDING_CASH_RESERVE_CONTRACT.ues_revision,
+        },
+        "recommendation": recommendation,
+        "freshness": {"status": "fresh", "age_seconds": age_seconds},
+        "forward_observation": {
+            "state": state,
+            "observations_completed": len(sessions),
+            "required_trading_sessions": policy.required_trading_sessions,
+            "last_observed_session": sessions[-1],
+            "observed_at": observed_at,
+            "no_order": True,
+            "live_authority_granted": False,
+        },
+    }
+    return {
+        "schema_version": CONTROL_PLANE_SOURCE_SCHEMA,
+        "source_id": SOXL_V7_CONTROL_PLANE_SOURCE_ID,
+        "generated_at": projected_at,
+        "computed_at": observed_at,
+        "data_status": "ready",
+        "candidates": [candidate],
+        "errors": [],
+    }
+
+
 __all__ = [
+    "CONTROL_PLANE_SOURCE_SCHEMA",
     "NONLIVE_FORWARD_OBSERVATION_SCHEMA",
+    "SOXL_V7_CONTROL_PLANE_SOURCE_ID",
     "SoxlV7NonliveForwardInputs",
     "SoxlV7NonliveForwardObservationError",
     "build_soxl_v7_nonlive_forward_inputs",
     "build_soxl_v7_nonlive_forward_policy",
     "build_soxl_v7_nonlive_forward_record",
+    "build_soxl_v7_forward_control_plane_source",
     "next_soxl_v7_nonlive_observation_session",
 ]
