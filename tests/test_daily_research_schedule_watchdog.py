@@ -123,6 +123,64 @@ def test_summary_also_checks_forward_calibration_and_previous_watchdog_window() 
     ]
 
 
+def test_previous_failed_watchdog_is_an_observed_schedule_heartbeat() -> None:
+    failed_watchdog = _response(conclusion="failure")
+    failed_watchdog["workflow_runs"][0]["created_at"] = "2026-08-20T11:20:00Z"  # type: ignore[index]
+
+    summary = build_daily_research_schedule_watchdog_summary(
+        expected_utc_date=EXPECTED_DATE,
+        tqqq_workflow_runs_response=_response(),
+        soxl_workflow_runs_response=_response(),
+        additional_workflow_checks={
+            "soxl-v7-nonlive-forward-observation": (EXPECTED_DATE, _response()),
+            "tqqq-v9-free-ohlcv-assurance-calibration": (EXPECTED_DATE, _response()),
+            "daily-research-schedule-watchdog": ("2026-08-20", failed_watchdog),
+        },
+    )
+
+    assert summary["status"] == WATCHDOG_OBSERVED
+    assert summary["reason_codes"] == []
+    assert summary["workflows"][-1]["status"] == WATCHDOG_OBSERVED
+    assert summary["workflows"][-1]["reason_code"] == "SCHEDULED_RUN_COMPLETED_WITH_FAILURE"
+
+
+def test_cancelled_or_timed_out_watchdog_is_not_a_completed_heartbeat() -> None:
+    for conclusion in ("cancelled", "timed_out"):
+        previous_watchdog = _response(conclusion=conclusion)
+        previous_watchdog["workflow_runs"][0]["created_at"] = "2026-08-20T11:20:00Z"  # type: ignore[index]
+
+        summary = build_daily_research_schedule_watchdog_summary(
+            expected_utc_date=EXPECTED_DATE,
+            tqqq_workflow_runs_response=_response(),
+            soxl_workflow_runs_response=_response(),
+            additional_workflow_checks={
+                "daily-research-schedule-watchdog": ("2026-08-20", previous_watchdog),
+            },
+        )
+
+        assert summary["status"] == WATCHDOG_PARKED
+        assert summary["reason_codes"] == ["SCHEDULED_RUN_NOT_SUCCESSFUL"]
+        assert summary["workflows"][-1]["status"] == WATCHDOG_PARKED
+
+
+def test_research_failure_still_parks_when_previous_watchdog_failed() -> None:
+    failed_watchdog = _response(conclusion="failure")
+    failed_watchdog["workflow_runs"][0]["created_at"] = "2026-08-20T11:20:00Z"  # type: ignore[index]
+
+    summary = build_daily_research_schedule_watchdog_summary(
+        expected_utc_date=EXPECTED_DATE,
+        tqqq_workflow_runs_response=_response(),
+        soxl_workflow_runs_response=_response(conclusion="failure"),
+        additional_workflow_checks={
+            "daily-research-schedule-watchdog": ("2026-08-20", failed_watchdog),
+        },
+    )
+
+    assert summary["status"] == WATCHDOG_PARKED
+    assert summary["reason_codes"] == ["SCHEDULED_RUN_NOT_SUCCESSFUL"]
+    assert summary["workflows"][1]["status"] == WATCHDOG_PARKED
+
+
 def test_cli_accepts_all_scheduled_workflow_inputs(tmp_path) -> None:
     paths = {}
     for name in ("tqqq", "soxl", "soxl_v7", "tqqq_v9", "watchdog"):

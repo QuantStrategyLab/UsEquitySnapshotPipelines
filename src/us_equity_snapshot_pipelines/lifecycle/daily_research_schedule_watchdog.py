@@ -121,6 +121,40 @@ def assess_scheduled_research_workflow(
     }
 
 
+def _assess_scheduled_watchdog_heartbeat(
+    *,
+    workflow_runs_response: object,
+    expected_utc_date: str,
+) -> dict[str, object]:
+    """Check that the previous watchdog ran without inheriting its alert.
+
+    A completed ``failure`` proves that the scheduled watchdog started and
+    reached a terminal result; its failure remains explicit in this record.
+    Cancelled, timed-out, nonterminal, missing, and malformed runs keep the
+    ordinary fail-closed result because they do not establish a completed
+    watchdog heartbeat.
+    """
+
+    result = assess_scheduled_research_workflow(
+        workflow_id="daily-research-schedule-watchdog",
+        workflow_runs_response=workflow_runs_response,
+        expected_utc_date=expected_utc_date,
+    )
+    run = result.get("run")
+    if (
+        result.get("reason_code") == "SCHEDULED_RUN_NOT_SUCCESSFUL"
+        and isinstance(run, Mapping)
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "failure"
+    ):
+        return {
+            **result,
+            "status": WATCHDOG_OBSERVED,
+            "reason_code": "SCHEDULED_RUN_COMPLETED_WITH_FAILURE",
+        }
+    return result
+
+
 def build_daily_research_schedule_watchdog_summary(
     *,
     expected_utc_date: str,
@@ -156,13 +190,21 @@ def build_daily_research_schedule_watchdog_summary(
             if not isinstance(check, tuple) or len(check) != 2:
                 _fail("invalid_additional_workflow_check")
             additional_expected_date, workflow_runs_response = check
-            workflows.append(
-                assess_scheduled_research_workflow(
-                    workflow_id=workflow_id,
-                    workflow_runs_response=workflow_runs_response,
-                    expected_utc_date=additional_expected_date,
+            if workflow_id == "daily-research-schedule-watchdog":
+                workflows.append(
+                    _assess_scheduled_watchdog_heartbeat(
+                        workflow_runs_response=workflow_runs_response,
+                        expected_utc_date=additional_expected_date,
+                    )
                 )
-            )
+            else:
+                workflows.append(
+                    assess_scheduled_research_workflow(
+                        workflow_id=workflow_id,
+                        workflow_runs_response=workflow_runs_response,
+                        expected_utc_date=additional_expected_date,
+                    )
+                )
     reason_codes = sorted(
         {
             str(workflow["reason_code"])
