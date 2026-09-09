@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import us_equity_strategies.entrypoints as entrypoints
+
+from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_p3_evidence_summary as evidence_summary
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "run_soxl_core_only_p3_isolated.py"
 P2_CANDIDATE = Path(__file__).parents[1] / "config" / "soxl_soxx_core_only_p2_v3.json"
@@ -271,6 +274,75 @@ def test_stateful_replay_target_weights_preserve_an_explicit_cash_reserve() -> N
     assert cash_weight == pytest.approx(0.03)
     with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
         module._target_asset_weights({"SOXL": 60_000.0, "SOXX": 30_000.0, "BOXX": 20_000.0}, equity=100_000.0)
+
+
+@pytest.mark.parametrize("cost_bps", [5, 10, 15])
+@pytest.mark.parametrize(
+    "first,second,expected_turnovers",
+    [
+        ({"SOXL": 0.8}, {"SOXL": 0.6}, [0.8, 0.2]),
+        ({"SOXL": 0.6}, {"SOXL": 0.8}, [0.6, 0.2]),
+        ({"SOXL": 0.8}, {"SOXL": 0.8}, [0.8, 0.0]),
+        ({"SOXL": 1.0}, {"SOXX": 1.0}, [1.0, 1.0]),
+    ],
+)
+def test_replay_accounting_charges_cash_legs_and_conserves_equity(
+    monkeypatch, cost_bps, first, second, expected_turnovers
+):
+    module = _module()
+    targets = iter([first, second, {"SOXX": 1.0}])
+    portfolios = []
+
+    def build(context):
+        portfolios.append(context.portfolio)
+        weights = next(targets)
+        return SimpleNamespace(
+            positions=[
+                SimpleNamespace(symbol=symbol, target_value=weights.get(symbol, 0.0) * context.portfolio.total_equity)
+                for symbol in ("SOXL", "SOXX", "BOXX")
+            ],
+            diagnostics={
+                "blend_tier": "full", "base_blend_tier": "full", "active_risk_asset": "SOXL",
+                "blend_gate_volatility_delever_triggered": False,
+                "blend_gate_volatility_delever_redirect_symbol": "SOXX",
+                "market_regime_control_enabled": False, "market_regime_control_applied": False,
+            },
+        )
+
+    monkeypatch.setattr(entrypoints, "build_soxl_soxx_core_only_p2_v2_research_decision", build)
+    replay = _replay_input(module)
+    replay["cost_bps"] = cost_bps
+    replay["sessions"] = [
+        {"as_of": f"2026-08-{day}T12:00:00+00:00", "market_data": _context()["market_data"],
+         "prices": {"SOXL": 100.0, "SOXX": 100.0, "BOXX": 100.0}}
+        for day in (20, 21, 24)
+    ]
+    result = module._source_stateful_replay(replay, json.loads(P2_CANDIDATE.read_text(encoding="utf-8")))
+
+    assert [row["executed_one_way_turnover"] for row in result["decisions"]] == pytest.approx(
+        [0.0, *expected_turnovers]
+    )
+    expected_equity = 100_000.0
+    for turnover in expected_turnovers:
+        expected_equity *= 1.0 - turnover * cost_bps / 10_000.0
+    assert result["final_equity"] == pytest.approx(expected_equity)
+    assert result["final_equity"] + result["cost_total"] == pytest.approx(100_000.0)
+    assert result["executed_signal_count"] == 2
+    assert result["unexecuted_final_signal"] is True
+    for portfolio in portfolios:
+        assert portfolio.cash_balance + sum(p.market_value for p in portfolio.positions) == pytest.approx(
+            portfolio.total_equity
+        )
+    outer = {
+        "schema_version": module.ISOLATED_REPLAY_RESULT_SCHEMA,
+        "status": "SUCCESS", "execution_identity": {"revision": "d" * 40},
+        "p2_identity": {"candidate_id": module.P2_CANDIDATE_ID, "config_sha256": module.P2_CONFIG_SHA256},
+        "replay": result,
+    }
+    outer["result_sha256"] = evidence_summary._sha256(outer)
+    metrics, _ = evidence_summary._replay_summary(outer, cost_bps=cost_bps)
+    assert metrics["net_return"] == pytest.approx(expected_equity / 100_000.0 - 1.0)
+    assert metrics["cagr"] == pytest.approx((expected_equity / 100_000.0) ** 126 - 1.0)
 
 
 def test_outer_replay_runner_binds_verified_source_replay(monkeypatch, tmp_path) -> None:

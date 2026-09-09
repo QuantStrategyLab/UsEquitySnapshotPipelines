@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import pytest
 
@@ -30,6 +31,11 @@ def _materialized() -> dict[str, object]:
                 "market_data": {"derived_indicators": {}},
                 "prices": {"SOXL": 1.0, "SOXX": 1.0, "BOXX": 1.0},
             },
+            {
+                "as_of": "2026-08-05T00:00:00+00:00",
+                "market_data": {"derived_indicators": {}},
+                "prices": {"SOXL": 1.0, "SOXX": 1.0, "BOXX": 1.0},
+            },
         ],
     }
 
@@ -50,7 +56,7 @@ def _plan() -> dict[str, object]:
             {
                 "window_id": "fold",
                 "window_kind": "purged_sequential_evidence",
-                "session_dates": ["2026-08-03", "2026-08-04"],
+                "session_dates": ["2026-08-03", "2026-08-04", "2026-08-05"],
                 "cost_bps": 5,
             }
         ],
@@ -67,12 +73,12 @@ def _isolated_result(cost_bps: int) -> dict[str, object]:
         "final_equity": 101_000.0,
         "cost_total": 25.0,
         "one_way_turnover": 0.5,
-        "executed_signal_count": 1,
+        "executed_signal_count": 2,
         "unexecuted_final_signal": True,
         "decisions": [
             {"equity_before_signal": 100_000.0},
             {"equity_before_signal": 99_000.0},
-            {"equity_before_signal": 100_500.0},
+            {"equity_before_signal": 101_000.0},
         ],
     }
     replay["output_sha256"] = hashlib.sha256(_canonical(replay)).hexdigest()
@@ -88,6 +94,47 @@ def _isolated_result(cost_bps: int) -> dict[str, object]:
     }
     result["result_sha256"] = hashlib.sha256(_canonical(result)).hexdigest()
     return result
+
+
+@pytest.mark.parametrize(
+    "curve", [[100.0, 101.0, 103.02], [100.0, 90.0, 90.0], [100.0, 100.0, 100.0], [100.0, 101.0, 101.0]]
+)
+def test_replay_accounting_summary_counts_only_real_holding_intervals(curve):
+    payload = _isolated_result(5)
+    replay = payload["replay"]
+    replay.update(
+        initial_equity=curve[0], final_equity=curve[-1], executed_signal_count=len(curve) - 1,
+        decisions=[{"equity_before_signal": equity} for equity in curve],
+    )
+    replay.pop("output_sha256")
+    replay["output_sha256"] = hashlib.sha256(_canonical(replay)).hexdigest()
+    payload.pop("result_sha256")
+    payload["result_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+    result, _ = summary._replay_summary(payload, cost_bps=5)
+
+    returns = [curve[1] / curve[0] - 1.0, curve[2] / curve[1] - 1.0]
+    mean = sum(returns) / 2
+    deviation = math.sqrt(sum((value - mean) ** 2 for value in returns))
+    expected_sharpe = math.sqrt(252) * mean / deviation if deviation else 0.0
+    assert result["win_rate"] == pytest.approx(sum(value > 0 for value in returns) / 2)
+    assert result["cagr"] == pytest.approx((curve[-1] / curve[0]) ** 126 - 1.0)
+    assert result["sharpe"] == pytest.approx(expected_sharpe)
+    assert result["net_return"] == pytest.approx(curve[-1] / curve[0] - 1.0)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("initial_equity", 99_999.0), ("final_equity", 101_001.0), ("executed_signal_count", 1)]
+)
+def test_replay_accounting_summary_rejects_inconsistent_nav_or_interval_count(field, value):
+    payload = _isolated_result(5)
+    replay = payload["replay"]
+    replay[field] = value
+    replay.pop("output_sha256")
+    replay["output_sha256"] = hashlib.sha256(_canonical(replay)).hexdigest()
+    payload.pop("result_sha256")
+    payload["result_sha256"] = hashlib.sha256(_canonical(payload)).hexdigest()
+    with pytest.raises(summary.SoxlCoreOnlyP3EvidenceSummaryError):
+        summary._replay_summary(payload, cost_bps=5)
 
 
 def test_summary_executes_only_the_fixed_plan_and_keeps_metrics_only(monkeypatch) -> None:
@@ -111,7 +158,7 @@ def test_summary_executes_only_the_fixed_plan_and_keeps_metrics_only(monkeypatch
     assert result["status"] == "SUCCESS"
     assert result["runs"][0]["metrics"]["net_return"] == pytest.approx(0.01)
     assert result["runs"][0]["metrics"]["max_drawdown"] == pytest.approx(0.01)
-    assert result["runs"][0]["metrics"]["win_rate"] == pytest.approx(2 / 3)
+    assert result["runs"][0]["metrics"]["win_rate"] == pytest.approx(1 / 2)
     assert result["runs"][0]["metrics"]["calmar"] > 0.0
     assert "sessions" not in result["runs"][0]
     assert "market_data" not in json.dumps(result)

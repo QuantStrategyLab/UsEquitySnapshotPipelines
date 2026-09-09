@@ -446,8 +446,10 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
             if pending_cash_weight is None:
                 _fail()
             current_weights = {symbol: market_values[symbol] / equity_before_trade for symbol in _SYMBOLS}
-            executed_turnover = 0.5 * sum(
-                abs(pending_weights[symbol] - current_weights[symbol]) for symbol in _SYMBOLS
+            # BOXX is an asset; the retained USD cash is a separate turnover leg.
+            executed_turnover = 0.5 * (
+                sum(abs(pending_weights[symbol] - current_weights[symbol]) for symbol in _SYMBOLS)
+                + abs(pending_cash_weight - cash / equity_before_trade)
             )
             executed_cost = equity_before_trade * executed_turnover * float(replay["cost_bps"]) / 10_000.0
             equity_after_trade = equity_before_trade - executed_cost
