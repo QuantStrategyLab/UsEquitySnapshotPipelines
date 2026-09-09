@@ -119,7 +119,12 @@ def _replay_summary(value: Mapping[str, object], *, cost_bps: int) -> tuple[dict
     for raw_decision in decisions:
         decision = _mapping(raw_decision)
         equity_curve.append(_finite(decision.get("equity_before_signal"), positive=True))
-    equity_curve.append(final_equity)
+    # The last signal is unexecuted: its marked equity is already the terminal NAV.
+    # Do not fabricate a further zero-return interval by appending it again.
+    if not math.isclose(equity_curve[0], initial_equity, rel_tol=1e-12) or not math.isclose(
+        equity_curve[-1], final_equity, rel_tol=1e-12
+    ):
+        _fail()
     peak = equity_curve[0]
     max_drawdown = 0.0
     for equity in equity_curve:
@@ -155,7 +160,7 @@ def _replay_summary(value: Mapping[str, object], *, cost_bps: int) -> tuple[dict
         "calmar": calmar,
         "win_rate": win_rate,
     }
-    if not isinstance(summary["executed_signal_count"], int) or summary["executed_signal_count"] < 1:
+    if type(summary["executed_signal_count"]) is not int or summary["executed_signal_count"] != len(returns):
         _fail()
     if summary["unexecuted_final_signal"] is not True:
         _fail()
