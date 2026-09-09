@@ -24,6 +24,15 @@ BASELINE_MID_SOXL_WEIGHT = 0.65
 P2_UES_UV_LOCK_SHA256 = "6c12df9b3412681829295f15de7e2ce7fc5b708d1de815f72d654fc16b7848e6"
 COST_BPS = (5.0, 10.0, 15.0)
 MAX_TRIALS = 3
+VALIDATION_CANDIDATE_MID_SOXL_WEIGHT = 0.55
+DEVELOPMENT_SUMMARY_SHA256 = "89418d4e13efa9379f91c522ccbe084e2cbf180ba343103d5b73fb7cdbb955a8"
+VALIDATION_OOS_START = date(2025, 8, 4)
+VALIDATION_OOS_END = date(2026, 8, 4)
+VALIDATION_FOLDS = (
+    (date(2022, 12, 28), date(2023, 6, 30), date(2023, 7, 3), date(2023, 12, 29)),
+    (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
+    (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
+)
 
 
 class SoxlThreeAssetLearningError(ValueError):
@@ -274,6 +283,180 @@ def run_learning(
     return result
 
 
+def _validation_proposal(
+    development_summary: Mapping[str, object], *, input_manifest_sha256: str,
+):
+    from quant_platform_kit.strategy_lifecycle.contracts import OptimizationProposal
+
+    summary = _mapping(development_summary)
+    summary_sha256 = _sha256(summary)
+    if summary_sha256 != DEVELOPMENT_SUMMARY_SHA256:
+        raise SoxlThreeAssetLearningError("invalid validation proposal")
+    input_identity = _mapping(summary.get("input_identity"))
+    if input_identity != {"manifest_sha256": input_manifest_sha256, "member_count": 4}:
+        raise SoxlThreeAssetLearningError("invalid validation proposal")
+    return OptimizationProposal(
+        strategy_profile=LEARNING_PROFILE,
+        domain="us_equity",
+        current_params={"blend_gate_mid_soxl_weight": BASELINE_MID_SOXL_WEIGHT},
+        proposed_params={"blend_gate_mid_soxl_weight": VALIDATION_CANDIDATE_MID_SOXL_WEIGHT},
+        improvement_score=0.0,
+        confidence=0.0,
+        winning_dimensions=("max_drawdown",),
+        regressing_dimensions=("cagr", "sharpe_ratio"),
+        recommendation="research_candidate",
+        walk_forward_passed=False,
+        optimization_method=f"bounded_development_tradeoff:sha256:{summary_sha256}",
+        search_iterations=3,
+    )
+
+
+class _NoWritePromotionStore:
+    def save_backtest_result(self, result: object) -> None:
+        del result
+
+
+class _ThreeAssetPromotionRunner:
+    runner_kind = "real"
+
+    def __init__(self, materialized: Mapping[str, object], execute: Callable[[Mapping[str, object]], Mapping[str, object]]):
+        self._sessions = tuple(_mapping(item) for item in materialized["sessions"])  # type: ignore[index]
+        self._execute = execute
+
+    def _run(self, params: Mapping[str, object], *, start: date, end: date, cost_model: object):
+        from quant_platform_kit.strategy_lifecycle.contracts import BacktestResult
+
+        if params != {"blend_gate_mid_soxl_weight": params.get("blend_gate_mid_soxl_weight")}:
+            raise SoxlThreeAssetLearningError("invalid validation parameters")
+        weight = _weights((params["blend_gate_mid_soxl_weight"],), require_baseline=False)[0]
+        if weight not in (BASELINE_MID_SOXL_WEIGHT, VALIDATION_CANDIDATE_MID_SOXL_WEIGHT):
+            raise SoxlThreeAssetLearningError("invalid validation parameters")
+        cost = sum(float(getattr(cost_model, field)) for field in ("commission_bps", "slippage_bps", "market_impact_bps"))
+        if cost not in COST_BPS:
+            raise SoxlThreeAssetLearningError("invalid validation cost")
+        sessions = [item for item in self._sessions if start.isoformat() <= str(item.get("as_of"))[:10] <= end.isoformat()]
+        if len(sessions) < 3 or str(sessions[0].get("as_of"))[:10] != start.isoformat() or str(sessions[-1].get("as_of"))[:10] != end.isoformat():
+            raise SoxlThreeAssetLearningError("validation window unavailable")
+        request = {
+            "schema_version": LEARNING_REPLAY_SCHEMA,
+            "initial_equity": 100_000.0,
+            "cost_bps": cost,
+            "sessions": sessions,
+            "parameter_override": {"blend_gate_mid_soxl_weight": weight},
+        }
+        result = _mapping(self._execute(request))
+        claimed = result.pop("output_sha256", None)
+        if (
+            result.get("schema_version") != LEARNING_REPLAY_RESULT_SCHEMA
+            or result.get("status") != "SUCCESS"
+            or result.get("parameter_override") != request["parameter_override"]
+            or result.get("cost_bps") != cost
+            or not isinstance(claimed, str)
+            or claimed != _sha256(result)
+        ):
+            raise SoxlThreeAssetLearningError("validation result unavailable")
+        raw = _mapping(result.get("backtest_result"))
+        if raw.get("params") != request["parameter_override"]:
+            raise SoxlThreeAssetLearningError("validation result unavailable")
+        try:
+            return BacktestResult(
+                strategy_profile=str(raw["strategy_profile"]), domain=str(raw["domain"]),
+                param_set_id=str(raw.get("param_set_id") or ""), params=_mapping(raw["params"]),
+                sharpe_ratio=float(raw["sharpe_ratio"]), max_drawdown=float(raw["max_drawdown"]),
+                cagr=float(raw["cagr"]), volatility=float(raw["volatility"]),
+                total_return=float(raw["total_return"]), start_date=date.fromisoformat(str(raw["start_date"])),
+                end_date=date.fromisoformat(str(raw["end_date"])), observation_count=int(raw["observation_count"]),
+                source_script=str(raw.get("source_script") or ""), source_revision=str(raw.get("source_revision") or ""),
+                cost_model=str(raw.get("cost_model") or ""), cost_inputs=_mapping(raw.get("cost_inputs")),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SoxlThreeAssetLearningError("validation result unavailable") from exc
+
+    def run_purged_fold(self, strategy_profile: str, params: Mapping[str, object], *, fold: object, purge_days: int, embargo_days: int, cost_model: object):
+        if strategy_profile != LEARNING_PROFILE or purge_days != 1 or embargo_days != 1:
+            raise SoxlThreeAssetLearningError("invalid validation plan")
+        return self._run(params, start=fold.test_start, end=fold.test_end, cost_model=cost_model)
+
+    def run_locked_oos(self, strategy_profile: str, params: Mapping[str, object], *, start_date: date, end_date: date, cost_model: object):
+        if strategy_profile != LEARNING_PROFILE:
+            raise SoxlThreeAssetLearningError("invalid validation plan")
+        return self._run(params, start=start_date, end=end_date, cost_model=cost_model)
+
+
+def run_fixed_validation(
+    *, materialized: Mapping[str, object], development_summary: Mapping[str, object],
+    execute: Callable[[Mapping[str, object]], Mapping[str, object]],
+):
+    """Run the one preselected 0.65/0.55 comparison through QPK promotion backtests."""
+    from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestOrchestrator
+    from quant_platform_kit.strategy_lifecycle.contracts import PromotionCostModel, PurgedWalkForwardFold
+
+    build_learning_requests(materialized, mid_soxl_weights=(0.65, 0.55))
+    source = _mapping(materialized)
+    p1 = _mapping(source.get("p1_identity"))
+    proposal = _validation_proposal(development_summary, input_manifest_sha256=str(p1.get("input_manifest_sha256")))
+    folds = tuple(PurgedWalkForwardFold(*boundaries) for boundaries in VALIDATION_FOLDS)
+    orchestrator = BacktestOrchestrator(store=_NoWritePromotionStore())
+    orchestrator.register_runner("us_equity", _ThreeAssetPromotionRunner(source, execute))
+    summary_digest = proposal.optimization_method.rsplit(":", 1)[-1]
+
+    def runs_for(weight: float, role: str):
+        return tuple(
+            orchestrator.run_promotion(
+                LEARNING_PROFILE, domain="us_equity",
+                params={"blend_gate_mid_soxl_weight": weight}, folds=folds,
+                locked_oos_start=VALIDATION_OOS_START, locked_oos_end=VALIDATION_OOS_END,
+                purge_days=1, embargo_days=1,
+                source_revision="7756fe32585e85cf1d09a163203a02e3eee39fe1",
+                cost_model=PromotionCostModel(
+                    model_id=f"all_in_per_side_{cost:g}bps", commission_bps=0.0,
+                    slippage_bps=cost, market_impact_bps=0.0,
+                ),
+                param_set_id=f"soxl-three-asset-{summary_digest}-{role}-cost-{cost:g}",
+            )
+            for cost in COST_BPS
+        )
+
+    baseline = runs_for(BASELINE_MID_SOXL_WEIGHT, "baseline")
+    candidate = runs_for(VALIDATION_CANDIDATE_MID_SOXL_WEIGHT, "candidate")
+    return proposal, baseline, candidate
+
+
+def run_fixed_validation_from_verified_p1(
+    *, binding: Mapping[str, object], manifest: Mapping[str, object], member_bytes: bytes,
+    development_summary: Mapping[str, object], ues_project: Path, p2_candidate_path: Path,
+):
+    from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
+        materialize_soxl_core_only_p3_input,
+    )
+
+    materialized = materialize_soxl_core_only_p3_input(
+        binding=binding, manifest=manifest, member_bytes=member_bytes,
+    )
+    return run_fixed_validation(
+        materialized=materialized,
+        development_summary=development_summary,
+        execute=lambda request: run_isolated_learning_request(
+            request, ues_project=ues_project, p2_candidate_path=p2_candidate_path,
+        ),
+    )
+
+
+def _validation_output(proposal: object, baseline: Sequence[object], candidate: Sequence[object]) -> dict[str, object]:
+    return {
+        "status": "PROMOTION_BACKTEST_RUNS_BUILT",
+        "stage": "promotion_validation",
+        "learning_only": True,
+        "size_zero_required": True,
+        "promotion_eligible": False,
+        "proposal": proposal.to_dict(),
+        "baseline_promotion_runs": [run.to_dict() for run in baseline],
+        "candidate_promotion_runs": [run.to_dict() for run in candidate],
+        "no_order": True,
+        "live_authority_granted": False,
+    }
+
+
 def run_isolated_learning_request(
     request: Mapping[str, object], *, ues_project: Path, p2_candidate_path: Path,
 ) -> dict[str, object]:
@@ -335,6 +518,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bars-member", type=Path)
     parser.add_argument("--ues-project", type=Path)
     parser.add_argument("--blend-gate-mid-soxl-weight", action="append", type=float)
+    parser.add_argument("--promotion-validation-development-summary", type=Path)
     parser.add_argument("--p2-candidate", required=True, type=Path)
     args = parser.parse_args(argv)
     failed = False
@@ -344,6 +528,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.loads(Path(args.source_learning_replay).read_text()),
                 json.loads(args.p2_candidate.read_text()),
             )
+        elif args.promotion_validation_development_summary:
+            if not all((args.p1_binding, args.input_manifest, args.bars_member, args.ues_project)) or args.blend_gate_mid_soxl_weight:
+                raise SoxlThreeAssetLearningError("invalid validation arguments")
+            proposal, baseline, candidate = run_fixed_validation_from_verified_p1(
+                binding=json.loads(args.p1_binding.read_text()),
+                manifest=json.loads(args.input_manifest.read_text()),
+                member_bytes=args.bars_member.read_bytes(),
+                development_summary=json.loads(args.promotion_validation_development_summary.read_text()),
+                ues_project=args.ues_project,
+                p2_candidate_path=args.p2_candidate,
+            )
+            result = _validation_output(proposal, baseline, candidate)
         else:
             if not all((args.input_manifest, args.bars_member, args.ues_project, args.blend_gate_mid_soxl_weight)):
                 raise SoxlThreeAssetLearningError("invalid learning arguments")
@@ -357,7 +553,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except Exception:
         failed = True
-        result = {"schema_version": LEARNING_SCHEMA, "status": "PARKED", "failure_class": "learning_input_or_runtime_unavailable"}
+        if args.promotion_validation_development_summary:
+            result = {
+                "status": "PARKED",
+                "stage": "promotion_validation",
+                "failure_class": "validation_input_or_runtime_unavailable",
+                "learning_only": True,
+                "no_order": True,
+                "size_zero_required": True,
+                "promotion_eligible": False,
+                "live_authority_granted": False,
+            }
+        else:
+            result = {"schema_version": LEARNING_SCHEMA, "status": "PARKED", "failure_class": "learning_input_or_runtime_unavailable"}
     print(json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False))
     return 2 if failed else 0
 
