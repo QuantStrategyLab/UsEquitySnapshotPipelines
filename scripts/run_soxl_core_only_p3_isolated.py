@@ -18,7 +18,7 @@ import json
 import math
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -410,16 +410,17 @@ def _target_asset_weights(
     return weights, cash_weight
 
 
-def _source_stateful_replay(value: object, candidate: object) -> dict[str, object]:
-    """Replay next-session target changes once inside the pinned UES process."""
+def _stateful_replay_with_decision_builder(
+    value: object,
+    *,
+    decision_builder: Callable[[object], Mapping[str, object]],
+    entrypoint: str = ENTRYPOINT,
+    result_schema: str = STATEFUL_REPLAY_RESULT_SCHEMA,
+) -> dict[str, object]:
+    """Apply the shared next-session ledger to one source decision function."""
     replay = _validate_replay_input(value)
-    p2 = validate_p2_candidate(candidate)
     try:
         from quant_platform_kit.common.models import PortfolioSnapshot, Position
-        from quant_platform_kit.common.strategy_contracts import StrategyContext
-        from us_equity_strategies.entrypoints import (
-            build_soxl_soxx_core_only_p2_v2_research_decision,
-        )
     except ImportError as exc:  # pragma: no cover - protected by outer identity gate
         raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable") from exc
 
@@ -479,15 +480,13 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
             ),
             metadata={"observed_effective_exposure": 0.0},
         )
-        decision = build_soxl_soxx_core_only_p2_v2_research_decision(
-            StrategyContext(
-                as_of=as_of,
-                portfolio=portfolio,
-                market_data=_mapping(session["market_data"]),
-                runtime_config=_mapping(p2["runtime_config"]),
-            )
-        )
-        summary = _summarize_source_decision(decision, as_of=as_of)
+        summary = _mapping(decision_builder({
+            "as_of": as_of,
+            "portfolio": portfolio,
+            "market_data": _mapping(session["market_data"]),
+        }))
+        if summary.get("as_of") != as_of.isoformat():
+            _fail()
         target_values = _mapping(summary["target_values"])
         pending_weights, pending_cash_weight = _target_asset_weights(target_values, equity=equity)
         decisions.append(
@@ -507,8 +506,8 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
             }
         )
     result: dict[str, object] = {
-        "schema_version": STATEFUL_REPLAY_RESULT_SCHEMA,
-        "entrypoint": ENTRYPOINT,
+        "schema_version": result_schema,
+        "entrypoint": entrypoint,
         "execution_timing": "next_complete_trading_session_after_signal_effective_date",
         "cost_bps": replay["cost_bps"],
         "initial_equity": replay["initial_equity"],
@@ -521,6 +520,32 @@ def _source_stateful_replay(value: object, candidate: object) -> dict[str, objec
     }
     result["output_sha256"] = _sha256(result)
     return result
+
+
+def _source_stateful_replay(value: object, candidate: object) -> dict[str, object]:
+    """Replay the frozen P2 decision without permitting a configuration override."""
+    p2 = validate_p2_candidate(candidate)
+    try:
+        from quant_platform_kit.common.strategy_contracts import StrategyContext
+        from us_equity_strategies.entrypoints import (
+            build_soxl_soxx_core_only_p2_v2_research_decision,
+        )
+    except ImportError as exc:  # pragma: no cover - protected by outer identity gate
+        raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL runtime unavailable") from exc
+
+    def decide(state: object) -> Mapping[str, object]:
+        item = _mapping(state)
+        decision = build_soxl_soxx_core_only_p2_v2_research_decision(
+            StrategyContext(
+                as_of=item["as_of"],
+                portfolio=item["portfolio"],
+                market_data=_mapping(item["market_data"]),
+                runtime_config=_mapping(p2["runtime_config"]),
+            )
+        )
+        return _summarize_source_decision(decision, as_of=item["as_of"])
+
+    return _stateful_replay_with_decision_builder(value, decision_builder=decide)
 
 
 def _file_sha256(path: Path) -> str:
