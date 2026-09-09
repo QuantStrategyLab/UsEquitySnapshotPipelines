@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,7 +16,9 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p4_v7_forward_confirm
     P4_V7_FORWARD_CONFIRMATION_CONTRACT,
 )
 from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation import (
+    SOXL_V7_CONTROL_PLANE_SOURCE_ID,
     SoxlV7NonliveForwardObservationError,
+    build_soxl_v7_forward_control_plane_source,
     build_soxl_v7_nonlive_forward_inputs,
     build_soxl_v7_nonlive_forward_policy,
     build_soxl_v7_nonlive_forward_record,
@@ -25,6 +28,19 @@ from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation 
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _resign(record: dict[str, object]) -> None:
+    core = {key: value for key, value in record.items() if key != "record_sha256"}
+    record["record_sha256"] = hashlib.sha256(
+        json.dumps(
+            core,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
 
 
 def _forward_dates(count: int) -> list[str]:
@@ -238,6 +254,96 @@ def test_full_v7_window_requires_human_live_review() -> None:
     assert controller["live_authority_granted"] is False
 
 
+@pytest.mark.parametrize(
+    ("record", "lifecycle", "recommendation"),
+    [
+        (_record(), {"stage": "P4", "status": "shadow"}, "auto_shadow_evaluation"),
+        (
+            _record(
+                data_status="stale",
+                shadow_status="unavailable",
+                paper_status="unavailable",
+                shadow_observation_sha256=None,
+                simulated_paper_observation_sha256=None,
+            ),
+            {"stage": "P4", "status": "parked"},
+            "park",
+        ),
+        (
+            _record(count=252),
+            {"stage": "P4", "status": "evidence_pending"},
+            "keep_research",
+        ),
+    ],
+)
+def test_v7_record_projects_existing_forward_state_without_refreshing_observation_metadata(
+    record, lifecycle, recommendation
+) -> None:
+    snapshot = build_soxl_v7_forward_control_plane_source(
+        record,
+        generated_at="2026-09-09T03:00:00Z",
+    )
+    candidate = snapshot["candidates"][0]
+
+    assert snapshot["source_id"] == SOXL_V7_CONTROL_PLANE_SOURCE_ID
+    assert snapshot["generated_at"] == "2026-09-09T03:00:00Z"
+    assert snapshot["computed_at"] == record["observed_at"]
+    assert candidate["lifecycle"] == lifecycle
+    assert candidate["recommendation"]["code"] == recommendation
+    assert candidate["forward_observation"] == {
+        "state": record["controller"]["state"],
+        "observations_completed": record["controller"]["observations_completed"],
+        "required_trading_sessions": 252,
+        "last_observed_session": record["last_observed_session"],
+        "observed_at": record["observed_at"],
+        "no_order": True,
+        "live_authority_granted": False,
+    }
+    assert candidate["freshness"]["age_seconds"] > 0
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda record: record.update(candidate_id="other"),
+        lambda record: record.update(candidate_config_sha256="0" * 64),
+        lambda record: record.update(p4_policy_sha256="0" * 64),
+        lambda record: record.update(no_order=False),
+        lambda record: record.update(broker_dependency=True),
+        lambda record: record.update(live_authority_granted=True),
+        lambda record: record["controller"].update(observations_completed=2),
+        lambda record: record["controller"].update(observations_completed=True),
+        lambda record: record["controller"].update(required_trading_sessions=251),
+        lambda record: record["forward_observation_receipt"]["dependency_digests"].update(
+            p3_evidence="0" * 64
+        ),
+        lambda record: record["observation_sessions"].append(_forward_dates(2)[-1]),
+    ],
+)
+def test_v7_control_plane_projection_rejects_invalid_identity_permission_or_count(
+    mutate,
+) -> None:
+    record = _record()
+    mutate(record)
+    with pytest.raises(SoxlV7NonliveForwardObservationError):
+        build_soxl_v7_forward_control_plane_source(
+            record,
+            generated_at="2026-09-09T03:00:00Z",
+        )
+
+
+def test_v7_control_plane_projection_rejects_complete_state_before_session_252() -> None:
+    record = _record()
+    record["controller"]["state"] = "FORWARD_COMPLETE_HUMAN_REVIEW"
+    _resign(record)
+
+    with pytest.raises(SoxlV7NonliveForwardObservationError):
+        build_soxl_v7_forward_control_plane_source(
+            record,
+            generated_at="2026-09-09T03:00:00Z",
+        )
+
+
 def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None:
     workflow = (
         Path(__file__).resolve().parents[1]
@@ -274,3 +380,15 @@ def test_scheduled_observer_is_create_only_and_has_no_execution_target() -> None
     assert "runtime_target" not in runner.lower()
     assert "submit_order" not in runner.lower()
     assert "place_order" not in runner.lower()
+    assert "publish_only:" in workflow
+    assert "type: boolean" in workflow
+    assert "default: false" in workflow
+    assert 'gcloud storage cp --quiet "$current" "$record"' in workflow
+    assert "PUBLISH_ONLY_RECORD_MISSING" in workflow
+    assert "steps.p1.outputs.status == 'ACCEPTED' && inputs.publish_only != true" in workflow
+    assert "build_soxl_v7_forward_control_plane_source.py" in workflow
+    assert "QSL_CONTROL_PLANE_SYNC_URL" in workflow
+    assert "CONTROL_PLANE_SYNC_TOKEN" in workflow
+    assert "urllib.request" in workflow
+    assert "Authorization" in workflow
+    assert "--retry" not in workflow
