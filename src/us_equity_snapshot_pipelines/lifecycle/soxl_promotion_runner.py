@@ -763,16 +763,17 @@ class SoxlPromotionRunner:
         state: _PortfolioState,
         *,
         market_regime: Mapping[str, Any],
+        price_field: str = "close",
     ) -> PortfolioSnapshot:
-        close_prices = self._prices(index, "close")
-        equity = self._equity(state, close_prices)
-        weights = self._weights(state, close_prices)
+        prices = self._prices(index, price_field)
+        equity = self._equity(state, prices)
+        weights = self._weights(state, prices)
         factors = self.mandate["product_leverage_factors"]
         positions = tuple(
             Position(
                 symbol=symbol,
                 quantity=state.quantities[symbol],
-                market_value=state.quantities[symbol] * close_prices[symbol],
+                market_value=state.quantities[symbol] * prices[symbol],
                 average_cost=(
                     sum(lot.quantity * lot.entry_price for lot in state.lots[symbol])
                     / sum(lot.quantity for lot in state.lots[symbol])
@@ -781,7 +782,7 @@ class SoxlPromotionRunner:
                 ),
             )
             for symbol in SOXL_PROMOTION_ASSETS
-            if state.quantities[symbol] > 1e-12 and symbol in close_prices
+            if state.quantities[symbol] > 1e-12 and symbol in prices
         )
         return PortfolioSnapshot(
             as_of=self._assessment_clock(),
@@ -1248,6 +1249,29 @@ class SoxlPromotionRunner:
             return self._window_evidence[(start, end, float(total_cost_bps))]
         except KeyError as exc:
             raise SoxlPromotionContractError("missing window evidence") from exc
+
+
+class _SoxlReplayCalculations:
+    """Authority-free event calculations shared with bounded learning adapters.
+
+    The methods are the exact implementations exercised by ``SoxlPromotionRunner``.
+    Promotion construction, identity, mandate, and window methods are deliberately
+    excluded so a consumer of this helper cannot satisfy ``PromotionBacktestRunner``.
+    """
+
+    _lot = SoxlPromotionRunner._lot
+    _initial_state = SoxlPromotionRunner._initial_state
+    _prices = SoxlPromotionRunner._prices
+    _equity = staticmethod(SoxlPromotionRunner._equity)
+    _weights = SoxlPromotionRunner._weights
+    _portfolio_snapshot = SoxlPromotionRunner._portfolio_snapshot
+    _sell_lots = SoxlPromotionRunner._sell_lots
+    _rebalance = SoxlPromotionRunner._rebalance
+    _execute_stops = SoxlPromotionRunner._execute_stops
+    _execute_open = SoxlPromotionRunner._execute_open
+    _state_digest = SoxlPromotionRunner._state_digest
+    _replay_window = SoxlPromotionRunner._replay_window
+    _window_metrics = SoxlPromotionRunner._window_metrics
 
 
 def _total_cost_bps(cost_model: PromotionCostModel) -> float:

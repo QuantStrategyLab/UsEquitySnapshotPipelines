@@ -666,7 +666,12 @@ def prepare_soxl_pit_input(
     )
 
 
-def _validate_binding(prepared: PreparedSoxlPITInput, identity_binding: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_binding(
+    prepared: PreparedSoxlPITInput,
+    identity_binding: Mapping[str, Any],
+    *,
+    expected_qpk_revision: str = QPK_REVISION,
+) -> dict[str, Any]:
     binding = _exact_mapping(identity_binding, _BINDING_KEYS, "identity binding")
     _reject_sensitive(binding)
     if binding["strategy_profile"] != "soxl_soxx_trend_income":
@@ -677,7 +682,8 @@ def _validate_binding(prepared: PreparedSoxlPITInput, identity_binding: Mapping[
     runner_revision = _revision(binding["runner_revision"], "runner revision")
     if runner_revision != prepared.producer_commit_sha:
         raise SoxlPITPackagerError("producer and runner revision mismatch")
-    if binding["qpk_revision"] != QPK_REVISION:
+    expected_qpk_revision = _revision(expected_qpk_revision, "expected QPK revision")
+    if binding["qpk_revision"] != expected_qpk_revision:
         raise SoxlPITPackagerError("QPK revision mismatch")
     if binding["candidate_id"] != CANDIDATE_ID:
         raise SoxlPITPackagerError("candidate identity mismatch")

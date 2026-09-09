@@ -923,6 +923,43 @@ def test_half_l1_cost_and_continuous_state_are_recorded(monkeypatch) -> None:
     assert state.lots["BOXX"]
 
 
+def test_isolated_learning_baseline_reuses_promotion_event_numerics(monkeypatch) -> None:
+    from quant_platform_kit.risk.contracts import RiskAction
+    from us_equity_snapshot_pipelines.lifecycle import soxl_isolated_research as learning
+
+    input_payload, config = _payloads()
+    engine = Mock()
+    engine.assess.return_value = RiskAction(action="approve", reason="passed")
+    monkeypatch.setattr("quant_platform_kit.risk.gate._utc_now", lambda: NOW)
+    monkeypatch.setattr("quant_platform_kit.risk.gate.build_risk_engine", lambda: engine)
+    monkeypatch.setattr(learning, "build_risk_engine", lambda: engine)
+    promotion = SoxlPromotionRunner(
+        input_payload, config, variant_id=VARIANTS[0], assessment_clock=lambda: NOW
+    )
+    isolated = learning.SoxlDevelopmentLearningRunner(
+        input_payload,
+        config["frozen_strategy_config"],
+        source_identity={
+            "strategy_revision": learning.SOURCE_UES_REVISION,
+            "qpk_revision": learning.SOURCE_QPK_REVISION,
+        },
+        deadline=float("inf"),
+    )
+    start = date.fromisoformat(input_payload["sessions"][0]["date"])
+    end = learning.DEVELOPMENT_END
+
+    old = promotion._replay_window(start, end, 5.0)
+    new = isolated._replay_window(start, end, 5.0)
+
+    assert new.result.total_return == pytest.approx(old.result.total_return)
+    assert new.result.cagr == pytest.approx(old.result.cagr)
+    assert new.result.max_drawdown == pytest.approx(old.result.max_drawdown)
+    assert new.turnover == pytest.approx(old.turnover)
+    assert new.costs_paid == pytest.approx(old.costs_paid)
+    assert new.trade_count == old.trade_count
+    assert new.assessment_count == old.assessment_count
+
+
 def test_breakers_are_persistent_and_fail_closed(monkeypatch) -> None:
     input_payload, config = _payloads()
     runner = SoxlPromotionRunner(
