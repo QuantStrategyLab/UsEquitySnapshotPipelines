@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import math
+import os
 import statistics
+import subprocess
+import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
@@ -465,3 +470,186 @@ def test_validation_stops_on_first_invalid_numeric_result() -> None:
             execute=invalid_execute,
         )
     assert len(calls) == 1
+
+
+def test_paired_shadow_envelope_stays_pending_until_external_policy_window_completes(
+    tmp_path: Path,
+) -> None:
+    ues_project = os.environ.get("QSL_UES7756_PROJECT")
+    qpk_python = os.environ.get("QSL_QPK736_PYTHON")
+    if not ues_project or not qpk_python:
+        pytest.skip("exact paired-shadow runtimes not configured")
+    module = _module()
+    policy = {
+        "schema_version": "forward_observation_policy.v1",
+        "candidate_id": module.PAIRED_SHADOW_CANDIDATE_ID,
+        "strategy_profile": module.LEARNING_PROFILE,
+        "domain": "us_equity",
+        "benchmark_symbol": "SOXX",
+        "required_trading_sessions": 2,
+        "review_milestones": [1],
+        "automatic_non_live_modes": ["shadow"],
+        "auto_resume_clean_sessions": 1,
+        "observation_calendar": "XNYS",
+        "observation_window_type": "fixed",
+        "observation_start_session": "2026-09-10",
+        "window_rationale_ref": "human-frozen-three-asset-policy",
+        "non_live_evidence_modes": ["shadow_decision"],
+        "live_authority_granted": False,
+    }
+    dependencies = {
+        "p1_manifest": "1" * 64,
+        "p2_config": "2" * 64,
+        "p3_evidence": "3" * 64,
+        "risk_policy": "4" * 64,
+        "strategy_release": "5" * 64,
+        "plugin_bundle": "6" * 64,
+    }
+    initial_state = {
+        "cash": 100_000.0,
+        "quantities": {"SOXL": 0.0, "SOXX": 0.0, "BOXX": 0.0},
+        "pending_target_weights": None,
+        "pending_cash_weight": None,
+        "previous_equity": 100_000.0,
+    }
+
+    def observation(value: str, *, soxl: float) -> dict[str, object]:
+        source = copy.deepcopy(_materialized()["sessions"][0])
+        source["as_of"] = f"{value}T20:00:00+00:00"
+        source["prices"] = {"SOXL": soxl, "SOXX": 107.0, "BOXX": 100.0}
+        source["market_data"]["derived_indicators"]["SOXL"]["price"] = soxl
+        source["input_snapshot_sha256"] = module._sha256(source)
+        return source
+
+    def run_cli(request: Mapping[str, object], path: Path) -> dict[str, object]:
+        path.write_bytes(module._canonical(request))
+        completed = subprocess.run(
+            (
+                sys.executable,
+                str(SCRIPT),
+                "--paired-shadow-session",
+                str(path),
+                "--ues-project",
+                ues_project,
+                "--qpk-python",
+                qpk_python,
+                "--p2-candidate",
+                str(P2_CANDIDATE),
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+        assert completed.returncode == 0, completed.stdout
+        return json.loads(completed.stdout)
+
+    first_request = {
+        "schema_version": module.PAIRED_SHADOW_SESSION_SCHEMA,
+        "policy": policy,
+        "dependency_digests": dependencies,
+        "baseline_id": module.PAIRED_SHADOW_BASELINE_ID,
+        "session": observation("2026-09-10", soxl=100.0),
+        "cost_bps": 10.0,
+        "baseline_state": initial_state,
+        "candidate_state": initial_state,
+        "previous_forward_observation_receipt": None,
+        "previous_paired_shadow_evidence": None,
+    }
+    request_path = tmp_path / "paired-shadow-session.json"
+    first = run_cli(first_request, request_path)
+
+    assert first["status"] == "pending"
+    assert first["passed"] is False
+    assert first["forward_observation"]["state"] == "PARKED"
+    assert first["promotion_eligible"] is False
+    assert first["no_order"] is True and first["live_authority_granted"] is False
+    assert first["forward_observation_receipt"]["observation_index"] == 1
+
+    second_request = {
+        "schema_version": module.PAIRED_SHADOW_SESSION_SCHEMA,
+        "policy": policy,
+        "dependency_digests": dependencies,
+        "baseline_id": module.PAIRED_SHADOW_BASELINE_ID,
+        "session": observation("2026-09-11", soxl=105.0),
+        "cost_bps": 10.0,
+        "baseline_state": first["baseline_state"],
+        "candidate_state": first["candidate_state"],
+        "previous_forward_observation_receipt": first["forward_observation_receipt"],
+        "previous_paired_shadow_evidence": first["evidence"],
+    }
+    second = run_cli(second_request, request_path)
+    assert second["status"] == "window_material_complete_external_admission_required"
+    assert second["passed"] is False
+    assert second["promotion_eligible"] is False
+    assert second["window_material_complete"] is True
+    assert second["forward_observation"]["state"] == "PARKED"
+    assert second["no_order"] is True and second["live_authority_granted"] is False
+    assert second["forward_observation_receipt"]["observation_index"] == 2
+    assert (
+        second["evidence"]["candidate"]["position"]["input_state_sha256"]
+        == first["evidence"]["candidate"]["hypothetical_order"]["next_state_sha256"]
+    )
+
+    mismatched_ledger = copy.deepcopy(second_request)
+    mismatched_ledger["candidate_state"]["cash"] += 1.0
+    request_path.write_bytes(module._canonical(mismatched_ledger))
+    failed = subprocess.run(
+        (
+            sys.executable,
+            str(SCRIPT),
+            "--paired-shadow-session",
+            str(request_path),
+            "--ues-project",
+            ues_project,
+            "--qpk-python",
+            qpk_python,
+            "--p2-candidate",
+            str(P2_CANDIDATE),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    assert failed.returncode == 2
+    assert json.loads(failed.stdout) == {
+        "status": "PARKED",
+        "stage": "paired_shadow",
+        "failure_class": "paired_shadow_input_or_runtime_unavailable",
+        "no_order": True,
+        "live_authority_granted": False,
+    }
+    assert first["evidence"]["candidate"]["signal"] != first["evidence"]["baseline"]["signal"]
+    assert (
+        second["evidence"]["candidate"]["cost"]["model"]
+        == "one_way_turnover_all_in_bps"
+    )
+
+
+def test_source_paired_shadow_decision_calls_frozen_three_asset_signal() -> None:
+    module = _module()
+    session = _materialized()["sessions"][0]
+    result = module._source_paired_shadow_decision(
+        {
+            "schema_version": module.PAIRED_SHADOW_DECISION_SCHEMA,
+            "as_of": session["as_of"],
+            "portfolio": {
+                "as_of": session["as_of"],
+                "total_equity": 100_000.0,
+                "buying_power": 100_000.0,
+                "cash_balance": 100_000.0,
+                "positions": [],
+                "metadata": {"observed_effective_exposure": 0.0},
+            },
+            "market_data": session["market_data"],
+            "parameter_override": {"blend_gate_mid_soxl_weight": 0.55},
+        },
+        json.loads(P2_CANDIDATE.read_text()),
+    )
+
+    assert set(result["target_values"]) == {"SOXL", "SOXX", "BOXX"}
+    assert result["entrypoint"].endswith("soxl_soxx_trend_income.build_rebalance_plan")
+    assert result["output_sha256"] == module._sha256({
+        key: value for key, value in result.items() if key != "output_sha256"
+    })
