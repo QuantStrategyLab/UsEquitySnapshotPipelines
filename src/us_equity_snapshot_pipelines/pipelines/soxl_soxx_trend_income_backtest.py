@@ -646,6 +646,9 @@ def _execute_rebalance(
     current_min_trade: float,
     turnover_cost_bps: float,
 ) -> tuple[dict[str, float], float, float]:
+    cost_rate = float(turnover_cost_bps) / 10_000.0
+    if not np.isfinite(cost_rate) or not 0.0 <= cost_rate < 1.0:
+        raise ValueError("turnover_cost_bps must be finite and in [0, 10000)")
     current_market_values = {
         symbol: float(equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS
     }
@@ -659,6 +662,7 @@ def _execute_rebalance(
     if abs(cash) < 1e-9:
         cash = 0.0
 
+    sold_value = 0.0
     for symbol in sell_order:
         current = current_market_values.get(symbol, 0.0)
         target = float(target_values.get(symbol, 0.0))
@@ -669,7 +673,12 @@ def _execute_rebalance(
             continue
         next_market_values[symbol] = target
         cash -= diff
+        sold_value -= diff
 
+    # Cash-inclusive half-L1 turnover is max(total buys, total sells).
+    # Reserve that fee before buying, including when the target invests all cash.
+    buy_budget = max(0.0, min(cash - cost_rate * sold_value, cash / (1.0 + cost_rate)))
+    bought_value = 0.0
     for symbol in buy_order:
         current = next_market_values.get(symbol, current_market_values.get(symbol, 0.0))
         target = float(target_values.get(symbol, 0.0))
@@ -678,26 +687,22 @@ def _execute_rebalance(
             continue
         if diff <= threshold_value or diff <= current_min_trade:
             continue
-        buy_value = min(diff, cash)
+        buy_value = min(diff, buy_budget - bought_value)
         if buy_value <= 0:
             continue
         next_market_values[symbol] = current + buy_value
         cash -= buy_value
+        bought_value += buy_value
 
     new_equity_before_cost = cash + sum(next_market_values.values())
     if new_equity_before_cost <= 0:
         return dict(current_weights), 0.0, 0.0
 
-    turnover = (
-        0.5
-        * sum(
-            abs(float(next_market_values.get(symbol, 0.0)) - float(current_market_values.get(symbol, 0.0)))
-            for symbol in MANAGED_SYMBOLS
-        )
-        / float(equity)
-    )
-    cost = float(equity) * turnover * (float(turnover_cost_bps) / 10_000.0)
-    cash = max(0.0, cash - cost)
+    traded_value = max(bought_value, sold_value)
+    turnover = traded_value / float(equity)
+    cash -= traded_value * cost_rate
+    if abs(cash) < 1e-9:
+        cash = 0.0
     new_equity = cash + sum(next_market_values.values())
     if new_equity <= 0:
         return dict(current_weights), 0.0, 0.0
@@ -710,6 +715,9 @@ def _execute_rebalance(
 def _summarize_returns(
     portfolio_returns: pd.Series,
     weights_history: pd.DataFrame,
+    *,
+    turnover_history: pd.Series | None = None,
+    start_date: pd.Timestamp | None = None,
 ) -> dict[str, float | str]:
     returns = portfolio_returns.dropna()
     if returns.empty:
@@ -717,26 +725,30 @@ def _summarize_returns(
 
     equity_curve = (1.0 + returns).cumprod()
     total_return = float(equity_curve.iloc[-1] - 1.0)
-    years = max((returns.index[-1] - returns.index[0]).days / 365.25, 1 / 365.25)
+    start = returns.index[0] if start_date is None else start_date
+    years = max((returns.index[-1] - start).days / 365.25, 1 / 365.25)
     cagr = float(equity_curve.iloc[-1] ** (1.0 / years) - 1.0)
-    drawdown = equity_curve / equity_curve.cummax() - 1.0
+    drawdown = equity_curve / equity_curve.cummax().clip(lower=1.0) - 1.0
     max_drawdown = float(drawdown.min())
     volatility = float(returns.std(ddof=0) * np.sqrt(252))
     std = float(returns.std(ddof=0))
     sharpe = float(returns.mean() / std * np.sqrt(252)) if std else float("nan")
     calmar = float(cagr / abs(max_drawdown)) if max_drawdown < 0 else float("nan")
 
-    changes = weights_history.fillna(0.0).diff().fillna(0.0)
-    if not changes.empty:
-        changes.iloc[0] = 0.0
-    daily_turnover = 0.5 * changes.abs().sum(axis=1)
+    if turnover_history is None:
+        changes = weights_history.fillna(0.0).diff().fillna(0.0)
+        if not changes.empty:
+            changes.iloc[0] = 0.0
+        daily_turnover = 0.5 * changes.abs().sum(axis=1)
+    else:
+        daily_turnover = turnover_history.fillna(0.0)
     rebalances_per_year = float((daily_turnover > 1e-12).sum() / years)
     turnover_per_year = float(daily_turnover.sum() / years)
     stock_columns = [column for column in weights_history.columns if column not in {"BOXX", "__cash__"}]
     avg_stock_exposure = float(weights_history[stock_columns].fillna(0.0).sum(axis=1).mean()) if stock_columns else 0.0
 
     return {
-        "Start": str(returns.index[0].date()),
+        "Start": str(start.date()),
         "End": str(returns.index[-1].date()),
         "Total Return": total_return,
         "CAGR": cagr,
@@ -790,6 +802,13 @@ def run_backtest(
     soxl_delever_overlay_combine_with_core: bool = False,
     strategy_overrides: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    """Idealized close-to-close research, not next-open execution evidence.
+
+    Targets use the signal session's close and trade at that same close; the
+    effective date labels the end of the first subsequent holding interval.
+    Holdings drift between trades and interval returns include trading fees.
+    weights_history records each interval's starting (post-trade) weights.
+    """
     prices = _build_price_frame(price_history)
     if end_date is not None:
         prices = prices.loc[prices["as_of"] <= pd.Timestamp(end_date).normalize()].copy()
@@ -877,10 +896,9 @@ def run_backtest(
     if len(index) < 2:
         raise RuntimeError("Not enough price history remains inside the selected date range")
 
-    backtest_index = index[:-1]
     weights_history = pd.DataFrame(0.0, index=index, columns=[*MANAGED_SYMBOLS, "__cash__"])
     portfolio_returns = pd.Series(index=index, dtype=float, name="portfolio_return")
-    turnover_history = pd.Series(index=index, dtype=float, name="turnover")
+    turnover_history = pd.Series(0.0, index=index, dtype=float, name="turnover")
     signal_rows: list[dict[str, object]] = []
     trade_rows: list[dict[str, object]] = []
     soxl_delever_stop_count = 0
@@ -893,11 +911,34 @@ def run_backtest(
     initial_weights["BOXX"] = 1.0
     current_weights = dict(initial_weights)
     current_equity = float(initial_equity)
+    equity_before_trade = current_equity
 
-    for as_of in backtest_index:
-        next_as_of = index[index.get_loc(as_of) + 1]
+    for position, as_of in enumerate(index):
         close_row = close_matrix.loc[as_of]
-        next_close_row = close_matrix.loc[next_as_of]
+        # Preserve the interval-start convention used by research overlays.
+        for symbol in weights_history.columns:
+            weights_history.at[as_of, symbol] = float(current_weights.get(symbol, 0.0))
+        if position:
+            previous_close = close_matrix.loc[index[position - 1]]
+            cash = current_equity * float(current_weights.get("__cash__", 0.0))
+            market_values = {}
+            for symbol in MANAGED_SYMBOLS:
+                value = current_equity * float(current_weights.get(symbol, 0.0))
+                if value:
+                    prior_price = float(previous_close.get(symbol, np.nan))
+                    price = float(close_row.get(symbol, np.nan))
+                    if not np.isfinite(prior_price) or prior_price <= 0 or not np.isfinite(price) or price <= 0:
+                        raise RuntimeError("Held asset price unavailable for portfolio valuation")
+                    value *= price / prior_price
+                market_values[symbol] = value
+            current_equity = cash + sum(market_values.values())
+            portfolio_returns.at[as_of] = current_equity / equity_before_trade - 1.0
+            current_weights = {symbol: value / current_equity for symbol, value in market_values.items()}
+            current_weights["__cash__"] = cash / current_equity
+        equity_before_trade = current_equity
+        if position == len(index) - 1:
+            break
+        next_as_of = index[position + 1]
         if pd.isna(close_row.get("SOXL")) or pd.isna(close_row.get("SOXX")):
             continue
 
@@ -909,6 +950,8 @@ def run_backtest(
         indicators = _indicator_snapshot_at(indicator_history, as_of)
         if "soxl" not in indicators or "soxx" not in indicators:
             continue
+        if any("ma_trend" not in indicators[symbol] for symbol in ("soxl", "soxx")):
+            continue
 
         try:
             plan = build_rebalance_plan(
@@ -918,7 +961,7 @@ def run_backtest(
                 **_call_strategy_kwargs(strategy_overrides),
             )
         except Exception:
-            continue
+            raise RuntimeError("Strategy evaluation failed during research backtest") from None
 
         target_values = dict(plan["targets"])
         threshold_value = float(plan["threshold_value"])
@@ -1128,7 +1171,7 @@ def run_backtest(
             for symbol in MANAGED_SYMBOLS:
                 old = float(current_weights.get(symbol, 0.0))
                 new = float(next_weights.get(symbol, 0.0))
-                if abs(new - old) > 1e-12:
+                if abs(next_equity * new - current_equity * old) > 1e-7:
                     trade_rows.append(
                         {
                             "signal_date": as_of,
@@ -1144,26 +1187,10 @@ def run_backtest(
         current_weights["__cash__"] = float(next_weights.get("__cash__", 0.0))
         current_equity = float(next_equity)
 
-        next_market_values = {
-            symbol: float(current_equity) * float(current_weights.get(symbol, 0.0)) for symbol in MANAGED_SYMBOLS
-        }
-        next_cash = float(current_equity) * float(current_weights.get("__cash__", 0.0))
-        equity_after_return = next_cash + sum(
-            float(next_market_values[symbol])
-            * (float(next_close_row.get(symbol, np.nan)) / float(close_row.get(symbol)))
-            if symbol in next_close_row and pd.notna(close_row.get(symbol)) and float(close_row.get(symbol)) > 0
-            else float(next_market_values[symbol])
-            for symbol in MANAGED_SYMBOLS
-        )
-        if current_equity > 0:
-            portfolio_returns.at[next_as_of] = equity_after_return / current_equity - 1.0
-        for symbol in MANAGED_SYMBOLS:
-            weights_history.at[next_as_of, symbol] = float(current_weights.get(symbol, 0.0))
-        weights_history.at[next_as_of, "__cash__"] = float(current_weights.get("__cash__", 0.0))
-        current_equity = float(equity_after_return)
-
     used_weights = weights_history.loc[:, (weights_history != 0.0).any(axis=0)]
-    summary = _summarize_returns(portfolio_returns, used_weights)
+    summary = _summarize_returns(
+        portfolio_returns, used_weights, turnover_history=turnover_history, start_date=index[0]
+    )
     summary["Chandelier Stops"] = float(soxl_delever_stop_count if overlay_kind == "chandelier" else 0.0)
     summary["SOXL Delever Stops"] = float(soxl_delever_stop_count)
     return {

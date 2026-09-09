@@ -8,7 +8,7 @@ from typing import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .pipelines.soxl_soxx_trend_income_backtest import _build_close_matrix, _build_price_frame
+from .pipelines.soxl_soxx_trend_income_backtest import DEFAULT_TURNOVER_COST_BPS, _build_close_matrix, _build_price_frame
 from .pipelines.soxl_soxx_trend_income_backtest import run_backtest as run_soxl_backtest
 from .tqqq_growth_income_archive import _income_disabled_overrides
 from .tqqq_growth_income_archive import run_backtest as run_tqqq_backtest
@@ -98,7 +98,15 @@ def _run_core_backtest(spec: StrategySpec, prices: pd.DataFrame) -> dict[str, ob
         }
         return run_tqqq_backtest(prices, start_date=spec.start_date, strategy_overrides=overrides)
     if spec.profile == "soxl_soxx_trend_income":
-        return run_soxl_backtest(prices, start_date=spec.start_date, disable_income_layer=True)
+        result = run_soxl_backtest(
+            prices, start_date=spec.start_date, disable_income_layer=True,
+            turnover_cost_bps=DEFAULT_TURNOVER_COST_BPS,
+        )
+        # Overlay replacements are contributions to the pre-trade NAV return.
+        # Convert post-fee holding weights to exposures on that same capital basis.
+        capital_fraction = 1.0 - result["turnover_history"] * (DEFAULT_TURNOVER_COST_BPS / 10_000.0)
+        result["weights_history"] = result["weights_history"].mul(capital_fraction, axis=0)
+        return result
     raise ValueError(f"unsupported profile: {spec.profile}")
 
 
