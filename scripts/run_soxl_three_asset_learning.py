@@ -12,7 +12,7 @@ import statistics
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 LEARNING_PROFILE = "soxl_soxx_three_asset_mid_weight_learning_v1"
@@ -33,6 +33,11 @@ VALIDATION_FOLDS = (
     (date(2024, 1, 2), date(2024, 6, 28), date(2024, 7, 1), date(2024, 12, 31)),
     (date(2025, 1, 2), date(2025, 2, 28), date(2025, 3, 3), date(2025, 7, 31)),
 )
+PAIRED_SHADOW_CANDIDATE_ID = "soxl_soxx_three_asset_mid_weight_055_v1"
+PAIRED_SHADOW_BASELINE_ID = "soxl_soxx_three_asset_mid_weight_065_v1"
+PAIRED_SHADOW_SESSION_SCHEMA = "qsl.soxl-three-asset-paired-shadow-session.v1"
+PAIRED_SHADOW_DECISION_SCHEMA = "qsl.soxl-three-asset-paired-shadow-decision.v1"
+PAIRED_SHADOW_QPK_REVISION = "7363011d56926d39f4fffeb036e511391114e39f"
 
 
 class SoxlThreeAssetLearningError(ValueError):
@@ -126,6 +131,19 @@ def _load_isolated_module():
     spec = importlib.util.spec_from_file_location("qsl_soxl_learning_isolated", path)
     if spec is None or spec.loader is None:
         raise SoxlThreeAssetLearningError("isolated runtime unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_paired_shadow_module():
+    path = (
+        Path(__file__).parents[1] / "src" / "us_equity_snapshot_pipelines" /
+        "lifecycle" / "soxl_three_asset_paired_shadow.py"
+    )
+    spec = importlib.util.spec_from_file_location("qsl_soxl_three_asset_paired_shadow", path)
+    if spec is None or spec.loader is None:
+        raise SoxlThreeAssetLearningError("paired shadow runtime unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -509,21 +527,386 @@ def run_learning_from_verified_p1(
     )
 
 
+def _source_paired_shadow_decision(
+    value: Mapping[str, object], candidate: Mapping[str, object]
+) -> dict[str, object]:
+    """Evaluate one explicit portfolio through the frozen UES three-asset signal."""
+    isolated = _load_isolated_module()
+    request = _mapping(value)
+    if set(request) != {
+        "schema_version", "as_of", "portfolio", "market_data", "parameter_override"
+    } or request["schema_version"] != PAIRED_SHADOW_DECISION_SCHEMA:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input")
+    override = _mapping(request["parameter_override"])
+    if set(override) != {"blend_gate_mid_soxl_weight"}:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input")
+    weight = _weights((override["blend_gate_mid_soxl_weight"],), require_baseline=False)[0]
+    if weight not in {BASELINE_MID_SOXL_WEIGHT, VALIDATION_CANDIDATE_MID_SOXL_WEIGHT}:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input")
+    p2 = isolated.validate_p2_candidate(candidate)
+    portfolio = _mapping(request["portfolio"])
+    if set(portfolio) != {
+        "as_of", "total_equity", "buying_power", "cash_balance", "positions", "metadata"
+    }:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input")
+    try:
+        as_of = datetime.fromisoformat(str(request["as_of"]).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input") from exc
+    if as_of.tzinfo is None or portfolio["as_of"] != request["as_of"]:
+        raise SoxlThreeAssetLearningError("invalid paired shadow decision input")
+
+    from quant_platform_kit.common.models import PortfolioSnapshot, Position
+    from quant_platform_kit.common.strategy_contracts import StrategyContext
+    from us_equity_strategies import entrypoints
+    from us_equity_strategies.strategies import soxl_soxx_trend_income as strategy
+
+    positions = tuple(
+        Position(
+            symbol=str(row["symbol"]), quantity=float(row["quantity"]),
+            market_value=float(row["market_value"]), currency=str(row["currency"]),
+        )
+        for row in portfolio["positions"]
+    )
+    snapshot = PortfolioSnapshot(
+        as_of=as_of,
+        total_equity=float(portfolio["total_equity"]),
+        buying_power=float(portfolio["buying_power"]),
+        cash_balance=float(portfolio["cash_balance"]),
+        positions=positions,
+        metadata=_mapping(portfolio["metadata"]),
+    )
+    runtime_config = dict(p2["runtime_config"])
+    runtime_config["blend_gate_mid_soxl_weight"] = weight
+    context = StrategyContext(
+        as_of=as_of,
+        portfolio=snapshot,
+        market_data=_mapping(request["market_data"]),
+        runtime_config=runtime_config,
+    )
+    config = entrypoints.merge_runtime_config(
+        entrypoints.soxl_soxx_trend_income_manifest.default_config, context
+    )
+    entrypoints._validate_soxl_soxx_core_only_research_runtime_config(config)
+    entrypoints.pop_option_overlay_config(config)
+    symbols = tuple(str(symbol) for symbol in config.pop("managed_symbols", ()))
+    config.pop("signal_text_fn", None)
+    config.pop("signal_effective_after_trading_days", None)
+    reserved = entrypoints.pop_reserved_cash_policy_config(config)
+    entrypoints.pop_execution_only_config(config)
+    entrypoints.apply_reserved_cash_policy_to_ratio_config(config, reserved)
+    translator = config.pop("translator", entrypoints.default_translator)
+    plan = strategy.build_rebalance_plan(
+        _mapping(request["market_data"])["derived_indicators"],
+        entrypoints._build_tiered_blend_account_state_from_portfolio(
+            snapshot, strategy_symbols=symbols
+        ),
+        translator=translator,
+        **config,
+    )
+    result = {
+        "schema_version": "qsl.soxl-soxx-three-asset-learning-decision.v1",
+        "entrypoint": "us_equity_strategies.strategies.soxl_soxx_trend_income.build_rebalance_plan",
+        "as_of": str(request["as_of"]),
+        "target_values": {
+            symbol: float(plan["targets"][symbol]) for symbol in ("SOXL", "SOXX", "BOXX")
+        },
+        "diagnostics": {
+            field: plan.get(field) for field in isolated._DIAGNOSTIC_FIELDS
+        },
+    }
+    result["output_sha256"] = isolated._sha256(result)
+    return result
+
+
+def _forward_policy(value: object):
+    from quant_platform_kit.strategy_lifecycle.forward_observation import ForwardObservationPolicy
+
+    raw = _mapping(value)
+    if raw.pop("schema_version", None) != "forward_observation_policy.v1":
+        raise SoxlThreeAssetLearningError("invalid paired shadow policy")
+    if raw.pop("live_authority_granted", None) is not False:
+        raise SoxlThreeAssetLearningError("invalid paired shadow policy")
+    try:
+        policy = ForwardObservationPolicy(
+            **{
+                **raw,
+                "review_milestones": tuple(raw["review_milestones"]),
+                "automatic_non_live_modes": tuple(raw["automatic_non_live_modes"]),
+                "non_live_evidence_modes": tuple(raw["non_live_evidence_modes"]),
+            }
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SoxlThreeAssetLearningError("invalid paired shadow policy") from exc
+    if (
+        policy.candidate_id != PAIRED_SHADOW_CANDIDATE_ID
+        or policy.strategy_profile != LEARNING_PROFILE
+        or tuple(policy.automatic_non_live_modes) != ("shadow",)
+        or tuple(policy.non_live_evidence_modes) != ("shadow_decision",)
+    ):
+        raise SoxlThreeAssetLearningError("invalid paired shadow policy")
+    return policy
+
+
+def _source_paired_shadow_envelope(value: Mapping[str, object]) -> dict[str, object]:
+    """Bind one financial observation to QPK736 receipt/evidence contracts."""
+    from quant_platform_kit.strategy_lifecycle.forward_observation import (
+        ForwardObservationSnapshot,
+        evaluate_forward_observation,
+    )
+    from quant_platform_kit.strategy_lifecycle.forward_observation_receipt import (
+        build_forward_observation_receipt,
+    )
+    from quant_platform_kit.strategy_lifecycle.paired_shadow_adapter import (
+        PairedShadowObservation,
+        collect_paired_shadow_for_promotion,
+    )
+
+    request = _mapping(value)
+    required = {
+        "policy", "dependency_digests", "baseline_id", "observation_session",
+        "observed_at", "input_snapshot_sha256", "candidate", "baseline",
+        "previous_forward_observation_receipt", "previous_paired_shadow_evidence",
+    }
+    if set(request) != required or request["baseline_id"] != PAIRED_SHADOW_BASELINE_ID:
+        raise SoxlThreeAssetLearningError("invalid paired shadow envelope")
+    previous_receipt = request["previous_forward_observation_receipt"]
+    previous_evidence = request["previous_paired_shadow_evidence"]
+    if (previous_receipt is None) != (previous_evidence is None):
+        raise SoxlThreeAssetLearningError("invalid paired shadow predecessor pair")
+    if previous_evidence is not None:
+        predecessor = _mapping(previous_evidence)
+        for leg_name in ("candidate", "baseline"):
+            prior_leg = _mapping(predecessor.get(leg_name))
+            current_leg = _mapping(request.get(leg_name))
+            prior_order = _mapping(prior_leg.get("hypothetical_order"))
+            current_position = _mapping(current_leg.get("position"))
+            if (
+                prior_order.get("next_state_sha256")
+                != current_position.get("input_state_sha256")
+            ):
+                raise SoxlThreeAssetLearningError("paired shadow predecessor ledger mismatch")
+    policy = _forward_policy(request["policy"])
+    previous_index = 0 if previous_receipt is None else int(_mapping(previous_receipt)["observation_index"])
+    receipt = build_forward_observation_receipt(
+        policy=policy,
+        observation_session=str(request["observation_session"]),
+        observation_index=previous_index + 1,
+        dependency_digests=_mapping(request["dependency_digests"]),
+        evidence_modes=("shadow_decision",),
+        previous_receipt=previous_receipt,
+    )
+    record = collect_paired_shadow_for_promotion(PairedShadowObservation(
+        policy=policy,
+        forward_observation_receipt=receipt,
+        baseline_id=PAIRED_SHADOW_BASELINE_ID,
+        observed_at=str(request["observed_at"]),
+        input_snapshot_sha256=str(request["input_snapshot_sha256"]),
+        candidate=_mapping(request["candidate"]),
+        baseline=_mapping(request["baseline"]),
+        previous_evidence=previous_evidence,
+        previous_forward_observation_receipt=previous_receipt,
+    ))
+    forward = evaluate_forward_observation(
+        policy,
+        ForwardObservationSnapshot(
+            # This bounded consumer validates an externally supplied digest but
+            # is not the trusted historical-evidence verifier. Keep promotion
+            # parked until the established outer cycle supplies that admission.
+            historical_evidence_verified=False,
+            observations_completed=int(receipt["observation_index"]),
+            previous_observations_completed=previous_index,
+            previous_state="not_started" if previous_index == 0 else "active",
+            paper_status="unsupported",
+        ),
+    ).to_dict()
+    window_material_complete = (
+        int(receipt["observation_index"]) >= policy.required_trading_sessions
+    )
+    record.update({
+        "status": (
+            "window_material_complete_external_admission_required"
+            if window_material_complete
+            else "pending"
+        ),
+        "passed": False,
+        "promotion_eligible": False,
+        "window_material_complete": window_material_complete,
+        "forward_observation_receipt": receipt,
+        "forward_observation": forward,
+        "no_order": True,
+        "live_authority_granted": False,
+    })
+    return record
+
+
+def _validate_qpk_python(path: Path) -> None:
+    if not path.is_file():
+        raise SoxlThreeAssetLearningError("isolated QPK paired shadow unavailable")
+    try:
+        actual = subprocess.run(
+            (
+                str(path),
+                "-c",
+                "import importlib.metadata,json;"
+                "d=importlib.metadata.distribution('quant-platform-kit');"
+                "print(json.loads(d.read_text('direct_url.json') or '{}')"
+                "['vcs_info']['commit_id'])",
+            ),
+            check=True,
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SoxlThreeAssetLearningError(
+            "isolated QPK paired shadow unavailable"
+        ) from exc
+    if actual != PAIRED_SHADOW_QPK_REVISION:
+        raise SoxlThreeAssetLearningError("isolated QPK paired shadow identity mismatch")
+
+
+def _run_isolated_json_mode(
+    request: Mapping[str, object], *, command: tuple[str, ...],
+    arguments: tuple[str, ...],
+) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="qsl-soxl-paired-shadow-") as directory:
+        path = Path(directory) / "request.json"
+        path.write_bytes(_canonical(request))
+        try:
+            completed = subprocess.run(
+                (*command, str(Path(__file__).resolve()), arguments[0], str(path),
+                 *arguments[1:]),
+                check=False, capture_output=True, text=True, timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SoxlThreeAssetLearningError("isolated paired shadow runtime unavailable") from exc
+    if completed.returncode != 0:
+        raise SoxlThreeAssetLearningError("isolated paired shadow runtime unavailable")
+    try:
+        return _mapping(json.loads(completed.stdout))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise SoxlThreeAssetLearningError("isolated paired shadow runtime unavailable") from exc
+
+
+def run_paired_shadow_session(
+    value: Mapping[str, object], *, ues_project: Path, qpk_python: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    """Run one offline paired session through UES7756 and QPK736."""
+    isolated = _load_isolated_module()
+    isolated.validate_ues_project(ues_project)
+    _validate_qpk_python(qpk_python)
+    p2_candidate = json.loads(p2_candidate_path.read_text())
+    isolated.validate_p2_candidate(p2_candidate)
+    request = _mapping(value)
+    required = {
+        "schema_version", "policy", "dependency_digests", "baseline_id", "session",
+        "cost_bps", "baseline_state", "candidate_state",
+        "previous_forward_observation_receipt", "previous_paired_shadow_evidence",
+    }
+    if set(request) != required or request["schema_version"] != PAIRED_SHADOW_SESSION_SCHEMA:
+        raise SoxlThreeAssetLearningError("invalid paired shadow session")
+    session = _mapping(request["session"])
+    try:
+        observed_at = datetime.fromisoformat(str(session["as_of"]).replace("Z", "+00:00"))
+        calendar_name = str(_mapping(request["policy"])["observation_calendar"])
+        import exchange_calendars as xcals
+
+        if observed_at.tzinfo is None or not xcals.get_calendar(calendar_name).is_session(
+            observed_at.date().isoformat()
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SoxlThreeAssetLearningError("invalid paired shadow observation session") from exc
+    paired_shadow = _load_paired_shadow_module()
+
+    def decide(**kwargs):
+        decision_request = {
+            "schema_version": PAIRED_SHADOW_DECISION_SCHEMA,
+            "as_of": kwargs["as_of"],
+            "portfolio": kwargs["portfolio"],
+            "market_data": kwargs["market_data"],
+            "parameter_override": {
+                "blend_gate_mid_soxl_weight": kwargs["mid_soxl_weight"]
+            },
+        }
+        return _run_isolated_json_mode(
+            decision_request,
+            command=(
+                "uv", "run", "--locked", "--no-editable", "--project",
+                str(ues_project), "python",
+            ),
+            arguments=("--source-paired-shadow-decision", "--p2-candidate", str(p2_candidate_path)),
+        )
+
+    financial = paired_shadow.advance_paired_shadow_session(
+        session=session,
+        baseline_state=_mapping(request["baseline_state"]),
+        candidate_state=_mapping(request["candidate_state"]),
+        cost_bps=float(request["cost_bps"]),
+        decide=decide,
+    )
+    observed_at = str(financial["observed_at"])
+    envelope_request = {
+        "policy": request["policy"],
+        "dependency_digests": request["dependency_digests"],
+        "baseline_id": request["baseline_id"],
+        "observation_session": observed_at[:10],
+        "observed_at": observed_at,
+        "input_snapshot_sha256": financial["input_snapshot_sha256"],
+        "candidate": financial["candidate"],
+        "baseline": financial["baseline"],
+        "previous_forward_observation_receipt": request["previous_forward_observation_receipt"],
+        "previous_paired_shadow_evidence": request["previous_paired_shadow_evidence"],
+    }
+    envelope = _run_isolated_json_mode(
+        envelope_request,
+        command=(str(qpk_python),),
+        arguments=(
+            "--source-paired-shadow-envelope", "--p2-candidate", str(p2_candidate_path)
+        ),
+    )
+    envelope["baseline_state"] = financial["baseline_state"]
+    envelope["candidate_state"] = financial["candidate_state"]
+    return envelope
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--source-learning-replay")
+    mode.add_argument("--source-paired-shadow-decision")
+    mode.add_argument("--source-paired-shadow-envelope")
+    mode.add_argument("--paired-shadow-session")
     mode.add_argument("--p1-binding", type=Path)
     parser.add_argument("--input-manifest", type=Path)
     parser.add_argument("--bars-member", type=Path)
     parser.add_argument("--ues-project", type=Path)
+    parser.add_argument("--qpk-python", type=Path)
     parser.add_argument("--blend-gate-mid-soxl-weight", action="append", type=float)
     parser.add_argument("--promotion-validation-development-summary", type=Path)
     parser.add_argument("--p2-candidate", required=True, type=Path)
     args = parser.parse_args(argv)
     failed = False
     try:
-        if args.source_learning_replay:
+        if args.source_paired_shadow_decision:
+            result = _source_paired_shadow_decision(
+                json.loads(Path(args.source_paired_shadow_decision).read_text()),
+                json.loads(args.p2_candidate.read_text()),
+            )
+        elif args.source_paired_shadow_envelope:
+            result = _source_paired_shadow_envelope(
+                json.loads(Path(args.source_paired_shadow_envelope).read_text())
+            )
+        elif args.paired_shadow_session:
+            if not all((args.ues_project, args.qpk_python, args.p2_candidate)):
+                raise SoxlThreeAssetLearningError("invalid paired shadow arguments")
+            result = run_paired_shadow_session(
+                json.loads(Path(args.paired_shadow_session).read_text()),
+                ues_project=args.ues_project,
+                qpk_python=args.qpk_python,
+                p2_candidate_path=args.p2_candidate,
+            )
+        elif args.source_learning_replay:
             result = _source_learning_replay(
                 json.loads(Path(args.source_learning_replay).read_text()),
                 json.loads(args.p2_candidate.read_text()),
@@ -553,7 +936,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except Exception:
         failed = True
-        if args.promotion_validation_development_summary:
+        if args.paired_shadow_session or args.source_paired_shadow_decision or args.source_paired_shadow_envelope:
+            result = {
+                "status": "PARKED",
+                "stage": "paired_shadow",
+                "failure_class": "paired_shadow_input_or_runtime_unavailable",
+                "no_order": True,
+                "live_authority_granted": False,
+            }
+        elif args.promotion_validation_development_summary:
             result = {
                 "status": "PARKED",
                 "stage": "promotion_validation",
