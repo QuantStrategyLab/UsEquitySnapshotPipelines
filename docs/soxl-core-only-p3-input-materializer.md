@@ -71,3 +71,28 @@ initial-equity contribution percentage points, return, drawdown, turnover,
 cost, dates, counts, identities, and reconciliation residuals. It omits daily
 prices, returns, positions, and decisions and remains retrospective research
 with no order, sizing, promotion, paper, shadow, or live authority.
+
+## Fixed volatility-delever ablation
+
+The same runner also exposes one fixed retrospective on/off comparison:
+
+```bash
+python scripts/run_soxl_three_asset_learning.py \
+  --p1-binding <binding.json> \
+  --input-manifest <manifest.json> \
+  --bars-member <bars.json> \
+  --ues-project <pinned-ues-checkout> \
+  --p2-candidate config/soxl_soxx_core_only_p2_v3.json \
+  --volatility-ablation
+```
+
+This mode evaluates only `baseline_mid_065` and
+`baseline_without_volatility_delever`, both at 10 bps, USD 100,000 initial
+equity, zero cash interest, and the same verified P1 adjusted-close sessions
+through 2025-07-31. The second variant copies the frozen P2 runtime config and
+changes only `blend_gate_volatility_delever_enabled` to `false`; the baseline
+uses the original config path unchanged. Output keeps the attribution schema
+and identifies `study_variant=volatility_delever_on_off_v1`. This analysis
+variant is not a new strategy identity, does not make a causal claim, and has
+no order, promotion, shadow, or live authority. The original `--attribution`
+nine-result study remains unchanged.

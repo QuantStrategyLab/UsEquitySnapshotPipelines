@@ -205,6 +205,93 @@ def test_attribution_requests_are_fixed_and_aggregate_results_do_not_leak_daily_
     assert result["result_sha256"] == module._sha256(material)
 
 
+def test_volatility_ablation_is_exactly_baseline_on_off_at_10bps() -> None:
+    module = _module()
+    materialized = _materialized()
+    requests = module.build_volatility_ablation_requests(materialized)
+    original_baseline = module.build_attribution_requests(materialized)[1]
+
+    assert requests == [
+        original_baseline,
+        original_baseline | {"variant": "baseline_without_volatility_delever"},
+    ]
+    calls = []
+
+    def execute(request):
+        calls.append(request)
+        result = {
+            "schema_version": module.ATTRIBUTION_REPLAY_RESULT_SCHEMA,
+            "status": "SUCCESS",
+            "variant": request["variant"],
+            "cost_bps": request["cost_bps"],
+            "initial_equity": 100_000.0,
+            "final_equity": 101_000.0,
+            "total_return": 0.01,
+            "max_drawdown": 0.02,
+            "cost_total": 10.0,
+            "one_way_turnover": 0.2,
+            "asset_pnl_usd": {"SOXL": 500.0, "SOXX": 400.0, "BOXX": 110.0},
+            "cash_pnl_usd": 0.0,
+            "external_flow_usd": 0.0,
+            "reconciliation_residual_usd": 0.0,
+            "contribution_pct_points": {
+                "SOXL": 0.5, "SOXX": 0.4, "BOXX": 0.11, "cash": 0.0,
+                "execution_cost": -0.01,
+            },
+            "start_date": "2025-07-28",
+            "end_date": "2025-07-31",
+            "observation_count": 3,
+            "unexecuted_final_signal": True,
+        }
+        result["output_sha256"] = module._sha256(result)
+        return result
+
+    summary = module.run_volatility_ablation(
+        materialized=materialized,
+        execute=execute,
+    )
+
+    assert calls == requests
+    assert summary["schema_version"] == module.ATTRIBUTION_SCHEMA
+    assert summary["study_variant"] == "volatility_delever_on_off_v1"
+    assert summary["variants"] == [
+        "baseline_mid_065",
+        "baseline_without_volatility_delever",
+    ]
+    assert summary["cost_bps"] == [10.0]
+    assert summary["causal_attribution_claimed"] is False
+    assert summary["source_config_reference"] == materialized["p2_identity"]
+    assert summary["source_identity"]["revision"] == "7756fe32585e85cf1d09a163203a02e3eee39fe1"
+    serialized = json.dumps(summary, sort_keys=True)
+    for forbidden in ('"sessions"', '"prices"', '"decisions"', '"positions"'):
+        assert forbidden not in serialized
+
+
+def test_source_volatility_ablation_reuses_baseline_and_changes_only_delever_switch() -> None:
+    module = _module()
+    materialized = _materialized()
+    for session in materialized["sessions"]:
+        session["market_data"]["derived_indicators"]["SOXX"]["realized_volatility_10"] = 0.8
+    materialized.pop("materialized_input_sha256")
+    materialized["materialized_input_sha256"] = module._sha256(materialized)
+    candidate = json.loads(P2_CANDIDATE.read_text(encoding="utf-8"))
+    requests = module.build_volatility_ablation_requests(materialized)
+
+    baseline = module._source_attribution_replay(requests[0], candidate)
+    without_delever = module._source_attribution_replay(requests[1], candidate)
+    original_baseline = module._source_attribution_replay(
+        module.build_attribution_requests(materialized)[1],
+        candidate,
+    )
+
+    assert baseline == original_baseline
+    assert without_delever["variant"] == "baseline_without_volatility_delever"
+    assert without_delever["final_equity"] != pytest.approx(baseline["final_equity"])
+    assert abs(without_delever["reconciliation_residual_usd"]) <= 1e-7
+    with pytest.raises(module.SoxlThreeAssetLearningError, match="invalid attribution input"):
+        module._source_attribution_replay(requests[1] | {"cost_bps": 5.0}, candidate)
+
+
 def test_source_attribution_variants_use_one_engine_and_soxx_buy_hold_does_not_rebalance() -> None:
     module = _module()
     requests = module.build_attribution_requests(_materialized())
@@ -324,6 +411,52 @@ def test_attribution_cli_requires_fixed_outer_mode_and_rejects_learning_paramete
     assert parked["schema_version"] == module.ATTRIBUTION_SCHEMA
     assert parked["status"] == "PARKED"
     assert parked["no_order"] is True
+
+
+def test_volatility_ablation_cli_is_explicit_and_rejects_other_study_modes(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    module = _module()
+    paths = {}
+    for name, content in {
+        "binding": {}, "manifest": {}, "bars": "bars", "candidate": {},
+    }.items():
+        path = tmp_path / name
+        path.write_text(json.dumps(content) if isinstance(content, dict) else content, encoding="utf-8")
+        paths[name] = path
+    project = tmp_path / "ues"
+    project.mkdir()
+    expected = {
+        "schema_version": module.ATTRIBUTION_SCHEMA,
+        "status": "SUCCESS",
+        "study_variant": module.VOLATILITY_ABLATION_STUDY_VARIANT,
+    }
+    captured = {}
+
+    def run(**kwargs):
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(module, "run_volatility_ablation_from_verified_p1", run)
+    base = [
+        "--p1-binding", str(paths["binding"]),
+        "--input-manifest", str(paths["manifest"]),
+        "--bars-member", str(paths["bars"]),
+        "--ues-project", str(project),
+        "--p2-candidate", str(paths["candidate"]),
+        "--volatility-ablation",
+    ]
+    assert module.main(base) == 0
+    assert json.loads(capsys.readouterr().out) == expected
+    assert set(captured) == {"binding", "manifest", "member_bytes", "ues_project", "p2_candidate_path"}
+
+    with pytest.raises(SystemExit):
+        module.main([*base, "--attribution"])
+    assert module.main([*base, "--blend-gate-mid-soxl-weight", "0.65"]) == 2
+    parked = json.loads(capsys.readouterr().out)
+    assert parked["schema_version"] == module.ATTRIBUTION_SCHEMA
+    assert parked["study_variant"] == module.VOLATILITY_ABLATION_STUDY_VARIANT
+    assert parked["status"] == "PARKED"
 
 
 def test_learning_rejects_a_single_return_interval() -> None:
