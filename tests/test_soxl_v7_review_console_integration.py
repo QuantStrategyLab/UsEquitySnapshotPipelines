@@ -3,16 +3,19 @@
 QRT_WORKER_PATH must identify an explicit local checkout; no checkout/network
 or production credentials are discovered by the test.
 """
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
+import urllib.request
 
 import pytest
 
 cycle = pytest.importorskip("quant_platform_kit.strategy_lifecycle.research_promotion_cycle")
-from scripts.run_soxl_v7_review_delivery import deliver_once  # noqa: E402
+from scripts.run_soxl_v7_review_delivery import _console_request, deliver_once  # noqa: E402
 from test_soxl_v7_review_delivery import Store  # noqa: E402
 from test_soxl_v7_research_review import complete_record, materialized, _base_summary, _policy  # noqa: E402,F401
 from us_equity_snapshot_pipelines.lifecycle import soxl_core_only_v7_forward_confirmation_p4_evidence as p4  # noqa: E402
@@ -48,16 +51,26 @@ def test_same_candidate_financial_to_worker_to_durable_decision(monkeypatch, com
             raise HTTPError(path, result["status"], "synthetic worker response", {}, None)
         return result["body"]
 
+    def open_request(req, timeout):
+        assert req.get_header("User-agent") == "UsEquitySnapshotPipelines-V7Review/1.0"
+        url = urlsplit(req.full_url)
+        path = url.path + ("?" + url.query if url.query else "")
+        body = request(path, req.get_method(), json.loads(req.data) if req.data else None)
+        response = io.BytesIO(json.dumps(body).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
     try:
         pull = cycle.make_console_research_promotion_pull(
             endpoint_url="https://switch.example/api/internal/research-promotion-ticket", sync_token="synthetic",
             raise_on_unavailable=True,
-            get_json=lambda **kw: request("/api/internal/research-promotion-ticket?ticket_id=" + kw["ticket_id"]),
+            get_json=_console_request,
         )
         sync = cycle.make_console_research_promotion_sync(
             endpoint_url="https://switch.example/api/internal/sync-research-promotion-ticket", sync_token="synthetic",
             pull_console=pull,
-            post_json=lambda **kw: request("/api/internal/sync-research-promotion-ticket", "POST", kw["payload"]),
+            post_json=_console_request,
         )
         store = Store()
         assert deliver_once(store=store, prepared=prepared, pull=pull, sync=sync) == "AWAITING_HUMAN"

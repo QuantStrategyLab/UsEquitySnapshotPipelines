@@ -1,10 +1,16 @@
 """Run additionally in scripts/requirements-soxl-v7-review-control.txt runtime."""
 from copy import deepcopy
+import io
+import json
+from types import SimpleNamespace
+from urllib.error import HTTPError
+import urllib.request
 
 import pytest
 
 cycle = pytest.importorskip("quant_platform_kit.strategy_lifecycle.research_promotion_cycle")
 from scripts.run_soxl_v7_review_delivery import CONFIG, PROFILE, deliver_once  # noqa: E402
+from scripts import run_soxl_v7_review_delivery as delivery  # noqa: E402
 
 
 class Store:
@@ -137,3 +143,36 @@ def test_only_confirmed_cloud_not_found_counts_as_absent():
     Blob.error = Forbidden("synthetic")
     with pytest.raises(Forbidden):
         store.read("ticket.json")
+
+
+@pytest.mark.parametrize("forbidden", [False, True])
+def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path, prepared, forbidden):
+    from google.cloud import storage
+    store, calls, remote = Store(), [], {}
+    monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(bucket=lambda _: None))
+    monkeypatch.setattr(delivery, "CreateOnlyStore", lambda _: store)
+    monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_URL", delivery.CONSOLE + "/api/internal/sync-research-promotion-ticket")
+    monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_TOKEN", "synthetic-review")
+    path = tmp_path / "ticket.json"
+    path.write_text(json.dumps(prepared))
+
+    def open_request(request, timeout):
+        calls.append(request.get_method())
+        assert request.get_header("Authorization") == "Bearer synthetic-review"
+        if forbidden or request.get_header("User-agent") != "UsEquitySnapshotPipelines-V7Review/1.0":
+            raise HTTPError(request.full_url, 403, "synthetic edge rejection", {}, None)
+        if request.get_method() == "POST":
+            remote.update(json.loads(request.data))
+        if not remote:
+            raise HTTPError(request.full_url, 404, "synthetic absent", {}, None)
+        response = io.BytesIO(json.dumps({"ok": True, "ticket": remote, "live_authority_granted": False}).encode())
+        response.status = 200
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    assert delivery.main(["--prepared-ticket", str(path)]) == (2 if forbidden else 0)
+    assert calls.count("POST") == (0 if forbidden else 1)
+    if forbidden:
+        assert store.read("attempted.json") is None
+    else:
+        assert store.read("attempted.json") == prepared
