@@ -272,6 +272,21 @@ def _development_summary() -> dict[str, object]:
     }
 
 
+def _watcher_development_summary() -> dict[str, object]:
+    summary = _development_summary()
+    summary.pop("authority")
+    summary.update({
+        "operation": "soxl_watcher_learning",
+        "source": "watcher_event_independent_learning",
+        "task_id": "watcher-123456789abc",
+        "task_sha256": "f" * 64,
+        "experiment": {
+            "parameter_bounds_sha256": "cd48b224d6c4a28100d3de9c226dc9cff927bfbb0cd72b528ea157b55089a2be",
+        },
+    })
+    return summary
+
+
 def _validation_materialized() -> dict[str, object]:
     module = _module()
 
@@ -307,10 +322,13 @@ def _validation_materialized() -> dict[str, object]:
     return payload
 
 
-def test_validation_runs_fixed_candidate_through_qpk_promotion_backtests() -> None:
+@pytest.mark.parametrize("watcher", (False, True))
+def test_validation_runs_fixed_candidate_through_qpk_promotion_backtests(watcher: bool) -> None:
     module = _module()
-    development_summary = _development_summary()
-    module.DEVELOPMENT_SUMMARY_SHA256 = module._sha256(development_summary)
+    development_summary = _watcher_development_summary() if watcher else _development_summary()
+    watcher_summary_sha256 = module._sha256(development_summary) if watcher else None
+    if not watcher:
+        module.DEVELOPMENT_SUMMARY_SHA256 = module._sha256(development_summary)
     calls = []
 
     def execute(request):
@@ -348,6 +366,7 @@ def test_validation_runs_fixed_candidate_through_qpk_promotion_backtests() -> No
     proposal, baseline_evidence, candidate_evidence = module.run_fixed_validation(
         materialized=_validation_materialized(),
         development_summary=development_summary,
+        watcher_development_summary_sha256=watcher_summary_sha256,
         execute=execute,
     )
 
@@ -408,6 +427,82 @@ def test_validation_runs_fixed_candidate_through_qpk_promotion_backtests() -> No
     assert len(output["candidate_promotion_runs"]) == 3
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("operation",), "soxl_learning"),
+        (("status",), "parked"),
+        (("task_id",), "watcher-invalid"),
+        (("task_sha256",), ""),
+        (("no_order",), False),
+        (("parameter_values",), [0.65, 0.55]),
+        (("cost_bps",), [5.0, 10.0]),
+        (("development_cutoff",), "2025-08-01"),
+        (("input_identity", "manifest_sha256"), "b" * 64),
+        (("numeric_summary",), None),
+        (("numeric_source_identity",), None),
+        (("numeric_result_sha256",), ""),
+    ),
+)
+def test_watcher_validation_rejects_changed_contract_fields(
+    path: tuple[str, ...], value: object,
+) -> None:
+    module = _module()
+    summary = _watcher_development_summary()
+    target = summary
+    for key in path[:-1]:
+        target = target[key]  # type: ignore[assignment,index]
+    target[path[-1]] = value
+
+    with pytest.raises(module.SoxlThreeAssetLearningError):
+        module.run_fixed_validation(
+            materialized=_validation_materialized(),
+            development_summary=summary,
+            watcher_development_summary_sha256=module._sha256(summary),
+            execute=lambda request: {},
+        )
+
+
+@pytest.mark.parametrize("digest", ("", "0" * 64, "A" * 64))
+def test_watcher_validation_rejects_empty_or_mismatched_digest(digest: str) -> None:
+    module = _module()
+    with pytest.raises(module.SoxlThreeAssetLearningError):
+        module.run_fixed_validation(
+            materialized=_validation_materialized(),
+            development_summary=_watcher_development_summary(),
+            watcher_development_summary_sha256=digest,
+            execute=lambda request: {},
+        )
+
+
+def test_watcher_validation_rejects_changed_numeric_trial_grid() -> None:
+    module = _module()
+    summary = _watcher_development_summary()
+    summary["numeric_summary"][1]["cost_bps"] = 15.0  # type: ignore[index]
+    with pytest.raises(module.SoxlThreeAssetLearningError):
+        module.run_fixed_validation(
+            materialized=_validation_materialized(),
+            development_summary=summary,
+            watcher_development_summary_sha256=module._sha256(summary),
+            execute=lambda request: {},
+        )
+
+
+def test_legacy_manual_validation_keeps_frozen_digest_default() -> None:
+    module = _module()
+    summary = _development_summary()
+    with pytest.raises(module.SoxlThreeAssetLearningError):
+        module.run_fixed_validation(
+            materialized=_validation_materialized(),
+            development_summary=summary,
+            execute=lambda request: {},
+        )
+
+    module.DEVELOPMENT_SUMMARY_SHA256 = module._sha256(summary)
+    proposal = module._validation_proposal(summary, input_manifest_sha256="a" * 64)
+    assert proposal.optimization_method.endswith(module.DEVELOPMENT_SUMMARY_SHA256)
+
+
 def test_validation_rejects_unbound_or_changed_development_summary() -> None:
     module = _module()
     original = _development_summary()
@@ -451,6 +546,108 @@ def test_validation_cli_is_explicit_and_failure_stays_non_promotable(capsys) -> 
         "promotion_eligible": False,
         "live_authority_granted": False,
     }
+
+
+def test_watcher_digest_cli_requires_promotion_validation_summary(capsys) -> None:
+    module = _module()
+    code = module.main([
+        "--p1-binding", "missing-binding.json",
+        "--p2-candidate", str(P2_CANDIDATE),
+        "--watcher-development-summary-sha256", "a" * 64,
+    ])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert output["stage"] == "promotion_validation"
+    assert output["failure_class"] == "validation_input_or_runtime_unavailable"
+    assert output["no_order"] is True
+    assert output["promotion_eligible"] is False
+
+
+@pytest.mark.parametrize(
+    ("mode_flag", "mode_value"),
+    (
+        ("--source-learning-replay", "source.json"),
+        ("--source-paired-shadow-decision", "source.json"),
+        ("--source-paired-shadow-envelope", "source.json"),
+        ("--paired-shadow-session", "source.json"),
+    ),
+)
+def test_watcher_digest_cli_rejects_non_p1_modes_before_execution(
+    mode_flag: str, mode_value: str, tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    module = _module()
+    source = tmp_path / mode_value
+    source.write_text("{}")
+    summary = tmp_path / "summary.json"
+    summary.write_text("{}")
+    for name in (
+        "_source_learning_replay", "_source_paired_shadow_decision",
+        "_source_paired_shadow_envelope", "run_paired_shadow_session",
+    ):
+        monkeypatch.setattr(module, name, lambda *args, **kwargs: pytest.fail("source mode must not execute"))
+    argv = [
+        mode_flag, str(source),
+        "--p2-candidate", str(P2_CANDIDATE),
+        "--promotion-validation-development-summary", str(summary),
+        "--watcher-development-summary-sha256", "a" * 64,
+    ]
+    if mode_flag == "--paired-shadow-session":
+        argv.extend(("--ues-project", str(tmp_path), "--qpk-python", str(tmp_path / "python")))
+    code = module.main(argv)
+    output = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert output["stage"] == "promotion_validation"
+    assert output["failure_class"] == "validation_input_or_runtime_unavailable"
+
+
+def test_watcher_digest_cli_rejects_learning_weights_before_execution(monkeypatch, capsys) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "run_fixed_validation_from_verified_p1",
+        lambda **kwargs: pytest.fail("validation must not execute"),
+    )
+    code = module.main([
+        "--p1-binding", "binding.json",
+        "--p2-candidate", str(P2_CANDIDATE),
+        "--promotion-validation-development-summary", "summary.json",
+        "--watcher-development-summary-sha256", "a" * 64,
+        "--blend-gate-mid-soxl-weight", "0.65",
+    ])
+    output = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert output["stage"] == "promotion_validation"
+    assert output["failure_class"] == "validation_input_or_runtime_unavailable"
+
+
+def test_watcher_digest_cli_is_forwarded_with_validation_summary(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    module = _module()
+    paths = {name: tmp_path / name for name in ("binding.json", "manifest.json", "bars.json", "summary.json")}
+    for name, path in paths.items():
+        path.write_text("{}" if name != "summary.json" else json.dumps(_watcher_development_summary()))
+    captured = {}
+
+    def fake_validation(**kwargs):
+        captured.update(kwargs)
+        return object(), (), ()
+
+    monkeypatch.setattr(module, "run_fixed_validation_from_verified_p1", fake_validation)
+    monkeypatch.setattr(module, "_validation_output", lambda proposal, baseline, candidate: {"status": "ok"})
+    digest = "a" * 64
+    code = module.main([
+        "--p1-binding", str(paths["binding.json"]),
+        "--input-manifest", str(paths["manifest.json"]),
+        "--bars-member", str(paths["bars.json"]),
+        "--ues-project", str(tmp_path),
+        "--p2-candidate", str(P2_CANDIDATE),
+        "--promotion-validation-development-summary", str(paths["summary.json"]),
+        "--watcher-development-summary-sha256", digest,
+    ])
+    assert code == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "ok"}
+    assert captured["watcher_development_summary_sha256"] == digest
 
 
 def test_validation_stops_on_first_invalid_numeric_result() -> None:

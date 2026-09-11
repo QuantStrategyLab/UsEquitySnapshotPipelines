@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import math
+import re
 import shutil
 import statistics
 import subprocess
@@ -26,6 +27,9 @@ COST_BPS = (5.0, 10.0, 15.0)
 MAX_TRIALS = 3
 VALIDATION_CANDIDATE_MID_SOXL_WEIGHT = 0.55
 DEVELOPMENT_SUMMARY_SHA256 = "89418d4e13efa9379f91c522ccbe084e2cbf180ba343103d5b73fb7cdbb955a8"
+WATCHER_PARAMETER_BOUNDS_SHA256 = "cd48b224d6c4a28100d3de9c226dc9cff927bfbb0cd72b528ea157b55089a2be"
+WATCHER_CONSUMER_REVISION = "b03ecbe4e0a7a0de22f298499f867a7039e4b60a"
+WATCHER_QPK_REVISION = "3acab1923a97b805b077c85c6c19657be0143bac"
 VALIDATION_OOS_START = date(2025, 8, 4)
 VALIDATION_OOS_END = date(2026, 8, 4)
 VALIDATION_FOLDS = (
@@ -303,12 +307,75 @@ def run_learning(
 
 def _validation_proposal(
     development_summary: Mapping[str, object], *, input_manifest_sha256: str,
+    watcher_development_summary_sha256: str | None = None,
 ):
     from quant_platform_kit.strategy_lifecycle.contracts import OptimizationProposal
 
     summary = _mapping(development_summary)
     summary_sha256 = _sha256(summary)
-    if summary_sha256 != DEVELOPMENT_SUMMARY_SHA256:
+    if watcher_development_summary_sha256 is None:
+        expected_summary_sha256 = DEVELOPMENT_SUMMARY_SHA256
+    else:
+        expected_summary_sha256 = watcher_development_summary_sha256
+        try:
+            experiment = _mapping(summary.get("experiment"))
+            numeric_source = _mapping(summary.get("numeric_source_identity"))
+            consumer_source = _mapping(summary.get("consumer_source"))
+        except SoxlThreeAssetLearningError as exc:
+            raise SoxlThreeAssetLearningError("invalid validation proposal") from exc
+        if (
+            not isinstance(expected_summary_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_summary_sha256) is None
+            or summary.get("schema_version") != "qsl.soxl-manual-learning-run.v1"
+            or summary.get("operation") != "soxl_watcher_learning"
+            or summary.get("source") != "watcher_event_independent_learning"
+            or summary.get("status") != "accepted"
+            or re.fullmatch(r"watcher-[0-9a-f]{12}", str(summary.get("task_id") or "")) is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(summary.get("task_sha256") or "")) is None
+            or experiment != {"parameter_bounds_sha256": WATCHER_PARAMETER_BOUNDS_SHA256}
+            or summary.get("parameter_key") != "blend_gate_mid_soxl_weight"
+            or summary.get("parameter_values") != [0.65, 0.6, 0.55]
+            or summary.get("cost_bps") != list(COST_BPS)
+            or summary.get("development_cutoff") != DEVELOPMENT_CUTOFF
+            or any(
+                summary.get(key) is not True
+                for key in ("learning_only", "no_order", "size_zero_required", "research_executed")
+            )
+            or summary.get("promotion_eligible") is not False
+            or consumer_source != {
+                "repository": "QuantStrategyLab/UsEquitySnapshotPipelines",
+                "revision": WATCHER_CONSUMER_REVISION,
+            }
+            or numeric_source != {
+                "repository": "QuantStrategyLab/UsEquityStrategies",
+                "revision": "7756fe32585e85cf1d09a163203a02e3eee39fe1",
+                "quant_platform_kit_revision": WATCHER_QPK_REVISION,
+                "uv_lock_sha256": P2_UES_UV_LOCK_SHA256,
+            }
+            or re.fullmatch(r"[0-9a-f]{64}", str(summary.get("numeric_result_sha256") or "")) is None
+        ):
+            raise SoxlThreeAssetLearningError("invalid validation proposal")
+        numeric_summary = summary.get("numeric_summary")
+        expected_trials = [(weight, cost) for weight in (0.65, 0.6, 0.55) for cost in COST_BPS]
+        if not isinstance(numeric_summary, list) or len(numeric_summary) != len(expected_trials):
+            raise SoxlThreeAssetLearningError("invalid validation proposal")
+        for raw, (weight, cost) in zip(numeric_summary, expected_trials, strict=True):
+            try:
+                trial = _mapping(raw)
+                parameter_override = _mapping(trial.get("parameter_override"))
+                backtest_result = _mapping(trial.get("backtest_result"))
+            except SoxlThreeAssetLearningError as exc:
+                raise SoxlThreeAssetLearningError("invalid validation proposal") from exc
+            if (
+                set(trial) != {"parameter_override", "cost_bps", "backtest_result", "output_sha256"}
+                or parameter_override != {"blend_gate_mid_soxl_weight": weight}
+                or trial.get("cost_bps") != cost
+                or backtest_result.get("strategy_profile") != LEARNING_PROFILE
+                or str(backtest_result.get("end_date") or "") > DEVELOPMENT_CUTOFF
+                or re.fullmatch(r"[0-9a-f]{64}", str(trial.get("output_sha256") or "")) is None
+            ):
+                raise SoxlThreeAssetLearningError("invalid validation proposal")
+    if summary_sha256 != expected_summary_sha256:
         raise SoxlThreeAssetLearningError("invalid validation proposal")
     input_identity = _mapping(summary.get("input_identity"))
     if input_identity != {"manifest_sha256": input_manifest_sha256, "member_count": 4}:
@@ -404,6 +471,7 @@ class _ThreeAssetPromotionRunner:
 def run_fixed_validation(
     *, materialized: Mapping[str, object], development_summary: Mapping[str, object],
     execute: Callable[[Mapping[str, object]], Mapping[str, object]],
+    watcher_development_summary_sha256: str | None = None,
 ):
     """Run the one preselected 0.65/0.55 comparison through QPK promotion backtests."""
     from quant_platform_kit.strategy_lifecycle.backtest_orchestrator import BacktestOrchestrator
@@ -412,7 +480,11 @@ def run_fixed_validation(
     build_learning_requests(materialized, mid_soxl_weights=(0.65, 0.55))
     source = _mapping(materialized)
     p1 = _mapping(source.get("p1_identity"))
-    proposal = _validation_proposal(development_summary, input_manifest_sha256=str(p1.get("input_manifest_sha256")))
+    proposal = _validation_proposal(
+        development_summary,
+        input_manifest_sha256=str(p1.get("input_manifest_sha256")),
+        watcher_development_summary_sha256=watcher_development_summary_sha256,
+    )
     folds = tuple(PurgedWalkForwardFold(*boundaries) for boundaries in VALIDATION_FOLDS)
     orchestrator = BacktestOrchestrator(store=_NoWritePromotionStore())
     orchestrator.register_runner("us_equity", _ThreeAssetPromotionRunner(source, execute))
@@ -443,6 +515,7 @@ def run_fixed_validation(
 def run_fixed_validation_from_verified_p1(
     *, binding: Mapping[str, object], manifest: Mapping[str, object], member_bytes: bytes,
     development_summary: Mapping[str, object], ues_project: Path, p2_candidate_path: Path,
+    watcher_development_summary_sha256: str | None = None,
 ):
     from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
         materialize_soxl_core_only_p3_input,
@@ -454,6 +527,7 @@ def run_fixed_validation_from_verified_p1(
     return run_fixed_validation(
         materialized=materialized,
         development_summary=development_summary,
+        watcher_development_summary_sha256=watcher_development_summary_sha256,
         execute=lambda request: run_isolated_learning_request(
             request, ues_project=ues_project, p2_candidate_path=p2_candidate_path,
         ),
@@ -884,10 +958,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--qpk-python", type=Path)
     parser.add_argument("--blend-gate-mid-soxl-weight", action="append", type=float)
     parser.add_argument("--promotion-validation-development-summary", type=Path)
+    parser.add_argument("--watcher-development-summary-sha256")
     parser.add_argument("--p2-candidate", required=True, type=Path)
     args = parser.parse_args(argv)
     failed = False
     try:
+        if args.watcher_development_summary_sha256 is not None:
+            watcher_validation_mode = (
+                args.p1_binding is not None
+                and args.promotion_validation_development_summary is not None
+                and not any((
+                    args.source_learning_replay,
+                    args.source_paired_shadow_decision,
+                    args.source_paired_shadow_envelope,
+                    args.paired_shadow_session,
+                ))
+                and not args.blend_gate_mid_soxl_weight
+            )
+            if not watcher_validation_mode:
+                raise SoxlThreeAssetLearningError("invalid validation arguments")
         if args.source_paired_shadow_decision:
             result = _source_paired_shadow_decision(
                 json.loads(Path(args.source_paired_shadow_decision).read_text()),
@@ -921,6 +1010,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 development_summary=json.loads(args.promotion_validation_development_summary.read_text()),
                 ues_project=args.ues_project,
                 p2_candidate_path=args.p2_candidate,
+                watcher_development_summary_sha256=args.watcher_development_summary_sha256,
             )
             result = _validation_output(proposal, baseline, candidate)
         else:
@@ -936,7 +1026,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     except Exception:
         failed = True
-        if args.paired_shadow_session or args.source_paired_shadow_decision or args.source_paired_shadow_envelope:
+        if (
+            args.watcher_development_summary_sha256 is None
+            and (args.paired_shadow_session or args.source_paired_shadow_decision or args.source_paired_shadow_envelope)
+        ):
             result = {
                 "status": "PARKED",
                 "stage": "paired_shadow",
@@ -944,7 +1037,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "no_order": True,
                 "live_authority_granted": False,
             }
-        elif args.promotion_validation_development_summary:
+        elif args.promotion_validation_development_summary or args.watcher_development_summary_sha256 is not None:
             result = {
                 "status": "PARKED",
                 "stage": "promotion_validation",
