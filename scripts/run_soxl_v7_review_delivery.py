@@ -12,7 +12,8 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
+import urllib.request
 
 from quant_platform_kit.strategy_lifecycle.research_promotion_cycle import (
     ResearchPromotionTicket, load_research_promotion_ticket,
@@ -26,6 +27,19 @@ PROFILE = "soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve"
 CONFIG = "843ab4e93e81985c2b3becc61a2f0b971508ccf25afa59acf402e75f574514d1"
 CONSOLE = "https://qsl-strategy-switch-console.pigbibi.workers.dev"
 
+
+def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload=None):
+    """Use QPK's existing transport hooks with this service's client identity."""
+    headers = {"Authorization": "Bearer " + bearer_token, "Accept": "application/json",
+               "User-Agent": "UsEquitySnapshotPipelines-V7Review/1.0"}
+    if payload is None:
+        request = urllib.request.Request(endpoint + "?" + urlencode({"ticket_id": ticket_id}), headers=headers)
+    else:
+        headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(endpoint, data=json.dumps(payload, sort_keys=True).encode(),
+                                         method="POST", headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read()) if payload is None else response.status
 
 
 def _admitted(raw):
@@ -98,10 +112,11 @@ def main(argv=None):
             raise ValueError("V7 research console binding unavailable")
         pull = make_console_research_promotion_pull(
             endpoint_url=CONSOLE + "/api/internal/research-promotion-ticket", sync_token=token,
-            raise_on_unavailable=True, printer=lambda *_a, **_k: None,
+            raise_on_unavailable=True, printer=lambda *_a, **_k: None, get_json=_console_request,
         )
         sync = make_console_research_promotion_sync(
             endpoint_url=url, sync_token=token, pull_console=pull, printer=lambda *_a, **_k: None,
+            post_json=_console_request,
         )
         prepared = json.loads(args.prepared_ticket.read_text()) if args.prepared_ticket else None
         status = deliver_once(
