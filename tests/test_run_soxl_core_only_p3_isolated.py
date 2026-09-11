@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -329,6 +330,7 @@ def test_replay_accounting_charges_cash_legs_and_conserves_equity(
     assert result["final_equity"] + result["cost_total"] == pytest.approx(100_000.0)
     assert result["executed_signal_count"] == 2
     assert result["unexecuted_final_signal"] is True
+    assert "attribution" not in result
     for portfolio in portfolios:
         assert portfolio.cash_balance + sum(p.market_value for p in portfolio.positions) == pytest.approx(
             portfolio.total_equity
@@ -343,6 +345,72 @@ def test_replay_accounting_charges_cash_legs_and_conserves_equity(
     metrics, _ = evidence_summary._replay_summary(outer, cost_bps=cost_bps)
     assert metrics["net_return"] == pytest.approx(expected_equity / 100_000.0 - 1.0)
     assert metrics["cagr"] == pytest.approx((expected_equity / 100_000.0) ** 126 - 1.0)
+
+
+def test_opt_in_replay_attribution_matches_hand_calculation_and_natural_drift() -> None:
+    module = _module()
+    replay = _replay_input(module)
+    replay["cost_bps"] = 10
+    replay["sessions"] = [
+        {
+            "as_of": f"2026-08-{day}T12:00:00+00:00",
+            "market_data": _context()["market_data"],
+            "prices": {"SOXL": soxl, "SOXX": 100.0, "BOXX": 100.0},
+        }
+        for day, soxl in ((20, 100.0), (21, 100.0), (24, 110.0))
+    ]
+    calls = 0
+
+    def decide(state):
+        nonlocal calls
+        portfolio = state["portfolio"]
+        if calls == 0:
+            target_values = {"SOXL": 50_000.0, "SOXX": 0.0, "BOXX": 0.0}
+            hold = False
+        else:
+            current = {position.symbol: position.market_value for position in portfolio.positions}
+            target_values = {symbol: current.get(symbol, 0.0) for symbol in ("SOXL", "SOXX", "BOXX")}
+            hold = True
+        calls += 1
+        return {
+            "as_of": state["as_of"].isoformat(),
+            "target_values": target_values,
+            "_attribution_hold_current_positions": hold,
+        }
+
+    result = module._stateful_replay_with_decision_builder(
+        replay,
+        decision_builder=decide,
+        include_attribution=True,
+    )
+
+    assert result["one_way_turnover"] == pytest.approx(0.5)
+    assert result["cost_total"] == pytest.approx(50.0)
+    assert result["final_equity"] == pytest.approx(104_947.5)
+    assert result["unexecuted_final_signal"] is True
+    assert result["attribution"] == {
+        "asset_pnl_usd": {"SOXL": pytest.approx(4_997.5), "SOXX": 0.0, "BOXX": 0.0},
+        "cash_pnl_usd": 0.0,
+        "external_flow_usd": 0.0,
+        "max_drawdown": pytest.approx(0.0005),
+        "reconciliation_residual_usd": pytest.approx(0.0, abs=1e-9),
+        "start_date": "2026-08-20",
+        "end_date": "2026-08-24",
+        "observation_count": 2,
+    }
+
+
+def test_replay_attribution_rejects_nonfinite_prices() -> None:
+    module = _module()
+    replay = _replay_input(module)
+    replay["sessions"][1]["prices"]["SOXL"] = math.nan
+
+    with pytest.raises(module.SoxlCoreOnlyP3IsolatedRunnerError):
+        module._stateful_replay_with_decision_builder(
+            replay,
+            decision_builder=lambda _state: {},
+            include_attribution=True,
+        )
 
 
 def test_outer_replay_runner_binds_verified_source_replay(monkeypatch, tmp_path) -> None:

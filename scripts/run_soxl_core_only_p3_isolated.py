@@ -416,6 +416,7 @@ def _stateful_replay_with_decision_builder(
     decision_builder: Callable[[object], Mapping[str, object]],
     entrypoint: str = ENTRYPOINT,
     result_schema: str = STATEFUL_REPLAY_RESULT_SCHEMA,
+    include_attribution: bool = False,
 ) -> dict[str, object]:
     """Apply the shared next-session ledger to one source decision function."""
     replay = _validate_replay_input(value)
@@ -431,12 +432,20 @@ def _stateful_replay_with_decision_builder(
     one_way_turnover = 0.0
     cost_total = 0.0
     decisions: list[dict[str, object]] = []
+    previous_prices: dict[str, float] | None = None
+    previous_equity = cash
+    asset_pnl_usd = {symbol: 0.0 for symbol in _SYMBOLS}
+    equity_curve = [cash]
     sessions = replay["sessions"]
     assert isinstance(sessions, list)
     for index, raw_session in enumerate(sessions):
         session = _mapping(raw_session)
         as_of = _timestamp(session["as_of"])
         prices = {symbol: _finite(_mapping(session["prices"])[symbol], positive=True) for symbol in _SYMBOLS}
+        period_asset_pnl = {
+            symbol: 0.0 if previous_prices is None else quantities[symbol] * (prices[symbol] - previous_prices[symbol])
+            for symbol in _SYMBOLS
+        }
         market_values = {symbol: quantities[symbol] * prices[symbol] for symbol in _SYMBOLS}
         equity_before_trade = cash + sum(market_values.values())
         if equity_before_trade <= 0.0:
@@ -463,6 +472,18 @@ def _stateful_replay_with_decision_builder(
             one_way_turnover += executed_turnover
             cost_total += executed_cost
         equity = cash + sum(market_values.values())
+        if include_attribution:
+            period_residual = equity - previous_equity - sum(period_asset_pnl.values()) + executed_cost
+            if not math.isfinite(period_residual) or not math.isclose(
+                period_residual,
+                0.0,
+                rel_tol=1e-12,
+                abs_tol=1e-7,
+            ):
+                raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL replay attribution invalid")
+            for symbol in _SYMBOLS:
+                asset_pnl_usd[symbol] += period_asset_pnl[symbol]
+            equity_curve.append(equity)
         portfolio = PortfolioSnapshot(
             as_of=as_of,
             total_equity=equity,
@@ -488,7 +509,25 @@ def _stateful_replay_with_decision_builder(
         if summary.get("as_of") != as_of.isoformat():
             _fail()
         target_values = _mapping(summary["target_values"])
-        pending_weights, pending_cash_weight = _target_asset_weights(target_values, equity=equity)
+        hold_current_positions = summary.get("_attribution_hold_current_positions", False)
+        if not isinstance(hold_current_positions, bool) or (hold_current_positions and not include_attribution):
+            _fail()
+        if hold_current_positions:
+            expected_values = {symbol: market_values[symbol] for symbol in _SYMBOLS}
+            if set(target_values) != set(_SYMBOLS) or any(
+                not math.isclose(
+                    _finite(target_values[symbol], nonnegative=True),
+                    expected_values[symbol],
+                    rel_tol=1e-12,
+                    abs_tol=1e-7,
+                )
+                for symbol in _SYMBOLS
+            ):
+                _fail()
+            pending_weights = None
+            pending_cash_weight = None
+        else:
+            pending_weights, pending_cash_weight = _target_asset_weights(target_values, equity=equity)
         decisions.append(
             {
                 "signal_as_of": as_of.isoformat(),
@@ -505,6 +544,8 @@ def _stateful_replay_with_decision_builder(
                 "pending_cash_weight": pending_cash_weight,
             }
         )
+        previous_prices = prices
+        previous_equity = equity
     result: dict[str, object] = {
         "schema_version": result_schema,
         "entrypoint": entrypoint,
@@ -518,6 +559,26 @@ def _stateful_replay_with_decision_builder(
         "cost_total": cost_total,
         "decisions": decisions,
     }
+    if include_attribution:
+        final_equity = float(result["final_equity"])
+        residual = final_equity - float(replay["initial_equity"]) - sum(asset_pnl_usd.values()) + cost_total
+        if not math.isfinite(residual) or not math.isclose(residual, 0.0, rel_tol=1e-12, abs_tol=1e-7):
+            raise SoxlCoreOnlyP3IsolatedRunnerError("isolated SOXL replay attribution invalid")
+        peak = equity_curve[0]
+        max_drawdown = 0.0
+        for equity in equity_curve:
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, 1.0 - equity / peak)
+        result["attribution"] = {
+            "asset_pnl_usd": {symbol: _finite(asset_pnl_usd[symbol]) for symbol in _SYMBOLS},
+            "cash_pnl_usd": 0.0,
+            "external_flow_usd": 0.0,
+            "max_drawdown": _finite(max_drawdown, nonnegative=True),
+            "reconciliation_residual_usd": residual,
+            "start_date": str(_mapping(sessions[0])["as_of"])[:10],
+            "end_date": str(_mapping(sessions[-1])["as_of"])[:10],
+            "observation_count": len(sessions) - 1,
+        }
     result["output_sha256"] = _sha256(result)
     return result
 

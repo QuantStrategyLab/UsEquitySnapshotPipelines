@@ -36,3 +36,38 @@ scenarios through the isolated runtime, and packages metrics-and-hashes only.
 The separate P1 publisher verifies complete XNYS coverage before it can create
 a root.  A later non-live scheduler must persist only sanitized evidence and
 fail closed.
+
+## Fixed retrospective return attribution
+
+The same verified materialized P1 input can be used for a bounded aggregate
+attribution study:
+
+```bash
+python scripts/run_soxl_three_asset_learning.py \
+  --p1-binding <binding.json> \
+  --input-manifest <manifest.json> \
+  --bars-member <bars.json> \
+  --ues-project <pinned-ues-checkout> \
+  --p2-candidate config/soxl_soxx_core_only_p2_v3.json \
+  --attribution
+```
+
+The command has no parameter-search surface. It always evaluates the original
+`0.65` mid-weight baseline, a 97% SOXX buy-and-hold comparison with 3% retained
+cash, and fixed 97%-invested full-tier weights (`0.70/0.20/0.10`) that rebalance
+under the original next-session model. Each variant runs at 5, 10, and 15 bps
+with initial equity of USD 100,000 and uses development sessions through
+2025-07-31 only. The two comparisons describe the aggregate rule difference;
+they do not separately identify a causal trend or volatility contribution and
+are not frozen P2 candidates.
+
+For every interval, the existing stateful replay attributes the pre-trade
+equity move to the prior simulated SOXL, SOXX, and BOXX quantities, then checks
+that the remaining equity change equals the original simulated execution cost.
+Cash interest and external flow are zero assumptions. The verified P1 adjusted
+close remains the price basis, so the study does not add a dividend, fund-fee,
+or ETF-expense adjustment. Output contains only aggregate dollar PnL,
+initial-equity contribution percentage points, return, drawdown, turnover,
+cost, dates, counts, identities, and reconciliation residuals. It omits daily
+prices, returns, positions, and decisions and remains retrospective research
+with no order, sizing, promotion, paper, shadow, or live authority.

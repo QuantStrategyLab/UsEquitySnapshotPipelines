@@ -120,6 +120,7 @@ def test_learning_uses_isolated_results_and_never_claims_promotion() -> None:
     assert result["promotion_eligible"] is False
     assert result["research_executed"] is True
     assert result["p1_identity"]["input_manifest_sha256"] == "a" * 64
+    assert "initial_equity" not in result
     assert "selected" not in json.dumps(result).lower()
 
     def mismatched(request):
@@ -135,6 +136,194 @@ def test_learning_uses_isolated_results_and_never_claims_promotion() -> None:
             mid_soxl_weights=(0.60, 0.65),
             execute=mismatched,
         )
+
+
+def test_attribution_requests_are_fixed_and_aggregate_results_do_not_leak_daily_data() -> None:
+    module = _module()
+    requests = module.build_attribution_requests(_materialized())
+    assert [(item["variant"], item["cost_bps"]) for item in requests] == [
+        (variant, cost)
+        for variant in ("baseline_mid_065", "soxx_buy_hold", "fixed_full_weights")
+        for cost in (5.0, 10.0, 15.0)
+    ]
+    assert all(item["initial_equity"] == 100_000.0 for item in requests)
+    assert all(item["sessions"][-1]["as_of"].startswith("2025-07-31") for item in requests)
+    calls = []
+
+    def execute(request):
+        calls.append(request)
+        result = {
+            "schema_version": module.ATTRIBUTION_REPLAY_RESULT_SCHEMA,
+            "status": "SUCCESS",
+            "variant": request["variant"],
+            "cost_bps": request["cost_bps"],
+            "initial_equity": 100_000.0,
+            "final_equity": 101_000.0,
+            "total_return": 0.01,
+            "max_drawdown": 0.02,
+            "cost_total": 10.0,
+            "one_way_turnover": 0.2,
+            "asset_pnl_usd": {"SOXL": 500.0, "SOXX": 400.0, "BOXX": 110.0},
+            "cash_pnl_usd": 0.0,
+            "external_flow_usd": 0.0,
+            "reconciliation_residual_usd": 0.0,
+            "contribution_pct_points": {
+                "SOXL": 0.5, "SOXX": 0.4, "BOXX": 0.11, "cash": 0.0,
+                "execution_cost": -0.01,
+            },
+            "start_date": "2025-07-28",
+            "end_date": "2025-07-31",
+            "observation_count": 3,
+            "unexecuted_final_signal": True,
+        }
+        result["output_sha256"] = module._sha256(result)
+        return result
+
+    result = module.run_attribution(materialized=_materialized(), execute=execute)
+
+    assert len(calls) == 9
+    assert result["schema_version"] == "qsl.soxl-three-asset-attribution.v1"
+    assert result["study_kind"] == "retrospective_research"
+    assert result["learning_only"] is True
+    assert result["no_order"] is True
+    assert result["size_zero_required"] is True
+    assert result["promotion_eligible"] is False
+    assert result["live_ready"] is False
+    assert result["live_authority_granted"] is False
+    assert result["initial_equity"] == 100_000.0
+    assert result["price_basis"] == "verified_p1_adjusted_close_as_materialized"
+    assert result["cash_interest_assumption"] == "zero"
+    assert result["external_flow_assumption"] == "zero"
+    assert result["execution_cost_basis"] == "original_simulated_all_in_per_side"
+    assert result["additional_dividend_or_fund_expense_adjustment"] is False
+    assert result["causal_attribution_claimed"] is False
+    assert result["p1_identity"]["input_manifest_sha256"] == "a" * 64
+    serialized = json.dumps(result, sort_keys=True)
+    for forbidden in ('"sessions"', '"prices"', '"decisions"', '"positions"'):
+        assert forbidden not in serialized
+    material = {key: value for key, value in result.items() if key != "result_sha256"}
+    assert result["result_sha256"] == module._sha256(material)
+
+
+def test_source_attribution_variants_use_one_engine_and_soxx_buy_hold_does_not_rebalance() -> None:
+    module = _module()
+    requests = module.build_attribution_requests(_materialized())
+    candidate = json.loads(P2_CANDIDATE.read_text(encoding="utf-8"))
+
+    results = [module._source_attribution_replay(requests[index], candidate) for index in (0, 3, 6)]
+
+    assert [result["variant"] for result in results] == list(module.ATTRIBUTION_VARIANTS)
+    assert results[1]["one_way_turnover"] == pytest.approx(0.97)
+    assert all(abs(result["reconciliation_residual_usd"]) <= 1e-7 for result in results)
+    assert all(result["unexecuted_final_signal"] is True for result in results)
+
+
+def test_isolated_attribution_uses_pinned_source_gate_and_internal_mode(
+    monkeypatch, tmp_path
+) -> None:
+    module = _module()
+    project = tmp_path / "ues"
+    project.mkdir()
+    candidate_path = tmp_path / "candidate.json"
+    candidate = json.loads(P2_CANDIDATE.read_text(encoding="utf-8"))
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    validations = []
+
+    class Isolated:
+        @staticmethod
+        def validate_ues_project(value):
+            validations.append(("ues", value))
+
+        @staticmethod
+        def validate_p2_candidate(value):
+            validations.append(("candidate", value))
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, '{"status":"SUCCESS"}', "")
+
+    monkeypatch.setattr(module, "_load_isolated_module", lambda: Isolated)
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert module.run_isolated_attribution_request(
+        {"schema_version": module.ATTRIBUTION_REPLAY_SCHEMA},
+        ues_project=project,
+        p2_candidate_path=candidate_path,
+    ) == {"status": "SUCCESS"}
+    assert validations == [("ues", project), ("candidate", candidate)]
+    command, kwargs = commands[0]
+    assert "--source-attribution-replay" in command
+    assert "--attribution" not in command
+    assert command[:5] == ("uv", "run", "--locked", "--project", str(project))
+    assert kwargs == {
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": 120,
+    }
+
+
+def test_attribution_stops_on_first_nonfinite_result() -> None:
+    module = _module()
+    calls = []
+
+    def execute(request):
+        calls.append(request)
+        return {
+            "schema_version": module.ATTRIBUTION_REPLAY_RESULT_SCHEMA,
+            "status": "SUCCESS",
+            "variant": request["variant"],
+            "cost_bps": request["cost_bps"],
+            "initial_equity": 100_000.0,
+            "final_equity": math.nan,
+        }
+
+    with pytest.raises(module.SoxlThreeAssetLearningError, match="attribution result unavailable"):
+        module.run_attribution(materialized=_materialized(), execute=execute)
+    assert len(calls) == 1
+
+
+def test_attribution_cli_requires_fixed_outer_mode_and_rejects_learning_parameters(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    module = _module()
+    paths = {}
+    for name, content in {
+        "binding": {}, "manifest": {}, "bars": "bars", "candidate": {},
+    }.items():
+        path = tmp_path / name
+        path.write_text(json.dumps(content) if isinstance(content, dict) else content, encoding="utf-8")
+        paths[name] = path
+    project = tmp_path / "ues"
+    project.mkdir()
+    expected = {"schema_version": module.ATTRIBUTION_SCHEMA, "status": "SUCCESS"}
+    captured = {}
+
+    def run(**kwargs):
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(module, "run_attribution_from_verified_p1", run)
+    base = [
+        "--p1-binding", str(paths["binding"]),
+        "--input-manifest", str(paths["manifest"]),
+        "--bars-member", str(paths["bars"]),
+        "--ues-project", str(project),
+        "--p2-candidate", str(paths["candidate"]),
+        "--attribution",
+    ]
+    assert module.main(base) == 0
+    assert json.loads(capsys.readouterr().out) == expected
+    assert set(captured) == {"binding", "manifest", "member_bytes", "ues_project", "p2_candidate_path"}
+
+    assert module.main([*base, "--blend-gate-mid-soxl-weight", "0.65"]) == 2
+    parked = json.loads(capsys.readouterr().out)
+    assert parked["schema_version"] == module.ATTRIBUTION_SCHEMA
+    assert parked["status"] == "PARKED"
+    assert parked["no_order"] is True
 
 
 def test_learning_rejects_a_single_return_interval() -> None:
