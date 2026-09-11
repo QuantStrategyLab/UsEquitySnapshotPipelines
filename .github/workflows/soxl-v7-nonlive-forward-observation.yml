@@ -74,11 +74,20 @@ jobs:
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Restore the fixed completed review before any new observation
+        id: completed_review
+        if: vars.SOXL_V7_RESEARCH_REVIEW_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          uv run --no-sync python -m scripts.soxl_v7_review_checkpoint restore \
+            --root "${RUNNER_TEMP}/soxl-v7-nonlive" \
+            --requested-date '${{ steps.session.outputs.date_cutoff }}' >> "$GITHUB_OUTPUT"
       - name: Load the last immutable observation receipt
         id: prior
         env:
           DATE_CUTOFF: ${{ steps.session.outputs.date_cutoff }}
           PUBLISH_ONLY: ${{ inputs.publish_only }}
+          RESTORED_COMPLETION: ${{ steps.completed_review.outputs.restored }}
         run: |
           set -euo pipefail
           prefix="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward"
@@ -88,6 +97,11 @@ jobs:
           listing_error="${state_dir}/prior-receipt-listing.err"
           record="${state_dir}/record.json"
           mkdir -p "$state_dir"
+          if [ "${RESTORED_COMPLETION:-false}" = "true" ]; then
+            echo "already_recorded=true" >> "$GITHUB_OUTPUT"
+            echo "history_available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gcloud storage ls "$current" >/dev/null 2>&1; then
             gcloud storage cp --quiet "$current" "$record"
             echo "already_recorded=true" >> "$GITHUB_OUTPUT"
@@ -154,6 +168,8 @@ jobs:
               print("backfill_pending=false")
           else:
               if observation is None:
+                  # Completed V7 keeps the final immutable record for read-only review recovery.
+                  Path(path).with_name("record.json").write_text(json.dumps(previous), encoding="utf-8")
                   print("already_recorded=true")
                   print("observation_date_cutoff=")
                   print("backfill_pending=false")
@@ -234,6 +250,7 @@ jobs:
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED' && inputs.publish_only != true
         env:
           PREVIOUS_RECORD: ${{ steps.prior.outputs.previous_record }}
+          REVIEW_ENABLED: ${{ vars.SOXL_V7_RESEARCH_REVIEW_ENABLED }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/soxl-v7-nonlive/p1-root"
@@ -252,7 +269,16 @@ jobs:
           if [ -n "${PREVIOUS_RECORD:-}" ]; then
             args+=(--previous-record "$PREVIOUS_RECORD")
           fi
+          if [ "${REVIEW_ENABLED:-false}" = "true" ]; then
+            args+=(--review-output-dir "${RUNNER_TEMP}/soxl-v7-nonlive/review")
+          fi
           uv run --no-sync python -m scripts.run_soxl_v7_nonlive_forward_observation "${args[@]}"
+      - name: Durably preserve the complete financial result before the final receipt
+        if: vars.SOXL_V7_RESEARCH_REVIEW_ENABLED == 'true' && steps.prior.outputs.already_recorded != 'true' && steps.p1.outputs.status == 'ACCEPTED'
+        run: |
+          set -euo pipefail
+          uv run --no-sync python -m scripts.soxl_v7_review_checkpoint preserve \
+            --root "${RUNNER_TEMP}/soxl-v7-nonlive"
       - name: Create-only publish non-live receipt
         if: steps.prior.outputs.already_recorded != 'true' && steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED' && inputs.publish_only != true
         env:
@@ -264,6 +290,60 @@ jobs:
           destination="gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward/${DATE_CUTOFF}.json"
           gcloud storage cp --quiet --no-clobber "$record" "$destination"
           echo "SOXL_V7_NONLIVE_RECORD=CREATE_ONLY_COMPLETE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore a missing final receipt from the immutable completed review
+        if: steps.completed_review.outputs.restored == 'true'
+        run: |
+          set -euo pipefail
+          record="${RUNNER_TEMP}/soxl-v7-nonlive/record.json"
+          session="$(RECORD="$record" python -c 'import json,os; print(json.load(open(os.environ["RECORD"]))["last_observed_session"])')"
+          gcloud storage cp --quiet --no-clobber "$record" \
+            "gs://qsl-runtime-logs-shared/strategy-lifecycle/v1/us_equity/soxl-v7-nonlive-forward/${session}.json"
+      - name: Check frozen V7 research review readiness
+        id: review
+        if: vars.SOXL_V7_RESEARCH_REVIEW_ENABLED == 'true' && (steps.prior.outputs.already_recorded == 'true' || steps.p1.outputs.status == 'ACCEPTED')
+        run: |
+          set -euo pipefail
+          RECORD="${RUNNER_TEMP}/soxl-v7-nonlive/record.json" uv run --no-sync python - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+          from us_equity_snapshot_pipelines.lifecycle.soxl_v7_nonlive_forward_observation import build_soxl_v7_forward_control_plane_source
+          record = json.loads(Path(os.environ["RECORD"]).read_text())
+          build_soxl_v7_forward_control_plane_source(record, generated_at=record["observed_at"])
+          complete = record["controller"]["state"] == "FORWARD_COMPLETE_HUMAN_REVIEW"
+          if complete:
+              summary_path = Path(os.environ["RECORD"]).parent / "review/financial-summary.json"
+              if not summary_path.is_file():
+                  raise SystemExit("PARKED_FIXED_FINANCIAL_CHECKPOINT_MISSING")
+              summary = json.loads(summary_path.read_text())
+              admitted = summary["forward_confirmation_policy"]["forward_confirmation_satisfied"] is True
+              print("admitted=" + str(admitted).lower())
+              if not admitted:
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+                      output.write("SOXL_V7_REVIEW=REJECTED_FINANCIAL_EVIDENCE; no ticket or automatic rerun.\n")
+          print("ready=" + str(complete).lower())
+          PYCODE
+      - name: Install isolated research ticket control runtime
+        if: steps.review.outputs.admitted == 'true'
+        run: |
+          set -euo pipefail
+          uv venv --python 3.11 "${RUNNER_TEMP}/soxl-v7-review-control"
+          uv pip install --python "${RUNNER_TEMP}/soxl-v7-review-control/bin/python" \
+            -r scripts/requirements-soxl-v7-review-control.txt
+      - name: Publish admitted research ticket or recover the human decision
+        if: steps.review.outputs.admitted == 'true'
+        env:
+          RESEARCH_PROMOTION_SYNC_URL: ${{ vars.RESEARCH_PROMOTION_SYNC_URL }}
+          RESEARCH_PROMOTION_SYNC_TOKEN: ${{ secrets.RESEARCH_PROMOTION_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          ticket="${RUNNER_TEMP}/soxl-v7-nonlive/review/ticket.json"
+          args=()
+          if [ -s "$ticket" ]; then
+            args+=(--prepared-ticket "$ticket")
+          fi
+          "${RUNNER_TEMP}/soxl-v7-review-control/bin/python" -E -s \
+            -m scripts.run_soxl_v7_review_delivery "${args[@]}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build V7 forward control-plane source
         if: steps.prior.outputs.already_recorded == 'true' || (steps.prior.outputs.history_available == 'true' && steps.p1.outputs.status == 'ACCEPTED')
         run: |
@@ -369,6 +449,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: soxl-v7-nonlive-forward-${{ steps.prior.outputs.observation_date_cutoff || steps.session.outputs.date_cutoff }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/soxl-v7-nonlive/record.json
+          path: |
+            ${{ runner.temp }}/soxl-v7-nonlive/record.json
+            ${{ runner.temp }}/soxl-v7-nonlive/review/*.json
           if-no-files-found: ignore
           retention-days: 35

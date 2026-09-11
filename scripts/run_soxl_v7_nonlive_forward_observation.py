@@ -48,6 +48,7 @@ def _arguments(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--observed-at", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--previous-record", type=Path)
+    parser.add_argument("--review-output-dir", type=Path)
     return parser.parse_args(argv)
 
 
@@ -102,13 +103,36 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
                 p2_candidate_path=args.p2_candidate,
             )
             paper_digest = str(paper.get("result_sha256") or "")
-    return build_soxl_v7_nonlive_forward_record(
+    record = build_soxl_v7_nonlive_forward_record(
         observed_at=args.observed_at,
         inputs=inputs,
         shadow_observation_sha256=shadow_digest,
         simulated_paper_observation_sha256=paper_digest,
         previous_record=previous if isinstance(previous, dict) else None,
     )
+
+    if args.review_output_dir is not None:
+        from us_equity_snapshot_pipelines.lifecycle.soxl_v7_research_review import evaluate_soxl_v7_research_review
+
+        def replay(request):
+            with tempfile.TemporaryDirectory(prefix="soxl-v7-p4-review-") as raw:
+                replay_input = Path(raw) / "input.json"
+                _write_json(replay_input, request)
+                return run_isolated_replay(
+                    ues_project=args.ues_project, input_path=replay_input,
+                    p2_candidate_path=args.p2_candidate,
+                )
+
+        policy = _read_json(Path(__file__).resolve().parents[1] / "config/soxl_soxx_core_only_p4_v7_forward_confirmation.json")
+        summary, ticket = evaluate_soxl_v7_research_review(
+            record=record, materialized=materialized, policy=policy, replay_executor=replay,
+        )
+        args.review_output_dir.mkdir(parents=True, exist_ok=True)
+        for name, payload in (("financial-summary.json", summary), ("ticket.json", ticket)):
+            if payload is not None:
+                with (args.review_output_dir / name).open("x", encoding="utf-8") as stream:
+                    json.dump(payload, stream, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    return record
 
 
 def main(argv: list[str] | None = None) -> int:

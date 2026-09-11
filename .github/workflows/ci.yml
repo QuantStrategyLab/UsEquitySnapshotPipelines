@@ -68,3 +68,10 @@ jobs:
           '
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Verify isolated V7 review delivery
+        run: |
+          python -m venv "$RUNNER_TEMP/v7-review-control"
+          "$RUNNER_TEMP/v7-review-control/bin/python" -m pip install \
+            -r scripts/requirements-soxl-v7-review-control.txt 'pytest>=8'
+          "$RUNNER_TEMP/v7-review-control/bin/python" -m pytest -q tests/test_soxl_v7_review_delivery.py
