@@ -20,6 +20,9 @@ LEARNING_PROFILE = "soxl_soxx_three_asset_mid_weight_learning_v1"
 LEARNING_SCHEMA = "qsl.soxl-soxx-three-asset-learning.v1"
 LEARNING_REPLAY_SCHEMA = "qsl.soxl-soxx-three-asset-learning-replay.v1"
 LEARNING_REPLAY_RESULT_SCHEMA = "qsl.soxl-soxx-three-asset-learning-replay-result.v1"
+ATTRIBUTION_SCHEMA = "qsl.soxl-three-asset-attribution.v1"
+ATTRIBUTION_REPLAY_SCHEMA = "qsl.soxl-three-asset-attribution-replay.v1"
+ATTRIBUTION_REPLAY_RESULT_SCHEMA = "qsl.soxl-three-asset-attribution-replay-result.v1"
 DEVELOPMENT_CUTOFF = "2025-07-31"
 BASELINE_MID_SOXL_WEIGHT = 0.65
 P2_UES_UV_LOCK_SHA256 = "6c12df9b3412681829295f15de7e2ce7fc5b708d1de815f72d654fc16b7848e6"
@@ -42,6 +45,8 @@ PAIRED_SHADOW_BASELINE_ID = "soxl_soxx_three_asset_mid_weight_065_v1"
 PAIRED_SHADOW_SESSION_SCHEMA = "qsl.soxl-three-asset-paired-shadow-session.v1"
 PAIRED_SHADOW_DECISION_SCHEMA = "qsl.soxl-three-asset-paired-shadow-decision.v1"
 PAIRED_SHADOW_QPK_REVISION = "7363011d56926d39f4fffeb036e511391114e39f"
+ATTRIBUTION_VARIANTS = ("baseline_mid_065", "soxx_buy_hold", "fixed_full_weights")
+ATTRIBUTION_INITIAL_EQUITY = 100_000.0
 
 
 class SoxlThreeAssetLearningError(ValueError):
@@ -83,6 +88,15 @@ def _weights(values: Sequence[float], *, require_baseline: bool = True) -> tuple
     if require_baseline and BASELINE_MID_SOXL_WEIGHT not in result:
         raise SoxlThreeAssetLearningError("baseline learning parameter required")
     return tuple(result)
+
+
+def _finite_number(value: object, *, nonnegative: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    result = float(value)
+    if not math.isfinite(result) or (nonnegative and result < 0.0):
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    return 0.0 if result == 0.0 else result
 
 
 def build_learning_requests(
@@ -197,18 +211,7 @@ def _backtest_result(replay: Mapping[str, object], *, parameter: float):
     )
 
 
-def _source_learning_replay(value: Mapping[str, object], candidate: Mapping[str, object]) -> dict[str, object]:
-    isolated = _load_isolated_module()
-    request = _mapping(value)
-    if set(request) != {"schema_version", "initial_equity", "cost_bps", "sessions", "parameter_override"} or request["schema_version"] != LEARNING_REPLAY_SCHEMA:
-        raise SoxlThreeAssetLearningError("invalid learning input")
-    override = _mapping(request.pop("parameter_override"))
-    if set(override) != {"blend_gate_mid_soxl_weight"}:
-        raise SoxlThreeAssetLearningError("invalid learning parameters")
-    parameter = _weights((override["blend_gate_mid_soxl_weight"],), require_baseline=False)[0]
-    request["schema_version"] = isolated.STATEFUL_REPLAY_INPUT_SCHEMA
-    p2 = isolated.validate_p2_candidate(candidate)
-
+def _build_mid_weight_decision_builder(isolated, p2, *, parameter: float):
     from quant_platform_kit.common.strategy_contracts import StrategyContext
     from us_equity_strategies import entrypoints
     from us_equity_strategies.strategies import soxl_soxx_trend_income as strategy
@@ -246,6 +249,22 @@ def _source_learning_replay(value: Mapping[str, object], candidate: Mapping[str,
         }
         summary["output_sha256"] = isolated._sha256(summary)
         return summary
+
+    return decide
+
+
+def _source_learning_replay(value: Mapping[str, object], candidate: Mapping[str, object]) -> dict[str, object]:
+    isolated = _load_isolated_module()
+    request = _mapping(value)
+    if set(request) != {"schema_version", "initial_equity", "cost_bps", "sessions", "parameter_override"} or request["schema_version"] != LEARNING_REPLAY_SCHEMA:
+        raise SoxlThreeAssetLearningError("invalid learning input")
+    override = _mapping(request.pop("parameter_override"))
+    if set(override) != {"blend_gate_mid_soxl_weight"}:
+        raise SoxlThreeAssetLearningError("invalid learning parameters")
+    parameter = _weights((override["blend_gate_mid_soxl_weight"],), require_baseline=False)[0]
+    request["schema_version"] = isolated.STATEFUL_REPLAY_INPUT_SCHEMA
+    p2 = isolated.validate_p2_candidate(candidate)
+    decide = _build_mid_weight_decision_builder(isolated, p2, parameter=parameter)
 
     replay = isolated._stateful_replay_with_decision_builder(
         request, decision_builder=decide,
@@ -300,6 +319,284 @@ def run_learning(
         "parameter_key": "blend_gate_mid_soxl_weight",
         "trial_count": len(_weights(mid_soxl_weights)), "cost_bps": list(COST_BPS),
         "results": trials,
+    }
+    result["result_sha256"] = _sha256(result)
+    return result
+
+
+def build_attribution_requests(materialized: Mapping[str, object]) -> list[dict[str, object]]:
+    """Build the fixed three-variant, three-cost retrospective study."""
+    baseline = build_learning_requests(
+        materialized,
+        mid_soxl_weights=(BASELINE_MID_SOXL_WEIGHT,),
+        initial_equity=ATTRIBUTION_INITIAL_EQUITY,
+    )
+    sessions = baseline[0]["sessions"]
+    return [
+        {
+            "schema_version": ATTRIBUTION_REPLAY_SCHEMA,
+            "initial_equity": ATTRIBUTION_INITIAL_EQUITY,
+            "cost_bps": cost_bps,
+            "sessions": sessions,
+            "variant": variant,
+        }
+        for variant in ATTRIBUTION_VARIANTS
+        for cost_bps in COST_BPS
+    ]
+
+
+def _build_attribution_decision_builder(isolated, p2, *, variant: str):
+    if variant == "baseline_mid_065":
+        return _build_mid_weight_decision_builder(
+            isolated,
+            p2,
+            parameter=BASELINE_MID_SOXL_WEIGHT,
+        )
+
+    def decide(state: object) -> Mapping[str, object]:
+        item = _mapping(state)
+        portfolio = item["portfolio"]
+        equity = isolated._finite(portfolio.total_equity, positive=True)
+        current_values = {"SOXL": 0.0, "SOXX": 0.0, "BOXX": 0.0}
+        for position in portfolio.positions:
+            if position.symbol not in current_values:
+                raise SoxlThreeAssetLearningError("invalid attribution input")
+            current_values[position.symbol] = isolated._finite(position.market_value, nonnegative=True)
+        hold_current = False
+        if variant == "soxx_buy_hold":
+            if any(value != 0.0 for value in current_values.values()):
+                target_values = current_values
+                hold_current = True
+            else:
+                target_values = {"SOXL": 0.0, "SOXX": equity * 0.97, "BOXX": 0.0}
+        elif variant == "fixed_full_weights":
+            target_values = {
+                "SOXL": equity * 0.70 * 0.97,
+                "SOXX": equity * 0.20 * 0.97,
+                "BOXX": equity * 0.10 * 0.97,
+            }
+        else:
+            raise SoxlThreeAssetLearningError("invalid attribution variant")
+        summary: dict[str, object] = {
+            "schema_version": "qsl.soxl-three-asset-attribution-decision.v1",
+            "entrypoint": f"retrospective_research.{variant}",
+            "as_of": item["as_of"].isoformat(),
+            "target_values": target_values,
+        }
+        if hold_current:
+            summary["_attribution_hold_current_positions"] = True
+        summary["output_sha256"] = isolated._sha256(summary)
+        return summary
+
+    return decide
+
+
+def _source_attribution_replay(
+    value: Mapping[str, object],
+    candidate: Mapping[str, object],
+) -> dict[str, object]:
+    isolated = _load_isolated_module()
+    request = _mapping(value)
+    if (
+        set(request) != {"schema_version", "initial_equity", "cost_bps", "sessions", "variant"}
+        or request["schema_version"] != ATTRIBUTION_REPLAY_SCHEMA
+        or request["variant"] not in ATTRIBUTION_VARIANTS
+        or request["initial_equity"] != ATTRIBUTION_INITIAL_EQUITY
+    ):
+        raise SoxlThreeAssetLearningError("invalid attribution input")
+    variant = str(request.pop("variant"))
+    request["schema_version"] = isolated.STATEFUL_REPLAY_INPUT_SCHEMA
+    request = isolated._validate_replay_input(request)
+    request["schema_version"] = isolated.STATEFUL_REPLAY_INPUT_SCHEMA
+    p2 = isolated.validate_p2_candidate(candidate)
+    replay = isolated._stateful_replay_with_decision_builder(
+        request,
+        decision_builder=_build_attribution_decision_builder(isolated, p2, variant=variant),
+        entrypoint=f"retrospective_research.{variant}",
+        result_schema=ATTRIBUTION_REPLAY_RESULT_SCHEMA,
+        include_attribution=True,
+    )
+    attribution = _mapping(replay.get("attribution"))
+    asset_pnl = _mapping(attribution.get("asset_pnl_usd"))
+    if set(asset_pnl) != {"SOXL", "SOXX", "BOXX"}:
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    initial_equity = _finite_number(replay.get("initial_equity"), nonnegative=True)
+    final_equity = _finite_number(replay.get("final_equity"), nonnegative=True)
+    cost_total = _finite_number(replay.get("cost_total"), nonnegative=True)
+    asset_pnl_usd = {symbol: _finite_number(asset_pnl[symbol]) for symbol in ("SOXL", "SOXX", "BOXX")}
+    contribution_pct_points = {
+        symbol: asset_pnl_usd[symbol] / initial_equity * 100.0
+        for symbol in ("SOXL", "SOXX", "BOXX")
+    }
+    contribution_pct_points.update(
+        {"cash": 0.0, "execution_cost": -cost_total / initial_equity * 100.0}
+    )
+    result: dict[str, object] = {
+        "schema_version": ATTRIBUTION_REPLAY_RESULT_SCHEMA,
+        "status": "SUCCESS",
+        "variant": variant,
+        "cost_bps": _finite_number(replay.get("cost_bps"), nonnegative=True),
+        "initial_equity": initial_equity,
+        "final_equity": final_equity,
+        "total_return": final_equity / initial_equity - 1.0,
+        "max_drawdown": _finite_number(attribution.get("max_drawdown"), nonnegative=True),
+        "cost_total": cost_total,
+        "one_way_turnover": _finite_number(replay.get("one_way_turnover"), nonnegative=True),
+        "asset_pnl_usd": asset_pnl_usd,
+        "cash_pnl_usd": 0.0,
+        "external_flow_usd": 0.0,
+        "reconciliation_residual_usd": _finite_number(attribution.get("reconciliation_residual_usd")),
+        "contribution_pct_points": contribution_pct_points,
+        "start_date": attribution.get("start_date"),
+        "end_date": attribution.get("end_date"),
+        "observation_count": attribution.get("observation_count"),
+        "unexecuted_final_signal": replay.get("unexecuted_final_signal"),
+    }
+    result["output_sha256"] = _sha256(result)
+    return result
+
+
+def _validated_attribution_result(
+    value: Mapping[str, object],
+    *,
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    result = _mapping(value)
+    required = {
+        "schema_version", "status", "variant", "cost_bps", "initial_equity", "final_equity",
+        "total_return", "max_drawdown", "cost_total", "one_way_turnover", "asset_pnl_usd",
+        "cash_pnl_usd", "external_flow_usd", "reconciliation_residual_usd",
+        "contribution_pct_points", "start_date", "end_date", "observation_count",
+        "unexecuted_final_signal", "output_sha256",
+    }
+    if (
+        set(result) != required
+        or result.get("schema_version") != ATTRIBUTION_REPLAY_RESULT_SCHEMA
+        or result.get("status") != "SUCCESS"
+        or result.get("variant") != request["variant"]
+        or result.get("cost_bps") != request["cost_bps"]
+        or result.get("initial_equity") != ATTRIBUTION_INITIAL_EQUITY
+        or result.get("unexecuted_final_signal") is not True
+        or not isinstance(result.get("start_date"), str)
+        or not isinstance(result.get("end_date"), str)
+        or isinstance(result.get("observation_count"), bool)
+        or not isinstance(result.get("observation_count"), int)
+        or int(result["observation_count"]) < 1
+    ):
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    asset_pnl = _mapping(result["asset_pnl_usd"])
+    contribution = _mapping(result["contribution_pct_points"])
+    if set(asset_pnl) != {"SOXL", "SOXX", "BOXX"} or set(contribution) != {
+        "SOXL", "SOXX", "BOXX", "cash", "execution_cost"
+    }:
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    numeric = {
+        "initial_equity": _finite_number(result["initial_equity"], nonnegative=True),
+        "final_equity": _finite_number(result["final_equity"], nonnegative=True),
+        "total_return": _finite_number(result["total_return"]),
+        "max_drawdown": _finite_number(result["max_drawdown"], nonnegative=True),
+        "cost_total": _finite_number(result["cost_total"], nonnegative=True),
+        "one_way_turnover": _finite_number(result["one_way_turnover"], nonnegative=True),
+        "cash_pnl_usd": _finite_number(result["cash_pnl_usd"]),
+        "external_flow_usd": _finite_number(result["external_flow_usd"]),
+        "reconciliation_residual_usd": _finite_number(result["reconciliation_residual_usd"]),
+    }
+    assets = {symbol: _finite_number(asset_pnl[symbol]) for symbol in ("SOXL", "SOXX", "BOXX")}
+    contributions = {key: _finite_number(contribution[key]) for key in contribution}
+    if (
+        numeric["cash_pnl_usd"] != 0.0
+        or numeric["external_flow_usd"] != 0.0
+        or numeric["max_drawdown"] > 1.0
+        or abs(numeric["reconciliation_residual_usd"]) > 1e-7
+        or result["start_date"] != str(request["sessions"][0]["as_of"])[:10]
+        or result["end_date"] != str(request["sessions"][-1]["as_of"])[:10]
+        or result["end_date"] > DEVELOPMENT_CUTOFF
+        or result["observation_count"] != len(request["sessions"]) - 1
+        or not math.isclose(
+            numeric["total_return"],
+            numeric["final_equity"] / numeric["initial_equity"] - 1.0,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            numeric["final_equity"] - numeric["initial_equity"],
+            sum(assets.values()) + numeric["cash_pnl_usd"] + numeric["external_flow_usd"]
+            - numeric["cost_total"] + numeric["reconciliation_residual_usd"],
+            rel_tol=1e-12,
+            abs_tol=1e-7,
+        )
+        or not math.isclose(
+            numeric["total_return"] * 100.0,
+            sum(contributions.values()),
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+        or any(
+            not math.isclose(
+                contributions[symbol],
+                assets[symbol] / numeric["initial_equity"] * 100.0,
+                rel_tol=1e-12,
+                abs_tol=1e-9,
+            )
+            for symbol in ("SOXL", "SOXX", "BOXX")
+        )
+        or contributions["cash"] != 0.0
+        or not math.isclose(
+            contributions["execution_cost"],
+            -numeric["cost_total"] / numeric["initial_equity"] * 100.0,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+    ):
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    claimed = result.pop("output_sha256")
+    if not isinstance(claimed, str) or claimed != _sha256(result):
+        raise SoxlThreeAssetLearningError("attribution result unavailable")
+    result["output_sha256"] = claimed
+    return result
+
+
+def run_attribution(
+    *,
+    materialized: Mapping[str, object],
+    execute: Callable[[Mapping[str, object]], Mapping[str, object]],
+) -> dict[str, object]:
+    requests = build_attribution_requests(materialized)
+    results = [
+        _validated_attribution_result(_mapping(execute(request)), request=request)
+        for request in requests
+    ]
+    source = _mapping(materialized)
+    result: dict[str, object] = {
+        "schema_version": ATTRIBUTION_SCHEMA,
+        "status": "SUCCESS",
+        "study_kind": "retrospective_research",
+        "learning_only": True,
+        "research_executed": True,
+        "no_order": True,
+        "size_zero_required": True,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "live_authority_granted": False,
+        "development_cutoff": DEVELOPMENT_CUTOFF,
+        "initial_equity": ATTRIBUTION_INITIAL_EQUITY,
+        "p1_identity": source["p1_identity"],
+        "source_identity": {
+            "repository": "QuantStrategyLab/UsEquityStrategies",
+            "revision": "7756fe32585e85cf1d09a163203a02e3eee39fe1",
+            "quant_platform_kit_revision": "3acab1923a97b805b077c85c6c19657be0143bac",
+            "uv_lock_sha256": P2_UES_UV_LOCK_SHA256,
+        },
+        "source_config_reference": source["p2_identity"],
+        "price_basis": "verified_p1_adjusted_close_as_materialized",
+        "cash_interest_assumption": "zero",
+        "external_flow_assumption": "zero",
+        "execution_cost_basis": "original_simulated_all_in_per_side",
+        "additional_dividend_or_fund_expense_adjustment": False,
+        "causal_attribution_claimed": False,
+        "variants": list(ATTRIBUTION_VARIANTS),
+        "cost_bps": list(COST_BPS),
+        "results": results,
     }
     result["result_sha256"] = _sha256(result)
     return result
@@ -582,6 +879,42 @@ def run_isolated_learning_request(
     return result
 
 
+def run_isolated_attribution_request(
+    request: Mapping[str, object],
+    *,
+    ues_project: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    isolated = _load_isolated_module()
+    isolated.validate_ues_project(ues_project)
+    isolated.validate_p2_candidate(json.loads(p2_candidate_path.read_text()))
+    if shutil.which("uv") is None:
+        raise SoxlThreeAssetLearningError("isolated runtime unavailable")
+    with tempfile.TemporaryDirectory(prefix="qsl-soxl-attribution-") as directory:
+        path = Path(directory) / "request.json"
+        path.write_bytes(_canonical(request))
+        try:
+            completed = subprocess.run(
+                (
+                    "uv", "run", "--locked", "--project", str(ues_project), "python",
+                    str(Path(__file__).resolve()), "--source-attribution-replay", str(path),
+                    "--p2-candidate", str(p2_candidate_path.resolve()),
+                ),
+                check=False, capture_output=True, text=True, timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SoxlThreeAssetLearningError("isolated runtime unavailable") from exc
+    if completed.returncode != 0:
+        raise SoxlThreeAssetLearningError("isolated runtime unavailable")
+    try:
+        result = _mapping(json.loads(completed.stdout))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise SoxlThreeAssetLearningError("isolated runtime unavailable") from exc
+    if result.get("status") != "SUCCESS":
+        raise SoxlThreeAssetLearningError("isolated runtime unavailable")
+    return result
+
+
 def run_learning_from_verified_p1(
     *, binding: Mapping[str, object], manifest: Mapping[str, object], member_bytes: bytes,
     ues_project: Path, p2_candidate_path: Path, mid_soxl_weights: Sequence[float],
@@ -597,6 +930,33 @@ def run_learning_from_verified_p1(
         materialized=materialized, mid_soxl_weights=mid_soxl_weights,
         execute=lambda request: run_isolated_learning_request(
             request, ues_project=ues_project, p2_candidate_path=p2_candidate_path,
+        ),
+    )
+
+
+def run_attribution_from_verified_p1(
+    *,
+    binding: Mapping[str, object],
+    manifest: Mapping[str, object],
+    member_bytes: bytes,
+    ues_project: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
+        materialize_soxl_core_only_p3_input,
+    )
+
+    materialized = materialize_soxl_core_only_p3_input(
+        binding=binding,
+        manifest=manifest,
+        member_bytes=member_bytes,
+    )
+    return run_attribution(
+        materialized=materialized,
+        execute=lambda request: run_isolated_attribution_request(
+            request,
+            ues_project=ues_project,
+            p2_candidate_path=p2_candidate_path,
         ),
     )
 
@@ -948,6 +1308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--source-learning-replay")
+    mode.add_argument("--source-attribution-replay")
     mode.add_argument("--source-paired-shadow-decision")
     mode.add_argument("--source-paired-shadow-envelope")
     mode.add_argument("--paired-shadow-session")
@@ -959,6 +1320,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--blend-gate-mid-soxl-weight", action="append", type=float)
     parser.add_argument("--promotion-validation-development-summary", type=Path)
     parser.add_argument("--watcher-development-summary-sha256")
+    parser.add_argument("--attribution", action="store_true")
     parser.add_argument("--p2-candidate", required=True, type=Path)
     args = parser.parse_args(argv)
     failed = False
@@ -969,15 +1331,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and args.promotion_validation_development_summary is not None
                 and not any((
                     args.source_learning_replay,
+                    args.source_attribution_replay,
                     args.source_paired_shadow_decision,
                     args.source_paired_shadow_envelope,
                     args.paired_shadow_session,
                 ))
                 and not args.blend_gate_mid_soxl_weight
+                and not args.attribution
             )
             if not watcher_validation_mode:
                 raise SoxlThreeAssetLearningError("invalid validation arguments")
-        if args.source_paired_shadow_decision:
+        if args.source_attribution_replay:
+            if args.attribution or any((
+                args.input_manifest,
+                args.bars_member,
+                args.ues_project,
+                args.qpk_python,
+                args.blend_gate_mid_soxl_weight,
+                args.promotion_validation_development_summary,
+                args.watcher_development_summary_sha256,
+            )):
+                raise SoxlThreeAssetLearningError("invalid attribution arguments")
+            result = _source_attribution_replay(
+                json.loads(Path(args.source_attribution_replay).read_text()),
+                json.loads(args.p2_candidate.read_text()),
+            )
+        elif args.source_paired_shadow_decision:
             result = _source_paired_shadow_decision(
                 json.loads(Path(args.source_paired_shadow_decision).read_text()),
                 json.loads(args.p2_candidate.read_text()),
@@ -999,6 +1378,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _source_learning_replay(
                 json.loads(Path(args.source_learning_replay).read_text()),
                 json.loads(args.p2_candidate.read_text()),
+            )
+        elif args.attribution:
+            if (
+                not all((args.p1_binding, args.input_manifest, args.bars_member, args.ues_project))
+                or args.blend_gate_mid_soxl_weight
+                or args.promotion_validation_development_summary
+                or args.watcher_development_summary_sha256 is not None
+                or args.qpk_python
+            ):
+                raise SoxlThreeAssetLearningError("invalid attribution arguments")
+            result = run_attribution_from_verified_p1(
+                binding=json.loads(args.p1_binding.read_text()),
+                manifest=json.loads(args.input_manifest.read_text()),
+                member_bytes=args.bars_member.read_bytes(),
+                ues_project=args.ues_project,
+                p2_candidate_path=args.p2_candidate,
             )
         elif args.promotion_validation_development_summary:
             if not all((args.p1_binding, args.input_manifest, args.bars_member, args.ues_project)) or args.blend_gate_mid_soxl_weight:
@@ -1035,6 +1430,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "stage": "paired_shadow",
                 "failure_class": "paired_shadow_input_or_runtime_unavailable",
                 "no_order": True,
+                "live_authority_granted": False,
+            }
+        elif args.attribution or args.source_attribution_replay:
+            result = {
+                "schema_version": ATTRIBUTION_SCHEMA,
+                "status": "PARKED",
+                "study_kind": "retrospective_research",
+                "failure_class": "attribution_input_or_runtime_unavailable",
+                "learning_only": True,
+                "research_executed": False,
+                "no_order": True,
+                "size_zero_required": True,
+                "promotion_eligible": False,
+                "live_ready": False,
                 "live_authority_granted": False,
             }
         elif args.promotion_validation_development_summary or args.watcher_development_summary_sha256 is not None:
