@@ -47,6 +47,12 @@ PAIRED_SHADOW_DECISION_SCHEMA = "qsl.soxl-three-asset-paired-shadow-decision.v1"
 PAIRED_SHADOW_QPK_REVISION = "7363011d56926d39f4fffeb036e511391114e39f"
 ATTRIBUTION_VARIANTS = ("baseline_mid_065", "soxx_buy_hold", "fixed_full_weights")
 ATTRIBUTION_INITIAL_EQUITY = 100_000.0
+VOLATILITY_ABLATION_STUDY_VARIANT = "volatility_delever_on_off_v1"
+VOLATILITY_ABLATION_VARIANTS = (
+    "baseline_mid_065",
+    "baseline_without_volatility_delever",
+)
+VOLATILITY_ABLATION_COST_BPS = 10.0
 
 
 class SoxlThreeAssetLearningError(ValueError):
@@ -211,13 +217,21 @@ def _backtest_result(replay: Mapping[str, object], *, parameter: float):
     )
 
 
-def _build_mid_weight_decision_builder(isolated, p2, *, parameter: float):
+def _build_mid_weight_decision_builder(
+    isolated,
+    p2,
+    *,
+    parameter: float,
+    volatility_delever_enabled: bool | None = None,
+):
     from quant_platform_kit.common.strategy_contracts import StrategyContext
     from us_equity_strategies import entrypoints
     from us_equity_strategies.strategies import soxl_soxx_trend_income as strategy
 
     runtime_config = dict(p2["runtime_config"])
     runtime_config["blend_gate_mid_soxl_weight"] = parameter
+    if volatility_delever_enabled is not None:
+        runtime_config["blend_gate_volatility_delever_enabled"] = volatility_delever_enabled
 
     def decide(state: object) -> Mapping[str, object]:
         item = _mapping(state)
@@ -345,12 +359,30 @@ def build_attribution_requests(materialized: Mapping[str, object]) -> list[dict[
     ]
 
 
+def build_volatility_ablation_requests(
+    materialized: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Build one fixed 10-bps baseline/on-off volatility-delever pair."""
+    baseline = build_attribution_requests(materialized)[1]
+    return [
+        dict(baseline),
+        dict(baseline) | {"variant": "baseline_without_volatility_delever"},
+    ]
+
+
 def _build_attribution_decision_builder(isolated, p2, *, variant: str):
     if variant == "baseline_mid_065":
         return _build_mid_weight_decision_builder(
             isolated,
             p2,
             parameter=BASELINE_MID_SOXL_WEIGHT,
+        )
+    if variant == "baseline_without_volatility_delever":
+        return _build_mid_weight_decision_builder(
+            isolated,
+            p2,
+            parameter=BASELINE_MID_SOXL_WEIGHT,
+            volatility_delever_enabled=False,
         )
 
     def decide(state: object) -> Mapping[str, object]:
@@ -400,7 +432,11 @@ def _source_attribution_replay(
     if (
         set(request) != {"schema_version", "initial_equity", "cost_bps", "sessions", "variant"}
         or request["schema_version"] != ATTRIBUTION_REPLAY_SCHEMA
-        or request["variant"] not in ATTRIBUTION_VARIANTS
+        or request["variant"] not in (*ATTRIBUTION_VARIANTS, *VOLATILITY_ABLATION_VARIANTS)
+        or (
+            request["variant"] == "baseline_without_volatility_delever"
+            and request["cost_bps"] != VOLATILITY_ABLATION_COST_BPS
+        )
         or request["initial_equity"] != ATTRIBUTION_INITIAL_EQUITY
     ):
         raise SoxlThreeAssetLearningError("invalid attribution input")
@@ -596,6 +632,53 @@ def run_attribution(
         "causal_attribution_claimed": False,
         "variants": list(ATTRIBUTION_VARIANTS),
         "cost_bps": list(COST_BPS),
+        "results": results,
+    }
+    result["result_sha256"] = _sha256(result)
+    return result
+
+
+def run_volatility_ablation(
+    *,
+    materialized: Mapping[str, object],
+    execute: Callable[[Mapping[str, object]], Mapping[str, object]],
+) -> dict[str, object]:
+    requests = build_volatility_ablation_requests(materialized)
+    results = [
+        _validated_attribution_result(_mapping(execute(request)), request=request)
+        for request in requests
+    ]
+    source = _mapping(materialized)
+    result: dict[str, object] = {
+        "schema_version": ATTRIBUTION_SCHEMA,
+        "status": "SUCCESS",
+        "study_kind": "retrospective_research",
+        "study_variant": VOLATILITY_ABLATION_STUDY_VARIANT,
+        "learning_only": True,
+        "research_executed": True,
+        "no_order": True,
+        "size_zero_required": True,
+        "promotion_eligible": False,
+        "live_ready": False,
+        "live_authority_granted": False,
+        "development_cutoff": DEVELOPMENT_CUTOFF,
+        "initial_equity": ATTRIBUTION_INITIAL_EQUITY,
+        "p1_identity": source["p1_identity"],
+        "source_identity": {
+            "repository": "QuantStrategyLab/UsEquityStrategies",
+            "revision": "7756fe32585e85cf1d09a163203a02e3eee39fe1",
+            "quant_platform_kit_revision": "3acab1923a97b805b077c85c6c19657be0143bac",
+            "uv_lock_sha256": P2_UES_UV_LOCK_SHA256,
+        },
+        "source_config_reference": source["p2_identity"],
+        "price_basis": "verified_p1_adjusted_close_as_materialized",
+        "cash_interest_assumption": "zero",
+        "external_flow_assumption": "zero",
+        "execution_cost_basis": "original_simulated_all_in_per_side",
+        "additional_dividend_or_fund_expense_adjustment": False,
+        "causal_attribution_claimed": False,
+        "variants": list(VOLATILITY_ABLATION_VARIANTS),
+        "cost_bps": [VOLATILITY_ABLATION_COST_BPS],
         "results": results,
     }
     result["result_sha256"] = _sha256(result)
@@ -952,6 +1035,33 @@ def run_attribution_from_verified_p1(
         member_bytes=member_bytes,
     )
     return run_attribution(
+        materialized=materialized,
+        execute=lambda request: run_isolated_attribution_request(
+            request,
+            ues_project=ues_project,
+            p2_candidate_path=p2_candidate_path,
+        ),
+    )
+
+
+def run_volatility_ablation_from_verified_p1(
+    *,
+    binding: Mapping[str, object],
+    manifest: Mapping[str, object],
+    member_bytes: bytes,
+    ues_project: Path,
+    p2_candidate_path: Path,
+) -> dict[str, object]:
+    from us_equity_snapshot_pipelines.lifecycle.soxl_core_only_p3_input_materializer import (
+        materialize_soxl_core_only_p3_input,
+    )
+
+    materialized = materialize_soxl_core_only_p3_input(
+        binding=binding,
+        manifest=manifest,
+        member_bytes=member_bytes,
+    )
+    return run_volatility_ablation(
         materialized=materialized,
         execute=lambda request: run_isolated_attribution_request(
             request,
@@ -1320,11 +1430,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--blend-gate-mid-soxl-weight", action="append", type=float)
     parser.add_argument("--promotion-validation-development-summary", type=Path)
     parser.add_argument("--watcher-development-summary-sha256")
-    parser.add_argument("--attribution", action="store_true")
+    study_mode = parser.add_mutually_exclusive_group()
+    study_mode.add_argument("--attribution", action="store_true")
+    study_mode.add_argument("--volatility-ablation", action="store_true")
     parser.add_argument("--p2-candidate", required=True, type=Path)
     args = parser.parse_args(argv)
     failed = False
     try:
+        if args.volatility_ablation and args.p1_binding is None:
+            raise SoxlThreeAssetLearningError("invalid volatility ablation arguments")
         if args.watcher_development_summary_sha256 is not None:
             watcher_validation_mode = (
                 args.p1_binding is not None
@@ -1338,11 +1452,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ))
                 and not args.blend_gate_mid_soxl_weight
                 and not args.attribution
+                and not args.volatility_ablation
             )
             if not watcher_validation_mode:
                 raise SoxlThreeAssetLearningError("invalid validation arguments")
         if args.source_attribution_replay:
-            if args.attribution or any((
+            if args.attribution or args.volatility_ablation or any((
                 args.input_manifest,
                 args.bars_member,
                 args.ues_project,
@@ -1395,6 +1510,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ues_project=args.ues_project,
                 p2_candidate_path=args.p2_candidate,
             )
+        elif args.volatility_ablation:
+            if (
+                not all((args.p1_binding, args.input_manifest, args.bars_member, args.ues_project))
+                or args.blend_gate_mid_soxl_weight
+                or args.promotion_validation_development_summary
+                or args.watcher_development_summary_sha256 is not None
+                or args.qpk_python
+            ):
+                raise SoxlThreeAssetLearningError("invalid volatility ablation arguments")
+            result = run_volatility_ablation_from_verified_p1(
+                binding=json.loads(args.p1_binding.read_text()),
+                manifest=json.loads(args.input_manifest.read_text()),
+                member_bytes=args.bars_member.read_bytes(),
+                ues_project=args.ues_project,
+                p2_candidate_path=args.p2_candidate,
+            )
         elif args.promotion_validation_development_summary:
             if not all((args.p1_binding, args.input_manifest, args.bars_member, args.ues_project)) or args.blend_gate_mid_soxl_weight:
                 raise SoxlThreeAssetLearningError("invalid validation arguments")
@@ -1430,6 +1561,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "stage": "paired_shadow",
                 "failure_class": "paired_shadow_input_or_runtime_unavailable",
                 "no_order": True,
+                "live_authority_granted": False,
+            }
+        elif args.volatility_ablation:
+            result = {
+                "schema_version": ATTRIBUTION_SCHEMA,
+                "status": "PARKED",
+                "study_kind": "retrospective_research",
+                "study_variant": VOLATILITY_ABLATION_STUDY_VARIANT,
+                "failure_class": "volatility_ablation_input_or_runtime_unavailable",
+                "learning_only": True,
+                "research_executed": False,
+                "no_order": True,
+                "size_zero_required": True,
+                "promotion_eligible": False,
+                "live_ready": False,
                 "live_authority_granted": False,
             }
         elif args.attribution or args.source_attribution_replay:
