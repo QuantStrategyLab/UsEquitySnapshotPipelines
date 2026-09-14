@@ -921,7 +921,7 @@ requires-dist = [
     { name = "quant-strategy-plugins", git = "https://github.com/QuantStrategyLab/QuantStrategyPlugins.git?rev=6b76d512c8273deb804c0770a203558284778399" },
     { name = "quant-strategy-plugins", extras = ["ai"], marker = "extra == 'ai'" },
     { name = "requests", extras = ["socks"], specifier = ">=2.31" },
-    { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=8deacd69569962dfea1232a8869ecef008167ae4" },
+    { name = "us-equity-strategies", git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=4baec1100fbbaf328f417e2d7c0f513ef564566d" },
     { name = "yfinance", specifier = ">=0.2.40" },
 ]
 provides-extras = ["ai", "test"]
@@ -929,7 +929,7 @@ provides-extras = ["ai", "test"]
 [[package]]
 name = "us-equity-strategies"
 version = "0.7.60"
-source = { git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=8deacd69569962dfea1232a8869ecef008167ae4#8deacd69569962dfea1232a8869ecef008167ae4" }
+source = { git = "https://github.com/QuantStrategyLab/UsEquityStrategies.git?rev=4baec1100fbbaf328f417e2d7c0f513ef564566d#4baec1100fbbaf328f417e2d7c0f513ef564566d" }
 dependencies = [
     { name = "pandas" },
     { name = "pytz" },
