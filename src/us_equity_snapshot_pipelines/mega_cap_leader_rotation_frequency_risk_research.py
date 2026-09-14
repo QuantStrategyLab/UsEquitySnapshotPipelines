@@ -6,6 +6,17 @@ from typing import Iterable
 
 import pandas as pd
 
+from .mega_cap_leader_rotation_concentration_variants import (
+    _build_rolling_rows,
+    _build_yearly_rows,
+    _rebalance_weight_deltas,
+    _returns_from_weights,
+)
+from .mega_cap_leader_rotation_dynamic_validation import (
+    DEFAULT_ROLLING_WINDOW_YEARS,
+    lag_universe_history,
+    parse_csv_ints,
+)
 from .pipelines.mega_cap_leader_rotation_backtest import (
     BENCHMARK_SYMBOL,
     BROAD_BENCHMARK_SYMBOL,
@@ -21,16 +32,6 @@ from .pipelines.mega_cap_leader_rotation_backtest import (
     build_target_weights,
     resolve_active_universe,
     summarize_returns,
-)
-from .mega_cap_leader_rotation_concentration_variants import (
-    _build_rolling_rows,
-    _build_yearly_rows,
-    _returns_from_weights,
-)
-from .mega_cap_leader_rotation_dynamic_validation import (
-    DEFAULT_ROLLING_WINDOW_YEARS,
-    lag_universe_history,
-    parse_csv_ints,
 )
 from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
@@ -354,6 +355,7 @@ def _summary_for_variant(
     daily_soft_exposure: float,
     daily_hard_exposure: float,
     risk_history: pd.DataFrame,
+    turnover_history: pd.Series | None = None,
 ) -> dict[str, object]:
     equal_weight_column = next(
         (column for column in reference_returns.columns if str(column).startswith("equal_weight_")),
@@ -363,6 +365,7 @@ def _summary_for_variant(
         summarize_returns(
             portfolio_returns,
             weights_history=weights,
+            turnover_history=turnover_history,
             benchmark_returns=(
                 reference_returns[benchmark_symbol]
                 if benchmark_symbol in reference_returns.columns
@@ -539,6 +542,13 @@ def run_frequency_risk_research(
                 weights.reindex(columns=columns, fill_value=0.0),
                 returns_matrix.reindex(columns=columns, fill_value=0.0),
                 turnover_cost_bps=float(turnover_cost_bps),
+                safe_haven=safe_haven,
+            )
+            turnover = (
+                _rebalance_weight_deltas(weights, returns_matrix, safe_haven=safe_haven)
+                .abs()
+                .sum(axis=1)
+                .mul(0.5)
             )
             summary_rows.append(
                 _summary_for_variant(
@@ -556,6 +566,7 @@ def run_frequency_risk_research(
                     daily_soft_exposure=soft_exposure,
                     daily_hard_exposure=hard_exposure,
                     risk_history=risk_history,
+                    turnover_history=turnover.shift(1).fillna(0.0),
                 )
             )
             yearly_rows.extend(

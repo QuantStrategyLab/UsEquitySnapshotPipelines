@@ -980,6 +980,7 @@ def summarize_returns(
     portfolio_returns: pd.Series,
     *,
     weights_history: pd.DataFrame | None = None,
+    turnover_history: pd.Series | None = None,
     benchmark_returns: pd.Series | None = None,
     broad_benchmark_returns: pd.Series | None = None,
     equal_weight_pool_returns: pd.Series | None = None,
@@ -1008,10 +1009,13 @@ def summarize_returns(
     turnover_per_year = float("nan")
     avg_stock_exposure = float("nan")
     if weights_history is not None and not weights_history.empty:
-        changes = weights_history.fillna(0.0).diff().fillna(0.0)
-        if not changes.empty:
-            changes.iloc[0] = 0.0
-        daily_turnover = 0.5 * changes.abs().sum(axis=1)
+        if turnover_history is None:
+            changes = weights_history.fillna(0.0).diff().fillna(0.0)
+            if not changes.empty:
+                changes.iloc[0] = 0.0
+            daily_turnover = 0.5 * changes.abs().sum(axis=1)
+        else:
+            daily_turnover = turnover_history.reindex(weights_history.index).fillna(0.0)
         rebalances_per_year = float((daily_turnover > 1e-12).sum() / years)
         turnover_per_year = float(daily_turnover.sum() / years)
         stock_columns = [column for column in weights_history.columns if column != _normalize_symbol(safe_haven)]
@@ -1231,7 +1235,17 @@ def run_backtest(
             weights_history.at[date, symbol] = weight
 
         next_returns = returns_matrix.loc[next_date]
-        gross_return = sum(weight * float(next_returns.get(symbol, 0.0)) for symbol, weight in current_weights.items())
+        gross_values = {
+            symbol: weight * (1.0 + float(next_returns.get(symbol, 0.0)))
+            for symbol, weight in current_weights.items()
+        }
+        gross_equity = sum(gross_values.values())
+        if not math.isfinite(gross_equity) or gross_equity <= 0.0:
+            raise RuntimeError("Portfolio equity became non-finite or non-positive after daily returns")
+        # Costs are already deducted from the period return below. They reduce total
+        # equity proportionally, so they do not change the post-return weight ratios.
+        current_weights = {symbol: value / gross_equity for symbol, value in gross_values.items()}
+        gross_return = gross_equity - 1.0
         cost = turnover_history.at[next_date] * (float(turnover_cost_bps) / 10_000.0)
         portfolio_returns.at[next_date] = gross_return - cost
 
@@ -1263,6 +1277,7 @@ def run_backtest(
     summary = summarize_returns(
         portfolio_returns,
         weights_history=used_weights,
+        turnover_history=turnover_history,
         benchmark_returns=reference_returns[benchmark_symbol] if benchmark_symbol in reference_returns else None,
         broad_benchmark_returns=(
             reference_returns[broad_benchmark_symbol] if broad_benchmark_symbol in reference_returns else None

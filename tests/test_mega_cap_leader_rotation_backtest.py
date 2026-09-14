@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
+from us_equity_snapshot_pipelines.pipelines import mega_cap_leader_rotation_backtest as backtest_module
 from us_equity_snapshot_pipelines.pipelines.mega_cap_leader_rotation_backtest import (
     BACKTEST_SUMMARY_COLUMNS,
     _normalize_price_history,
@@ -77,6 +79,92 @@ def _sample_prices_with_return_variation() -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _three_day_fixed_weight_prices() -> pd.DataFrame:
+    dates = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02"])
+    closes = {
+        "AAA": [1.0, 2.0, 1.0],
+        "BBB": [1.0, 1.0, 1.0],
+        "QQQ": [1.0, 1.0, 1.0],
+        "SPY": [1.0, 1.0, 1.0],
+        "BOXX": [1.0, 1.0, 1.0],
+    }
+    return pd.DataFrame(
+        [
+            {"as_of": date, "symbol": symbol, "close": close}
+            for symbol, values in closes.items()
+            for date, close in zip(dates, values)
+        ]
+    )
+
+
+def test_run_backtest_drift_uses_holdings_and_real_turnover(monkeypatch) -> None:
+    def fixed_target(*args, **kwargs):
+        return {"AAA": 0.5, "BBB": 0.5}, pd.DataFrame(), {"selected_symbols": ("AAA", "BBB")}
+
+    monkeypatch.setattr(backtest_module, "build_target_weights", fixed_target)
+    result = run_backtest(
+        _three_day_fixed_weight_prices(),
+        pd.DataFrame([{"symbol": "AAA", "sector": "X"}, {"symbol": "BBB", "sector": "Y"}]),
+        start_date="2024-01-31",
+        benchmark_symbol="QQQ",
+        broad_benchmark_symbol="SPY",
+        safe_haven="BOXX",
+        turnover_cost_bps=0.0,
+    )
+
+    assert float((1.0 + result["portfolio_returns"]).cumprod().iloc[-1]) == pytest.approx(1.0)
+    assert result["weights_history"].loc[pd.Timestamp("2024-02-01"), "AAA"] == pytest.approx(2 / 3)
+    assert result["weights_history"].loc[pd.Timestamp("2024-02-01"), "BBB"] == pytest.approx(1 / 3)
+    assert result["weights_history"].loc[pd.Timestamp("2024-02-02"), "AAA"] == pytest.approx(0.5)
+    assert result["weights_history"].loc[pd.Timestamp("2024-02-02"), "BBB"] == pytest.approx(0.5)
+    assert set(result["trades"]["signal_date"]) == {pd.Timestamp("2024-01-31")}
+    assert float(result["turnover_history"].loc[pd.Timestamp("2024-02-02")]) == pytest.approx(0.0)
+    years = (pd.Timestamp("2024-02-02") - pd.Timestamp("2024-01-31")).days / 365.25
+    assert result["summary"]["Rebalances/Year"] == pytest.approx(1.0 / years)
+    assert result["summary"]["Turnover/Year"] == pytest.approx(1.0 / years)
+
+
+def test_run_backtest_rebalance_uses_drifted_weights_for_turnover(monkeypatch) -> None:
+    dates = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02", "2024-02-29", "2024-03-01"])
+    closes = {
+        "AAA": [1.0, 2.0, 1.0, 2.0, 2.0],
+        "BBB": [1.0, 1.0, 1.0, 1.0, 1.0],
+        "QQQ": [1.0] * len(dates),
+        "SPY": [1.0] * len(dates),
+        "BOXX": [1.0] * len(dates),
+    }
+    prices = pd.DataFrame(
+        [
+            {"as_of": date, "symbol": symbol, "close": close}
+            for symbol, values in closes.items()
+            for date, close in zip(dates, values)
+        ]
+    )
+
+    def fixed_target(*args, **kwargs):
+        return {"AAA": 0.5, "BBB": 0.5}, pd.DataFrame(), {"selected_symbols": ("AAA", "BBB")}
+
+    monkeypatch.setattr(backtest_module, "build_target_weights", fixed_target)
+    result = run_backtest(
+        prices,
+        pd.DataFrame([{"symbol": "AAA", "sector": "X"}, {"symbol": "BBB", "sector": "Y"}]),
+        start_date="2024-01-31",
+        benchmark_symbol="QQQ",
+        broad_benchmark_symbol="SPY",
+        safe_haven="BOXX",
+        turnover_cost_bps=0.0,
+    )
+
+    assert float(result["turnover_history"].loc[pd.Timestamp("2024-03-01")]) == pytest.approx(1 / 6)
+    assert set(result["trades"]["signal_date"]) == {
+        pd.Timestamp("2024-01-31"),
+        pd.Timestamp("2024-02-29"),
+    }
+    years = (pd.Timestamp("2024-03-01") - pd.Timestamp("2024-01-31")).days / 365.25
+    assert result["summary"]["Rebalances/Year"] == pytest.approx(2.0 / years)
+    assert result["summary"]["Turnover/Year"] == pytest.approx((1.0 + 1 / 6) / years)
 
 
 def test_run_backtest_builds_research_outputs() -> None:
