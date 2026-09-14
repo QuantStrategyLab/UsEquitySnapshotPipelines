@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from us_equity_snapshot_pipelines.mega_cap_leader_rotation_concentration_variants import (
+    _build_close_and_returns,
+    _build_rebalance_trade_rows,
+    _rebalance_weight_deltas,
+    _returns_from_weights,
     main,
     run_concentration_variant_research,
 )
+from us_equity_snapshot_pipelines.pipelines import mega_cap_leader_rotation_backtest as backtest_module
 
 
 def _sample_prices() -> pd.DataFrame:
@@ -76,6 +82,80 @@ def _sample_dynamic_universe() -> pd.DataFrame:
             )
         ]
     )
+
+
+def test_consumer_reuses_real_drift_loop_without_duplicate_turnover(monkeypatch) -> None:
+    dates = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02"])
+    closes = {
+        "AAA": [1.0, 2.0, 1.0],
+        "BBB": [1.0, 1.0, 1.0],
+        "QQQ": [1.0, 1.0, 1.0],
+        "SPY": [1.0, 1.0, 1.0],
+        "BOXX": [1.0, 1.0, 1.0],
+    }
+    prices = pd.DataFrame(
+        [
+            {"as_of": date, "symbol": symbol, "close": close}
+            for symbol, values in closes.items()
+            for date, close in zip(dates, values)
+        ]
+    )
+    universe = pd.DataFrame([{"symbol": "AAA", "sector": "X"}, {"symbol": "BBB", "sector": "Y"}])
+
+    def fixed_target(*args, **kwargs):
+        return {"AAA": 0.5, "BBB": 0.5}, pd.DataFrame(), {"selected_symbols": ("AAA", "BBB")}
+
+    monkeypatch.setattr(backtest_module, "build_target_weights", fixed_target)
+    result = backtest_module.run_backtest(
+        prices,
+        universe,
+        start_date="2024-01-31",
+        benchmark_symbol="QQQ",
+        broad_benchmark_symbol="SPY",
+        safe_haven="BOXX",
+        turnover_cost_bps=100.0,
+    )
+    _close_matrix, returns_matrix = _build_close_and_returns(prices)
+    weights = result["weights_history"]
+    consumer_returns = _returns_from_weights(
+        weights,
+        returns_matrix,
+        turnover_cost_bps=100.0,
+        safe_haven="BOXX",
+    )
+    consumer_turnover = _rebalance_weight_deltas(weights, returns_matrix, safe_haven="BOXX").abs().sum(axis=1).mul(0.5)
+
+    pd.testing.assert_series_equal(consumer_returns, result["portfolio_returns"], check_names=False)
+    pd.testing.assert_series_equal(
+        consumer_turnover.shift(1).fillna(0.0), result["turnover_history"], check_names=False
+    )
+    trades = _build_rebalance_trade_rows(
+        run_name="synthetic",
+        variant_type="base",
+        weights=weights,
+        returns_matrix=returns_matrix,
+        safe_haven="BOXX",
+    )
+    assert {row["Date"] for row in trades} == {"2024-01-31"}
+    assert consumer_turnover.loc[pd.Timestamp("2024-02-02")] == pytest.approx(0.0)
+
+
+def test_consumer_counts_non_month_end_target_change_as_rebalance() -> None:
+    index = pd.to_datetime(["2024-01-31", "2024-02-01", "2024-02-02"])
+    weights = pd.DataFrame({"AAA": [0.5, 0.5, 0.5], "BBB": [0.5, 0.5, 0.5]}, index=index)
+    returns = pd.DataFrame({"AAA": [0.0, 0.2, 0.0], "BBB": [0.0, 0.0, 0.0]}, index=index)
+
+    deltas = _rebalance_weight_deltas(weights, returns, safe_haven="BOXX")
+    trades = _build_rebalance_trade_rows(
+        run_name="synthetic",
+        variant_type="base",
+        weights=weights,
+        returns_matrix=returns,
+        safe_haven="BOXX",
+    )
+
+    assert float(deltas.loc[pd.Timestamp("2024-02-01")].abs().sum() / 2.0) == pytest.approx(1 / 22)
+    assert {row["Date"] for row in trades} == {"2024-01-31", "2024-02-01"}
 
 
 def test_concentration_variant_research_builds_blend_and_dynamic_tables() -> None:

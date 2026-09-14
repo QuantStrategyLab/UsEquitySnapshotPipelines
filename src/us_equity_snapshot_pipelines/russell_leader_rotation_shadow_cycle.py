@@ -19,6 +19,10 @@ NAMED_VARIANTS = (
     "blend_top2_25_top4_75",
     "blend_top2_50_top4_50",
 )
+DIAGNOSTIC_SUMMARY = (
+    "Russell Top50 当前仅比较目标仓位；该诊断没有回测收益证据，不能判断哪个变体更优。"
+    "本次说明由程序生成，未调用 AI。"
+)
 
 
 @dataclass(frozen=True)
@@ -262,7 +266,10 @@ def run_russell_leader_rotation_shadow_cycle(
             "no_order": True,
             "broker_access": False,
         },
-        "diagnostics": dict(active_decision.diagnostics),
+        "diagnostics": {
+            **dict(active_decision.diagnostics),
+            "diagnostic_summary": DIAGNOSTIC_SUMMARY,
+        },
     }
     validate_shadow_cycle_contract(diagnostics_payload)
     diagnostics_json = output_dir / "russell_leader_rotation_runtime_diagnostics.json"

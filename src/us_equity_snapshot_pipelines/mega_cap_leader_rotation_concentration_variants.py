@@ -227,17 +227,43 @@ def _align_weights(
     return weights_history.reindex(index).fillna(0.0).reindex(columns=columns, fill_value=0.0)
 
 
+def _rebalance_weight_deltas(
+    weights_history: pd.DataFrame,
+    returns_matrix: pd.DataFrame,
+    *,
+    safe_haven: str,
+) -> pd.DataFrame:
+    weights = weights_history.fillna(0.0).copy()
+    safe_symbol = str(safe_haven).strip().upper()
+    if safe_symbol not in weights.columns:
+        weights[safe_symbol] = 0.0
+    returns = returns_matrix.reindex(weights.index).reindex(columns=weights.columns, fill_value=0.0).fillna(0.0)
+    previous = weights.shift(1).fillna(0.0)
+    pre_values = previous * (1.0 + returns)
+    natural = pre_values.copy()
+    if not natural.empty:
+        natural.iloc[0] = 0.0
+        natural.iat[0, natural.columns.get_loc(safe_symbol)] = 1.0
+    for row_index in natural.index[1:]:
+        total = float(pre_values.loc[row_index].sum())
+        if not np.isfinite(total) or total <= 0.0:
+            raise RuntimeError("Portfolio equity became non-finite or non-positive before rebalance")
+        natural.loc[row_index] = pre_values.loc[row_index] / total
+    return weights - natural
+
+
 def _returns_from_weights(
     weights_history: pd.DataFrame,
     returns_matrix: pd.DataFrame,
     *,
     turnover_cost_bps: float,
+    safe_haven: str = SAFE_HAVEN,
 ) -> pd.Series:
     weights = weights_history.fillna(0.0)
     returns = returns_matrix.reindex(weights.index).reindex(columns=weights.columns, fill_value=0.0).fillna(0.0)
     gross_returns = (weights.shift(1).fillna(0.0) * returns).sum(axis=1)
-    turnover = 0.5 * weights.diff().abs().sum(axis=1).shift(1).fillna(0.0)
-    return gross_returns - turnover * (float(turnover_cost_bps) / 10_000.0)
+    turnover = _rebalance_weight_deltas(weights, returns_matrix, safe_haven=safe_haven).abs().sum(axis=1).mul(0.5)
+    return gross_returns - turnover.shift(1).fillna(0.0) * (float(turnover_cost_bps) / 10_000.0)
 
 
 
@@ -247,11 +273,16 @@ def _build_rebalance_trade_rows(
     run_name: str,
     variant_type: str,
     weights: pd.DataFrame,
+    returns_matrix: pd.DataFrame,
+    safe_haven: str,
 ) -> list[dict[str, object]]:
     frame = weights.fillna(0.0).copy()
     if frame.empty:
         return []
-    deltas = frame.diff().fillna(frame)
+    safe_symbol = str(safe_haven).strip().upper()
+    if safe_symbol not in frame.columns:
+        frame[safe_symbol] = 0.0
+    deltas = _rebalance_weight_deltas(frame, returns_matrix, safe_haven=safe_haven)
     rows: list[dict[str, object]] = []
     for as_of, delta_row in deltas.iterrows():
         changed_symbols = [symbol for symbol, value in delta_row.items() if abs(float(value)) > 1e-12]
@@ -550,6 +581,7 @@ def _summary_for_variant(
     broad_benchmark_symbol: str,
     safe_haven: str,
     universe_lag_trading_days: int,
+    turnover_history: pd.Series | None = None,
     max_names_per_sector: int | None = None,
     sector_score_penalty: float | None = None,
     residual_momentum_weight: float | None = None,
@@ -573,6 +605,7 @@ def _summary_for_variant(
         summarize_returns(
             portfolio_returns,
             weights_history=weights,
+            turnover_history=turnover_history,
             benchmark_returns=(
                 reference_returns[benchmark_symbol]
                 if benchmark_symbol in reference_returns.columns
@@ -1098,13 +1131,25 @@ def run_concentration_variant_research(
     trade_rows: list[dict[str, object]] = []
     rolling_values = parse_csv_ints(tuple(rolling_window_years), default=DEFAULT_ROLLING_WINDOW_YEARS)
     for run_name, variant_type, weights, blend_weight, threshold, top4_share in variants:
-        returns = _returns_from_weights(weights, returns_matrix, turnover_cost_bps=float(turnover_cost_bps))
+        returns = _returns_from_weights(
+            weights,
+            returns_matrix,
+            turnover_cost_bps=float(turnover_cost_bps),
+            safe_haven=safe_haven,
+        )
+        turnover = (
+            _rebalance_weight_deltas(weights, returns_matrix, safe_haven=safe_haven)
+            .abs()
+            .sum(axis=1)
+            .mul(0.5)
+        )
         summary_rows.append(
             _summary_for_variant(
                 run_name=run_name,
                 variant_type=variant_type,
                 weights=weights,
                 portfolio_returns=returns,
+                turnover_history=turnover.shift(1).fillna(0.0),
                 reference_returns=reference_returns,
                 benchmark_symbol=benchmark_symbol,
                 broad_benchmark_symbol=broad_benchmark_symbol,
@@ -1131,6 +1176,8 @@ def run_concentration_variant_research(
                 run_name=run_name,
                 variant_type=variant_type,
                 weights=weights,
+                returns_matrix=returns_matrix,
+                safe_haven=safe_haven,
             )
         )
         daily_return_rows.extend(

@@ -7,14 +7,6 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from .pipelines.mega_cap_leader_rotation_backtest import (
-    BENCHMARK_SYMBOL,
-    BROAD_BENCHMARK_SYMBOL,
-    SAFE_HAVEN,
-    _build_close_and_returns,
-    _normalize_price_history,
-    run_backtest,
-)
 from .mega_cap_leader_rotation_concentration_variants import (
     DEFAULT_BLEND_TOP2_WEIGHTS,
     _align_weights,
@@ -36,6 +28,14 @@ from .mega_cap_leader_rotation_stress_readiness import (
     DEFAULT_PANIC_GUARD_STOCK_EXPOSURE,
     DEFAULT_PANIC_GUARD_VOL_THRESHOLD,
     parse_csv_floats_no_percent,
+)
+from .pipelines.mega_cap_leader_rotation_backtest import (
+    BENCHMARK_SYMBOL,
+    BROAD_BENCHMARK_SYMBOL,
+    SAFE_HAVEN,
+    _build_close_and_returns,
+    _normalize_price_history,
+    run_backtest,
 )
 from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
@@ -414,11 +414,13 @@ def build_panic_guard_walk_forward_oos(
             baseline_weights,
             returns_matrix,
             turnover_cost_bps=float(turnover_cost_bps),
+            safe_haven=safe_haven,
         )
         candidate_returns = _returns_from_weights(
             candidate_weights,
             returns_matrix,
             turnover_cost_bps=float(turnover_cost_bps),
+            safe_haven=safe_haven,
         )
         window_frames.append(
             _build_pair_walk_forward_windows(

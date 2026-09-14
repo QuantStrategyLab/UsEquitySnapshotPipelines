@@ -8,14 +8,6 @@ from typing import Iterable
 
 import pandas as pd
 
-from .pipelines.mega_cap_leader_rotation_backtest import (
-    BENCHMARK_SYMBOL,
-    BROAD_BENCHMARK_SYMBOL,
-    SAFE_HAVEN,
-    _build_close_and_returns,
-    _normalize_price_history,
-    run_backtest,
-)
 from .mega_cap_leader_rotation_concentration_variants import (
     DAILY_RETURN_COLUMNS,
     TRADE_COLUMNS,
@@ -24,6 +16,7 @@ from .mega_cap_leader_rotation_concentration_variants import (
     _build_rebalance_trade_rows,
     _build_rolling_rows,
     _build_yearly_rows,
+    _rebalance_weight_deltas,
     _returns_from_weights,
     _summary_for_variant,
 )
@@ -31,6 +24,14 @@ from .mega_cap_leader_rotation_dynamic_validation import (
     DEFAULT_ROLLING_WINDOW_YEARS,
     lag_universe_history,
     parse_csv_ints,
+)
+from .pipelines.mega_cap_leader_rotation_backtest import (
+    BENCHMARK_SYMBOL,
+    BROAD_BENCHMARK_SYMBOL,
+    SAFE_HAVEN,
+    _build_close_and_returns,
+    _normalize_price_history,
+    run_backtest,
 )
 from .pipelines.russell_1000_multi_factor_defensive_snapshot import read_table
 
@@ -306,7 +307,13 @@ def run_crash_brake_research(
     rolling_values = parse_csv_ints(tuple(rolling_window_years), default=DEFAULT_ROLLING_WINDOW_YEARS)
     mode_share = float(mode_history["Mode"].eq("floor").mean()) if not mode_history.empty else 0.0
     for run_name, variant_type, weights, top2_weight, floor_weight in variants:
-        returns = _returns_from_weights(weights, aligned_returns, turnover_cost_bps=float(turnover_cost_bps))
+        returns = _returns_from_weights(
+            weights,
+            aligned_returns,
+            turnover_cost_bps=float(turnover_cost_bps),
+            safe_haven=safe_haven,
+        )
+        turnover = _rebalance_weight_deltas(weights, aligned_returns, safe_haven=safe_haven).abs().sum(axis=1).mul(0.5)
         summary = _summary_for_variant(
             run_name=run_name,
             variant_type=variant_type,
@@ -316,6 +323,7 @@ def run_crash_brake_research(
             benchmark_symbol=benchmark_symbol,
             broad_benchmark_symbol=broad_benchmark_symbol,
             safe_haven=safe_haven,
+            turnover_history=turnover.shift(1).fillna(0.0),
             universe_lag_trading_days=int(universe_lag_trading_days),
             top2_blend_weight=top2_weight,
             top4_mode_share=1.0 - float(top2_weight or 0.0),
@@ -333,6 +341,8 @@ def run_crash_brake_research(
                 run_name=run_name,
                 variant_type=variant_type,
                 weights=weights,
+                returns_matrix=aligned_returns,
+                safe_haven=safe_haven,
             )
         )
         daily_return_rows.extend(
