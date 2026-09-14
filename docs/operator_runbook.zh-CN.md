@@ -106,3 +106,32 @@ remediation PR、重试反馈，或请求/执行自动合并。证据包仅作�
 
 仓库 settings、旧变量和 secret 不属于此 workflow 的契约范围。不要从本文推断
 其 runtime 状态；任何 settings 修改都需要独立的、已认证且明确授权的流程。
+
+## Russell 离线 core-signal 研究回放
+
+该 runner 只复用 `russell_top50_leader_rotation` 的 `compute_signals`，通过 QPK
+普通 `BacktestOrchestrator` 运行。它是 `core_signal_only` 研究工具，不调用 AI、
+不产生订单、不具备晋级资格，也不包含 income、option overlay、账户风控或实盘
+成交层。输入的 feature snapshot 与价格必须使用统一的可比口径；股票拆分、分红
+和复权来源在本工具中不会被推断或修正。
+
+```bash
+PYTHONPATH=src:$UES_SRC:$QPK_SRC \
+python -m us_equity_snapshot_pipelines.lifecycle.russell_research_runner \
+  --features features.csv --prices prices.csv --data-kind research \
+  --equity 100000 --bps 25 --variant blend_top2_50_top4_50 \
+  --output ./research-output
+```
+
+`data-kind` 只能是显式的 `synthetic` 或 `research`；synthetic 结果不得解释为
+真实 PIT、OOS、验证或 live readiness 证据。该 runner 的 flags 固定为学习用途、
+零规模和 no-order，不能通过参数反转。
+
+## 固定 Russell core case
+
+`.github/workflows/russell-core-research-case.yml` 仅支持手动、非 live 的一次性
+研究接线。它从固定 generation 的 feature snapshot 读取一次内存数据，并请求
+2026-09-01 至 2026-09-11 的 AMD、INTC、MU、PANW Alpaca SIP 全复权日线；只输出
+聚合收益、回撤、费用、样本数和 research flags，不落 bars、daily、trades 或上传
+工件。25 bps 每边是本例研究假设，不是券商实际成本。Alpaca SIP 全复权日线开/收盘
+用于研究模拟，不代表券商成交价；本例不另计股息现金，避免与复权价格重复计算。
