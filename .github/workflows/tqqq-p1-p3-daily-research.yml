@@ -411,10 +411,12 @@ jobs:
           result_path="${RUNNER_TEMP}/tqqq-daily-research/p3-result.json"
           status_path="${RUNNER_TEMP}/tqqq-daily-research/daily-research-status.json"
           p3_exit=0
+          logical_evaluation_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run --no-sync python scripts/run_tqqq_p3.py \
             --snapshot-root "$root" \
             --config config/tqqq_core_only_p2_v5.json \
             --mandate-receipt-sha256 "$POLICY_RECEIPT_SHA256" \
+            --logical-evaluation-time "$logical_evaluation_time" \
             --output-dir "${RUNNER_TEMP}/tqqq-daily-research/p3-output" > "$result_path" || p3_exit=$?
           RESULT_PATH="$result_path" STATUS_PATH="$status_path" P3_EXIT="$p3_exit" uv run --no-sync python - <<'PY'
           import hashlib
