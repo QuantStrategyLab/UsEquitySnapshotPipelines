@@ -1,9 +1,52 @@
 from __future__ import annotations
 
+import ast
+import re
+import shlex
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/tqqq-p1-p3-daily-research.yml")
 GITIGNORE = Path(".gitignore")
+
+
+def _extract_cli_parser() -> object:
+    source = Path("scripts/run_tqqq_p3.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    selected: list[ast.AST] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import) and any(alias.name == "argparse" for alias in node.names):
+            selected.append(node)
+        elif isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            selected.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name == "_SanitizedParser":
+            selected.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name == "_arguments":
+            selected.append(node)
+    namespace: dict[str, object] = {"__name__": "test_parser"}
+    exec(compile(ast.Module(selected, type_ignores=[]), "<p3-parser>", "exec"), namespace)
+    return namespace["_arguments"]
+
+
+def test_daily_p3_workflow_passes_logical_evaluation_time_to_cli() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    command = re.search(
+        r"uv run --no-sync python scripts/run_tqqq_p3\.py(?P<args>.*?) > \"\$result_path\"",
+        workflow,
+        flags=re.DOTALL,
+    )
+    assert command is not None
+    args = [item for item in shlex.split(command.group("args")) if item.strip()]
+    tokens: list[str] = []
+    values = {
+        "$root": "/tmp/synthetic-root",
+        "$POLICY_RECEIPT_SHA256": "a" * 64,
+        "$logical_evaluation_time": "2026-09-15T08:00:00Z",
+        "${RUNNER_TEMP}/tqqq-daily-research/p3-output": "/tmp/synthetic-output",
+    }
+    for item in args:
+        tokens.append(values.get(item, item))
+    parsed = _extract_cli_parser()(tokens)
+    assert parsed.logical_evaluation_time == "2026-09-15T08:00:00Z"
 
 
 def test_ephemeral_runner_outputs_do_not_dirty_the_p3_checkout() -> None:
