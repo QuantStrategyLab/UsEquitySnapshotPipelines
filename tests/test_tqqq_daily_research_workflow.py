@@ -1,9 +1,156 @@
 from __future__ import annotations
 
+import ast
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/tqqq-p1-p3-daily-research.yml")
 GITIGNORE = Path(".gitignore")
+
+
+def _run_daily_p3_terminal_heredoc(
+    tmp_path: Path, *, result: dict[str, object], p3_exit: int
+) -> tuple[dict[str, str], dict[str, str], dict[str, object], subprocess.CompletedProcess[str]]:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(
+        r"RESULT_PATH=\"\$result_path\" STATUS_PATH=\"\$status_path\" P3_EXIT=\"\$p3_exit\" uv run --no-sync python - <<'PY'\n(?P<script>.*?)\n          PY",
+        workflow,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    script = "\n".join(line[10:] if line.startswith("          ") else line for line in match.group("script").splitlines())
+    result_path = tmp_path / "p3-result.json"
+    status_path = tmp_path / "daily-research-status.json"
+    summary_path = tmp_path / "summary.md"
+    output_path = tmp_path / "github-output"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    env = {
+        **os.environ,
+        "RESULT_PATH": str(result_path),
+        "STATUS_PATH": str(status_path),
+        "P3_EXIT": str(p3_exit),
+        "DATE_CUTOFF": "2026-09-15",
+        "MANIFEST_SHA256": "a" * 64,
+        "P1_HEALTH_SHA256": "b" * 64,
+        "POLICY_RECEIPT_SHA256": "c" * 64,
+        "GITHUB_STEP_SUMMARY": str(summary_path),
+        "GITHUB_OUTPUT": str(output_path),
+    }
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            str(Path(__file__).parents[1] / "src"),
+            *[entry for entry in sys.path if entry],
+            env.get("PYTHONPATH", ""),
+        ]
+    )
+    completed = subprocess.run(
+        [sys.executable, "-"], input=script, text=True, capture_output=True, env=env, check=False
+    )
+    status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+    summary = dict(
+        line.split("=", 1) for line in summary_path.read_text(encoding="utf-8").splitlines() if "=" in line
+    ) if summary_path.exists() else {}
+    outputs = dict(
+        line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines() if "=" in line
+    ) if output_path.exists() else {}
+    return summary, outputs, status, completed
+
+
+def test_daily_p3_terminal_heredoc_records_synthetic_v3_success(tmp_path: Path) -> None:
+    summary, outputs, status, completed = _run_daily_p3_terminal_heredoc(
+        tmp_path,
+        result={
+            "evidence_sha256": "d" * 64,
+            "status": "EVIDENCE_V3_COMPLETE",
+            "verdict": "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
+        },
+        p3_exit=0,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert status["p3_terminal"]["status"] == "EVIDENCE_V3_COMPLETE"
+    assert summary == {
+        "P3_DAILY_STATUS": "EVIDENCE_V3_COMPLETE",
+        "P3_EVIDENCE_SHA256": "d" * 64,
+        "P3_VERDICT": "PASS_READY_FOR_SEPARATE_HUMAN_PROMOTION_DECISION",
+    }
+    assert outputs == {"status": "EVIDENCE_V3_COMPLETE", "evidence_sha256": "d" * 64}
+
+
+def test_daily_p3_terminal_heredoc_records_synthetic_parked_failure(tmp_path: Path) -> None:
+    summary, outputs, status, completed = _run_daily_p3_terminal_heredoc(
+        tmp_path,
+        result={
+            "complete_evidence": False,
+            "failure_class": "config_contract_failure",
+            "replay_started": False,
+            "source_commit": "e" * 40,
+            "stage": "config_contract",
+            "status": "PARKED",
+        },
+        p3_exit=2,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert status["p3_terminal"] == {
+        "complete_evidence": False,
+        "failure_class": "config_contract_failure",
+        "replay_started": False,
+        "source_commit": "e" * 40,
+        "stage": "config_contract",
+        "status": "PARKED",
+    }
+    assert summary == {
+        "P3_DAILY_STATUS": "PARKED",
+        "P3_FAILURE_CLASS": "config_contract_failure",
+        "P3_FAILURE_STAGE": "config_contract",
+    }
+    assert outputs == {"status": "PARKED", "failure_class": "config_contract_failure"}
+
+
+def _extract_cli_parser() -> object:
+    source = Path("scripts/run_tqqq_p3.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    selected: list[ast.AST] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import) and any(alias.name == "argparse" for alias in node.names):
+            selected.append(node)
+        elif isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            selected.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name == "_SanitizedParser":
+            selected.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name == "_arguments":
+            selected.append(node)
+    namespace: dict[str, object] = {"__name__": "test_parser"}
+    exec(compile(ast.Module(selected, type_ignores=[]), "<p3-parser>", "exec"), namespace)
+    return namespace["_arguments"]
+
+
+def test_daily_p3_workflow_passes_logical_evaluation_time_to_cli() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    command = re.search(
+        r"uv run --no-sync python scripts/run_tqqq_p3\.py(?P<args>.*?) > \"\$result_path\"",
+        workflow,
+        flags=re.DOTALL,
+    )
+    assert command is not None
+    args = [item for item in shlex.split(command.group("args")) if item.strip()]
+    tokens: list[str] = []
+    values = {
+        "$root": "/tmp/synthetic-root",
+        "$POLICY_RECEIPT_SHA256": "a" * 64,
+        "$logical_evaluation_time": "2026-09-15T08:00:00Z",
+        "${RUNNER_TEMP}/tqqq-daily-research/p3-output": "/tmp/synthetic-output",
+    }
+    for item in args:
+        tokens.append(values.get(item, item))
+    parsed = _extract_cli_parser()(tokens)
+    assert parsed.logical_evaluation_time == "2026-09-15T08:00:00Z"
 
 
 def test_ephemeral_runner_outputs_do_not_dirty_the_p3_checkout() -> None:
@@ -33,6 +180,15 @@ def test_daily_research_workflow_is_scheduled_p2_v5_only_and_nonlive() -> None:
     assert "QSL_CONTROL_PLANE_SYNC_URL" in workflow
     assert "CONTROL_PLANE_SYNC_TOKEN" in workflow
     assert "/api/internal/sync-control-plane-source" in workflow
+
+
+def test_daily_research_workflow_uses_v3_terminal_and_evidence_package() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "EVIDENCE_V2_COMPLETE" not in workflow
+    assert workflow.count("EVIDENCE_V3_COMPLETE") == 5
+    assert "strategy-evidence-package.v3.json" in workflow
+    assert "strategy-evidence-package.v2.json" not in workflow
 
 
 def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> None:
