@@ -13,3 +13,9 @@
 回放固定使用 `UsEquityStrategies` commit `5f11fcfe8c5473de20e1b590e9aa3e87665b6108` 的 `UsEtfRotationBacktestRunner`，`global_etf_rotation`、`min_history_days=260`、2017-01-01 至 2024-12-31；2016 只作 warmup，保持 lag-one、默认 10 bps 费用和既有 runner 聚合 metrics。workflow 另外固定安装 `pandas-market-calendars==5.4.0`，并在读取 GCS 前确认 NYSE 2018-03 最后交易日为 2018-03-29，缺失即停止，避免静默回退工作日月末。
 
 结果只报告来源 generation、runner revision、窗口、实际 params、既有聚合 metrics 和 `no_order=true`、`learning_only=true`、`pit_verified=false`、`promotion_eligible=false`、`live_ready=false`、`size_zero_required=true`。没有可比基准时明确未比较，不输出胜率、Sortino 或虚构盈利结论；回放成功也不代表真实 PIT、晋级、交易或自然观察完成。默认 CLI 仍 plan-only，`--execute-cloud` 只接受 main GitHub Actions 环境；不重采、不调用 AI、不交易。
+
+## VOO/BIL 基准比较
+
+同一 workflow 的 `operation=compare` 只读取固定 bars generation `1789552505861428` 和既有 replay 结果 generation `1789555099559060`（size `1601`），先检查目标 `global-etf-learning/2017-2024/20260916/learning-benchmarks.json` 不存在；任一来源身份、窗口、controls、UES/QPK revision、10 bps 或 replay metrics（含 2012 observations）不匹配即停止。比较器不调用 runner、不重采、不调用 AI，结果只在云端内存中计算并 create-only 上传聚合摘要。
+
+VOO/BIL 均从 2017 年首个交易日收盘买入，初始本金费用 `c=0.001` 只在下一日计入：`r0=0`，`r1=(P1/P0)/(1+c)-1`，之后使用 `pct_change`，不做终末卖出。指标复用固定 `compute_backtest_metrics`，映射 `annual_return→cagr`、`annual_volatility→volatility`、`days→observation_count`；输出复制策略 metrics、两个基准 metrics 和 `strategy_minus_benchmark` 简单差值，不产生 alpha、晋级或盈利结论。

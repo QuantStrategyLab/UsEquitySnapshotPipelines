@@ -3,8 +3,16 @@ name: Global ETF Learning Replay
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Select the bounded operation"
+        required: true
+        default: replay
+        type: choice
+        options:
+          - replay
+          - compare
       execute:
-        description: "Execute one cloud-only replay and create the bounded result object"
+        description: "Execute the selected cloud-only operation"
         required: true
         default: false
         type: boolean
@@ -55,19 +63,34 @@ jobs:
           if str(schedule.index[-1].date()) != "2018-03-29":
               raise SystemExit("NYSE calendar is not the required fixed calendar")
           PY
-      - name: Print replay plan
+      - name: Print selected operation plan
         if: ${{ inputs.execute != true }}
-        run: uv run --no-sync python scripts/run_global_etf_learning_replay.py
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            compare) uv run --no-sync python scripts/compare_global_etf_learning_benchmarks.py ;;
+            replay) uv run --no-sync python scripts/run_global_etf_learning_replay.py ;;
+            *) echo "Unsupported operation" >&2; exit 1 ;;
+          esac
       - name: Authenticate to Google Cloud
         if: ${{ inputs.execute == true }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
-      - name: Execute one cloud-only replay
-        if: ${{ inputs.execute == true }}
+      - name: Execute selected cloud-only operation
+        if: ${{ inputs.execute == true && inputs.operation == 'replay' }}
         env:
           GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/run_global_etf_learning_replay.py --execute-cloud
+      - name: Execute cloud-only benchmark comparison
+        if: ${{ inputs.execute == true && inputs.operation == 'compare' }}
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/compare_global_etf_learning_benchmarks.py --execute-cloud
