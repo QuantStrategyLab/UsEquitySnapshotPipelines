@@ -1,0 +1,73 @@
+name: Global ETF Learning Replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Execute one cloud-only replay and create the bounded result object"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: global-etf-learning-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install locked runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Install fixed replay runner and calendar
+        run: |
+          set -euo pipefail
+          uv pip install --python .venv/bin/python --no-deps \
+            'us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@5f11fcfe8c5473de20e1b590e9aa3e87665b6108' \
+            'pandas-market-calendars==5.4.0'
+          uv run --no-sync python - <<'PY'
+          import json
+          import importlib.metadata as metadata
+          import pandas_market_calendars as mcal
+
+          direct_url = metadata.distribution("us-equity-strategies").read_text("direct_url.json") or "{}"
+          direct_url_data = json.loads(direct_url)
+          commit_id = direct_url_data.get("vcs_info", {}).get("commit_id")
+          if commit_id != "5f11fcfe8c5473de20e1b590e9aa3e87665b6108":
+              raise SystemExit("fixed UsEquityStrategies revision is not installed")
+          if metadata.version("pandas-market-calendars") != "5.4.0":
+              raise SystemExit("fixed pandas-market-calendars version is not installed")
+          schedule = mcal.get_calendar("NYSE").schedule(start_date="2018-03-01", end_date="2018-03-31")
+          if str(schedule.index[-1].date()) != "2018-03-29":
+              raise SystemExit("NYSE calendar is not the required fixed calendar")
+          PY
+      - name: Print replay plan
+        if: ${{ inputs.execute != true }}
+        run: uv run --no-sync python scripts/run_global_etf_learning_replay.py
+      - name: Authenticate to Google Cloud
+        if: ${{ inputs.execute == true }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Execute one cloud-only replay
+        if: ${{ inputs.execute == true }}
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/run_global_etf_learning_replay.py --execute-cloud
