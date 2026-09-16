@@ -470,7 +470,7 @@ jobs:
           print(f'DAILY_STATUS_SHA256={hashlib.sha256(encoded).hexdigest()}')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
               summary.write(f'P3_DAILY_STATUS={terminal["status"]}\n')
-              if terminal['status'] == 'EVIDENCE_V2_COMPLETE':
+              if terminal['status'] == 'EVIDENCE_V3_COMPLETE':
                   summary.write(f'P3_EVIDENCE_SHA256={terminal["evidence_sha256"]}\n')
                   summary.write(f'P3_VERDICT={terminal["verdict"]}\n')
               else:
@@ -478,7 +478,7 @@ jobs:
                   summary.write(f'P3_FAILURE_STAGE={terminal["stage"]}\n')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'status={terminal["status"]}\n')
-              if terminal['status'] == 'EVIDENCE_V2_COMPLETE':
+              if terminal['status'] == 'EVIDENCE_V3_COMPLETE':
                   output.write(f'evidence_sha256={terminal["evidence_sha256"]}\n')
               else:
                   output.write(f'failure_class={terminal["failure_class"]}\n')
@@ -502,7 +502,7 @@ jobs:
           retention-days: 35
       - name: Build a bound P5 forward observation
         id: forward_observation
-        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        if: steps.terminal.outputs.status == 'EVIDENCE_V3_COMPLETE'
         working-directory: p3-source
         env:
           MANIFEST_SHA256: ${{ needs.p1.outputs.manifest_sha256 }}
@@ -626,7 +626,7 @@ jobs:
           if-no-files-found: error
           retention-days: 35
       - name: Build sanitized P3 research performance observation
-        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        if: steps.terminal.outputs.status == 'EVIDENCE_V3_COMPLETE'
         working-directory: p3-source
         env:
           P3_EVIDENCE_SHA256: ${{ steps.terminal.outputs.evidence_sha256 }}
@@ -634,7 +634,7 @@ jobs:
           set -euo pipefail
           output_path="${RUNNER_TEMP}/tqqq-daily-research/strategy_performance.v2.json"
           uv run --no-sync python scripts/build_tqqq_p3_strategy_performance.py \
-            --evidence-package "${RUNNER_TEMP}/tqqq-daily-research/p3-output/strategy-evidence-package.v2.json" \
+            --evidence-package "${RUNNER_TEMP}/tqqq-daily-research/p3-output/strategy-evidence-package.v3.json" \
             --expected-evidence-sha256 "$P3_EVIDENCE_SHA256" \
             --producer-revision "$GITHUB_SHA" \
             --computed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -642,7 +642,7 @@ jobs:
           python -m json.tool "$output_path"
           printf 'P3_RESEARCH_PERFORMANCE=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P3 research performance observation
-        if: steps.terminal.outputs.status == 'EVIDENCE_V2_COMPLETE'
+        if: steps.terminal.outputs.status == 'EVIDENCE_V3_COMPLETE'
         uses: actions/upload-artifact@v7
         with:
           name: tqqq-p3-research-performance-${{ github.run_id }}-${{ github.run_attempt }}
