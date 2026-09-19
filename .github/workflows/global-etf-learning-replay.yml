@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           uv pip install --python .venv/bin/python --no-deps \
-            'us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@5f11fcfe8c5473de20e1b590e9aa3e87665b6108' \
+            'us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@8412d8338879f335ef8830678c2733e02e53e7c7' \
             'pandas-market-calendars==5.4.0'
           uv run --no-sync python - <<'PY'
           import json
