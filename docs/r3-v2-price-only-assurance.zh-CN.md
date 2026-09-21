@@ -13,6 +13,16 @@ R3-v2 price-only 是本仓内**独立于全量 OHLCV 合同**的研究诊断切�
 
 手工入口：工作流 `r3-v2-price-only-assurance-diagnostic.yml`（`contents: read`、`market-data-nonlive`）。无云端、无 id-token、无 artifact 上传、无券商或下单权限。
 
+## 截止日稳定性规则
+
+最新完成交易日只作为 T+0 观察，不稳定时保持停车，不把一次最新日线结果写成长期数据源结论。2026-09-21 的 T+0 诊断仍为 `NOT_VERIFIED`，但回看 2026-09-18（T+1）和 2026-09-17（T+2）时，四个标的均通过价格一致性和 XNYS 覆盖检查：
+
+- [T+0 run 35641033490](https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines/actions/runs/35641033490)：最新日存在价格分歧，保持 `NOT_VERIFIED`。
+- [T+1 run 35642032881](https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines/actions/runs/35642032881)：四个标的 `VERIFIED`，覆盖完整。
+- [T+2 run 35642032339](https://github.com/QuantStrategyLab/UsEquitySnapshotPipelines/actions/runs/35642032339)：四个标的 `VERIFIED`，覆盖完整。
+
+因此研究输入应绑定已经通过双源检查的稳定截止日，优先使用 T+1/T+2；T+0 只用于观察最新数据是否已经稳定。此规则不放宽价格容差、不自动换源、不混源，也不改变 `can_promote=false` / `auto_promote=false` 的研究诊断边界。
+
 ## 合同边界
 
 | 项 | 规则 |
