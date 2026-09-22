@@ -60,4 +60,4 @@ jobs:
             --execute \
             --batch-id "$BATCH_ID" \
             | tee "$RUNNER_TEMP/batch-a-v2-alpaca-sip-summary.json" \
-            >> "$GITHUB_STEP_SUMMARY"
+            | tee -a "$GITHUB_STEP_SUMMARY"

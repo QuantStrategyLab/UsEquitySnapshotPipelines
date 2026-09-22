@@ -27,6 +27,12 @@ def test_batch_a_v2_workflow_is_manual_main_only_nonlive() -> None:
     assert "scripts/acquire_batch_a_v2_price_snapshots_alpaca.py" in workflow
     assert "--execute" in workflow
     assert "--batch-id" in workflow
+    assert "set -euo pipefail" in workflow
+    assert (
+        '| tee "$RUNNER_TEMP/batch-a-v2-alpaca-sip-summary.json"' in workflow
+    )
+    assert '| tee -a "$GITHUB_STEP_SUMMARY"' in workflow
+    assert '>> "$GITHUB_STEP_SUMMARY"' not in workflow
     assert "upload-artifact" not in workflow
     assert "placeorder" not in workflow.lower()
     assert "broker" not in workflow.lower()
