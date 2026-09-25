@@ -8,6 +8,9 @@ from scripts.diagnose_qqqm_boxx_historical_sip import PARAMS, _provider_error, d
 class _Response:
     status = 200
 
+    def __init__(self, body=b'{"bars":[{"t":"2024-06-03T04:00:00Z"}]}'):
+        self.body = body
+
     def __enter__(self):
         return self
 
@@ -15,19 +18,20 @@ class _Response:
         return False
 
     def read(self, _limit):
-        return b'{"bars":[{"t":"2024-06-03T04:00:00Z"}]}'
+        return self.body
 
 
 class _Opener:
-    def __init__(self, error=None):
+    def __init__(self, error=None, body=None):
         self.error = error
+        self.body = body
         self.calls = []
 
     def open(self, request, timeout):
         self.calls.append((request.full_url, timeout))
         if self.error:
             raise self.error
-        return _Response()
+        return _Response(self.body) if self.body is not None else _Response()
 
 
 def test_fixed_request_has_historical_sip_raw_window():
@@ -57,3 +61,12 @@ def test_provider_error_extracts_only_code_and_redacted_message():
 
 def test_non_json_error_does_not_escape_body():
     assert _provider_error(b"private raw error") == (None, None)
+
+
+def test_untrusted_success_timestamp_is_not_logged():
+    body = json.dumps({"bars": [{"t": {"secret": "do not print"}}]}).encode()
+    result = diagnose("QQQM", "id", "secret", opener=_Opener(body=body))
+    assert result == {"symbol": "QQQM", "http_status": 200, "status": "SUCCESS_FORMAT_INVALID"}
+    for bars in ([{}], [{"t": "2024-06-08T04:00:00Z"}]):
+        result = diagnose("QQQM", "id", "secret", opener=_Opener(body=json.dumps({"bars": bars}).encode()))
+        assert result["status"] == "SUCCESS_FORMAT_INVALID"

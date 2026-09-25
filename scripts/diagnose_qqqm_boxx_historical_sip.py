@@ -69,9 +69,20 @@ def diagnose(symbol: str, key_id: str, secret: str, *, opener=None) -> dict[str,
                 return {"symbol": symbol, "http_status": response.status, "status": "RESPONSE_TOO_LARGE"}
             value = json.loads(body)
             bars = value.get("bars") if isinstance(value, dict) else None
-            if not isinstance(bars, list):
+            if not isinstance(bars, list) or len(bars) > 5:
                 return {"symbol": symbol, "http_status": response.status, "status": "SUCCESS_FORMAT_INVALID"}
-            times = [bar.get("t") for bar in bars if isinstance(bar, dict)]
+            times = []
+            for bar in bars:
+                stamp = bar.get("t") if isinstance(bar, dict) else None
+                if not isinstance(stamp, str) or len(stamp) > 40:
+                    return {"symbol": symbol, "http_status": response.status, "status": "SUCCESS_FORMAT_INVALID"}
+                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    return {"symbol": symbol, "http_status": response.status, "status": "SUCCESS_FORMAT_INVALID"}
+                observed = parsed.astimezone(UTC)
+                if not (datetime(2024, 6, 3, 4, tzinfo=UTC) <= observed < datetime(2024, 6, 8, 4, tzinfo=UTC)):
+                    return {"symbol": symbol, "http_status": response.status, "status": "SUCCESS_FORMAT_INVALID"}
+                times.append(observed.isoformat().replace("+00:00", "Z"))
             return {"symbol": symbol, "http_status": response.status,
                     "status": "ACCESS_OK" if bars else "EMPTY_SUCCESS",
                     "bar_count": len(bars), "first_bar_time": times[0] if times else None,
@@ -98,7 +109,7 @@ def main() -> int:
                     "feed": PARAMS["feed"], "adjustment": PARAMS["adjustment"],
                     "currency": PARAMS["currency"], "limit_per_symbol": 5},
         "results": results,
-        "request_count": sum("http_status" in result or result["status"] == "TRANSPORT_FAILED" for result in results),
+        "request_count": sum(result["status"] != "CREDENTIALS_NOT_CONFIGURED" for result in results),
         "no_order": True,
     }
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
