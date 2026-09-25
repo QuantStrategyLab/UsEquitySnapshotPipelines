@@ -111,6 +111,7 @@ class BoundedProvider:
         self.opener = opener or build_opener(ProxyHandler({}), _NoRedirect())
         self.pages = 0
         self.bytes = 0
+        self.completed: list[dict[str, object]] = []
 
     def get(self, path: str, params: dict[str, str]) -> tuple[bytes, dict[str, Any]]:
         if path not in {"/v1/corporate-actions", *(f"/v2/stocks/{s}/bars" for s in WINDOWS)}:
@@ -277,8 +278,12 @@ def run(store: PrivateStore, provider: BoundedProvider) -> dict[str, object]:
     inputs = []
     for symbol in WINDOWS:
         inputs.append(_collect(provider, store, symbol, "bars"))
+        provider.completed.append({"symbol": symbol, "kind": "bars", "count": inputs[-1]["count"],
+                                   "first_bar_time": inputs[-1]["first_bar_time"],
+                                   "last_bar_time": inputs[-1]["last_bar_time"]})
     for symbol in WINDOWS:
         inputs.append(_collect(provider, store, symbol, "actions"))
+        provider.completed.append({"symbol": symbol, "kind": "actions", "count": inputs[-1]["count"]})
     manifest = {"schema_version": "qsl.research.raw_sip_input.v1",
                 "retrieved_at": _utc_now(), "source": "alpaca.stocks.bars.v2_and_corporate_actions.v1",
                 "feed": "sip", "price_adjustment": "raw", "calendar": "XNYS",
@@ -317,6 +322,7 @@ def main() -> int:
                   "provider_message": exc.provider_message,
                   "provider_page_requests": provider.pages if provider else 0,
                   "provider_response_bytes": provider.bytes if provider else 0,
+                  "completed_inputs": provider.completed if provider else [],
                   "scope": PREFIX, "no_order": True}
     except Exception:  # noqa: BLE001 - no secret or provider body escapes
         result = {"status": "RUNTIME_FAILURE_SANITIZED", "scope": PREFIX, "no_order": True}
