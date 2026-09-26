@@ -165,3 +165,30 @@ def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.delenv("R9_LICENSE_RECORD_SHA256", raising=False)
     assert module["main"]() == 2
+    monkeypatch.setenv("R9_LICENSE_RECORD_SHA256", "0" * 64)
+    assert module["main"]() == 2
+
+
+def test_r9_attested_record_binding_reaches_only_stubbed_acquisition(monkeypatch, capsys):
+    from google.cloud import storage
+
+    monkeypatch.setenv("GITHUB_WORKFLOW", "R9 Raw Temporal Extension")
+    module = runpy.run_path(str(Path(__file__).parents[1] / "scripts" /
+                                "acquire_qqqm_boxx_raw_history.py"), run_name="r9_test")
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" /
+                "r9-raw-temporal-extension.yml").read_text()
+    digest = module["R9_LICENSE_RECORD_SHA256"]
+    assert f"R9_LICENSE_RECORD_SHA256: {digest}" in workflow
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("R9_LICENSE_RECORD_SHA256", digest)
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "synthetic-key")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "synthetic-secret")
+    monkeypatch.setattr(storage, "Client", lambda: object())
+    globals_ = module["main"].__globals__
+    monkeypatch.setitem(globals_, "PrivateStore", lambda _client: object())
+    monkeypatch.setitem(globals_, "run", lambda _store, _provider: {
+        "status": "COMPLETE_SOURCE_DOWNLOAD", "no_order": True,
+    })
+    assert module["main"]() == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "COMPLETE_SOURCE_DOWNLOAD"

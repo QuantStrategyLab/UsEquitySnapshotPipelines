@@ -33,7 +33,8 @@ WINDOWS = {
 }
 R9_WORKFLOW = "R9 Raw Temporal Extension"
 R9_SCOPE = os.environ.get("GITHUB_WORKFLOW") == R9_WORKFLOW
-R9_LICENSE_RECORD_SHA256 = None  # Bind only an independently verified entitlement record.
+# SHA of the private user_attested R9 record, not of a supplier document.
+R9_LICENSE_RECORD_SHA256 = "779f219f35f6b396caba0c787337b9593d9eb98597895afd280eb4dca1ccf73f"
 MAX_STORAGE_OPERATIONS = 200
 MAX_STORAGE_TRANSFER_BYTES = 1024 * 1024 * 1024
 if R9_SCOPE:
