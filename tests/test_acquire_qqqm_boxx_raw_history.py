@@ -1,5 +1,7 @@
 import io
 import json
+import runpy
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -117,3 +119,76 @@ def test_private_write_probe_precedes_any_provider_request():
     with pytest.raises(AcquisitionError, match="OBJECT_WRITE_OR_READBACK_UNKNOWN"):
         run(Store(), Provider())
     assert events == [("write", "_write_probe.json")]
+
+
+def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKFLOW", "R9 Raw Temporal Extension")
+    module = runpy.run_path(str(Path(__file__).parents[1] / "scripts" /
+                                "acquire_qqqm_boxx_raw_history.py"), run_name="r9_test")
+    assert module["PREFIX"] == "research/v2/input/r9-temporal-extension-20260926-001/"
+    assert module["MAX_PAGES"] == 60
+    assert module["MAX_BYTES"] == 128 * 1024 * 1024
+    assert module["MAX_PAGE_BYTES"] == 4 * 1024 * 1024
+    assert module["ACTION_START"] == "2024-10-01"
+    assert module["ACTION_END"] == "2026-08-25"
+    assert module["ASOF"] == "2026-08-25"
+    assert set(module["WINDOWS"]) == {"QQQ", "TQQQ", "QQQM", "SOXL", "SOXX", "BOXX"}
+    assert all(value == ("2025-01-01T00:00:00-05:00", "2025-01-01")
+               for value in module["WINDOWS"].values())
+    bar = {"t": "2026-08-25T04:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10}
+    assert module["_bars_summary"]({"bars": [bar]}, "QQQM", None,
+                                    "2025-01-01T05:00:00Z")[0] == 1
+    with pytest.raises(module["AcquisitionError"], match="BAR_TIMESTAMP_INVALID"):
+        module["_bars_summary"]({"bars": [{**bar, "t": "2026-08-26T04:00:00Z"}]},
+                                "QQQM", None, "2025-01-01T05:00:00Z")
+
+    class NoExternalCall:
+        def bucket(self, _name):
+            return self
+
+        def blob(self, _name):
+            raise AssertionError("storage call must be rejected before external operation")
+
+    store = module["PrivateStore"](NoExternalCall())
+    store.operations = 199
+    with pytest.raises(module["AcquisitionError"], match="STORAGE_OPERATION_BUDGET_EXHAUSTED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"{}")
+    store.operations = 0
+    store.transfer_bytes = module["MAX_STORAGE_TRANSFER_BYTES"] - 3
+    with pytest.raises(module["AcquisitionError"], match="STORAGE_TRANSFER_BUDGET_EXHAUSTED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"{}")
+    store.transfer_bytes = 0
+    with pytest.raises(module["AcquisitionError"], match="OBJECT_MULTIPART_LIMIT_EXCEEDED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"x" * (4 * 1024 * 1024 + 1))
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.delenv("R9_LICENSE_RECORD_SHA256", raising=False)
+    assert module["main"]() == 2
+    monkeypatch.setenv("R9_LICENSE_RECORD_SHA256", "0" * 64)
+    assert module["main"]() == 2
+
+
+def test_r9_attested_record_binding_reaches_only_stubbed_acquisition(monkeypatch, capsys):
+    from google.cloud import storage
+
+    monkeypatch.setenv("GITHUB_WORKFLOW", "R9 Raw Temporal Extension")
+    module = runpy.run_path(str(Path(__file__).parents[1] / "scripts" /
+                                "acquire_qqqm_boxx_raw_history.py"), run_name="r9_test")
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" /
+                "r9-raw-temporal-extension.yml").read_text()
+    digest = module["R9_LICENSE_RECORD_SHA256"]
+    assert f"R9_LICENSE_RECORD_SHA256: {digest}" in workflow
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("R9_LICENSE_RECORD_SHA256", digest)
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "synthetic-key")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "synthetic-secret")
+    monkeypatch.setattr(storage, "Client", lambda: object())
+    globals_ = module["main"].__globals__
+    monkeypatch.setitem(globals_, "PrivateStore", lambda _client: object())
+    monkeypatch.setitem(globals_, "run", lambda _store, _provider: {
+        "status": "COMPLETE_SOURCE_DOWNLOAD", "no_order": True,
+    })
+    assert module["main"]() == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "COMPLETE_SOURCE_DOWNLOAD"

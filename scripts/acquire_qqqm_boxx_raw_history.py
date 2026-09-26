@@ -18,6 +18,7 @@ PREFIX = "research/v2/input/qqqm-boxx-raw-20260925-001/"
 HOST = "https://data.alpaca.markets"
 END = "2025-01-01T00:00:00-05:00"
 ACTION_END = "2024-12-31"
+ACTION_START = None
 ASOF = "2024-12-31"
 MAX_PAGES = 20
 MAX_BYTES = 100 * 1024 * 1024
@@ -30,6 +31,23 @@ WINDOWS = {
     "TQQQ": ("2022-01-03T00:00:00-05:00", "2022-01-03"),
     "QQQ": ("2022-01-03T00:00:00-05:00", "2022-01-03"),
 }
+R9_WORKFLOW = "R9 Raw Temporal Extension"
+R9_SCOPE = os.environ.get("GITHUB_WORKFLOW") == R9_WORKFLOW
+# SHA of the private user_attested R9 record, not of a supplier document.
+R9_LICENSE_RECORD_SHA256 = "779f219f35f6b396caba0c787337b9593d9eb98597895afd280eb4dca1ccf73f"
+MAX_STORAGE_OPERATIONS = 200
+MAX_STORAGE_TRANSFER_BYTES = 1024 * 1024 * 1024
+if R9_SCOPE:
+    PREFIX = "research/v2/input/r9-temporal-extension-20260926-001/"
+    END = "2026-08-26T00:00:00-04:00"
+    ACTION_START = "2024-10-01"
+    ACTION_END = "2026-08-25"
+    ASOF = "2026-08-25"
+    MAX_PAGES = 60
+    MAX_BYTES = 128 * 1024 * 1024
+    MAX_PAGE_BYTES = 4 * 1024 * 1024
+    WINDOWS = {symbol: ("2025-01-01T00:00:00-05:00", "2025-01-01")
+               for symbol in WINDOWS}
 ACTION_TYPES = frozenset({
     "capital_gains_distributions", "cash_dividends", "cash_mergers", "forward_splits",
     "name_changes", "partial_calls", "redemptions", "reorganizations", "reverse_splits",
@@ -79,10 +97,21 @@ class PrivateStore:
 
     def __init__(self, client: Any) -> None:
         self.bucket = client.bucket(BUCKET)
+        self.operations = 0
+        self.transfer_bytes = 0
 
     def create_and_verify(self, name: str, body: bytes) -> dict[str, object]:
         if not name or name.startswith("/") or ".." in name or "//" in name:
             raise AcquisitionError("OBJECT_NAME_REJECTED")
+        if R9_SCOPE:
+            if len(body) > MAX_PAGE_BYTES:
+                raise AcquisitionError("OBJECT_MULTIPART_LIMIT_EXCEEDED")
+            if self.operations + 3 > MAX_STORAGE_OPERATIONS:
+                raise AcquisitionError("STORAGE_OPERATION_BUDGET_EXHAUSTED")
+            if self.transfer_bytes + 2 * len(body) > MAX_STORAGE_TRANSFER_BYTES:
+                raise AcquisitionError("STORAGE_TRANSFER_BUDGET_EXHAUSTED")
+            self.operations += 3  # One small multipart upload, reload, exact-generation download.
+            self.transfer_bytes += 2 * len(body)
         blob = self.bucket.blob(PREFIX + name)
         try:
             blob.upload_from_string(body, content_type="application/json",
@@ -172,7 +201,7 @@ def _bars_summary(data: dict[str, Any], symbol: str, previous: str | None,
     first: str | None = None
     last = previous
     start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-    end_dt = datetime(2025, 1, 1, 5, tzinfo=UTC)
+    end_dt = datetime.fromisoformat(END).astimezone(UTC)
     for item in bars:
         if not isinstance(item, dict):
             raise AcquisitionError("BAR_SCHEMA_INVALID")
@@ -235,7 +264,7 @@ def _collect(provider: BoundedProvider, store: PrivateStore, symbol: str,
                   "sort": "asc", "limit": "10000"}
     else:
         path = "/v1/corporate-actions"
-        params = {"symbols": symbol, "region": "us", "start": start_date,
+        params = {"symbols": symbol, "region": "us", "start": ACTION_START or start_date,
                   "end": ACTION_END, "data_quality": "all", "sort": "asc", "limit": "1000"}
     seen: set[str] = set()
     token: str | None = None
@@ -294,22 +323,34 @@ def run(store: PrivateStore, provider: BoundedProvider) -> dict[str, object]:
                 "bar_timestamp_meaning": "left edge of daily bar, not decision availability",
                 "corporate_action_limitation": "provider does not guarantee creation time; historical availability not proven",
                 "no_order": True, "research_only": True, "execution_authorized": False}
+    if R9_SCOPE:
+        manifest["license_basis_record_sha256"] = R9_LICENSE_RECORD_SHA256
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     manifest_identity = store.create_and_verify("manifest.json", encoded)
-    return {"status": "COMPLETE_SOURCE_DOWNLOAD", "manifest": manifest_identity,
+    result = {"status": "COMPLETE_SOURCE_DOWNLOAD", "manifest": manifest_identity,
             "provider_page_requests": provider.pages, "provider_response_bytes": provider.bytes,
             "coverage": [{"symbol": item["symbol"], "kind": item["kind"], "count": item["count"],
                           "first_bar_time": item["first_bar_time"],
                           "last_bar_time": item["last_bar_time"]} for item in inputs],
             "no_order": True}
+    if R9_SCOPE:
+        result["storage_operations"] = store.operations
+        result["storage_transfer_bytes"] = store.transfer_bytes
+    return result
 
 
 def main() -> int:
     result: dict[str, object]
     provider: BoundedProvider | None = None
     try:
-        if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_WORKFLOW") != "QQQM BOXX Raw Historical Inputs":
+        if (os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("GITHUB_REF") != "refs/heads/main"
+                or os.environ.get("GITHUB_WORKFLOW") not in
+                ("QQQM BOXX Raw Historical Inputs", R9_WORKFLOW)):
             raise AcquisitionError("EXECUTION_CONTEXT_REJECTED")
+        if R9_SCOPE and (R9_LICENSE_RECORD_SHA256 is None
+                         or os.environ.get("R9_LICENSE_RECORD_SHA256") != R9_LICENSE_RECORD_SHA256):
+            raise AcquisitionError("LICENSE_RECORD_UNVERIFIED")
         key_id = os.environ.get("ALPACA_API_KEY_ID", "")
         secret = os.environ.get("ALPACA_API_SECRET_KEY", "")
         provider = BoundedProvider(key_id, secret)
