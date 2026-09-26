@@ -63,8 +63,8 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _root_parts(uri: str) -> tuple[str, str]:
-    if digest(uri.encode()) != ROOT_SHA256 or not uri.startswith("gs://") or not uri.endswith("/"):
+def _root_parts(uri: str, *, root_sha256: str | None = None) -> tuple[str, str]:
+    if digest(uri.encode()) != (root_sha256 or ROOT_SHA256) or not uri.startswith("gs://") or not uri.endswith("/"):
         raise R5ArchiveError("private root does not match frozen authorization")
     bucket, sep, prefix = uri[5:].partition("/")
     if not bucket or not sep or not prefix:
@@ -75,17 +75,29 @@ def _root_parts(uri: str) -> tuple[str, str]:
 class FixedArchive:
     """Exact names only; create-only upload and generation-pinned readback."""
 
-    def __init__(self, client: storage.Client, uri: str) -> None:
-        bucket, prefix = _root_parts(uri)
+    def __init__(
+        self,
+        client: storage.Client,
+        uri: str,
+        *,
+        root_sha256: str | None = None,
+        max_operations: int | None = None,
+        max_bytes: int | None = None,
+        probe_content: bytes | None = None,
+    ) -> None:
+        bucket, prefix = _root_parts(uri, root_sha256=root_sha256)
         self.bucket = client.bucket(bucket)
         self.prefix = prefix
+        self.max_operations = MAX_OBJECT_OPERATIONS if max_operations is None else max_operations
+        self.max_bytes = MAX_OBJECT_BYTES if max_bytes is None else max_bytes
+        self.probe_content = probe_content or canonical({"schema": "soxl_v7_r5_probe.v1", "candidate_id": candidate_id()})
         self.operations = 0
         self.bytes_transferred = 0
 
     def _charge(self, *, operations: int = 1, bytes_transferred: int = 0) -> None:
         if (
-            self.operations + operations > MAX_OBJECT_OPERATIONS
-            or self.bytes_transferred + bytes_transferred > MAX_OBJECT_BYTES
+            self.operations + operations > self.max_operations
+            or self.bytes_transferred + bytes_transferred > self.max_bytes
         ):
             raise R5ArchiveError("private object budget exhausted")
         self.operations += operations
@@ -134,7 +146,7 @@ class FixedArchive:
         return content
 
     def verify_probe(self) -> dict[str, object]:
-        content = canonical({"schema": "soxl_v7_r5_probe.v1", "candidate_id": candidate_id()})
+        content = self.probe_content
         blob = self._blob("probe.json")
         self._charge()
         try:
@@ -150,7 +162,7 @@ class FixedArchive:
         return receipt
 
     def create_probe(self) -> dict[str, object]:
-        content = canonical({"schema": "soxl_v7_r5_probe.v1", "candidate_id": candidate_id()})
+        content = self.probe_content
         try:
             return self.create("probe.json", content)
         except R5ArchiveError as exc:
@@ -178,7 +190,7 @@ class _MeteredResponse:
         return self.response.__exit__(*args)
 
     def read(self, size: int = -1) -> bytes:
-        remaining = MAX_HTTP_BYTES - self.meter.bytes_read
+        remaining = (MAX_HTTP_BYTES if self.meter.max_bytes is None else self.meter.max_bytes) - self.meter.bytes_read
         if remaining < 1:
             raise R5ArchiveError("market body budget exhausted")
         header = self.response.headers.get("Content-Length")
@@ -194,15 +206,24 @@ class _MeteredResponse:
 class HttpMeter:
     """One HTTP request per fixed source; no redirect, proxy or hidden retry."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_hosts: frozenset[str] = frozenset({"api.twelvedata.com", "query1.finance.yahoo.com"}),
+        max_requests: int | None = None,
+        max_bytes: int | None = None,
+    ) -> None:
         self.requests = 0
         self.bytes_read = 0
+        self.allowed_hosts = allowed_hosts
+        self.max_requests = max_requests
+        self.max_bytes = max_bytes
         self.opener = build_opener(ProxyHandler({}), _NoRedirect())
 
     def open(self, request, timeout: int = 30):  # noqa: ANN001, ANN202
-        if urlparse(request.full_url).hostname not in {"api.twelvedata.com", "query1.finance.yahoo.com"}:
+        if urlparse(request.full_url).hostname not in self.allowed_hosts:
             raise R5ArchiveError("market request host outside frozen sources")
-        if self.requests >= MAX_HTTP_REQUESTS:
+        if self.requests >= (MAX_HTTP_REQUESTS if self.max_requests is None else self.max_requests):
             raise R5ArchiveError("market request budget exhausted")
         self.requests += 1
         return _MeteredResponse(self.opener.open(request, timeout=timeout), self)
