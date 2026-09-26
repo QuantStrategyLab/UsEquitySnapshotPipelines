@@ -35,6 +35,13 @@ R9_WORKFLOW = "R9 Raw Temporal Extension"
 R9_SCOPE = os.environ.get("GITHUB_WORKFLOW") == R9_WORKFLOW
 # SHA of the private user_attested R9 record, not of a supplier document.
 R9_LICENSE_RECORD_SHA256 = "779f219f35f6b396caba0c787337b9593d9eb98597895afd280eb4dca1ccf73f"
+R9_BAR_REQUEST_END = "2026-08-25T23:59:59-04:00"  # Alpaca's end is inclusive.
+R9_PROBE_GENERATION = 1790428811648938  # Read back the prior failed run's probe; never overwrite it.
+R9_PROBE_BYTES = 180
+R9_PRIOR_PROVIDER_PAGES = 1
+R9_PRIOR_PROVIDER_BYTES = 46047
+R9_PRIOR_STORAGE_OPERATIONS = 3
+R9_PRIOR_STORAGE_TRANSFER_BYTES = 2 * R9_PROBE_BYTES
 MAX_STORAGE_OPERATIONS = 200
 MAX_STORAGE_TRANSFER_BYTES = 1024 * 1024 * 1024
 if R9_SCOPE:
@@ -43,8 +50,8 @@ if R9_SCOPE:
     ACTION_START = "2024-10-01"
     ACTION_END = "2026-08-25"
     ASOF = "2026-08-25"
-    MAX_PAGES = 60
-    MAX_BYTES = 128 * 1024 * 1024
+    MAX_PAGES = 60 - R9_PRIOR_PROVIDER_PAGES
+    MAX_BYTES = 128 * 1024 * 1024 - R9_PRIOR_PROVIDER_BYTES
     MAX_PAGE_BYTES = 4 * 1024 * 1024
     WINDOWS = {symbol: ("2025-01-01T00:00:00-05:00", "2025-01-01")
                for symbol in WINDOWS}
@@ -97,8 +104,31 @@ class PrivateStore:
 
     def __init__(self, client: Any) -> None:
         self.bucket = client.bucket(BUCKET)
-        self.operations = 0
-        self.transfer_bytes = 0
+        self.operations = R9_PRIOR_STORAGE_OPERATIONS if R9_SCOPE else 0
+        self.transfer_bytes = R9_PRIOR_STORAGE_TRANSFER_BYTES if R9_SCOPE else 0
+
+    def read_prior_probe(self) -> dict[str, object]:
+        if not R9_SCOPE:
+            raise AcquisitionError("RECOVERY_SCOPE_REJECTED")
+        if self.operations + 1 > MAX_STORAGE_OPERATIONS:
+            raise AcquisitionError("STORAGE_OPERATION_BUDGET_EXHAUSTED")
+        if self.transfer_bytes + R9_PROBE_BYTES > MAX_STORAGE_TRANSFER_BYTES:
+            raise AcquisitionError("STORAGE_TRANSFER_BUDGET_EXHAUSTED")
+        self.operations += 1
+        self.transfer_bytes += R9_PROBE_BYTES
+        blob = self.bucket.blob(PREFIX + "_write_probe.json", generation=R9_PROBE_GENERATION)
+        try:
+            body = blob.download_as_bytes(if_generation_match=R9_PROBE_GENERATION,
+                                          retry=None, timeout=30)
+            probe = json.loads(body)
+        except Exception:  # noqa: BLE001 - no cloud or payload detail escapes
+            raise AcquisitionError("RECOVERY_PROBE_READBACK_UNKNOWN") from None
+        if (len(body) != R9_PROBE_BYTES or not isinstance(probe, dict)
+                or probe.get("schema_version") != "qsl.research.private_write_probe.v1"
+                or probe.get("scope") != PREFIX or probe.get("no_order") is not True):
+            raise AcquisitionError("RECOVERY_PROBE_MISMATCH")
+        return {"uri": f"gs://{BUCKET}/{PREFIX}_write_probe.json",
+                "generation": str(R9_PROBE_GENERATION), "bytes": len(body), "sha256": _sha(body)}
 
     def create_and_verify(self, name: str, body: bytes) -> dict[str, object]:
         if not name or name.startswith("/") or ".." in name or "//" in name:
@@ -259,7 +289,8 @@ def _collect(provider: BoundedProvider, store: PrivateStore, symbol: str,
     start_time, start_date = WINDOWS[symbol]
     if kind == "bars":
         path = f"/v2/stocks/{symbol}/bars"
-        params = {"timeframe": "1Day", "start": start_time, "end": END,
+        params = {"timeframe": "1Day", "start": start_time,
+                  "end": R9_BAR_REQUEST_END if R9_SCOPE else END,
                   "asof": ASOF, "feed": "sip", "adjustment": "raw", "currency": "USD",
                   "sort": "asc", "limit": "10000"}
     else:
@@ -300,10 +331,13 @@ def _collect(provider: BoundedProvider, store: PrivateStore, symbol: str,
 
 
 def run(store: PrivateStore, provider: BoundedProvider) -> dict[str, object]:
-    probe = {"schema_version": "qsl.research.private_write_probe.v1",
-             "scope": PREFIX, "observed_at": _utc_now(), "no_order": True}
-    marker = store.create_and_verify("_write_probe.json",
-                                     json.dumps(probe, sort_keys=True).encode())
+    if R9_SCOPE:
+        marker = store.read_prior_probe()
+    else:
+        probe = {"schema_version": "qsl.research.private_write_probe.v1",
+                 "scope": PREFIX, "observed_at": _utc_now(), "no_order": True}
+        marker = store.create_and_verify("_write_probe.json",
+                                         json.dumps(probe, sort_keys=True).encode())
     inputs = []
     for symbol in WINDOWS:
         inputs.append(_collect(provider, store, symbol, "bars"))
@@ -325,6 +359,10 @@ def run(store: PrivateStore, provider: BoundedProvider) -> dict[str, object]:
                 "no_order": True, "research_only": True, "execution_authorized": False}
     if R9_SCOPE:
         manifest["license_basis_record_sha256"] = R9_LICENSE_RECORD_SHA256
+        manifest["prior_provider_page_requests"] = R9_PRIOR_PROVIDER_PAGES
+        manifest["prior_provider_response_bytes"] = R9_PRIOR_PROVIDER_BYTES
+        manifest["prior_storage_operations"] = R9_PRIOR_STORAGE_OPERATIONS
+        manifest["prior_storage_transfer_bytes"] = R9_PRIOR_STORAGE_TRANSFER_BYTES
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     manifest_identity = store.create_and_verify("manifest.json", encoded)
     result = {"status": "COMPLETE_SOURCE_DOWNLOAD", "manifest": manifest_identity,
