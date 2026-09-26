@@ -43,6 +43,7 @@ jobs:
           service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       - name: Verify private create-only write and fixed-version read
         if: inputs.mode == 'preflight'
+        timeout-minutes: 10
         env:
           SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}
         run: uv run --no-sync python -m scripts.soxl_v7_r6_twelve_single_source preflight
