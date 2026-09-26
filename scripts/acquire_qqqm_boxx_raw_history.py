@@ -18,6 +18,7 @@ PREFIX = "research/v2/input/qqqm-boxx-raw-20260925-001/"
 HOST = "https://data.alpaca.markets"
 END = "2025-01-01T00:00:00-05:00"
 ACTION_END = "2024-12-31"
+ACTION_START = None
 ASOF = "2024-12-31"
 MAX_PAGES = 20
 MAX_BYTES = 100 * 1024 * 1024
@@ -30,6 +31,17 @@ WINDOWS = {
     "TQQQ": ("2022-01-03T00:00:00-05:00", "2022-01-03"),
     "QQQ": ("2022-01-03T00:00:00-05:00", "2022-01-03"),
 }
+R9_WORKFLOW = "R9 Raw Temporal Extension"
+if os.environ.get("GITHUB_WORKFLOW") == R9_WORKFLOW:
+    PREFIX = "research/v2/input/r9-temporal-extension-20260926-001/"
+    END = "2026-08-26T00:00:00-04:00"
+    ACTION_START = "2024-10-01"
+    ACTION_END = "2026-08-25"
+    ASOF = "2026-08-25"
+    MAX_PAGES = 60
+    MAX_BYTES = 128 * 1024 * 1024
+    WINDOWS = {symbol: ("2025-01-01T00:00:00-05:00", "2025-01-01")
+               for symbol in WINDOWS}
 ACTION_TYPES = frozenset({
     "capital_gains_distributions", "cash_dividends", "cash_mergers", "forward_splits",
     "name_changes", "partial_calls", "redemptions", "reorganizations", "reverse_splits",
@@ -172,7 +184,7 @@ def _bars_summary(data: dict[str, Any], symbol: str, previous: str | None,
     first: str | None = None
     last = previous
     start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-    end_dt = datetime(2025, 1, 1, 5, tzinfo=UTC)
+    end_dt = datetime.fromisoformat(END).astimezone(UTC)
     for item in bars:
         if not isinstance(item, dict):
             raise AcquisitionError("BAR_SCHEMA_INVALID")
@@ -235,7 +247,7 @@ def _collect(provider: BoundedProvider, store: PrivateStore, symbol: str,
                   "sort": "asc", "limit": "10000"}
     else:
         path = "/v1/corporate-actions"
-        params = {"symbols": symbol, "region": "us", "start": start_date,
+        params = {"symbols": symbol, "region": "us", "start": ACTION_START or start_date,
                   "end": ACTION_END, "data_quality": "all", "sort": "asc", "limit": "1000"}
     seen: set[str] = set()
     token: str | None = None
@@ -308,7 +320,10 @@ def main() -> int:
     result: dict[str, object]
     provider: BoundedProvider | None = None
     try:
-        if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_WORKFLOW") != "QQQM BOXX Raw Historical Inputs":
+        if (os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("GITHUB_REF") != "refs/heads/main"
+                or os.environ.get("GITHUB_WORKFLOW") not in
+                ("QQQM BOXX Raw Historical Inputs", R9_WORKFLOW)):
             raise AcquisitionError("EXECUTION_CONTEXT_REJECTED")
         key_id = os.environ.get("ALPACA_API_KEY_ID", "")
         secret = os.environ.get("ALPACA_API_SECRET_KEY", "")

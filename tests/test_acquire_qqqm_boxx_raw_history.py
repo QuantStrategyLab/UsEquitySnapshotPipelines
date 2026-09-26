@@ -1,5 +1,7 @@
 import io
 import json
+import runpy
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -117,3 +119,24 @@ def test_private_write_probe_precedes_any_provider_request():
     with pytest.raises(AcquisitionError, match="OBJECT_WRITE_OR_READBACK_UNKNOWN"):
         run(Store(), Provider())
     assert events == [("write", "_write_probe.json")]
+
+
+def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKFLOW", "R9 Raw Temporal Extension")
+    module = runpy.run_path(str(Path(__file__).parents[1] / "scripts" /
+                                "acquire_qqqm_boxx_raw_history.py"), run_name="r9_test")
+    assert module["PREFIX"] == "research/v2/input/r9-temporal-extension-20260926-001/"
+    assert module["MAX_PAGES"] == 60
+    assert module["MAX_BYTES"] == 128 * 1024 * 1024
+    assert module["ACTION_START"] == "2024-10-01"
+    assert module["ACTION_END"] == "2026-08-25"
+    assert module["ASOF"] == "2026-08-25"
+    assert set(module["WINDOWS"]) == {"QQQ", "TQQQ", "QQQM", "SOXL", "SOXX", "BOXX"}
+    assert all(value == ("2025-01-01T00:00:00-05:00", "2025-01-01")
+               for value in module["WINDOWS"].values())
+    bar = {"t": "2026-08-25T04:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 10}
+    assert module["_bars_summary"]({"bars": [bar]}, "QQQM", None,
+                                    "2025-01-01T05:00:00Z")[0] == 1
+    with pytest.raises(module["AcquisitionError"], match="BAR_TIMESTAMP_INVALID"):
+        module["_bars_summary"]({"bars": [{**bar, "t": "2026-08-26T04:00:00Z"}]},
+                                "QQQM", None, "2025-01-01T05:00:00Z")
