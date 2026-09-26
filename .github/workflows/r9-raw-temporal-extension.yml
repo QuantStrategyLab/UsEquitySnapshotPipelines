@@ -36,7 +36,6 @@ jobs:
         env:
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
-          R9_LICENSE_RECORD_SHA256: cb14a511083c824a748d137a271c93cfe0e8adf38f648905b26e37decf4c6182
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/acquire_qqqm_boxx_raw_history.py \

@@ -33,7 +33,7 @@ WINDOWS = {
 }
 R9_WORKFLOW = "R9 Raw Temporal Extension"
 R9_SCOPE = os.environ.get("GITHUB_WORKFLOW") == R9_WORKFLOW
-R9_LICENSE_RECORD_SHA256 = "cb14a511083c824a748d137a271c93cfe0e8adf38f648905b26e37decf4c6182"
+R9_LICENSE_RECORD_SHA256 = None  # Bind only an independently verified entitlement record.
 MAX_STORAGE_OPERATIONS = 200
 MAX_STORAGE_TRANSFER_BYTES = 1024 * 1024 * 1024
 if R9_SCOPE:
@@ -347,7 +347,8 @@ def main() -> int:
                 or os.environ.get("GITHUB_WORKFLOW") not in
                 ("QQQM BOXX Raw Historical Inputs", R9_WORKFLOW)):
             raise AcquisitionError("EXECUTION_CONTEXT_REJECTED")
-        if R9_SCOPE and os.environ.get("R9_LICENSE_RECORD_SHA256") != R9_LICENSE_RECORD_SHA256:
+        if R9_SCOPE and (R9_LICENSE_RECORD_SHA256 is None
+                         or os.environ.get("R9_LICENSE_RECORD_SHA256") != R9_LICENSE_RECORD_SHA256):
             raise AcquisitionError("LICENSE_RECORD_UNVERIFIED")
         key_id = os.environ.get("ALPACA_API_KEY_ID", "")
         secret = os.environ.get("ALPACA_API_SECRET_KEY", "")
