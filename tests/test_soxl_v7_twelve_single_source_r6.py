@@ -187,3 +187,38 @@ def test_r6_cannot_start_repeat_acquisition_after_attempt(tmp_path: Path) -> Non
     archive.create("attempt.json", b"{}")
     with pytest.raises(tool.R5ArchiveError, match="create-only write failed"):
         archive.create("attempt.json", b"{}")
+
+
+def test_r6_raw_source_is_archived_before_normalization_and_read_back() -> None:
+    from tests.test_soxl_v7_r5_native_archive import FakeClient
+
+    uri = "gs://synthetic-private/approved/"
+    archive = tool.FixedArchive(
+        FakeClient(), uri, root_sha256=tool.digest(uri.encode()),
+        max_operations=160, max_bytes=512 * 1024 * 1024,
+    )
+    observations = _observations()
+    members = r6.build_input(observations, observed_at="2026-09-26T00:00:00Z", producer=_producer())
+    raw_receipts = {}
+    snapshot_receipts = {}
+    for symbol, observation in observations.items():
+        bars = observation.snapshot.bars
+        raw = {
+            "meta": {"symbol": symbol, "currency": "USD", "interval": "1day", "type": "ETF"},
+            "values": [
+                {"datetime": bar.session_date, "open": bar.open, "high": bar.high, "low": bar.low,
+                 "close": bar.close, "volume": bar.volume}
+                for bar in reversed(bars)
+            ],
+        }
+        raw_receipts[symbol] = archive.create(f"source_raw/{symbol}.json", tool.canonical(raw))
+        snapshot_receipts[symbol] = archive.create(
+            f"source/{symbol}.json", tool.canonical(observation.snapshot.to_dict())
+        )
+    trace = tool._verify_archived_sources(archive, raw_receipts, snapshot_receipts, members)
+    assert set(trace["symbols"]) == set(r6.SYMBOLS)
+    bad_raw = {"meta": {"symbol": "SOXL", "currency": "USD", "interval": "1day", "type": "ETF"},
+               "values": [{"datetime": "2026-08-25", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]}
+    raw_receipts["SOXL"] = archive.create("source_raw/SOXL-other.json", tool.canonical(bad_raw))
+    with pytest.raises(tool.R6ArchiveError, match="raw-to-normalized"):
+        tool._verify_archived_sources(archive, raw_receipts, snapshot_receipts, members)

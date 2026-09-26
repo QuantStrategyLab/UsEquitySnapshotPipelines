@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from google.cloud import storage
 
@@ -71,10 +72,39 @@ def _validate_twelve_payload(payload: object) -> None:
         raise R6ArchiveError("Twelve Data metadata or raw session order invalid") from exc
 
 
+class _RawCapture:
+    """Persist the bounded provider body before it is parsed or normalized."""
+
+    def __init__(self, response, *, archive: FixedArchive, symbol: str, receipts: dict[str, dict[str, object]]) -> None:  # noqa: ANN001
+        self.response = response
+        self.archive = archive
+        self.symbol = symbol
+        self.receipts = receipts
+        self.status = response.status
+        self.read_once = False
+
+    def __enter__(self):  # noqa: ANN204
+        self.response.__enter__()
+        return self
+
+    def __exit__(self, *args):  # noqa: ANN002, ANN204
+        return self.response.__exit__(*args)
+
+    def read(self, size: int = -1) -> bytes:
+        if self.read_once or size != -1:
+            raise R6ArchiveError("R6 raw response read contract invalid")
+        self.read_once = True
+        body = self.response.read()
+        self.receipts[self.symbol] = self.archive.create(f"source_raw/{self.symbol}.json", body)
+        return body
+
+
 class TwelveTransport:
     """Meter only the approved Twelve endpoint; no Yahoo source is reachable."""
 
-    def __init__(self) -> None:
+    def __init__(self, archive: FixedArchive) -> None:
+        self.archive = archive
+        self.raw_receipts: dict[str, dict[str, object]] = {}
         self.meter = HttpMeter(
             allowed_hosts=frozenset({"api.twelvedata.com"}),
             max_requests=MAX_HTTP_REQUESTS,
@@ -85,6 +115,18 @@ class TwelveTransport:
     def __enter__(self) -> HttpMeter:
         original_normalize = twelve_data_daily._normalize_daily_bars
 
+        def checked_open(request, timeout=30):  # noqa: ANN001, ANN202
+            query = parse_qs(urlparse(request.full_url).query)
+            symbols = query.get("symbol", [])
+            if len(symbols) != 1 or symbols[0] not in SYMBOLS or symbols[0] in self.raw_receipts:
+                raise R6ArchiveError("R6 raw source request identity invalid")
+            return _RawCapture(
+                self.meter.open(request, timeout=timeout),
+                archive=self.archive,
+                symbol=symbols[0],
+                receipts=self.raw_receipts,
+            )
+
         def checked_normalize(payload, *, symbol, date_cutoff):  # noqa: ANN001, ANN202
             _validate_twelve_payload(payload)
             if payload["meta"].get("symbol") != symbol:
@@ -92,7 +134,7 @@ class TwelveTransport:
             return original_normalize(payload, symbol=symbol, date_cutoff=date_cutoff)
 
         self.originals = (twelve_data_daily.urlopen, original_normalize)
-        twelve_data_daily.urlopen = self.meter.open
+        twelve_data_daily.urlopen = checked_open
         twelve_data_daily._normalize_daily_bars = checked_normalize
         return self.meter
 
@@ -215,6 +257,63 @@ def _verify_replay_accounting(replays: list[dict[str, object]]) -> dict[str, obj
     return {"schema_version": "qsl.soxl-v7-r6-accounting-check.v1", "runs": checked}
 
 
+def _verify_archived_sources(
+    archive: FixedArchive,
+    raw_receipts: dict[str, dict[str, object]],
+    snapshot_receipts: dict[str, dict[str, object]],
+    members: dict[str, bytes],
+) -> dict[str, object]:
+    """Rebuild each normalized observation from its generation-pinned raw body."""
+    _manifest_sha, close_series = verify_input(members)
+    report = json.loads(members["assurance.json"])
+    if set(raw_receipts) != set(SYMBOLS) or set(snapshot_receipts) != set(SYMBOLS):
+        raise R6ArchiveError("R6 source receipt set incomplete")
+    trace = {}
+    for symbol in SYMBOLS:
+        try:
+            raw_bytes = archive.read(raw_receipts[symbol])
+            snapshot_bytes = archive.read(snapshot_receipts[symbol])
+            payload = json.loads(raw_bytes)
+            _validate_twelve_payload(payload)
+            if payload["meta"].get("symbol") != symbol:
+                raise ValueError
+            bars = twelve_data_daily._normalize_daily_bars(payload, symbol=symbol, date_cutoff=DATE_CUTOFF)
+            start = expected_soxl_core_only_sessions(DATE_CUTOFF)[symbol][0].isoformat()
+            source_artifact_sha256 = digest(canonical({
+                "source_id": twelve_data_daily.TWELVE_DATA_DAILY_SOURCE_ID,
+                "symbol": symbol,
+                "start_date": start,
+                "date_cutoff": DATE_CUTOFF,
+                "adjustment_basis": "split_adjusted",
+                "bars": [bar.to_dict() for bar in bars],
+            }))
+            rebuilt = {
+                "source_id": twelve_data_daily.TWELVE_DATA_DAILY_SOURCE_ID,
+                "symbol": symbol,
+                "date_cutoff": DATE_CUTOFF,
+                "adjustment_basis": "split_adjusted",
+                "source_artifact_sha256": source_artifact_sha256,
+                "bars": [bar.to_dict() for bar in bars],
+            }
+            if canonical(rebuilt) != snapshot_bytes:
+                raise ValueError
+            assurance = report["symbols"][symbol]
+            if assurance["source_snapshot_sha256"] != digest(snapshot_bytes):
+                raise ValueError
+            closes = [{"session_date": bar.session_date, "close": bar.close} for bar in bars]
+            if closes != close_series[symbol]:
+                raise ValueError
+            trace[symbol] = {
+                "raw_response_sha256": digest(raw_bytes),
+                "normalized_snapshot_sha256": digest(snapshot_bytes),
+                "normalized_close_sha256": assurance["canonical_close_series_sha256"],
+                "session_count": len(bars),
+            }
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise R6ArchiveError("R6 raw-to-normalized source readback invalid") from exc
+    return {"schema_version": "qsl.soxl-v7-r6-source-trace.v1", "symbols": trace}
+
+
 def execute(
     archive: FixedArchive,
     *,
@@ -242,7 +341,8 @@ def execute(
         observed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         observations = {}
         source_receipts = {}
-        with TwelveTransport() as meter:
+        transport = TwelveTransport(archive)
+        with transport as meter:
             for symbol in SYMBOLS:
                 start = expected_soxl_core_only_sessions(DATE_CUTOFF)[symbol][0].isoformat()
                 observation = twelve_data_daily.observe_twelve_data_adjusted_daily_bars(
@@ -251,11 +351,13 @@ def execute(
                 if observation.status != "READY" or observation.snapshot is None:
                     reason = ",".join(observation.reason_codes) or "SOURCE_UNAVAILABLE"
                     raise R6ArchiveError(f"Twelve Data {symbol} unavailable: {reason}")
+                if symbol not in transport.raw_receipts:
+                    raise R6ArchiveError("R6 provider response not archived")
                 observations[symbol] = observation
                 source_receipts[symbol] = archive.create(
                     f"source/{symbol}.json", canonical(observation.snapshot.to_dict())
                 )
-        if meter.requests != 3 or meter.bytes_read > MAX_HTTP_BYTES:
+        if meter.requests != 3 or meter.bytes_read > MAX_HTTP_BYTES or set(transport.raw_receipts) != set(SYMBOLS):
             raise R6ArchiveError("R6 source request count incomplete")
         members = build_input(
             observations,
@@ -279,6 +381,10 @@ def execute(
         frozen_members = read_input(readback)
         if verify_input(frozen_members)[0] != manifest_sha:
             raise R6ArchiveError("R6 archived input mismatch")
+        source_trace = _verify_archived_sources(
+            archive, transport.raw_receipts, source_receipts, frozen_members
+        )
+        trace_receipt = archive.create("metadata/source_trace.json", canonical(source_trace))
 
         native_replay = _load_isolated_replay(p2_profile=PROFILE)
         replay_records: list[dict[str, object]] = []
@@ -334,6 +440,8 @@ def execute(
             "license_evidence_sha256": license_evidence_sha256,
             "observed_at": observed_at,
             "sources": source_receipts,
+            "raw_responses": transport.raw_receipts,
+            "source_trace": trace_receipt,
             "p1": p1_receipts,
             "p1_manifest_sha256": manifest_sha,
             "candidate_config": config_receipt,
