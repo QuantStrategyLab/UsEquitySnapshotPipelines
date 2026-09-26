@@ -1,0 +1,67 @@
+name: SOXL V7 R6 Twelve Single Source Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Exact private-store preflight or one frozen R6 execution
+        required: true
+        type: choice
+        options:
+          - preflight
+          - execute
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: soxl-v7-r6-twelve-single-source
+  cancel-in-progress: false
+
+jobs:
+  r6-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install locked research runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate existing non-live research identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Verify private create-only write and fixed-version read
+        if: inputs.mode == 'preflight'
+        env:
+          SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}
+        run: uv run --no-sync python -m scripts.soxl_v7_r6_twelve_single_source preflight
+      - name: Fetch frozen UES source for unchanged V7 replay
+        if: inputs.mode == 'execute'
+        run: |
+          set -euo pipefail
+          ues="${RUNNER_TEMP}/soxl-v7-r6-ues"
+          git clone --quiet --no-checkout https://github.com/QuantStrategyLab/UsEquityStrategies.git "$ues"
+          git -C "$ues" fetch --quiet --depth=1 origin 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+          git -C "$ues" checkout --quiet --detach 07b164d95f2ab4d4c54fd993f6f2040bd207d664
+      - name: Run one R6 source acquisition and fixed replay
+        if: inputs.mode == 'execute'
+        env:
+          SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}
+          SOXL_V7_R6_LICENSE_EVIDENCE_SHA256: ${{ secrets.SOXL_V7_R6_LICENSE_EVIDENCE_SHA256 }}
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python -m scripts.soxl_v7_r6_twelve_single_source execute \
+            --ues-project "${RUNNER_TEMP}/soxl-v7-r6-ues" \
+            --license-evidence-sha256 "${SOXL_V7_R6_LICENSE_EVIDENCE_SHA256}"

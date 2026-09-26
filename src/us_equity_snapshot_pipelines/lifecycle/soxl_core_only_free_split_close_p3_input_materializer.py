@@ -245,6 +245,31 @@ def materialize_soxl_core_only_free_split_close_p3_input(
         assurance_bytes=assurance_bytes,
         p2_contract=p2_contract,
     )
+    return _materialize_validated_close_series(
+        raw_series,
+        p1_identity={
+            "input_manifest_sha256": manifest_sha256,
+            "binding_sha256": soxl_core_only_free_split_close_p1_binding_sha256(
+                frozen, p2_contract=p2_contract
+            ),
+            "closes_member_sha256": hashlib.sha256(closes_bytes).hexdigest(),
+            "assurance_member_sha256": hashlib.sha256(assurance_bytes).hexdigest(),
+            "date_cutoff": frozen["data_identity"]["date_cutoff"],
+        },
+        p2_identity={
+            "candidate_id": frozen["candidate"]["candidate_id"],
+            "config_sha256": frozen["candidate"]["config_sha256"],
+        },
+    )
+
+
+def _materialize_validated_close_series(
+    raw_series: Mapping[str, Sequence[Mapping[str, object]]],
+    *,
+    p1_identity: Mapping[str, object],
+    p2_identity: Mapping[str, object],
+) -> dict[str, object]:
+    """Deterministic V7-compatible indicators after a caller's strict P1 gate."""
     if len(raw_series["SOXL"]) < _MIN_RAW_SESSIONS or len(raw_series["SOXX"]) < _MIN_RAW_SESSIONS:
         _fail()
     history = _indicator_history(raw_series)
@@ -286,20 +311,8 @@ def materialize_soxl_core_only_free_split_close_p3_input(
         _fail()
     result: dict[str, object] = {
         "schema_version": MATERIALIZED_INPUT_SCHEMA,
-        "p1_identity": {
-            "input_manifest_sha256": manifest_sha256,
-            "binding_sha256": soxl_core_only_free_split_close_p1_binding_sha256(
-                frozen,
-                p2_contract=p2_contract,
-            ),
-            "closes_member_sha256": hashlib.sha256(closes_bytes).hexdigest(),
-            "assurance_member_sha256": hashlib.sha256(assurance_bytes).hexdigest(),
-            "date_cutoff": frozen["data_identity"]["date_cutoff"],
-        },
-        "p2_identity": {
-            "candidate_id": frozen["candidate"]["candidate_id"],
-            "config_sha256": frozen["candidate"]["config_sha256"],
-        },
+        "p1_identity": dict(p1_identity),
+        "p2_identity": dict(p2_identity),
         "indicator_spec": {
             "id": INDICATOR_SPEC_ID,
             "price_field": "split_adjusted_close",
