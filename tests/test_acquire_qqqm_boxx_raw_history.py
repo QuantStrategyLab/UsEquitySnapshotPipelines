@@ -128,6 +128,7 @@ def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
     assert module["PREFIX"] == "research/v2/input/r9-temporal-extension-20260926-001/"
     assert module["MAX_PAGES"] == 60
     assert module["MAX_BYTES"] == 128 * 1024 * 1024
+    assert module["MAX_PAGE_BYTES"] == 4 * 1024 * 1024
     assert module["ACTION_START"] == "2024-10-01"
     assert module["ACTION_END"] == "2026-08-25"
     assert module["ASOF"] == "2026-08-25"
@@ -140,3 +141,27 @@ def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
     with pytest.raises(module["AcquisitionError"], match="BAR_TIMESTAMP_INVALID"):
         module["_bars_summary"]({"bars": [{**bar, "t": "2026-08-26T04:00:00Z"}]},
                                 "QQQM", None, "2025-01-01T05:00:00Z")
+
+    class NoExternalCall:
+        def bucket(self, _name):
+            return self
+
+        def blob(self, _name):
+            raise AssertionError("storage call must be rejected before external operation")
+
+    store = module["PrivateStore"](NoExternalCall())
+    store.operations = 199
+    with pytest.raises(module["AcquisitionError"], match="STORAGE_OPERATION_BUDGET_EXHAUSTED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"{}")
+    store.operations = 0
+    store.transfer_bytes = module["MAX_STORAGE_TRANSFER_BYTES"] - 3
+    with pytest.raises(module["AcquisitionError"], match="STORAGE_TRANSFER_BUDGET_EXHAUSTED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"{}")
+    store.transfer_bytes = 0
+    with pytest.raises(module["AcquisitionError"], match="OBJECT_MULTIPART_LIMIT_EXCEEDED"):
+        store.create_and_verify("bars/QQQM/page-001.json", b"x" * (4 * 1024 * 1024 + 1))
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.delenv("R9_LICENSE_RECORD_SHA256", raising=False)
+    assert module["main"]() == 2
