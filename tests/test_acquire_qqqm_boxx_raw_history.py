@@ -126,12 +126,14 @@ def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
     module = runpy.run_path(str(Path(__file__).parents[1] / "scripts" /
                                 "acquire_qqqm_boxx_raw_history.py"), run_name="r9_test")
     assert module["PREFIX"] == "research/v2/input/r9-temporal-extension-20260926-001/"
-    assert module["MAX_PAGES"] == 60
-    assert module["MAX_BYTES"] == 128 * 1024 * 1024
+    assert module["MAX_PAGES"] == 59
+    assert module["MAX_BYTES"] == 128 * 1024 * 1024 - 46047
     assert module["MAX_PAGE_BYTES"] == 4 * 1024 * 1024
     assert module["ACTION_START"] == "2024-10-01"
     assert module["ACTION_END"] == "2026-08-25"
     assert module["ASOF"] == "2026-08-25"
+    assert module["END"] == "2026-08-26T00:00:00-04:00"
+    assert module["R9_BAR_REQUEST_END"] == "2026-08-25T23:59:59-04:00"
     assert set(module["WINDOWS"]) == {"QQQ", "TQQQ", "QQQM", "SOXL", "SOXX", "BOXX"}
     assert all(value == ("2025-01-01T00:00:00-05:00", "2025-01-01")
                for value in module["WINDOWS"].values())
@@ -141,6 +143,59 @@ def test_r9_workflow_uses_only_frozen_extension_scope(monkeypatch):
     with pytest.raises(module["AcquisitionError"], match="BAR_TIMESTAMP_INVALID"):
         module["_bars_summary"]({"bars": [{**bar, "t": "2026-08-26T04:00:00Z"}]},
                                 "QQQM", None, "2025-01-01T05:00:00Z")
+
+    class OneBarProvider:
+        def get(self, _path, query):
+            assert query["end"] == module["R9_BAR_REQUEST_END"]
+            return json.dumps({"bars": [bar], "next_page_token": None}).encode(), {
+                "bars": [bar], "next_page_token": None,
+            }
+
+    class OnePageStore:
+        def create_and_verify(self, _name, _body):
+            return {"generation": "1"}
+
+    assert module["_collect"](OneBarProvider(), OnePageStore(), "QQQM", "bars")["count"] == 1
+
+    probe = json.dumps({"schema_version": "qsl.research.private_write_probe.v1",
+                        "scope": module["PREFIX"], "no_order": True}).encode().ljust(180, b" ")
+
+    class ProbeBlob:
+        def download_as_bytes(self, *, if_generation_match, retry, timeout):
+            assert if_generation_match == module["R9_PROBE_GENERATION"]
+            assert retry is None and timeout == 30
+            return probe
+
+    class ProbeBucket:
+        def blob(self, name, *, generation):
+            assert name == module["PREFIX"] + "_write_probe.json"
+            assert generation == module["R9_PROBE_GENERATION"]
+            return ProbeBlob()
+
+    class ProbeClient:
+        def bucket(self, name):
+            assert name == module["BUCKET"]
+            return ProbeBucket()
+
+    recovered_store = module["PrivateStore"](ProbeClient())
+    marker = recovered_store.read_prior_probe()
+    assert marker["generation"] == str(module["R9_PROBE_GENERATION"])
+    assert recovered_store.operations == 4
+    assert recovered_store.transfer_bytes == 3 * module["R9_PROBE_BYTES"]
+
+    class FailedProbeStore:
+        def read_prior_probe(self):
+            raise module["AcquisitionError"]("RECOVERY_PROBE_READBACK_UNKNOWN")
+
+        def create_and_verify(self, *_args):
+            raise AssertionError("no replacement probe may be created")
+
+    class NoProviderCall:
+        def get(self, *_args):
+            raise AssertionError("provider must wait for exact-generation probe readback")
+
+    with pytest.raises(module["AcquisitionError"], match="RECOVERY_PROBE_READBACK_UNKNOWN"):
+        module["run"](FailedProbeStore(), NoProviderCall())
 
     class NoExternalCall:
         def bucket(self, _name):
