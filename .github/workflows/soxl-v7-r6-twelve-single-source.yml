@@ -241,15 +241,15 @@ jobs:
           timeout --kill-after=10s 600s bash -c "
             set -euo pipefail
             python -m pip install --quiet 'uv==0.11.19'
-            uv_ver=\"\$(uv --version)\"
-            if [ \"\$uv_ver\" != 'uv 0.11.19' ]; then
+            uv_ver=\"\$(env -u VIRTUAL_ENV python -I -m uv self version --short)\"
+            if [ \"\$uv_ver\" != '0.11.19' ]; then
               exit 3
             fi
             cd \"${SRC}\"
             env -u UV_PYTHON -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT=\"${VENV}\" \
               UV_CACHE_DIR=\"${CACHE}/uv\" PIP_CACHE_DIR=\"${CACHE}/pip\" \
               TMPDIR=\"${CACHE}/tmp\" XDG_CACHE_HOME=\"${CACHE}/xdg\" MPLCONFIGDIR=\"${CACHE}/mpl\" \
-              uv sync --locked --no-dev --no-editable --python 3.11
+              python -I -m uv sync --locked --no-dev --no-editable --python 3.11
           " >/dev/null 2>&1
           lock_code=$?
           set -e
