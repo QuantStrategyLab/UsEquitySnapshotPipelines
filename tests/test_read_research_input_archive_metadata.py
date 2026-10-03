@@ -746,28 +746,49 @@ def test_exception_redaction_in_public_output(monkeypatch: pytest.MonkeyPatch) -
 
 def test_workflow_mode_job_and_secret_isolation() -> None:
     raw = WORKFLOW.read_text(encoding="utf-8")
-    assert "          - preflight\n          - execute\n          - metadata_only\n" in raw
+    assert (
+        "          - preflight\n"
+        "          - execute\n"
+        "          - metadata_only\n"
+        "          - integrity_only\n"
+    ) in raw
     research_marker = "  r6-research:\n"
     meta_marker = "  research-input-archive-metadata:\n"
+    integrity_marker = "  research-input-archive-integrity:\n"
     assert research_marker in raw
     assert meta_marker in raw
+    assert integrity_marker in raw
     research_start = raw.index(research_marker)
     meta_start = raw.index(meta_marker)
-    assert research_start < meta_start
+    integrity_start = raw.index(integrity_marker)
+    assert research_start < meta_start < integrity_start
     research_block = raw[research_start:meta_start]
-    meta_block = raw[meta_start:]
+    meta_block = raw[meta_start:integrity_start]
+    integrity_block = raw[integrity_start:]
     assert "    if: ${{ inputs.mode == 'preflight' || inputs.mode == 'execute' }}\n" in research_block
     assert "    if: ${{ inputs.mode == 'metadata_only' }}\n" in meta_block
+    assert "    if: ${{ inputs.mode == 'integrity_only' }}\n" in integrity_block
     assert "environment: market-data-nonlive" in research_block
     assert "environment: market-data-nonlive" in meta_block
-    assert "TWELVE_DATA_API_KEY" not in meta_block
-    assert "SOXL_V7_R6_LICENSE_EVIDENCE_SHA256" not in meta_block
-    assert "UsEquityStrategies" not in meta_block
-    assert "ALPACA" not in meta_block
-    assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in meta_block
-    assert "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata 2>/dev/null" in meta_block
-    assert "DEADLINE_EXCEEDED" in meta_block
-    assert "124" in meta_block
+    assert "environment: market-data-nonlive" in integrity_block
+    for block in (meta_block, integrity_block):
+        assert "TWELVE_DATA_API_KEY" not in block
+        assert "SOXL_V7_R6_LICENSE_EVIDENCE_SHA256" not in block
+        assert "UsEquityStrategies" not in block
+        assert "ALPACA" not in block
+        assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
+        assert "DEADLINE_EXCEEDED" in block
+        assert "124" in block
+        assert "2>/dev/null" in block
+    assert (
+        "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata 2>/dev/null"
+        in meta_block
+    )
+    assert (
+        "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata --integrity-only 2>/dev/null"
+        in integrity_block
+    )
+    assert "content_integrity_verified" in integrity_block
     assert "if: inputs.mode == 'preflight'" in research_block
     assert "if: inputs.mode == 'execute'" in research_block
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in research_block
@@ -789,3 +810,607 @@ def test_unreachable_mutators_on_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
         bucket.blob("n").upload_from_string(b"x")
     with pytest.raises(AssertionError, match="create_bucket unreachable"):
         client.create_bucket("x")
+
+
+def _pad_to(prefix: bytes, size: int) -> bytes:
+    if len(prefix) > size:
+        raise AssertionError(f"prefix {len(prefix)} exceeds target {size}")
+    return prefix + (b" " * (size - len(prefix)))
+
+
+def _integrity_bodies() -> dict[str, bytes]:
+    raw_body = b"SYN-RAW-" + (b"r" * (reader.RAW_SIZE_BYTES - 8))
+    closes_body = b"SYN-CLOSES-" + (b"c" * (int(reader.P1_PINS["closes.json"]["size_bytes"]) - 11))
+    assurance_body = b"SYN-ASSURE-" + (b"a" * (int(reader.P1_PINS["assurance.json"]["size_bytes"]) - 11))
+    binding_body = _pad_to(b'{"synthetic":"binding-body"}', int(reader.P1_PINS["binding.json"]["size_bytes"]))
+    bind_sha = _sha(binding_body)
+    manifest_core = json.dumps(
+        {
+            "schema_version": "research_input_manifest.v1",
+            "profile": reader.STUDY_ID,
+            "research_input_contract_id": reader.INPUT_CONTRACT_ID,
+            "producer": {"commit_sha": reader.PRODUCER_REVISION},
+            "calendar": {"source_revision": bind_sha},
+            "adjustment": {"source_revision": bind_sha},
+            "members": [
+                {
+                    "path": "closes.json",
+                    "size_bytes": len(closes_body),
+                    "sha256": _sha(closes_body),
+                },
+                {
+                    "path": "assurance.json",
+                    "size_bytes": len(assurance_body),
+                    "sha256": _sha(assurance_body),
+                },
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    manifest_body = _pad_to(manifest_core, int(reader.P1_PINS["manifest.json"]["size_bytes"]))
+    return {
+        "raw": raw_body,
+        "binding": binding_body,
+        "manifest": manifest_body,
+        "closes": closes_body,
+        "assurance": assurance_body,
+    }
+
+
+def _integrity_complete_body(bodies: dict[str, bytes]) -> bytes:
+    body_by_key = {
+        "binding.json": bodies["binding"],
+        "manifest.json": bodies["manifest"],
+        "closes.json": bodies["closes"],
+        "assurance.json": bodies["assurance"],
+    }
+    p1 = {
+        key: {
+            "name": f"p1/{key}",
+            "generation": int(reader.P1_PINS[key]["generation"]),
+            "size_bytes": int(reader.P1_PINS[key]["size_bytes"]),
+            "sha256": _sha(body_by_key[key]),
+        }
+        for key in reader.P1_KEYS
+    }
+    payload = {
+        "schema": reader.COMPLETION_SCHEMA,
+        "study_id": reader.STUDY_ID,
+        "signal_candidate_id": reader.SIGNAL_CANDIDATE_ID,
+        "source_assurance": reader.SOURCE_ASSURANCE,
+        "historical_point_in_time_certified": False,
+        "date_cutoff": reader.DATE_CUTOFF,
+        "producer_revision": reader.PRODUCER_REVISION,
+        "license_evidence_sha256": reader.R6_LICENSE_SHA256,
+        "observed_at": reader.R6_COMPLETE_OBSERVED_AT,
+        "p1_manifest_sha256": _sha(bodies["manifest"]),
+        "p1": p1,
+    }
+    core = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return _pad_to(core, reader.R6_COMPLETE_SIZE_BYTES)
+
+
+def _patch_integrity_hashes(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, bytes], complete: bytes) -> None:
+    bind_sha = _sha(bodies["binding"])
+    manifest_sha = _sha(bodies["manifest"])
+    pins = {key: dict(value) for key, value in reader.P1_PINS.items()}
+    pins["binding.json"]["sha256"] = bind_sha
+    pins["manifest.json"]["sha256"] = manifest_sha
+    pins["closes.json"]["sha256"] = _sha(bodies["closes"])
+    pins["assurance.json"]["sha256"] = _sha(bodies["assurance"])
+    monkeypatch.setattr(reader, "P1_PINS", pins)
+    monkeypatch.setattr(reader, "RAW_EXPECTED_SHA256", _sha(bodies["raw"]))
+    monkeypatch.setattr(reader, "R6_COMPLETE_SHA256", _sha(complete))
+    monkeypatch.setattr(reader, "P1_MANIFEST_SHA256", manifest_sha)
+    monkeypatch.setattr(reader, "BINDING_SHA256", bind_sha)
+
+
+def _integrity_store(bodies: dict[str, bytes], complete: bytes) -> dict[tuple[str, str], dict[str, Any]]:
+    prefix = "exact-study-root/"
+    store: dict[tuple[str, str], dict[str, Any]] = {
+        (reader.RAW_BUCKET, reader.RAW_OBJECT): {
+            "generation": reader.RAW_GENERATION,
+            "size": reader.RAW_SIZE_BYTES,
+            "body": bodies["raw"],
+        },
+        ("synthetic-r6-private-bucket", prefix + reader.R6_COMPLETE_NAME): {
+            "generation": reader.R6_COMPLETE_GENERATION,
+            "size": reader.R6_COMPLETE_SIZE_BYTES,
+            "body": complete,
+        },
+    }
+    for key, body_key in (
+        ("binding.json", "binding"),
+        ("manifest.json", "manifest"),
+        ("closes.json", "closes"),
+        ("assurance.json", "assurance"),
+    ):
+        store[("synthetic-r6-private-bucket", prefix + f"p1/{key}")] = {
+            "generation": int(reader.P1_PINS[key]["generation"]),
+            "size": int(reader.P1_PINS[key]["size_bytes"]),
+            "body": bodies[body_key],
+        }
+    for name, _sha256 in reader.CONTRACT_SPECS:
+        store[(reader.RAW_BUCKET, reader.RAW_PREFIX + name)] = {
+            "generation": 7000 + len(name),
+            "size": 128 + len(name),
+            "body": b"CONTRACT-BODY-MUST-NOT-BE-READ",
+        }
+    return store
+
+
+def test_integrity_success_exact_fifteen_gets_and_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    assert reader.INTEGRITY_MAX_BODY_BYTES == 163079
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    # Real frozen hashes must never be reused for synthetic bodies.
+    assert reader.RAW_EXPECTED_SHA256 != "cb14a511083c824a748d137a271c93cfe0e8adf38f648905b26e37decf4c6182"
+    assert reader.R6_COMPLETE_SHA256 != "15bfb9d59a884e79614f555b959d888df895377f4924c7639480b106752fee46"
+    client = FakeClient(_integrity_store(bodies, complete))
+    code, payload = reader.run_integrity_read(client=client)
+    assert code == 0
+    assert payload["status"] == "INTEGRITY_READY"
+    assert payload["content_integrity_verified"] is True
+    assert payload["research_qualification"] is False
+    assert payload["trading_rights"] is False
+    assert payload["license_verified"] is False
+    assert payload["historical_point_in_time_certified"] is False
+    assert payload["completion_identity_authenticated"] is False
+    assert payload["content_verified"] is False
+    raw = payload["raw"]
+    assert isinstance(raw, dict)
+    assert raw["status"] == "INTEGRITY_MATCHED"
+    assert raw["content_hash_verified"] is True
+    assert raw["generation"] == reader.RAW_GENERATION
+    assert raw["size_bytes"] == reader.RAW_SIZE_BYTES
+    r6 = payload["r6"]
+    assert isinstance(r6, dict)
+    assert r6["status"] == "INTEGRITY_MATCHED"
+    assert r6["completion_identity_authenticated"] is False
+    assert r6["complete"]["generation"] == reader.R6_COMPLETE_GENERATION
+    assert r6["complete"]["size_bytes"] == reader.R6_COMPLETE_SIZE_BYTES
+    contracts = payload["contracts"]
+    assert isinstance(contracts, dict)
+    assert contracts["status"] == "METADATA_MATCHED"
+    for name, expected in reader.CONTRACT_SPECS:
+        item = contracts["contracts"][name]
+        assert item["location_present"] is True
+        assert item["body_read"] is False
+        assert item["content_hash_verified"] is False
+        assert item["expected_sha_status"] == "unverified"
+        assert item["expected_sha256"] == expected
+        assert item["generation"] > 0
+        assert 0 <= item["size_bytes"] <= reader.P1_MAX_BYTES
+    ops = [event[0] for event in client.events]
+    assert ops.count("reload") == 9
+    assert ops.count("download") == 6
+    assert len(client.events) == 15
+    requested = sum(event[1][4] for event in client.events if event[0] == "download")
+    assert requested == 163079
+    assert not any(event[0] == "download" and "contract" in event[1][1] for event in client.events)
+    text = json.dumps(payload)
+    assert "SYN-RAW" not in text
+    assert "SYN-CLOSES" not in text
+    assert "CONTRACT-BODY" not in text
+    assert "gs://" not in text
+    assert "synthetic-r6-private-bucket" not in text
+    assert reader.RAW_BUCKET not in text
+
+
+def test_integrity_hash_gen_size_and_receipt_widening(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+
+    client = FakeClient(_integrity_store(bodies, complete))
+    client.store[(reader.RAW_BUCKET, reader.RAW_OBJECT)]["body"] = b"x" * reader.RAW_SIZE_BYTES
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["raw"]["reason_class"] == "RAW_HASH_MISMATCH"
+
+    client = FakeClient(_integrity_store(bodies, complete))
+    client.store[(reader.RAW_BUCKET, reader.RAW_OBJECT)]["generation"] = reader.RAW_GENERATION + 1
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["raw"]["reason_class"] == "RAW_METADATA_MISMATCH"
+
+    client = FakeClient(_integrity_store(bodies, complete))
+    client.store[("synthetic-r6-private-bucket", "exact-study-root/complete.json")]["size"] = (
+        reader.R6_COMPLETE_SIZE_BYTES + 1
+    )
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["r6"]["reason_class"] == "COMPLETE_METADATA_MISMATCH"
+
+    # Receipt widening must not retarget pinned P1 objects.
+    widened = json.loads(complete.decode())
+    widened["p1"]["closes.json"]["generation"] = int(reader.P1_PINS["closes.json"]["generation"]) + 99
+    widened["p1"]["closes.json"]["size_bytes"] = int(reader.P1_PINS["closes.json"]["size_bytes"]) + 50
+    widened["p1"]["closes.json"]["sha256"] = "f" * 64
+    bad = _pad_to(
+        json.dumps(widened, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        reader.R6_COMPLETE_SIZE_BYTES,
+    )
+    monkeypatch.setattr(reader, "R6_COMPLETE_SHA256", _sha(bad))
+    client = FakeClient(_integrity_store(bodies, bad))
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["r6"]["reason_class"] == "P1_RECEIPT_PIN_MISMATCH"
+    p1_downloads = [
+        event
+        for event in client.events
+        if event[0] == "download" and "/p1/" in event[1][1]
+    ]
+    assert p1_downloads == []
+
+
+def test_integrity_manifest_binding_link_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    bad_manifest = json.loads(bodies["manifest"].decode())
+    bad_manifest["calendar"]["source_revision"] = "0" * 64
+    bodies = dict(bodies)
+    bodies["manifest"] = _pad_to(
+        json.dumps(bad_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        int(reader.P1_PINS["manifest.json"]["size_bytes"]),
+    )
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    client = FakeClient(_integrity_store(bodies, complete))
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["r6"]["reason_class"] == "MANIFEST_BINDING_MISMATCH"
+
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    bad_manifest = json.loads(bodies["manifest"].decode())
+    bad_manifest["members"][0]["sha256"] = "1" * 64
+    bodies = dict(bodies)
+    bodies["manifest"] = _pad_to(
+        json.dumps(bad_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        int(reader.P1_PINS["manifest.json"]["size_bytes"]),
+    )
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    client = FakeClient(_integrity_store(bodies, complete))
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["r6"]["reason_class"] == "MANIFEST_BINDING_MISMATCH"
+
+
+def test_integrity_no_tempfile_or_path_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+
+    def boom_write(*_a: object, **_k: object) -> None:
+        raise AssertionError("path write unreachable")
+
+    monkeypatch.setattr(Path, "write_bytes", boom_write)
+    monkeypatch.setattr(Path, "write_text", boom_write)
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom_write)
+    monkeypatch.setattr(tempfile, "mkstemp", boom_write)
+    client = FakeClient(_integrity_store(bodies, complete))
+    code, _payload = reader.run_integrity_read(client=client)
+    assert code == 0
+
+
+def test_integrity_contracts_metadata_only_and_first_error_stops_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    store = _integrity_store(bodies, complete)
+    first_name = reader.CONTRACT_SPECS[0][0]
+    del store[(reader.RAW_BUCKET, reader.RAW_PREFIX + first_name)]
+    client = FakeClient(store)
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["raw"]["status"] == "INTEGRITY_MATCHED"
+    assert result["r6"]["status"] == "INTEGRITY_MATCHED"
+    assert result["contracts"]["reason_class"] == "CONTRACT_METADATA_UNAVAILABLE"
+    assert result["content_integrity_verified"] is False
+    assert result["status"] == "BLOCKED"
+    contract_reloads = [
+        event
+        for event in client.events
+        if event[0] == "reload" and event[1][1].startswith(reader.RAW_PREFIX) and event[1][1] != reader.RAW_OBJECT
+    ]
+    assert len(contract_reloads) == 1
+    assert contract_reloads[0][1][1].endswith(first_name)
+    assert not any(event[0] == "download" and first_name in event[1][1] for event in client.events)
+
+
+def test_integrity_403_404_ambiguous_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+
+    class StatusBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            if self.name.endswith(reader.CONTRACT_SPECS[0][0]):
+                raise RuntimeError("403 Forbidden / 404 Not Found for object")
+            super().reload(**kwargs)
+
+    class StatusBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return StatusBlob(self.store, self.name, name, generation, self.events)
+
+    class StatusClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return StatusBucket(self.store, name, self.events)
+
+    client = StatusClient(_integrity_store(bodies, complete))
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["contracts"]["reason_class"] == "CONTRACT_METADATA_UNAVAILABLE"
+    text = json.dumps(result)
+    assert "403" not in text
+    assert "404" not in text
+    assert "NOT_FOUND" not in text
+    assert "nonexistent" not in text.lower()
+
+
+def test_integrity_independent_raw_r6_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+
+    client = FakeClient(_integrity_store(bodies, complete))
+    client.store[(reader.RAW_BUCKET, reader.RAW_OBJECT)]["generation"] = 1
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["raw"]["reason_class"] == "RAW_METADATA_MISMATCH"
+    assert result["r6"]["status"] == "INTEGRITY_MATCHED"
+    assert result["contracts"]["status"] == "METADATA_MATCHED"
+    assert result["reason_class"] == "RAW_METADATA_MISMATCH"
+
+    client = FakeClient(_integrity_store(bodies, complete))
+    client.store[("synthetic-r6-private-bucket", "exact-study-root/p1/manifest.json")]["body"] = (
+        b"y" * int(reader.P1_PINS["manifest.json"]["size_bytes"])
+    )
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 2
+    assert result["raw"]["status"] == "INTEGRITY_MATCHED"
+    assert result["r6"]["reason_class"] == "P1_HASH_MISMATCH"
+    assert result["contracts"]["status"] == "METADATA_MATCHED"
+
+
+def test_integrity_deadline_after_last_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    clock = MutableClock(0.0)
+    last_contract = reader.CONTRACT_SPECS[-1][0]
+
+    class OverrunBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            super().reload(**kwargs)
+            if self.name.endswith(last_contract):
+                clock.now = 31.0
+
+    class OverrunBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return OverrunBlob(self.store, self.name, name, generation, self.events)
+
+    class OverrunClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return OverrunBucket(self.store, name, self.events)
+
+    client = OverrunClient(_integrity_store(bodies, complete))
+    code, result = reader.run_integrity_read(client=client, clock=clock, budget_s=30.0)
+    assert code == 2
+    assert result["raw"]["status"] == "INTEGRITY_MATCHED"
+    assert result["r6"]["status"] == "INTEGRITY_MATCHED"
+    assert result["contracts"]["reason_class"] == "DEADLINE_EXCEEDED"
+    assert result["reason_class"] == "DEADLINE_EXCEEDED"
+    assert result["content_integrity_verified"] is False
+
+
+def test_integrity_raw_gzip_not_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    plain = bodies["raw"]
+    compressed = gzip.compress(plain)
+    assert len(compressed) < reader.RAW_SIZE_BYTES
+    padded = compressed + (b"\x00" * (reader.RAW_SIZE_BYTES - len(compressed)))
+    bodies = dict(bodies)
+    bodies["raw"] = padded
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    client = FakeClient(_integrity_store(bodies, complete))
+    code, result = reader.run_integrity_read(client=client)
+    assert code == 0
+    download = next(
+        event
+        for event in client.events
+        if event[0] == "download" and event[1][1] == reader.RAW_OBJECT
+    )
+    assert download[1][6] is True
+    assert download[1][4] == reader.RAW_SIZE_BYTES
+    assert result["raw"]["sha256"] == _sha(padded)
+    assert result["raw"]["sha256"] != _sha(plain)
+
+
+def test_integrity_output_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    _actions(monkeypatch)
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+
+    class ExplodingBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            raise RuntimeError("secret-token gs://private/path credentials=xyz amount=12.34")
+
+    class ExplodingBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return ExplodingBlob(self.store, self.name, name, generation, self.events)
+
+    class ExplodingClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return ExplodingBucket(self.store, name, self.events)
+
+    client = ExplodingClient(_integrity_store(bodies, complete))
+    code, payload = reader.run_integrity_read(client=client)
+    assert code == 2
+    text = json.dumps(payload)
+    assert "secret-token" not in text
+    assert "credentials=" not in text
+    assert "gs://private/path" not in text
+    assert "12.34" not in text
+    assert payload["raw"]["reason_class"] == "RAW_METADATA_UNAVAILABLE"
+
+
+def test_integrity_cli_env_and_argv_guards(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", reader.ALLOWED_REPOSITORY)
+    created = {"client": False}
+
+    def boom() -> FakeClient:
+        created["client"] = True
+        raise AssertionError("client must not be created")
+
+    code, payload = reader.run_integrity_read(create_client=boom)
+    assert code == 2
+    assert payload["reason_class"] == "ENV_REFUSED"
+    assert created["client"] is False
+
+    _actions(monkeypatch)
+    assert reader.main(["--integrity-only", "--root", "gs://x"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ARGV_REFUSED"
+    assert "gs://" not in json.dumps(out)
+
+    bodies = _integrity_bodies()
+    complete = _integrity_complete_body(bodies)
+    _patch_integrity_hashes(monkeypatch, bodies, complete)
+    client = FakeClient(_integrity_store(bodies, complete))
+    monkeypatch.setattr(reader, "_lazy_storage_client", lambda: client)
+    assert reader.main(["--integrity-only"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "INTEGRITY_READY"
+    assert out["content_integrity_verified"] is True
+
+
+def test_integrity_lazy_client_body_helper_no_bucket_get_or_401_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(reader.DISABLE_OTEL_BUCKET_METADATA_ENV, "false")
+    fake_creds = FakeCredentials()
+    _patch_lazy_auth(monkeypatch, fake_creds)
+    plain = b"SYN-BODY-" + (b"z" * 200)
+    compressed = gzip.compress(plain)
+    generation = 4242
+    object_name = "exact-study-root/p1/assurance.json"
+    http_calls: list[tuple[str, str]] = []
+
+    def fake_request(self: requests.Session, method: str, url: str, **kwargs: Any) -> requests.Response:
+        http_calls.append((method.upper(), url))
+        parsed = urlparse(url)
+        path = parsed.path
+        response = requests.Response()
+        response.url = url
+        response.request = requests.Request(method=method, url=url).prepare()
+        if _is_bucket_metadata_url(url):
+            raise AssertionError(f"unexpected bucket metadata GET: {url}")
+        if "/download/storage/v1/b/" in path and "alt=media" in parsed.query:
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/octet-stream"
+            response.headers["Content-Length"] = str(len(compressed))
+            response.raw = urllib3.HTTPResponse(
+                body=BytesIO(compressed),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(len(compressed)),
+                },
+                status=200,
+                preload_content=False,
+                decode_content=False,
+            )
+            response._content = False
+            response._content_consumed = False
+            return response
+        if "/o/" in path and "assurance.json" in path:
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = json.dumps(
+                {
+                    "kind": "storage#object",
+                    "name": object_name,
+                    "bucket": "synthetic-bucket",
+                    "generation": str(generation),
+                    "size": str(len(compressed)),
+                    "metageneration": "1",
+                }
+            ).encode("utf-8")
+            return response
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    client = reader._lazy_storage_client()
+    assert os.environ[reader.DISABLE_OTEL_BUCKET_METADATA_ENV] == "true"
+    clock = MutableClock(0.0)
+    body = reader._download_bytes(
+        client,
+        bucket_name="synthetic-bucket",
+        object_name=object_name,
+        generation=generation,
+        size=len(compressed),
+        max_size=len(compressed),
+        deadline=30.0,
+        clock=clock,
+        oversize_reason="P1_OVERSIZE",
+        fail_reason="P1_DOWNLOAD_FAILED",
+    )
+    assert body == compressed
+    assert body != plain
+    get_urls = [url for method, url in http_calls if method == "GET"]
+    assert get_urls
+    assert not any(_is_bucket_metadata_url(url) for url in get_urls)
+    assert any("/download/storage/v1/b/" in url and "alt=media" in url for url in get_urls)
+    assert fake_creds.refresh_calls == 0
+    assert len(http_calls) == len(get_urls)
+
+
+def test_integrity_module_main_only_flag_subprocess() -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"GITHUB_ACTIONS", "GITHUB_REPOSITORY", reader.ROOT_ENV}
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.read_research_input_archive_metadata",
+            "--integrity-only",
+            "gs://evil",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["reason_class"] == "ARGV_REFUSED"
