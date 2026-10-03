@@ -11,7 +11,7 @@ import subprocess
 import sys
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import google.auth.credentials
@@ -753,40 +753,61 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         "          - integrity_only\n"
         "          - contracts_only\n"
         "          - materialized_identity_only\n"
+        "          - raw_manifest_projection_only\n"
     ) in raw
     research_marker = "  r6-research:\n"
     meta_marker = "  research-input-archive-metadata:\n"
     integrity_marker = "  research-input-archive-integrity:\n"
     contracts_marker = "  research-input-archive-contracts:\n"
+    projection_marker = "  research-input-archive-raw-manifest-projection:\n"
     materialized_marker = "  research-input-archive-materialized-identity:\n"
     assert research_marker in raw
     assert meta_marker in raw
     assert integrity_marker in raw
     assert contracts_marker in raw
+    assert projection_marker in raw
     assert materialized_marker in raw
     research_start = raw.index(research_marker)
     meta_start = raw.index(meta_marker)
     integrity_start = raw.index(integrity_marker)
     contracts_start = raw.index(contracts_marker)
+    projection_start = raw.index(projection_marker)
     materialized_start = raw.index(materialized_marker)
-    assert research_start < meta_start < integrity_start < contracts_start < materialized_start
+    assert (
+        research_start
+        < meta_start
+        < integrity_start
+        < contracts_start
+        < projection_start
+        < materialized_start
+    )
     research_block = raw[research_start:meta_start]
     meta_block = raw[meta_start:integrity_start]
     integrity_block = raw[integrity_start:contracts_start]
-    contracts_block = raw[contracts_start:materialized_start]
+    contracts_block = raw[contracts_start:projection_start]
+    projection_block = raw[projection_start:materialized_start]
     materialized_block = raw[materialized_start:]
     assert "    if: ${{ inputs.mode == 'preflight' || inputs.mode == 'execute' }}\n" in research_block
     assert "    if: ${{ inputs.mode == 'metadata_only' }}\n" in meta_block
     assert "    if: ${{ inputs.mode == 'integrity_only' }}\n" in integrity_block
     assert "    if: ${{ inputs.mode == 'contracts_only' }}\n" in contracts_block
+    assert "    if: ${{ inputs.mode == 'raw_manifest_projection_only' }}\n" in projection_block
     assert "    if: ${{ inputs.mode == 'materialized_identity_only' }}\n" in materialized_block
     assert "environment: market-data-nonlive" in research_block
     assert "environment: market-data-nonlive" in meta_block
     assert "environment: market-data-nonlive" in integrity_block
     assert "environment: market-data-nonlive" in contracts_block
+    assert "environment: market-data-nonlive" in projection_block
     assert "environment: market-data-nonlive" in materialized_block
     assert "timeout-minutes: 20" in materialized_block
-    for block in (meta_block, integrity_block, contracts_block, materialized_block):
+    assert "cancel-in-progress: false" in raw
+    for block in (
+        meta_block,
+        integrity_block,
+        contracts_block,
+        projection_block,
+        materialized_block,
+    ):
         assert "TWELVE_DATA_API_KEY" not in block
         assert "SOXL_V7_R6_LICENSE_EVIDENCE_SHA256" not in block
         assert "ALPACA" not in block
@@ -794,9 +815,13 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
     for block in (meta_block, integrity_block, materialized_block):
         assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
     assert "SOXL_V7_R6_PRIVATE_ROOT" not in contracts_block
+    assert "SOXL_V7_R6_PRIVATE_ROOT" not in projection_block
+    assert "--raw-manifest-projection-only" in projection_block
+    assert "timeout 30s" in projection_block
     assert "UsEquityStrategies" not in meta_block
     assert "UsEquityStrategies" not in integrity_block
     assert "UsEquityStrategies" not in contracts_block
+    assert "UsEquityStrategies" not in projection_block
     assert "git fetch --no-tags --depth=1 origin ${LEGACY_SHA}" in materialized_block
     assert 'LEGACY_SHA="0ae8ac4eb886431f9f9695702d9dd60982919dae"' in materialized_block
     assert "timeout --kill-after=10s 300s" in materialized_block
@@ -2600,3 +2625,354 @@ def test_materialized_wrong_venv_python_env_refused(
     )
     assert code == 2
     assert payload["reason_class"] == "RUNTIME_PYTHON_MISMATCH"
+
+
+def _raw_projection_page(symbol: str, kind: str, *, nbytes: int = 11) -> dict[str, object]:
+    body = b"x" * nbytes
+    return {
+        "uri": f"gs://{reader.RAW_BUCKET}/{reader.RAW_PREFIX}{kind}/{symbol}/page-001.json",
+        "generation": "1790338000000001",
+        "bytes": nbytes,
+        "sha256": _sha(body),
+    }
+
+
+def _raw_projection_manifest(
+    *,
+    mutate: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    inputs: list[dict[str, Any]] = []
+    for symbol in reader.RAW_MANIFEST_SYMBOLS:
+        for kind in reader.RAW_MANIFEST_KINDS:
+            count = 0 if kind == "actions" else 3
+            item: dict[str, Any] = {
+                "symbol": symbol,
+                "kind": kind,
+                "request": {"symbol": symbol, "kind": kind},
+                "count": count,
+                "first_bar_time": (
+                    None if kind == "actions" else "2022-01-03T00:00:00-05:00"
+                ),
+                "last_bar_time": (
+                    None if kind == "actions" else "2022-01-05T00:00:00-05:00"
+                ),
+                "pages": [_raw_projection_page(symbol, kind)],
+                "complete_pagination": True,
+            }
+            inputs.append(item)
+    payload: dict[str, Any] = {
+        "schema_version": reader.RAW_MANIFEST_SCHEMA,
+        "retrieved_at": "2026-09-25T12:00:00Z",
+        "source": reader.RAW_MANIFEST_SOURCE,
+        "feed": reader.RAW_MANIFEST_FEED,
+        "price_adjustment": reader.RAW_MANIFEST_PRICE_ADJUSTMENT,
+        "calendar": reader.RAW_MANIFEST_CALENDAR,
+        "timezone": reader.RAW_MANIFEST_TIMEZONE,
+        "currency": reader.RAW_MANIFEST_CURRENCY,
+        "license_retention": reader.RAW_MANIFEST_LICENSE_RETENTION,
+        "scope": reader.RAW_PREFIX,
+        "write_probe": {
+            "uri": f"gs://{reader.RAW_BUCKET}/{reader.RAW_PREFIX}_write_probe.json",
+            "generation": "1790338000000000",
+            "bytes": 120,
+            "sha256": "a" * 64,
+        },
+        "inputs": inputs,
+        "provider_page_requests": 12,
+        "provider_response_bytes": 4096,
+        "bar_timestamp_meaning": reader.RAW_MANIFEST_BAR_TIMESTAMP_MEANING,
+        "corporate_action_limitation": reader.RAW_MANIFEST_CORPORATE_ACTION_LIMITATION,
+        "no_order": True,
+        "research_only": True,
+        "execution_authorized": False,
+    }
+    if mutate is not None:
+        mutate(payload)
+    return payload
+
+
+def _raw_projection_body(
+    mutate: Callable[[dict[str, Any]], None] | None = None,
+) -> bytes:
+    return json.dumps(
+        _raw_projection_manifest(mutate=mutate),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _raw_projection_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", reader.ALLOWED_REPOSITORY)
+    monkeypatch.delenv(reader.ROOT_ENV, raising=False)
+
+
+def _raw_projection_store(body: bytes) -> dict[tuple[str, str], dict[str, Any]]:
+    return {
+        (reader.RAW_BUCKET, reader.RAW_OBJECT): {
+            "generation": reader.RAW_GENERATION,
+            "size": len(body),
+            "body": body,
+        }
+    }
+
+
+def _patch_raw_projection_pins(monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
+    monkeypatch.setattr(reader, "RAW_SIZE_BYTES", len(body))
+    monkeypatch.setattr(reader, "RAW_EXPECTED_SHA256", _sha(body))
+
+
+def test_raw_manifest_projection_ready_two_gets_no_member_no_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _raw_projection_actions(monkeypatch)
+    body = _raw_projection_body()
+    _patch_raw_projection_pins(monkeypatch, body)
+    client = FakeClient(_raw_projection_store(body))
+    code, payload = reader.run_raw_manifest_projection_read(client=client)
+    assert code == 0
+    assert payload["status"] == "RAW_MANIFEST_PROJECTION_READY"
+    assert payload["manifest_identity_matched"] is True
+    assert payload["license_scope_matches"] is True
+    assert payload["retrieved_at_present"] is True
+    assert payload["retrieved_at_valid"] is True
+    assert payload["available_at_present"] is False
+    assert payload["historical_availability_limitation_matches"] is True
+    assert payload["input_count"] == 12
+    assert payload["member_body_read"] is False
+    assert payload["member_content_verified"] is False
+    assert payload["research_qualification"] is False
+    assert payload["trading_rights"] is False
+    assert payload["license_verified"] is False
+    assert payload["historical_point_in_time_certified"] is False
+    assert payload["completion_identity_authenticated"] is False
+    assert payload["content_verified"] is False
+    assert payload["budget"]["manifest_get_count"] == 2
+    assert payload["budget"]["manifest_bytes"] == len(body)
+    assert payload["budget"]["planned_member_get_count"] == 24
+    assert payload["budget"]["planned_next_run_with_manifest_reverify_get_count"] == 26
+    assert len(payload["inputs"]) == 12
+    total = sum(int(item["declared_size_bytes"]) for item in payload["inputs"])
+    assert payload["total_declared_member_bytes"] == total
+    assert payload["budget"]["planned_member_bytes"] == total
+    assert payload["budget"]["planned_next_run_with_manifest_reverify_bytes"] == total + len(
+        body
+    )
+    reloads = [e for e in client.events if e[0] == "reload"]
+    downloads = [e for e in client.events if e[0] == "download"]
+    assert len(reloads) == 1
+    assert len(downloads) == 1
+    assert downloads[0][1][1] == reader.RAW_OBJECT
+    text = json.dumps(payload)
+    assert reader.RAW_PREFIX not in text
+    assert "gs://" not in text
+    assert "write_probe" not in text
+    assert "license_retention" not in text
+    assert "request" not in text
+    assert reader.ROOT_ENV not in os.environ
+
+
+def test_raw_manifest_projection_bad_pin_skips_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _raw_projection_actions(monkeypatch)
+    body = _raw_projection_body()
+    _patch_raw_projection_pins(monkeypatch, body)
+    bad = b"x" * len(body)
+    client = FakeClient(_raw_projection_store(bad))
+    code, payload = reader.run_raw_manifest_projection_read(client=client)
+    assert code == 2
+    assert payload["reason_class"] == "RAW_HASH_MISMATCH"
+    assert payload["manifest_identity_matched"] is False
+    assert [e for e in client.events if e[0] == "download"]
+
+
+def test_raw_manifest_projection_rejects_set_and_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _raw_projection_actions(monkeypatch)
+
+    def drop_one(payload: dict[str, Any]) -> None:
+        payload["inputs"] = payload["inputs"][:-1]
+
+    body = _raw_projection_body(mutate=drop_one)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert code == 2
+    assert payload["reason_class"] == "RAW_INPUT_SET_INVALID"
+
+    def multipage(payload: dict[str, Any]) -> None:
+        page = dict(payload["inputs"][0]["pages"][0])
+        page["uri"] = page["uri"].replace("page-001", "page-002")
+        payload["inputs"][0]["pages"].append(page)
+
+    body = _raw_projection_body(mutate=multipage)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_INPUT_SET_INVALID"
+
+    def bad_uri(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["uri"] = (
+            "gs://other-bucket/research/v2/input/qqqm-boxx-raw-20260925-001/"
+            "bars/QQQM/page-001.json"
+        )
+
+    body = _raw_projection_body(mutate=bad_uri)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_INPUT_SET_INVALID"
+
+    def encoded_uri(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["uri"] = payload["inputs"][0]["pages"][0][
+            "uri"
+        ].replace("bars/", "bars%2F")
+
+    body = _raw_projection_body(mutate=encoded_uri)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_INPUT_SET_INVALID"
+
+    def traversal(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["uri"] = (
+            f"gs://{reader.RAW_BUCKET}/{reader.RAW_PREFIX}../secrets/page-001.json"
+        )
+
+    body = _raw_projection_body(mutate=traversal)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_INPUT_SET_INVALID"
+
+    def gen_bool(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["generation"] = True
+
+    body = _raw_projection_body(mutate=gen_bool)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_INVALID"
+
+    def bad_size(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["bytes"] = True
+
+    body = _raw_projection_body(mutate=bad_size)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_INVALID"
+
+    def bad_hash(payload: dict[str, Any]) -> None:
+        payload["inputs"][0]["pages"][0]["sha256"] = "not-hex"
+
+    body = _raw_projection_body(mutate=bad_hash)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_INVALID"
+
+
+def test_raw_manifest_projection_rejects_json_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _raw_projection_actions(monkeypatch)
+    dup = (
+        b'{"schema_version":"qsl.research.raw_sip_input.v1",'
+        b'"schema_version":"qsl.research.raw_sip_input.v1"}'
+    )
+    _patch_raw_projection_pins(monkeypatch, dup)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(dup))
+    )
+    assert code == 2
+    assert payload["reason_class"] == "RAW_MANIFEST_INVALID"
+
+    nan_body = b'{"schema_version":NaN}'
+    _patch_raw_projection_pins(monkeypatch, nan_body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(nan_body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_INVALID"
+
+    def bad_scope(payload: dict[str, Any]) -> None:
+        payload["scope"] = "research/v2/input/other/"
+
+    body = _raw_projection_body(mutate=bad_scope)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_IDENTITY_MISMATCH"
+
+    def bad_license(payload: dict[str, Any]) -> None:
+        payload["license_retention"] = "public redistributable"
+
+    body = _raw_projection_body(mutate=bad_license)
+    _patch_raw_projection_pins(monkeypatch, body)
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert payload["reason_class"] == "RAW_MANIFEST_IDENTITY_MISMATCH"
+    text = json.dumps(payload)
+    assert "public redistributable" not in text
+    assert "research/v2/input/other/" not in text
+
+
+def test_raw_manifest_projection_deadline_and_stdout_canary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _raw_projection_actions(monkeypatch)
+    body = _raw_projection_body()
+    _patch_raw_projection_pins(monkeypatch, body)
+    clock = MutableClock(0.0)
+
+    class SlowClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            clock.now = 31.0
+            return super().bucket(name)
+
+    code, payload = reader.run_raw_manifest_projection_read(
+        client=SlowClient(_raw_projection_store(body)),
+        clock=clock,
+        budget_s=30.0,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert reader.main(["--raw-manifest-projection-only"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ENV_REFUSED"
+    assert "secret" not in json.dumps(out).lower()
+
+    _raw_projection_actions(monkeypatch)
+    code_i, ready = reader.run_raw_manifest_projection_read(
+        client=FakeClient(_raw_projection_store(body))
+    )
+    assert code_i == 0
+    printed = json.dumps(ready, sort_keys=True, separators=(",", ":"))
+    assert "gs://" not in printed
+    assert reader.RAW_PREFIX not in printed
+    assert "_write_probe" not in printed
+    assert "canary-secret-token" not in printed
+
+
+def test_raw_manifest_projection_cli_guards(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _raw_projection_actions(monkeypatch)
+    assert reader.main(["--raw-manifest-projection-only", "extra"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ARGV_REFUSED"
