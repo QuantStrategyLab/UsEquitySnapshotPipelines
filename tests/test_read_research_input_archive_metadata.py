@@ -806,7 +806,11 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
     assert "if: always()" in materialized_block
     assert "qsl-materialized-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" in materialized_block
     assert "uv==0.11.19" in materialized_block
-    assert 'uv 0.11.19' in materialized_block
+    assert "env -u VIRTUAL_ENV python -I -m uv self version --short" in materialized_block
+    assert "!= '0.11.19'" in materialized_block
+    assert "python -I -m uv sync --locked --no-dev --no-editable --python 3.11" in materialized_block
+    assert "uv --version" not in materialized_block
+    assert 'uv 0.11.19' not in materialized_block
     assert "UV_CACHE_DIR" in materialized_block
     assert "PIP_CACHE_DIR" in materialized_block
     assert "--materialized-identity-only" in materialized_block
@@ -843,6 +847,143 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
     assert "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" in raw
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065" in raw
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" in raw
+
+
+def _materialized_bootstrap600_inner(workflow_text: str) -> str:
+    marker = 'timeout --kill-after=10s 600s bash -c "'
+    # Materialized job owns the sole 600s bootstrap envelope.
+    start = workflow_text.rindex(marker) + len(marker)
+    if workflow_text[start] == "\n":
+        start += 1
+    end = workflow_text.index('" >/dev/null 2>&1', start)
+    inner = workflow_text[start:end]
+    return inner.replace('\\"', '"').replace("\\$", "$")
+
+
+def _run_bootstrap600_fragment(
+    *,
+    tmp_path: Path,
+    short_version: str | None,
+    version_exit: int = 0,
+) -> tuple[int, list[str]]:
+    """Execute the workflow's 600s bootstrap inner script with fake python/pip/uv."""
+    raw = WORKFLOW.read_text(encoding="utf-8")
+    inner = _materialized_bootstrap600_inner(raw)
+    assert "python -m pip install --quiet 'uv==0.11.19'" in inner
+    assert "env -u VIRTUAL_ENV python -I -m uv self version --short" in inner
+    assert "[ \"$uv_ver\" != '0.11.19' ]" in inner
+    assert "python -I -m uv sync --locked --no-dev --no-editable --python 3.11" in inner
+    assert "uv --version" not in inner
+
+    root = tmp_path / "bootstrap"
+    bin_dir = root / "bin"
+    src = root / "src"
+    venv = root / "venv"
+    cache = root / "cache"
+    log = root / "actions.log"
+    bin_dir.mkdir(parents=True)
+    src.mkdir()
+    (src / "uv.lock").write_text("lock\n", encoding="utf-8")
+    for name in ("tmp", "xdg", "mpl", "uv", "pip"):
+        (cache / name).mkdir(parents=True, exist_ok=True)
+    log.write_text("", encoding="utf-8")
+
+    fake_uv = bin_dir / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\nprintf 'path-uv\\n' >>\"$QSL_BOOTSTRAP_LOG\"\nexit 99\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    version_payload = short_version if short_version is not None else ""
+    fake_python = bin_dir / "python"
+    fake_python.write_text(
+        f"""#!/bin/sh
+set -eu
+log="$QSL_BOOTSTRAP_LOG"
+printf 'python:%s\\n' "$*" >>"$log"
+case " $* " in
+  *" -m pip install --quiet uv==0.11.19 "*)
+    printf 'install\\n' >>"$log"
+    exit 0
+    ;;
+  *" -I -m uv self version --short "*)
+    printf 'version\\n' >>"$log"
+    if [ "{version_exit}" -ne 0 ]; then
+      exit "{version_exit}"
+    fi
+    printf '%s\\n' "{version_payload}"
+    exit 0
+    ;;
+  *" -I -m uv sync --locked --no-dev --no-editable --python 3.11 "*)
+    printf 'sync\\n' >>"$log"
+    mkdir -p "$QSL_BOOTSTRAP_VENV/bin"
+    printf '#!/bin/sh\\nexit 0\\n' >"$QSL_BOOTSTRAP_VENV/bin/python"
+    chmod 755 "$QSL_BOOTSTRAP_VENV/bin/python"
+    exit 0
+    ;;
+esac
+printf 'unexpected-python-args\\n' >>"$log"
+exit 7
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env["SRC"] = str(src)
+    env["VENV"] = str(venv)
+    env["CACHE"] = str(cache)
+    env["QSL_BOOTSTRAP_LOG"] = str(log)
+    env["QSL_BOOTSTRAP_VENV"] = str(venv)
+    env["VIRTUAL_ENV"] = str(tmp_path / "unrelated-venv")
+    env["UV_PYTHON"] = "should-be-cleared"
+    completed = subprocess.run(
+        ["bash", "-c", inner],
+        env=env,
+        cwd=str(root),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    actions = [
+        line
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if line in {"install", "version", "sync", "path-uv"}
+    ]
+    return completed.returncode, actions
+
+
+def test_materialized_bootstrap600_uses_python_module_uv_not_path(
+    tmp_path: Path,
+) -> None:
+    code, actions = _run_bootstrap600_fragment(tmp_path=tmp_path, short_version="0.11.19")
+    assert code == 0
+    assert actions == ["install", "version", "sync"]
+    assert "path-uv" not in actions
+
+
+def test_materialized_bootstrap600_rejects_wrong_short_version(
+    tmp_path: Path,
+) -> None:
+    code, actions = _run_bootstrap600_fragment(tmp_path=tmp_path, short_version="0.11.18")
+    assert code == 3
+    assert actions == ["install", "version"]
+    assert "sync" not in actions
+    assert "path-uv" not in actions
+
+
+def test_materialized_bootstrap600_rejects_short_version_command_failure(
+    tmp_path: Path,
+) -> None:
+    code, actions = _run_bootstrap600_fragment(
+        tmp_path=tmp_path, short_version="0.11.19", version_exit=4
+    )
+    assert code != 0
+    assert actions == ["install", "version"]
+    assert "sync" not in actions
+    assert "path-uv" not in actions
 
 
 def test_unreachable_mutators_on_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
