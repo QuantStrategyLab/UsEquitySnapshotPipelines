@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Exact private-store preflight or one frozen R6 execution
+        description: Exact private-store preflight, frozen R6 execution, metadata, or integrity
         required: true
         type: choice
         options:
           - preflight
           - execute
           - metadata_only
+          - integrity_only
 
 permissions:
   contents: read
@@ -102,6 +103,43 @@ jobs:
           set -e
           if [ "$code" -eq 124 ]; then
             printf '%s\n' '{"status":"TIMEOUT","reason_class":"DEADLINE_EXCEEDED","research_qualification":false,"trading_rights":false,"content_verified":false}'
+            exit 2
+          fi
+          exit "$code"
+
+  research-input-archive-integrity:
+    if: ${{ inputs.mode == 'integrity_only' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: market-data-nonlive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install locked research runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate existing non-live research identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Verify research input archive integrity only
+        env:
+          SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata --integrity-only 2>/dev/null
+          code=$?
+          set -e
+          if [ "$code" -eq 124 ]; then
+            printf '%s\n' '{"status":"TIMEOUT","reason_class":"DEADLINE_EXCEEDED","research_qualification":false,"trading_rights":false,"content_verified":false,"content_integrity_verified":false}'
             exit 2
           fi
           exit "$code"

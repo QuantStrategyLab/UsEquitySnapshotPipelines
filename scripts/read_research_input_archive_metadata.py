@@ -1,8 +1,9 @@
-"""GET-only research archive metadata reader for original RAW + R6 recovery pins.
+"""GET-only research archive metadata / integrity reader for original RAW + R6 pins.
 
-Single-purpose entry: reload fixed RAW manifest metadata and the R6 completion
-index (bounded download) plus four P1 member metadata receipts. No provider
-calls, listing, uploads, body dumps, or research qualification claims.
+metadata_only: fixed RAW metadata + bounded complete index + four P1 metadata.
+integrity_only: fixed-generation whole-byte hashes for RAW/complete/P1 plus three
+contract metadata observations. No provider calls, listing, uploads, body dumps,
+or research qualification claims.
 """
 
 from __future__ import annotations
@@ -28,23 +29,77 @@ DISABLE_OTEL_BUCKET_METADATA_ENV = "DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADA
 
 RAW_BUCKET = "qsl-research-evidence-831478360303"
 RAW_OBJECT = "research/v2/input/qqqm-boxx-raw-20260925-001/manifest.json"
+RAW_PREFIX = "research/v2/input/qqqm-boxx-raw-20260925-001/"
 RAW_GENERATION = 1790338090501279
 RAW_SIZE_BYTES = 7580
 RAW_EXPECTED_SHA256 = "cb14a511083c824a748d137a271c93cfe0e8adf38f648905b26e37decf4c6182"
 
 R6_COMPLETE_NAME = "complete.json"
 R6_COMPLETE_MAX_BYTES = 64 * 1024
+R6_COMPLETE_GENERATION = 1790408062686989
+R6_COMPLETE_SIZE_BYTES = 3390
+R6_COMPLETE_SHA256 = "15bfb9d59a884e79614f555b959d888df895377f4924c7639480b106752fee46"
+R6_COMPLETE_OBSERVED_AT = "2026-09-26T07:34:09Z"
+R6_LICENSE_SHA256 = "c11f174c833e93443df6dd210e4d965dfb4aaa9a86406a95f434728c4ac07cdb"
+
 P1_MAX_BYTES = 16 * 1024 * 1024
 P1_KEYS = ("binding.json", "manifest.json", "closes.json", "assurance.json")
 P1_NAME_MAP = {key: f"p1/{key}" for key in P1_KEYS}
 P1_MANIFEST_SHA256 = "86fa48cba3459ad9ff228671cd5b5e574e0e68c1637eaa40d7487c541ff36795"
+P1_PINS: dict[str, dict[str, object]] = {
+    "binding.json": {
+        "generation": 1790408051987526,
+        "size_bytes": 832,
+        "sha256": "769ab7fd151d7576755ef1ab3a01540cd1229ae671f07faeb348a59fec484f27",
+    },
+    "manifest.json": {
+        "generation": 1790408052165082,
+        "size_bytes": 2199,
+        "sha256": P1_MANIFEST_SHA256,
+    },
+    "closes.json": {
+        "generation": 1790408052331620,
+        "size_bytes": 147981,
+        "sha256": "e5761ee4def3b42237f605bf04e65056b2556e3bb4be7ae1b376a925b7008072",
+    },
+    "assurance.json": {
+        "generation": 1790408052509816,
+        "size_bytes": 1097,
+        "sha256": "ad2b8232ea2b4f4b22f1a8c0d4e34ddfa2170798fb2fceab52afb4fbb998048b",
+    },
+}
+INTEGRITY_MAX_BODY_BYTES = (
+    RAW_SIZE_BYTES
+    + R6_COMPLETE_SIZE_BYTES
+    + int(P1_PINS["binding.json"]["size_bytes"])
+    + int(P1_PINS["manifest.json"]["size_bytes"])
+    + int(P1_PINS["closes.json"]["size_bytes"])
+    + int(P1_PINS["assurance.json"]["size_bytes"])
+)
 
 STUDY_ID = "soxl_v7_twelve_basic_split_close_development_v1"
+INPUT_CONTRACT_ID = "qsl.soxl-v7-twelve-single-source-r6-input.v1"
 COMPLETION_SCHEMA = "soxl-v7-r6-twelve-single-completion.v1"
 SIGNAL_CANDIDATE_ID = "soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve"
 PRODUCER_REVISION = "0ae8ac4eb886431f9f9695702d9dd60982919dae"
 DATE_CUTOFF = "2026-08-25"
 SOURCE_ASSURANCE = "single_source_structural_only_no_cross_provider_verification"
+BINDING_SHA256 = str(P1_PINS["binding.json"]["sha256"])
+
+CONTRACT_SPECS: tuple[tuple[str, str], ...] = (
+    (
+        "tqqq_qqq_guard_cash_contract.v1.json",
+        "7b603312762262ebb2fe90c86bef2ed0b7914ab26586b0b9db93ee39b4d1e60b",
+    ),
+    (
+        "boxx_outer_cash_policy.v1.json",
+        "cfed32767cb367ccce7ef880c3c15f82d50b99fe805d542e85839fc67270c905",
+    ),
+    (
+        "s4_budget_policy.v1.json",
+        "8c7a4410717c52222bb09c91a9c5d6774524625b8b2ad3226ffb2cd28dd31bbd",
+    ),
+)
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SHA_NAME = re.compile(r"^(?:\.\./|/|gs:|https?:)", re.IGNORECASE)
@@ -227,6 +282,18 @@ def _validate_p1_receipts(payload: dict[str, Any]) -> dict[str, dict[str, object
     return validated
 
 
+def _require_receipts_match_pins(receipts: dict[str, dict[str, object]]) -> None:
+    for key in P1_KEYS:
+        pin = P1_PINS[key]
+        receipt = receipts[key]
+        if (
+            receipt["generation"] != pin["generation"]
+            or receipt["size_bytes"] != pin["size_bytes"]
+            or receipt["sha256"] != pin["sha256"]
+        ):
+            raise MetadataError("P1_RECEIPT_PIN_MISMATCH")
+
+
 def _reload_metadata(
     client: Any,
     *,
@@ -260,20 +327,22 @@ def _reload_metadata(
     return generation_i, size_i
 
 
-def _download_complete(
+def _download_bytes(
     client: Any,
     *,
     bucket_name: str,
-    prefix: str,
+    object_name: str,
     generation: int,
     size: int,
+    max_size: int,
     deadline: float,
     clock: Callable[[], float],
+    oversize_reason: str,
+    fail_reason: str,
 ) -> bytes:
-    if size > R6_COMPLETE_MAX_BYTES:
-        raise MetadataError("COMPLETE_OVERSIZE")
+    if size > max_size:
+        raise MetadataError(oversize_reason)
     timeout = _remaining(deadline, clock)
-    object_name = prefix + R6_COMPLETE_NAME
     try:
         blob = client.bucket(bucket_name).blob(object_name, generation=generation)
         content = blob.download_as_bytes(
@@ -287,11 +356,35 @@ def _download_complete(
     except MetadataError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise MetadataError("COMPLETE_DOWNLOAD_FAILED") from exc
+        raise MetadataError(fail_reason) from exc
     _remaining(deadline, clock)
     if not isinstance(content, (bytes, bytearray)) or len(content) != size:
-        raise MetadataError("COMPLETE_DOWNLOAD_FAILED")
+        raise MetadataError(fail_reason)
     return bytes(content)
+
+
+def _download_complete(
+    client: Any,
+    *,
+    bucket_name: str,
+    prefix: str,
+    generation: int,
+    size: int,
+    deadline: float,
+    clock: Callable[[], float],
+) -> bytes:
+    return _download_bytes(
+        client,
+        bucket_name=bucket_name,
+        object_name=prefix + R6_COMPLETE_NAME,
+        generation=generation,
+        size=size,
+        max_size=R6_COMPLETE_MAX_BYTES,
+        deadline=deadline,
+        clock=clock,
+        oversize_reason="COMPLETE_OVERSIZE",
+        fail_reason="COMPLETE_DOWNLOAD_FAILED",
+    )
 
 
 def read_raw_group(
@@ -402,6 +495,249 @@ def read_r6_group(
     }
 
 
+def _validate_manifest_binding_links(manifest: dict[str, Any]) -> None:
+    if manifest.get("schema_version") != "research_input_manifest.v1":
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    if manifest.get("profile") != STUDY_ID:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    if manifest.get("research_input_contract_id") != INPUT_CONTRACT_ID:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    producer = manifest.get("producer")
+    if not isinstance(producer, dict) or producer.get("commit_sha") != PRODUCER_REVISION:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    calendar = manifest.get("calendar")
+    adjustment = manifest.get("adjustment")
+    if not isinstance(calendar, dict) or calendar.get("source_revision") != BINDING_SHA256:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    if not isinstance(adjustment, dict) or adjustment.get("source_revision") != BINDING_SHA256:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    members = manifest.get("members")
+    if not isinstance(members, list) or len(members) != 2:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    by_path: dict[str, dict[str, Any]] = {}
+    for item in members:
+        if not isinstance(item, dict):
+            raise MetadataError("MANIFEST_BINDING_MISMATCH")
+        path = item.get("path")
+        if not isinstance(path, str) or path in by_path:
+            raise MetadataError("MANIFEST_BINDING_MISMATCH")
+        by_path[path] = item
+    if set(by_path) != {"closes.json", "assurance.json"}:
+        raise MetadataError("MANIFEST_BINDING_MISMATCH")
+    for path in ("closes.json", "assurance.json"):
+        pin = P1_PINS[path]
+        item = by_path[path]
+        size = item.get("size_bytes")
+        sha256 = item.get("sha256")
+        if size != pin["size_bytes"] or sha256 != pin["sha256"]:
+            raise MetadataError("MANIFEST_BINDING_MISMATCH")
+
+
+def read_raw_integrity_group(
+    client: Any,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    generation, size = _reload_metadata(
+        client,
+        bucket_name=RAW_BUCKET,
+        object_name=RAW_OBJECT,
+        generation=RAW_GENERATION,
+        expected_generation=RAW_GENERATION,
+        expected_size=RAW_SIZE_BYTES,
+        deadline=deadline,
+        clock=clock,
+        mismatch_reason="RAW_METADATA_MISMATCH",
+        unavailable_reason="RAW_METADATA_UNAVAILABLE",
+    )
+    body = _download_bytes(
+        client,
+        bucket_name=RAW_BUCKET,
+        object_name=RAW_OBJECT,
+        generation=generation,
+        size=size,
+        max_size=RAW_SIZE_BYTES,
+        deadline=deadline,
+        clock=clock,
+        oversize_reason="RAW_OVERSIZE",
+        fail_reason="RAW_DOWNLOAD_FAILED",
+    )
+    digest = _digest(body)
+    if digest != RAW_EXPECTED_SHA256:
+        raise MetadataError("RAW_HASH_MISMATCH")
+    _remaining(deadline, clock)
+    return {
+        "status": "INTEGRITY_MATCHED",
+        "content_hash_verified": True,
+        "generation": generation,
+        "size_bytes": size,
+        "sha256": digest,
+    }
+
+
+def read_r6_integrity_group(
+    client: Any,
+    *,
+    root_uri: str,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    bucket_name, prefix = _parse_root(root_uri)
+    generation, size = _reload_metadata(
+        client,
+        bucket_name=bucket_name,
+        object_name=prefix + R6_COMPLETE_NAME,
+        generation=R6_COMPLETE_GENERATION,
+        expected_generation=R6_COMPLETE_GENERATION,
+        expected_size=R6_COMPLETE_SIZE_BYTES,
+        deadline=deadline,
+        clock=clock,
+        mismatch_reason="COMPLETE_METADATA_MISMATCH",
+        unavailable_reason="COMPLETE_METADATA_UNAVAILABLE",
+    )
+    body = _download_bytes(
+        client,
+        bucket_name=bucket_name,
+        object_name=prefix + R6_COMPLETE_NAME,
+        generation=generation,
+        size=size,
+        max_size=R6_COMPLETE_SIZE_BYTES,
+        deadline=deadline,
+        clock=clock,
+        oversize_reason="COMPLETE_OVERSIZE",
+        fail_reason="COMPLETE_DOWNLOAD_FAILED",
+    )
+    complete_digest = _digest(body)
+    if complete_digest != R6_COMPLETE_SHA256:
+        raise MetadataError("COMPLETE_HASH_MISMATCH")
+    payload = _parse_complete_json(body)
+    identity = _validate_complete_identity(payload)
+    if identity["license_evidence_sha256"] != R6_LICENSE_SHA256:
+        raise MetadataError("COMPLETE_IDENTITY_MISMATCH")
+    if identity["observed_at"] not in {R6_COMPLETE_OBSERVED_AT, "2026-09-26T07:34:09+00:00"}:
+        raise MetadataError("COMPLETE_IDENTITY_MISMATCH")
+    receipts = _validate_p1_receipts(payload)
+    _require_receipts_match_pins(receipts)
+
+    bodies: dict[str, bytes] = {}
+    # Manifest whole-bytes first; binding links are extracted only after that hash.
+    for key in ("manifest.json", "binding.json", "closes.json", "assurance.json"):
+        pin = P1_PINS[key]
+        object_name = prefix + P1_NAME_MAP[key]
+        observed_generation, observed_size = _reload_metadata(
+            client,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            generation=int(pin["generation"]),
+            expected_generation=int(pin["generation"]),
+            expected_size=int(pin["size_bytes"]),
+            deadline=deadline,
+            clock=clock,
+            mismatch_reason="P1_METADATA_MISMATCH",
+            unavailable_reason="P1_METADATA_UNAVAILABLE",
+        )
+        member = _download_bytes(
+            client,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            generation=observed_generation,
+            size=observed_size,
+            max_size=int(pin["size_bytes"]),
+            deadline=deadline,
+            clock=clock,
+            oversize_reason="P1_OVERSIZE",
+            fail_reason="P1_DOWNLOAD_FAILED",
+        )
+        digest = _digest(member)
+        if digest != pin["sha256"]:
+            raise MetadataError("P1_HASH_MISMATCH")
+        bodies[key] = member
+        if key == "manifest.json":
+            try:
+                manifest = json.loads(
+                    member.decode("utf-8"),
+                    object_pairs_hook=_object_pairs_hook,
+                    parse_constant=lambda _c: (_ for _ in ()).throw(
+                        MetadataError("MANIFEST_JSON_INVALID")
+                    ),
+                )
+            except MetadataError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise MetadataError("MANIFEST_JSON_INVALID") from exc
+            if not isinstance(manifest, dict):
+                raise MetadataError("MANIFEST_JSON_INVALID")
+            _validate_manifest_binding_links(manifest)
+
+    if _digest(bodies["binding.json"]) != BINDING_SHA256:
+        raise MetadataError("P1_HASH_MISMATCH")
+    _remaining(deadline, clock)
+    return {
+        "status": "INTEGRITY_MATCHED",
+        "content_hash_verified": True,
+        "completion_identity_authenticated": False,
+        "complete": {
+            "generation": generation,
+            "size_bytes": size,
+            "sha256": complete_digest,
+            "p1_manifest_sha256": P1_MANIFEST_SHA256,
+            "license_evidence_sha256": R6_LICENSE_SHA256,
+            "observed_at": identity["observed_at"],
+            "historical_point_in_time_certified": False,
+        },
+        "p1": {
+            key: {
+                "generation": int(P1_PINS[key]["generation"]),
+                "size_bytes": int(P1_PINS[key]["size_bytes"]),
+                "sha256": str(P1_PINS[key]["sha256"]),
+                "content_hash_verified": True,
+                "body_read": True,
+            }
+            for key in P1_KEYS
+        },
+    }
+
+
+def read_contracts_metadata_group(
+    client: Any,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    contracts: dict[str, object] = {}
+    for name, expected_sha in CONTRACT_SPECS:
+        object_name = RAW_PREFIX + name
+        try:
+            generation, size = _reload_metadata(
+                client,
+                bucket_name=RAW_BUCKET,
+                object_name=object_name,
+                generation=None,
+                expected_generation=None,
+                expected_size=None,
+                deadline=deadline,
+                clock=clock,
+                mismatch_reason="CONTRACT_METADATA_MISMATCH",
+                unavailable_reason="CONTRACT_METADATA_UNAVAILABLE",
+            )
+        except MetadataError:
+            raise
+        if size > P1_MAX_BYTES:
+            raise MetadataError("CONTRACT_OVERSIZE")
+        contracts[name] = {
+            "location_present": True,
+            "generation": generation,
+            "size_bytes": size,
+            "expected_sha256": expected_sha,
+            "expected_sha_status": "unverified",
+            "body_read": False,
+            "content_hash_verified": False,
+        }
+    _remaining(deadline, clock)
+    return {"status": "METADATA_MATCHED", "contracts": contracts}
+
+
 def _lazy_storage_client() -> Any:
     # Force the exact SDK knob before imports/ctor. Caller "false" must not re-enable
     # background bucket metadata GETs; getenv is consulted dynamically per span.
@@ -416,6 +752,19 @@ def _lazy_storage_client() -> Any:
     return storage.Client(project=project, credentials=credentials, _http=session)
 
 
+def _base_result() -> dict[str, object]:
+    return {
+        "status": "BLOCKED",
+        "research_qualification": False,
+        "trading_rights": False,
+        "license_verified": False,
+        "historical_point_in_time_certified": False,
+        "completion_identity_authenticated": False,
+        "content_verified": False,
+        "content_integrity_verified": False,
+    }
+
+
 def run_metadata_read(
     *,
     client: Any | None = None,
@@ -428,10 +777,7 @@ def run_metadata_read(
     deadline = started + budget_s
     mono = clock or time.monotonic
     result: dict[str, object] = {
-        "status": "BLOCKED",
-        "research_qualification": False,
-        "trading_rights": False,
-        "content_verified": False,
+        **_base_result(),
         "raw": None,
         "r6": None,
     }
@@ -499,17 +845,118 @@ def run_metadata_read(
     return 2, result
 
 
+def run_integrity_read(
+    *,
+    client: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    root: str | None = None,
+    budget_s: float = OVERALL_BUDGET_S,
+    create_client: Callable[[], Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    started = (clock or time.monotonic)()
+    deadline = started + budget_s
+    mono = clock or time.monotonic
+    result: dict[str, object] = {
+        **_base_result(),
+        "raw": None,
+        "r6": None,
+        "contracts": None,
+    }
+    try:
+        _require_actions_identity()
+        if client is None:
+            factory = create_client or _lazy_storage_client
+            client = factory()
+    except MetadataError as exc:
+        result["reason_class"] = exc.reason_class
+        return 2, result
+    except Exception:  # noqa: BLE001
+        result["reason_class"] = "CLIENT_UNAVAILABLE"
+        return 2, result
+
+    root_uri = root if root is not None else os.environ.get(ROOT_ENV, "")
+    raw_error: str | None = None
+    r6_error: str | None = None
+    contracts_error: str | None = None
+
+    try:
+        _remaining(deadline, mono)
+        result["raw"] = read_raw_integrity_group(client, deadline=deadline, clock=mono)
+        _remaining(deadline, mono)
+    except MetadataError as exc:
+        raw_error = exc.reason_class
+        result["raw"] = {"status": "BLOCKED", "reason_class": raw_error}
+    except Exception:  # noqa: BLE001
+        raw_error = "RAW_METADATA_UNAVAILABLE"
+        result["raw"] = {"status": "BLOCKED", "reason_class": raw_error}
+
+    try:
+        _remaining(deadline, mono)
+        if not isinstance(root_uri, str) or not root_uri:
+            raise MetadataError("ROOT_MISMATCH")
+        _parse_root(root_uri)
+        result["r6"] = read_r6_integrity_group(
+            client,
+            root_uri=root_uri,
+            deadline=deadline,
+            clock=mono,
+        )
+        _remaining(deadline, mono)
+    except MetadataError as exc:
+        r6_error = exc.reason_class
+        result["r6"] = {"status": "BLOCKED", "reason_class": r6_error}
+    except Exception:  # noqa: BLE001
+        r6_error = "COMPLETE_METADATA_UNAVAILABLE"
+        result["r6"] = {"status": "BLOCKED", "reason_class": r6_error}
+
+    try:
+        _remaining(deadline, mono)
+        result["contracts"] = read_contracts_metadata_group(
+            client, deadline=deadline, clock=mono
+        )
+        _remaining(deadline, mono)
+    except MetadataError as exc:
+        contracts_error = exc.reason_class
+        result["contracts"] = {"status": "BLOCKED", "reason_class": contracts_error}
+    except Exception:  # noqa: BLE001
+        contracts_error = "CONTRACT_METADATA_UNAVAILABLE"
+        result["contracts"] = {"status": "BLOCKED", "reason_class": contracts_error}
+
+    if raw_error is None and r6_error is None and contracts_error is None:
+        try:
+            _remaining(deadline, mono)
+        except MetadataError as exc:
+            result["status"] = "BLOCKED"
+            result["reason_class"] = exc.reason_class
+            return 2, result
+        result["status"] = "INTEGRITY_READY"
+        result["content_integrity_verified"] = True
+        return 0, result
+
+    result["status"] = "BLOCKED"
+    # Incomplete contracts keep overall BLOCKED even when RAW/P1 integrity matched.
+    errors = [code for code in (raw_error, r6_error, contracts_error) if code]
+    if len(errors) > 1:
+        result["reason_class"] = "GROUP_MISMATCH"
+    else:
+        result["reason_class"] = errors[0]
+    if raw_error is None and r6_error is None:
+        result["content_integrity_verified"] = False
+    return 2, result
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if argv == ["--integrity-only"]:
+        code, payload = run_integrity_read()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return code
     if argv:
         # Root/URI must come from the protected env, never argv.
         payload = {
-            "status": "BLOCKED",
+            **_base_result(),
             "reason_class": "ARGV_REFUSED",
-            "research_qualification": False,
-            "trading_rights": False,
-            "content_verified": False,
         }
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return 2
