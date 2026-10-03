@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,8 @@ import requests
 import urllib3
 
 from scripts import read_research_input_archive_metadata as reader
+
+UTC = timezone.utc
 
 WORKFLOW = Path(".github/workflows/soxl-v7-r6-twelve-single-source.yml")
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -754,24 +757,28 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         "          - contracts_only\n"
         "          - materialized_identity_only\n"
         "          - raw_manifest_projection_only\n"
+        "          - raw_members_integrity_only\n"
     ) in raw
     research_marker = "  r6-research:\n"
     meta_marker = "  research-input-archive-metadata:\n"
     integrity_marker = "  research-input-archive-integrity:\n"
     contracts_marker = "  research-input-archive-contracts:\n"
     projection_marker = "  research-input-archive-raw-manifest-projection:\n"
+    members_marker = "  research-input-archive-raw-members-integrity:\n"
     materialized_marker = "  research-input-archive-materialized-identity:\n"
     assert research_marker in raw
     assert meta_marker in raw
     assert integrity_marker in raw
     assert contracts_marker in raw
     assert projection_marker in raw
+    assert members_marker in raw
     assert materialized_marker in raw
     research_start = raw.index(research_marker)
     meta_start = raw.index(meta_marker)
     integrity_start = raw.index(integrity_marker)
     contracts_start = raw.index(contracts_marker)
     projection_start = raw.index(projection_marker)
+    members_start = raw.index(members_marker)
     materialized_start = raw.index(materialized_marker)
     assert (
         research_start
@@ -779,25 +786,29 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         < integrity_start
         < contracts_start
         < projection_start
+        < members_start
         < materialized_start
     )
     research_block = raw[research_start:meta_start]
     meta_block = raw[meta_start:integrity_start]
     integrity_block = raw[integrity_start:contracts_start]
     contracts_block = raw[contracts_start:projection_start]
-    projection_block = raw[projection_start:materialized_start]
+    projection_block = raw[projection_start:members_start]
+    members_block = raw[members_start:materialized_start]
     materialized_block = raw[materialized_start:]
     assert "    if: ${{ inputs.mode == 'preflight' || inputs.mode == 'execute' }}\n" in research_block
     assert "    if: ${{ inputs.mode == 'metadata_only' }}\n" in meta_block
     assert "    if: ${{ inputs.mode == 'integrity_only' }}\n" in integrity_block
     assert "    if: ${{ inputs.mode == 'contracts_only' }}\n" in contracts_block
     assert "    if: ${{ inputs.mode == 'raw_manifest_projection_only' }}\n" in projection_block
+    assert "    if: ${{ inputs.mode == 'raw_members_integrity_only' }}\n" in members_block
     assert "    if: ${{ inputs.mode == 'materialized_identity_only' }}\n" in materialized_block
     assert "environment: market-data-nonlive" in research_block
     assert "environment: market-data-nonlive" in meta_block
     assert "environment: market-data-nonlive" in integrity_block
     assert "environment: market-data-nonlive" in contracts_block
     assert "environment: market-data-nonlive" in projection_block
+    assert "environment: market-data-nonlive" in members_block
     assert "environment: market-data-nonlive" in materialized_block
     assert "timeout-minutes: 20" in materialized_block
     assert "cancel-in-progress: false" in raw
@@ -806,6 +817,7 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         integrity_block,
         contracts_block,
         projection_block,
+        members_block,
         materialized_block,
     ):
         assert "TWELVE_DATA_API_KEY" not in block
@@ -816,12 +828,25 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
     assert "SOXL_V7_R6_PRIVATE_ROOT" not in contracts_block
     assert "SOXL_V7_R6_PRIVATE_ROOT" not in projection_block
+    assert "SOXL_V7_R6_PRIVATE_ROOT" not in members_block
     assert "--raw-manifest-projection-only" in projection_block
     assert "timeout 30s" in projection_block
+    assert "--raw-members-integrity-only" in members_block
+    assert "timeout 60s" in members_block
+    assert '"raw_member_content_integrity_verified":false' in members_block
+    assert '"license_verified":false' in members_block
+    assert '"historical_point_in_time_certified":false' in members_block
+    assert '"completion_identity_authenticated":false' in members_block
+    assert '"content_integrity_verified":false' in members_block
+    assert '"member_body_read":null' in members_block
+    assert '"observed_get_count":null' in members_block
+    assert '"observed_transfer_bytes":null' in members_block
+    assert '"observed_transfer_bytes_is_lower_bound":null' in members_block
     assert "UsEquityStrategies" not in meta_block
     assert "UsEquityStrategies" not in integrity_block
     assert "UsEquityStrategies" not in contracts_block
     assert "UsEquityStrategies" not in projection_block
+    assert "UsEquityStrategies" not in members_block
     assert "git fetch --no-tags --depth=1 origin ${LEGACY_SHA}" in materialized_block
     assert 'LEGACY_SHA="0ae8ac4eb886431f9f9695702d9dd60982919dae"' in materialized_block
     assert "timeout --kill-after=10s 300s" in materialized_block
@@ -2976,3 +3001,626 @@ def test_raw_manifest_projection_cli_guards(
     assert reader.main(["--raw-manifest-projection-only", "extra"]) == 2
     out = json.loads(capsys.readouterr().out)
     assert out["reason_class"] == "ARGV_REFUSED"
+
+
+def _json_exact(payload: dict[str, Any], size: int) -> bytes:
+    data = dict(payload)
+    data["pad"] = ""
+    for _ in range(12):
+        raw = json.dumps(
+            data, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+        if len(raw) == size:
+            return raw
+        if len(raw) > size:
+            raise AssertionError(f"payload {len(raw)} exceeds target {size}")
+        data["pad"] = "x" * (size - len(raw) + len(data["pad"]))
+    raise AssertionError("unable to pad json")
+
+
+def _member_bars_bundle(
+    symbol: str, count: int, size: int
+) -> tuple[bytes, str | None, str | None]:
+    start = datetime.fromisoformat(reader.RAW_BAR_WINDOWS[symbol])
+    bars: list[dict[str, Any]] = []
+    first: str | None = None
+    last: str | None = None
+    for index in range(count):
+        current = (start + timedelta(days=index)).astimezone(UTC)
+        assert current < reader.RAW_BAR_END_EXCLUSIVE
+        stamp = current.isoformat().replace("+00:00", "Z")
+        bars.append(
+            {
+                "t": stamp,
+                "o": 1.0,
+                "h": 2.0,
+                "l": 0.5,
+                "c": 1.5,
+                "v": 0.0 if index == 0 else 1.0,
+                "provider_extra": True,
+            }
+        )
+        first = first or stamp
+        last = stamp
+    body = _json_exact(
+        {"symbol": symbol, "bars": bars, "next_page_token": None}, size
+    )
+    return body, first, last
+
+
+def _member_actions_bundle(symbol: str, count: int, size: int) -> bytes:
+    events = [{"symbol": symbol if index % 2 == 0 else None} for index in range(count)]
+    actions: dict[str, list[dict[str, Any]]] = {}
+    if count:
+        actions["cash_dividends"] = events
+    return _json_exact(
+        {"corporate_actions": actions, "next_page_token": ""}, size
+    )
+
+
+def _members_integrity_fixture(
+    *,
+    pins: dict[tuple[str, str], dict[str, int]] | None = None,
+    mutate_manifest: Callable[[dict[str, Any]], None] | None = None,
+    mutate_member: Callable[[str, str, dict[str, Any]], None] | None = None,
+) -> tuple[bytes, dict[tuple[str, str], dict[str, Any]], dict[tuple[str, str], dict[str, int]]]:
+    active_pins = pins if pins is not None else dict(reader.RAW_MEMBER_PINS)
+    member_store: dict[tuple[str, str], dict[str, Any]] = {}
+    inputs: list[dict[str, Any]] = []
+    gen = 1790338100000000
+    for symbol in reader.RAW_MANIFEST_SYMBOLS:
+        for kind in reader.RAW_MANIFEST_KINDS:
+            pin = active_pins[(symbol, kind)]
+            gen += 1
+            if kind == "bars":
+                body, first, last = _member_bars_bundle(
+                    symbol, pin["count"], pin["bytes"]
+                )
+            else:
+                body = _member_actions_bundle(symbol, pin["count"], pin["bytes"])
+                first = last = None
+            if mutate_member is not None:
+                payload = json.loads(body.decode("utf-8"))
+                mutate_member(symbol, kind, payload)
+                body = _json_exact(payload, pin["bytes"])
+            page = {
+                "uri": (
+                    f"gs://{reader.RAW_BUCKET}/{reader.RAW_PREFIX}"
+                    f"{kind}/{symbol}/page-001.json"
+                ),
+                "generation": str(gen),
+                "bytes": pin["bytes"],
+                "sha256": _sha(body),
+            }
+            inputs.append(
+                {
+                    "symbol": symbol,
+                    "kind": kind,
+                    "request": {"symbol": symbol, "kind": kind, "canary": "hide-me"},
+                    "count": pin["count"],
+                    "first_bar_time": first,
+                    "last_bar_time": last,
+                    "pages": [page],
+                    "complete_pagination": True,
+                }
+            )
+            member_store[(symbol, kind)] = {
+                "generation": gen,
+                "size": pin["bytes"],
+                "body": body,
+                "object_name": f"{reader.RAW_PREFIX}{kind}/{symbol}/page-001.json",
+            }
+    manifest = {
+        "schema_version": reader.RAW_MANIFEST_SCHEMA,
+        "retrieved_at": "2026-09-25T12:00:00Z",
+        "source": reader.RAW_MANIFEST_SOURCE,
+        "feed": reader.RAW_MANIFEST_FEED,
+        "price_adjustment": reader.RAW_MANIFEST_PRICE_ADJUSTMENT,
+        "calendar": reader.RAW_MANIFEST_CALENDAR,
+        "timezone": reader.RAW_MANIFEST_TIMEZONE,
+        "currency": reader.RAW_MANIFEST_CURRENCY,
+        "license_retention": reader.RAW_MANIFEST_LICENSE_RETENTION,
+        "scope": reader.RAW_PREFIX,
+        "write_probe": {
+            "uri": f"gs://{reader.RAW_BUCKET}/{reader.RAW_PREFIX}_write_probe.json",
+            "generation": "1790338000000000",
+            "bytes": 120,
+            "sha256": "a" * 64,
+        },
+        "inputs": inputs,
+        "provider_page_requests": 12,
+        "provider_response_bytes": 4096,
+        "bar_timestamp_meaning": reader.RAW_MANIFEST_BAR_TIMESTAMP_MEANING,
+        "corporate_action_limitation": reader.RAW_MANIFEST_CORPORATE_ACTION_LIMITATION,
+        "no_order": True,
+        "research_only": True,
+        "execution_authorized": False,
+    }
+    if mutate_manifest is not None:
+        mutate_manifest(manifest)
+    manifest_body = json.dumps(
+        manifest, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return manifest_body, member_store, active_pins
+
+
+def _members_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", reader.ALLOWED_REPOSITORY)
+    monkeypatch.delenv(reader.ROOT_ENV, raising=False)
+
+
+def _patch_members_pins(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    manifest_body: bytes,
+    pins: dict[tuple[str, str], dict[str, int]],
+) -> None:
+    declared = sum(pin["bytes"] for pin in pins.values())
+    monkeypatch.setattr(reader, "RAW_SIZE_BYTES", len(manifest_body))
+    monkeypatch.setattr(reader, "RAW_EXPECTED_SHA256", _sha(manifest_body))
+    monkeypatch.setattr(reader, "RAW_MEMBER_PINS", pins)
+    monkeypatch.setattr(reader, "RAW_MEMBERS_DECLARED_BYTES", declared)
+    monkeypatch.setattr(
+        reader, "RAW_MEMBERS_TOTAL_BYTES", len(manifest_body) + declared
+    )
+
+
+def _members_store(
+    manifest_body: bytes, member_store: dict[tuple[str, str], dict[str, Any]]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    store: dict[tuple[str, str], dict[str, Any]] = {
+        (reader.RAW_BUCKET, reader.RAW_OBJECT): {
+            "generation": reader.RAW_GENERATION,
+            "size": len(manifest_body),
+            "body": manifest_body,
+        }
+    }
+    for spec in member_store.values():
+        store[(reader.RAW_BUCKET, spec["object_name"])] = {
+            "generation": spec["generation"],
+            "size": spec["size"],
+            "body": spec["body"],
+        }
+    return store
+
+
+def test_raw_members_integrity_ready_exact_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+    assert reader.RAW_SIZE_BYTES == 7580
+    assert reader.RAW_MEMBERS_DECLARED_BYTES == 518601
+    assert reader.RAW_MEMBERS_TOTAL_BYTES == 526181
+    assert reader.RAW_MEMBERS_MAX_GETS == 26
+    assert reader.RAW_MEMBERS_BUDGET_S == 60.0
+    assert sum(pin["bytes"] for pin in reader.RAW_MEMBER_PINS.values()) == 518601
+    manifest_body, member_store, pins = _members_integrity_fixture()
+    assert sum(pin["bytes"] for pin in pins.values()) == 518601
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    client = FakeClient(_members_store(manifest_body, member_store))
+    code, payload = reader.run_raw_members_integrity_read(client=client, budget_s=60.0)
+    assert code == 0
+    assert payload["status"] == "RAW_MEMBERS_INTEGRITY_READY"
+    assert payload["raw_member_content_integrity_verified"] is True
+    assert payload["member_body_read"] is True
+    assert payload["member_content_verified"] is False
+    assert payload["content_integrity_verified"] is False
+    assert payload["content_verified"] is False
+    assert payload["research_qualification"] is False
+    assert payload["observed_get_count"] == 26
+    assert payload["observed_transfer_bytes"] == len(manifest_body) + 518601
+    assert payload["budget"]["max_get_count"] == 26
+    assert payload["budget"]["timeout_s"] == 60
+    assert payload["budget"]["planned_member_bytes"] == 518601
+    assert len(payload["inputs"]) == 12
+    assert all(item["body_shape_verified"] is True for item in payload["inputs"])
+    reloads = [e for e in client.events if e[0] == "reload"]
+    downloads = [e for e in client.events if e[0] == "download"]
+    assert len(reloads) == 13
+    assert len(downloads) == 13
+    text = json.dumps(payload)
+    assert "gs://" not in text
+    assert reader.RAW_PREFIX not in text
+    assert "hide-me" not in text
+    assert "canary" not in text
+
+
+def test_raw_members_integrity_manifest_errors_zero_member_gets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+
+    def bad_pin(manifest: dict[str, Any]) -> None:
+        manifest["inputs"][0]["pages"][0]["bytes"] = (
+            int(manifest["inputs"][0]["pages"][0]["bytes"]) + 1
+        )
+
+    manifest_body, member_store, pins = _members_integrity_fixture(
+        mutate_manifest=bad_pin
+    )
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    client = FakeClient(_members_store(manifest_body, member_store))
+    code, payload = reader.run_raw_members_integrity_read(client=client)
+    assert code == 2
+    assert payload["reason_class"] == "RAW_MEMBER_PIN_MISMATCH"
+    assert payload["observed_get_count"] == 2
+    assert payload["raw_member_content_integrity_verified"] is False
+    assert len([e for e in client.events if e[0] == "download"]) == 1
+
+
+def test_raw_members_integrity_member_failures_and_shortcircuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+    small = {
+        (symbol, kind): {"count": 1 if kind == "bars" else 0, "bytes": 180}
+        for symbol in reader.RAW_MANIFEST_SYMBOLS
+        for kind in reader.RAW_MANIFEST_KINDS
+    }
+    small[("QQQM", "bars")] = {"count": 2, "bytes": 260}
+    manifest_body, member_store, pins = _members_integrity_fixture(pins=small)
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+
+    # Wrong generation: first member metadata fails; no further member objects.
+    store = _members_store(manifest_body, member_store)
+    first_obj = member_store[("QQQM", "bars")]["object_name"]
+    store[(reader.RAW_BUCKET, first_obj)]["generation"] = 1
+    client = FakeClient(store)
+    code, payload = reader.run_raw_members_integrity_read(client=client)
+    assert code == 2
+    assert payload["reason_class"] == "RAW_MEMBER_METADATA_MISMATCH"
+    assert payload["observed_get_count"] == 3
+    assert len([e for e in client.events if e[0] == "download"]) == 1
+
+    # Hash mismatch after body read.
+    manifest_body, member_store, pins = _members_integrity_fixture(pins=small)
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    store = _members_store(manifest_body, member_store)
+    store[(reader.RAW_BUCKET, member_store[("QQQM", "bars")]["object_name"])]["body"] = (
+        b"y" * pins[("QQQM", "bars")]["bytes"]
+    )
+    client = FakeClient(store)
+    code, payload = reader.run_raw_members_integrity_read(client=client)
+    assert payload["reason_class"] == "RAW_MEMBER_HASH_MISMATCH"
+    assert payload["inputs"][0]["member_body_read"] is True
+    assert payload["raw_member_content_integrity_verified"] is False
+
+    def bad_order(_symbol: str, kind: str, payload: dict[str, Any]) -> None:
+        if kind != "bars":
+            return
+        payload["bars"] = list(reversed(payload["bars"]))
+
+    manifest_body, member_store, pins = _members_integrity_fixture(
+        pins=small, mutate_member=bad_order
+    )
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    code, payload = reader.run_raw_members_integrity_read(
+        client=FakeClient(_members_store(manifest_body, member_store))
+    )
+    assert payload["reason_class"] == "RAW_MEMBER_BODY_INVALID"
+
+    def bad_token(_symbol: str, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "bars":
+            payload["next_page_token"] = "more"
+
+    manifest_body, member_store, pins = _members_integrity_fixture(
+        pins=small, mutate_member=bad_token
+    )
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    code, payload = reader.run_raw_members_integrity_read(
+        client=FakeClient(_members_store(manifest_body, member_store))
+    )
+    assert payload["reason_class"] == "RAW_MEMBER_BODY_INVALID"
+
+
+def test_raw_members_integrity_empty_actions_zero_volume_and_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+    pins = {
+        (symbol, kind): {
+            "count": 1 if kind == "bars" else 0,
+            "bytes": 200 if kind == "bars" else 120,
+        }
+        for symbol in reader.RAW_MANIFEST_SYMBOLS
+        for kind in reader.RAW_MANIFEST_KINDS
+    }
+
+    def token_variants(symbol: str, kind: str, payload: dict[str, Any]) -> None:
+        if symbol == "QQQM" and kind == "actions":
+            payload.pop("next_page_token", None)
+        elif symbol == "BOXX" and kind == "actions":
+            payload["next_page_token"] = None
+        elif symbol == "SOXL" and kind == "actions":
+            payload["next_page_token"] = ""
+
+    manifest_body, member_store, active = _members_integrity_fixture(
+        pins=pins, mutate_member=token_variants
+    )
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=active)
+    code, payload = reader.run_raw_members_integrity_read(
+        client=FakeClient(_members_store(manifest_body, member_store))
+    )
+    assert code == 0
+    assert payload["raw_member_content_integrity_verified"] is True
+    actions = [row for row in payload["inputs"] if row["kind"] == "actions"]
+    assert all(row["expected_count"] == 0 and row["count_matched"] for row in actions)
+
+
+def test_raw_members_integrity_deadline_and_canary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _members_actions(monkeypatch)
+    small = {
+        (symbol, kind): {"count": 1 if kind == "bars" else 0, "bytes": 160}
+        for symbol in reader.RAW_MANIFEST_SYMBOLS
+        for kind in reader.RAW_MANIFEST_KINDS
+    }
+    manifest_body, member_store, pins = _members_integrity_fixture(pins=small)
+    _patch_members_pins(monkeypatch, manifest_body=manifest_body, pins=pins)
+    clock = MutableClock(0.0)
+
+    class CountingClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            clock.now += 10.0
+            return super().bucket(name)
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=CountingClient(_members_store(manifest_body, member_store)),
+        clock=clock,
+        budget_s=25.0,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+    assert payload["budget"]["timeout_s"] == 60
+    assert payload["observed_get_count"] < 26
+
+    class BoomClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            raise RuntimeError("secret-token gs://leak/path request=hide")
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=BoomClient(_members_store(manifest_body, member_store))
+    )
+    assert code == 2
+    text = json.dumps(payload)
+    assert "secret-token" not in text
+    assert "gs://" not in text
+    assert "hide" not in text
+    assert payload["reason_class"] in {
+        "CLIENT_UNAVAILABLE",
+        "RAW_METADATA_UNAVAILABLE",
+        "RAW_MEMBER_METADATA_UNAVAILABLE",
+    }
+
+    assert reader.main(["--raw-members-integrity-only", "x"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ARGV_REFUSED"
+
+
+def test_raw_members_integrity_sdk_boundary_counting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+    small = {
+        (symbol, kind): {"count": 1 if kind == "bars" else 0, "bytes": 400}
+        for symbol in reader.RAW_MANIFEST_SYMBOLS
+        for kind in reader.RAW_MANIFEST_KINDS
+    }
+    manifest_body, member_store, pins = _members_integrity_fixture(pins=small)
+    # Keep synthetic sizes explicit for the Astra counterexamples.
+    monkeypatch.setattr(reader, "RAW_SIZE_BYTES", len(manifest_body))
+    monkeypatch.setattr(reader, "RAW_EXPECTED_SHA256", _sha(manifest_body))
+    monkeypatch.setattr(reader, "RAW_MEMBER_PINS", pins)
+    declared = sum(pin["bytes"] for pin in pins.values())
+    monkeypatch.setattr(reader, "RAW_MEMBERS_DECLARED_BYTES", declared)
+
+    # Client/bucket construction failure before any SDK object method: 0 GET.
+    class NoBucketClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            raise RuntimeError("construct-fail")
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=NoBucketClient(_members_store(manifest_body, member_store))
+    )
+    assert code == 2
+    assert payload["observed_get_count"] == 0
+    assert payload["observed_transfer_bytes"] == 0
+    assert payload["member_body_read"] is False
+    assert payload["observed_transfer_bytes_is_lower_bound"] is False
+
+    # Manifest metadata mismatch: 1 GET / 0 bytes.
+    store = _members_store(manifest_body, member_store)
+    store[(reader.RAW_BUCKET, reader.RAW_OBJECT)]["generation"] = 1
+    code, payload = reader.run_raw_members_integrity_read(client=FakeClient(store))
+    assert payload["reason_class"] == "RAW_METADATA_MISMATCH"
+    assert payload["observed_get_count"] == 1
+    assert payload["observed_transfer_bytes"] == 0
+    assert payload["member_body_read"] is False
+
+    # Manifest hash mismatch: 2 GET / full manifest bytes.
+    store = _members_store(manifest_body, member_store)
+    store[(reader.RAW_BUCKET, reader.RAW_OBJECT)]["body"] = b"z" * len(manifest_body)
+    code, payload = reader.run_raw_members_integrity_read(client=FakeClient(store))
+    assert payload["reason_class"] == "RAW_HASH_MISMATCH"
+    assert payload["observed_get_count"] == 2
+    assert payload["observed_transfer_bytes"] == len(manifest_body)
+    assert payload["member_body_read"] is False
+
+    # Deadline after manifest download returns: still 2 GET / manifest bytes.
+    clock = MutableClock(0.0)
+    store = _members_store(manifest_body, member_store)
+
+    class LateManifestDeadline(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            bucket = super().bucket(name)
+
+            class LateBlob(FakeBlob):
+                def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+                    body = super().download_as_bytes(**kwargs)
+                    clock.now = 100.0
+                    return body
+
+            original_blob = bucket.blob
+
+            def _blob(object_name: str, *, generation: int | None = None) -> FakeBlob:
+                blob = original_blob(object_name, generation=generation)
+                late = LateBlob(
+                    blob.store, blob.bucket, blob.name, blob.generation, blob.events
+                )
+                return late
+
+            bucket.blob = _blob  # type: ignore[method-assign]
+            return bucket
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=LateManifestDeadline(store), clock=clock, budget_s=30.0
+    )
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+    assert payload["observed_get_count"] == 2
+    assert payload["observed_transfer_bytes"] == len(manifest_body)
+    assert payload["member_body_read"] is False
+
+    # First member metadata then deadline: 3 GET / manifest bytes only.
+    clock = MutableClock(0.0)
+    store = _members_store(manifest_body, member_store)
+    first_obj = member_store[("QQQM", "bars")]["object_name"]
+
+    class LateMemberMeta(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            bucket = super().bucket(name)
+            original_blob = bucket.blob
+
+            def _blob(object_name: str, *, generation: int | None = None) -> FakeBlob:
+                blob = original_blob(object_name, generation=generation)
+
+                class MetaBlob(FakeBlob):
+                    def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+                        super().reload(**kwargs)
+                        if self.name == first_obj:
+                            clock.now = 100.0
+
+                return MetaBlob(
+                    blob.store, blob.bucket, blob.name, blob.generation, blob.events
+                )
+
+            bucket.blob = _blob  # type: ignore[method-assign]
+            return bucket
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=LateMemberMeta(store), clock=clock, budget_s=30.0
+    )
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+    assert payload["observed_get_count"] == 3
+    assert payload["observed_transfer_bytes"] == len(manifest_body)
+    assert payload["member_body_read"] is False
+    assert payload["inputs"][0]["member_body_read"] is False
+
+    # First member body returns then deadline: 4 GET / manifest+member bytes / body_read.
+    clock = MutableClock(0.0)
+    store = _members_store(manifest_body, member_store)
+
+    class LateMemberBody(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            bucket = super().bucket(name)
+            original_blob = bucket.blob
+
+            def _blob(object_name: str, *, generation: int | None = None) -> FakeBlob:
+                blob = original_blob(object_name, generation=generation)
+
+                class BodyBlob(FakeBlob):
+                    def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+                        body = super().download_as_bytes(**kwargs)
+                        if self.name == first_obj:
+                            clock.now = 100.0
+                        return body
+
+                return BodyBlob(
+                    blob.store, blob.bucket, blob.name, blob.generation, blob.events
+                )
+
+            bucket.blob = _blob  # type: ignore[method-assign]
+            return bucket
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=LateMemberBody(store), clock=clock, budget_s=30.0
+    )
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+    assert payload["observed_get_count"] == 4
+    assert payload["observed_transfer_bytes"] == len(manifest_body) + pins[
+        ("QQQM", "bars")
+    ]["bytes"]
+    assert payload["member_body_read"] is True
+    assert payload["inputs"][0]["member_body_read"] is True
+
+    # Short member body: count returned 1B and body_read true before length fail.
+    store = _members_store(manifest_body, member_store)
+    store[(reader.RAW_BUCKET, first_obj)]["body"] = b"x"
+    store[(reader.RAW_BUCKET, first_obj)]["size"] = pins[("QQQM", "bars")]["bytes"]
+    code, payload = reader.run_raw_members_integrity_read(client=FakeClient(store))
+    assert payload["reason_class"] == "RAW_MEMBER_DOWNLOAD_FAILED"
+    assert payload["observed_get_count"] == 4
+    assert payload["observed_transfer_bytes"] == len(manifest_body) + 1
+    assert payload["member_body_read"] is True
+    assert payload["inputs"][0]["member_body_read"] is True
+    assert payload["observed_transfer_bytes_is_lower_bound"] is False
+
+    # SDK exception after download attempt: GET counted, bytes lower-bound unknown.
+    class ExplodingDownload(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            bucket = super().bucket(name)
+            original_blob = bucket.blob
+
+            def _blob(object_name: str, *, generation: int | None = None) -> FakeBlob:
+                blob = original_blob(object_name, generation=generation)
+
+                class BoomBlob(FakeBlob):
+                    def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+                        if self.name == first_obj:
+                            raise RuntimeError("transport-blown")
+                        return super().download_as_bytes(**kwargs)
+
+                return BoomBlob(
+                    blob.store, blob.bucket, blob.name, blob.generation, blob.events
+                )
+
+            bucket.blob = _blob  # type: ignore[method-assign]
+            return bucket
+
+    code, payload = reader.run_raw_members_integrity_read(
+        client=ExplodingDownload(_members_store(manifest_body, member_store))
+    )
+    assert payload["reason_class"] == "RAW_MEMBER_DOWNLOAD_FAILED"
+    assert payload["observed_get_count"] == 4
+    assert payload["observed_transfer_bytes"] == len(manifest_body)
+    assert payload["observed_transfer_bytes_is_lower_bound"] is True
+    assert payload["inputs"][0]["member_body_read"] is False
+
+    # Later member failure keeps earlier verified rows.
+    store = _members_store(manifest_body, member_store)
+    second_obj = member_store[("QQQM", "actions")]["object_name"]
+    store[(reader.RAW_BUCKET, second_obj)]["generation"] = 1
+    code, payload = reader.run_raw_members_integrity_read(client=FakeClient(store))
+    assert payload["reason_class"] == "RAW_MEMBER_METADATA_MISMATCH"
+    assert payload["inputs"][0]["body_shape_verified"] is True
+    assert payload["inputs"][0]["hash_matched"] is True
+    assert payload["inputs"][0]["member_body_read"] is True
+    assert payload["inputs"][1]["member_body_read"] is False
+    assert payload["raw_member_content_integrity_verified"] is False
+
+
+def test_raw_members_integrity_create_client_failure_zero_gets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _members_actions(monkeypatch)
+
+    def boom() -> Any:
+        raise RuntimeError("no-client")
+
+    code, payload = reader.run_raw_members_integrity_read(create_client=boom)
+    assert code == 2
+    assert payload["reason_class"] == "CLIENT_UNAVAILABLE"
+    assert payload["observed_get_count"] == 0
+    assert payload["observed_transfer_bytes"] == 0
+    assert payload["member_body_read"] is False

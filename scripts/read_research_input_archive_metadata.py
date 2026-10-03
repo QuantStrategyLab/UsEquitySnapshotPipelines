@@ -6,6 +6,7 @@ contract metadata observations.
 contracts_only: fixed-generation whole-byte hashes for the three RAW-prefix contracts.
 materialized_identity_only: fixed P1 bytes + legacy-lock worker identity check.
 raw_manifest_projection_only: fixed RAW manifest bytes + closed public projection.
+raw_members_integrity_only: fixed RAW manifest + 12 member whole-byte integrity.
 No provider calls, listing, uploads, body dumps, or research qualification claims.
 """
 
@@ -20,11 +21,12 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+UTC = timezone.utc
 OVERALL_BUDGET_S = 30.0
 ROOT_ENV = "SOXL_V7_R6_PRIVATE_ROOT"
 ROOT_SHA256 = "274610e59a8d654b412af9155ee4c3bd59b90a53fc5f8bbc56091d346f60070c"
@@ -98,6 +100,53 @@ RAW_MANIFEST_INPUT_FIELD_KEYS = frozenset(
 RAW_MANIFEST_PAGE_KEYS = frozenset({"uri", "generation", "bytes", "sha256"})
 RAW_MANIFEST_PROBE_KEYS = frozenset({"uri", "generation", "bytes", "sha256"})
 RAW_DIGITS = re.compile(r"^[1-9][0-9]*$")
+RAW_MEMBERS_BUDGET_S = 60.0
+RAW_MEMBERS_MAX_GETS = 26
+RAW_MEMBERS_DECLARED_BYTES = 518601
+RAW_MEMBERS_TOTAL_BYTES = RAW_SIZE_BYTES + RAW_MEMBERS_DECLARED_BYTES
+RAW_BAR_END_EXCLUSIVE = datetime.fromisoformat("2025-01-01T00:00:00-05:00").astimezone(UTC)
+RAW_BAR_WINDOWS: dict[str, str] = {
+    "QQQM": "2020-10-13T00:00:00-04:00",
+    "BOXX": "2022-12-28T00:00:00-05:00",
+    "SOXL": "2022-01-03T00:00:00-05:00",
+    "SOXX": "2022-01-03T00:00:00-05:00",
+    "TQQQ": "2022-01-03T00:00:00-05:00",
+    "QQQ": "2022-01-03T00:00:00-05:00",
+}
+RAW_ACTION_TYPES = frozenset(
+    {
+        "capital_gains_distributions",
+        "cash_dividends",
+        "cash_mergers",
+        "forward_splits",
+        "name_changes",
+        "partial_calls",
+        "redemptions",
+        "reorganizations",
+        "reverse_splits",
+        "rights_distributions",
+        "spin_offs",
+        "stock_and_cash_mergers",
+        "stock_dividends",
+        "stock_mergers",
+        "unit_splits",
+        "worthless_removals",
+    }
+)
+RAW_MEMBER_PINS: dict[tuple[str, str], dict[str, int]] = {
+    ("QQQM", "bars"): {"count": 1061, "bytes": 116420},
+    ("QQQM", "actions"): {"count": 17, "bytes": 4057},
+    ("BOXX", "bars"): {"count": 505, "bytes": 54588},
+    ("BOXX", "actions"): {"count": 1, "bytes": 300},
+    ("SOXL", "bars"): {"count": 753, "bytes": 81245},
+    ("SOXL", "actions"): {"count": 12, "bytes": 2881},
+    ("SOXX", "bars"): {"count": 753, "bytes": 82976},
+    ("SOXX", "actions"): {"count": 14, "bytes": 3402},
+    ("TQQQ", "bars"): {"count": 753, "bytes": 81863},
+    ("TQQQ", "actions"): {"count": 10, "bytes": 2461},
+    ("QQQ", "bars"): {"count": 753, "bytes": 85070},
+    ("QQQ", "actions"): {"count": 14, "bytes": 3338},
+}
 
 R6_COMPLETE_NAME = "complete.json"
 R6_COMPLETE_MAX_BYTES = 64 * 1024
@@ -657,10 +706,13 @@ def _reload_metadata(
     clock: Callable[[], float],
     mismatch_reason: str,
     unavailable_reason: str,
+    on_sdk_get_attempt: Callable[[], None] | None = None,
 ) -> tuple[int, int]:
     timeout = _remaining(deadline, clock)
     try:
         blob = client.bucket(bucket_name).blob(object_name, generation=generation)
+        if on_sdk_get_attempt is not None:
+            on_sdk_get_attempt()
         blob.reload(retry=None, timeout=timeout)
         observed_generation = blob.generation
         observed_size = blob.size
@@ -690,12 +742,18 @@ def _download_bytes(
     clock: Callable[[], float],
     oversize_reason: str,
     fail_reason: str,
+    on_sdk_get_attempt: Callable[[], None] | None = None,
+    on_sdk_bytes: Callable[[object | None], None] | None = None,
 ) -> bytes:
     if size > max_size:
         raise MetadataError(oversize_reason)
     timeout = _remaining(deadline, clock)
+    attempted = False
     try:
         blob = client.bucket(bucket_name).blob(object_name, generation=generation)
+        if on_sdk_get_attempt is not None:
+            on_sdk_get_attempt()
+        attempted = True
         content = blob.download_as_bytes(
             start=0,
             end=size,
@@ -707,7 +765,12 @@ def _download_bytes(
     except MetadataError:
         raise
     except Exception as exc:  # noqa: BLE001
+        if attempted and on_sdk_bytes is not None:
+            on_sdk_bytes(None)
         raise MetadataError(fail_reason) from exc
+    # Record returned payload before length / deadline validation.
+    if on_sdk_bytes is not None:
+        on_sdk_bytes(content)
     _remaining(deadline, clock)
     if not isinstance(content, (bytes, bytearray)) or len(content) != size:
         raise MetadataError(fail_reason)
@@ -889,6 +952,8 @@ def _read_verified_raw_manifest_bytes(
     *,
     deadline: float,
     clock: Callable[[], float],
+    on_sdk_get_attempt: Callable[[], None] | None = None,
+    on_sdk_bytes: Callable[[object | None], None] | None = None,
 ) -> tuple[int, int, bytes]:
     """Reload + download fixed RAW manifest; return verified whole bytes only."""
     generation, size = _reload_metadata(
@@ -902,6 +967,7 @@ def _read_verified_raw_manifest_bytes(
         clock=clock,
         mismatch_reason="RAW_METADATA_MISMATCH",
         unavailable_reason="RAW_METADATA_UNAVAILABLE",
+        on_sdk_get_attempt=on_sdk_get_attempt,
     )
     body = _download_bytes(
         client,
@@ -914,6 +980,8 @@ def _read_verified_raw_manifest_bytes(
         clock=clock,
         oversize_reason="RAW_OVERSIZE",
         fail_reason="RAW_DOWNLOAD_FAILED",
+        on_sdk_get_attempt=on_sdk_get_attempt,
+        on_sdk_bytes=on_sdk_bytes,
     )
     digest = _digest(body)
     if digest != RAW_EXPECTED_SHA256:
@@ -1220,6 +1288,452 @@ def run_raw_manifest_projection_read(
     result["completion_identity_authenticated"] = False
     result["content_verified"] = False
     result["content_integrity_verified"] = False
+    return 0, result
+
+
+def _raw_member_private_plan(payload: dict[str, Any]) -> list[dict[str, object]]:
+    """Cloud-private read plan; never copied into public projection output."""
+    by_pair: dict[tuple[str, str], dict[str, object]] = {}
+    for item in payload["inputs"]:
+        symbol = str(item["symbol"])
+        kind = str(item["kind"])
+        page = item["pages"][0]
+        object_name = f"{RAW_PREFIX}{kind}/{symbol}/page-001.json"
+        by_pair[(symbol, kind)] = {
+            "symbol": symbol,
+            "kind": kind,
+            "object_name": object_name,
+            "generation": int(str(page["generation"])),
+            "declared_size": int(page["bytes"]),
+            "declared_sha256": str(page["sha256"]),
+            "declared_count": int(item["count"]),
+            "first_bar_time": item.get("first_bar_time"),
+            "last_bar_time": item.get("last_bar_time"),
+        }
+    return [
+        by_pair[(symbol, kind)]
+        for symbol in RAW_MANIFEST_SYMBOLS
+        for kind in RAW_MANIFEST_KINDS
+    ]
+
+
+def _require_frozen_raw_member_table(plan: list[dict[str, object]]) -> None:
+    total = 0
+    for spec in plan:
+        pin = RAW_MEMBER_PINS.get((str(spec["symbol"]), str(spec["kind"])))
+        if pin is None:
+            raise MetadataError("RAW_MEMBER_PIN_MISMATCH")
+        declared_count = int(spec["declared_count"])
+        declared_size = int(spec["declared_size"])
+        total += declared_size
+        if declared_count != pin["count"] or declared_size != pin["bytes"]:
+            raise MetadataError("RAW_MEMBER_PIN_MISMATCH")
+    if total != RAW_MEMBERS_DECLARED_BYTES:
+        raise MetadataError("RAW_MEMBER_BUDGET_MISMATCH")
+
+
+def _parse_raw_member_json(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_raw_manifest_pairs_hook,
+            parse_constant=lambda _c: (_ for _ in ()).throw(
+                MetadataError("RAW_MEMBER_BODY_INVALID")
+            ),
+        )
+    except MetadataError as exc:
+        if exc.reason_class == "RAW_MANIFEST_INVALID":
+            raise MetadataError("RAW_MEMBER_BODY_INVALID") from exc
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise MetadataError("RAW_MEMBER_BODY_INVALID") from exc
+    if not isinstance(payload, dict):
+        raise MetadataError("RAW_MEMBER_BODY_INVALID")
+
+    def _reject_nonfinite(node: object) -> None:
+        if isinstance(node, float) and (math.isnan(node) or math.isinf(node)):
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        if isinstance(node, dict):
+            for value in node.values():
+                _reject_nonfinite(value)
+        elif isinstance(node, list):
+            for value in node:
+                _reject_nonfinite(value)
+
+    _reject_nonfinite(payload)
+    return payload
+
+
+def _require_terminal_next_page_token(data: dict[str, Any]) -> None:
+    if "next_page_token" not in data:
+        return
+    token = data.get("next_page_token")
+    if token is None or token == "":
+        return
+    raise MetadataError("RAW_MEMBER_BODY_INVALID")
+
+
+def _validate_raw_bars_body(
+    data: dict[str, Any],
+    *,
+    symbol: str,
+    declared_count: int,
+    first_bar_time: object,
+    last_bar_time: object,
+) -> int:
+    _require_terminal_next_page_token(data)
+    bars = data.get("bars")
+    if not isinstance(bars, list) or len(bars) > 10000:
+        raise MetadataError("RAW_MEMBER_BODY_INVALID")
+    if data.get("symbol") not in (None, symbol):
+        raise MetadataError("RAW_MEMBER_BODY_INVALID")
+    start = RAW_BAR_WINDOWS[symbol]
+    start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(UTC)
+    end_dt = RAW_BAR_END_EXCLUSIVE
+    first_norm: str | None = None
+    last_norm: str | None = None
+    previous: datetime | None = None
+    for item in bars:
+        if not isinstance(item, dict):
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        stamp = item.get("t")
+        if not isinstance(stamp, str) or len(stamp) > 40:
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        try:
+            current = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if current.tzinfo is None:
+                raise ValueError
+            current = current.astimezone(UTC)
+            normalized = current.isoformat().replace("+00:00", "Z")
+            if not (start_dt <= current < end_dt):
+                raise ValueError
+        except ValueError as exc:
+            raise MetadataError("RAW_MEMBER_BODY_INVALID") from exc
+        if previous is not None and current <= previous:
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        for field in ("o", "h", "l", "c", "v"):
+            value = item.get(field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise MetadataError("RAW_MEMBER_BODY_INVALID")
+            number = float(value)
+            if field == "v":
+                if number < 0:
+                    raise MetadataError("RAW_MEMBER_BODY_INVALID")
+            elif number <= 0:
+                raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        low = float(item["l"])
+        high = float(item["h"])
+        open_ = float(item["o"])
+        close = float(item["c"])
+        if low > min(open_, close, high) or high < max(open_, close, low):
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        first_norm = first_norm or normalized
+        last_norm = normalized
+        previous = current
+    observed = len(bars)
+    if observed != declared_count:
+        raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+    if declared_count == 0:
+        if first_bar_time is not None or last_bar_time is not None:
+            raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+        if first_norm is not None or last_norm is not None:
+            raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+        return observed
+    if not isinstance(first_bar_time, str) or not isinstance(last_bar_time, str):
+        raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+    try:
+        declared_first = datetime.fromisoformat(
+            first_bar_time.replace("Z", "+00:00")
+        ).astimezone(UTC)
+        declared_last = datetime.fromisoformat(
+            last_bar_time.replace("Z", "+00:00")
+        ).astimezone(UTC)
+        observed_first = datetime.fromisoformat(
+            (first_norm or "").replace("Z", "+00:00")
+        ).astimezone(UTC)
+        observed_last = datetime.fromisoformat(
+            (last_norm or "").replace("Z", "+00:00")
+        ).astimezone(UTC)
+    except ValueError as exc:
+        raise MetadataError("RAW_MEMBER_COUNT_MISMATCH") from exc
+    if declared_first != observed_first or declared_last != observed_last:
+        raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+    return observed
+
+
+def _validate_raw_actions_body(
+    data: dict[str, Any], *, symbol: str, declared_count: int
+) -> int:
+    _require_terminal_next_page_token(data)
+    actions = data.get("corporate_actions")
+    if not isinstance(actions, dict) or set(actions) - RAW_ACTION_TYPES:
+        raise MetadataError("RAW_MEMBER_BODY_INVALID")
+    count = 0
+    for category in actions.values():
+        if not isinstance(category, list):
+            raise MetadataError("RAW_MEMBER_BODY_INVALID")
+        count += len(category)
+        for item in category:
+            if not isinstance(item, dict) or item.get("symbol") not in (None, symbol):
+                raise MetadataError("RAW_MEMBER_BODY_INVALID")
+    if count > 1000:
+        raise MetadataError("RAW_MEMBER_BODY_INVALID")
+    if count != declared_count:
+        raise MetadataError("RAW_MEMBER_COUNT_MISMATCH")
+    return count
+
+
+def _public_member_integrity_row(
+    *,
+    symbol: str,
+    kind: str,
+    expected_count: int,
+    observed_count: int | None,
+    size_matched: bool,
+    hash_matched: bool,
+    body_shape_verified: bool,
+    member_body_read: bool,
+    count_matched: bool,
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "kind": kind,
+        "expected_count": expected_count,
+        "observed_count": observed_count,
+        "count_matched": count_matched,
+        "size_matched": size_matched,
+        "hash_matched": hash_matched,
+        "body_shape_verified": body_shape_verified,
+        "has_original_generation": True,
+        "member_body_read": member_body_read,
+    }
+
+
+def run_raw_members_integrity_read(
+    *,
+    client: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    budget_s: float = RAW_MEMBERS_BUDGET_S,
+    create_client: Callable[[], Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    # Production freeze is 60s; tests may shorten but must not raise the ceiling.
+    effective_budget = min(float(budget_s), RAW_MEMBERS_BUDGET_S)
+    started = (clock or time.monotonic)()
+    deadline = started + effective_budget
+    mono = clock or time.monotonic
+    max_bytes = RAW_SIZE_BYTES + RAW_MEMBERS_DECLARED_BYTES
+    result: dict[str, object] = {
+        **_base_result(),
+        "member_body_read": False,
+        "member_content_verified": False,
+        "raw_member_content_integrity_verified": False,
+        "manifest_identity_matched": False,
+        "license_scope_matches": False,
+        "retrieved_at_present": False,
+        "retrieved_at_valid": False,
+        "available_at_present": False,
+        "historical_availability_limitation_matches": False,
+        "input_count": 0,
+        "total_declared_member_bytes": 0,
+        "observed_get_count": 0,
+        "observed_transfer_bytes": 0,
+        "observed_transfer_bytes_is_lower_bound": False,
+        "inputs": [],
+        "budget": {
+            "max_get_count": RAW_MEMBERS_MAX_GETS,
+            "max_transfer_bytes": max_bytes,
+            "timeout_s": int(RAW_MEMBERS_BUDGET_S),
+            "manifest_get_count": 2,
+            "manifest_bytes": RAW_SIZE_BYTES,
+            "planned_member_get_count": 24,
+            "planned_member_bytes": RAW_MEMBERS_DECLARED_BYTES,
+        },
+    }
+    observed_gets = 0
+    observed_bytes = 0
+    bytes_lower_bound = False
+    public_rows: list[dict[str, object]] = []
+    any_body_read = False
+    active_row: dict[str, object] | None = None
+
+    def _on_sdk_get_attempt() -> None:
+        nonlocal observed_gets
+        if observed_gets + 1 > RAW_MEMBERS_MAX_GETS:
+            raise MetadataError("RAW_MEMBER_BUDGET_MISMATCH")
+        observed_gets += 1
+
+    def _on_sdk_bytes(content: object | None) -> None:
+        nonlocal observed_bytes, bytes_lower_bound, any_body_read
+        if isinstance(content, (bytes, bytearray)):
+            observed_bytes += len(content)
+            # member_body_read is only for the 12 member bodies, never the manifest.
+            if active_row is not None:
+                any_body_read = True
+                active_row["member_body_read"] = True
+            return
+        # Non-bytes return or SDK exception after attempt: known bytes are a lower bound.
+        bytes_lower_bound = True
+
+    def _publish_counts() -> None:
+        result["observed_get_count"] = observed_gets
+        result["observed_transfer_bytes"] = observed_bytes
+        result["observed_transfer_bytes_is_lower_bound"] = bytes_lower_bound
+        result["inputs"] = public_rows
+        result["member_body_read"] = any_body_read
+        result["member_content_verified"] = False
+        result["raw_member_content_integrity_verified"] = False
+        result["research_qualification"] = False
+        result["trading_rights"] = False
+        result["license_verified"] = False
+        result["historical_point_in_time_certified"] = False
+        result["completion_identity_authenticated"] = False
+        result["content_verified"] = False
+        result["content_integrity_verified"] = False
+
+    try:
+        _require_actions_identity()
+        if client is None:
+            factory = create_client or _lazy_storage_client
+            client = factory()
+        _remaining(deadline, mono)
+        active_row = None
+        _generation, _size, manifest_body = _read_verified_raw_manifest_bytes(
+            client,
+            deadline=deadline,
+            clock=mono,
+            on_sdk_get_attempt=_on_sdk_get_attempt,
+            on_sdk_bytes=_on_sdk_bytes,
+        )
+        if observed_bytes > max_bytes:
+            raise MetadataError("RAW_MEMBER_BUDGET_MISMATCH")
+        _remaining(deadline, mono)
+        payload = _parse_raw_manifest_json(manifest_body)
+        projection = _project_raw_manifest(payload)
+        plan = _raw_member_private_plan(payload)
+        _require_frozen_raw_member_table(plan)
+        result["manifest_identity_matched"] = True
+        result["license_scope_matches"] = True
+        result["retrieved_at_present"] = True
+        result["retrieved_at_valid"] = True
+        result["available_at_present"] = bool(projection.get("available_at_present"))
+        result["historical_availability_limitation_matches"] = True
+        result["input_count"] = 12
+        result["total_declared_member_bytes"] = RAW_MEMBERS_DECLARED_BYTES
+        _remaining(deadline, mono)
+
+        for spec in plan:
+            symbol = str(spec["symbol"])
+            kind = str(spec["kind"])
+            expected_count = int(spec["declared_count"])
+            declared_size = int(spec["declared_size"])
+            declared_sha = str(spec["declared_sha256"])
+            object_name = str(spec["object_name"])
+            generation = int(spec["generation"])
+            row = _public_member_integrity_row(
+                symbol=symbol,
+                kind=kind,
+                expected_count=expected_count,
+                observed_count=None,
+                size_matched=False,
+                hash_matched=False,
+                body_shape_verified=False,
+                member_body_read=False,
+                count_matched=False,
+            )
+            public_rows.append(row)
+            active_row = row
+            _remaining(deadline, mono)
+            observed_generation, observed_size = _reload_metadata(
+                client,
+                bucket_name=RAW_BUCKET,
+                object_name=object_name,
+                generation=generation,
+                expected_generation=generation,
+                expected_size=declared_size,
+                deadline=deadline,
+                clock=mono,
+                mismatch_reason="RAW_MEMBER_METADATA_MISMATCH",
+                unavailable_reason="RAW_MEMBER_METADATA_UNAVAILABLE",
+                on_sdk_get_attempt=_on_sdk_get_attempt,
+            )
+            row["size_matched"] = observed_size == declared_size
+            if observed_generation != generation or observed_size != declared_size:
+                raise MetadataError("RAW_MEMBER_METADATA_MISMATCH")
+            _remaining(deadline, mono)
+            if observed_bytes + declared_size > max_bytes:
+                raise MetadataError("RAW_MEMBER_BUDGET_MISMATCH")
+            body = _download_bytes(
+                client,
+                bucket_name=RAW_BUCKET,
+                object_name=object_name,
+                generation=generation,
+                size=declared_size,
+                max_size=declared_size,
+                deadline=deadline,
+                clock=mono,
+                oversize_reason="RAW_MEMBER_OVERSIZE",
+                fail_reason="RAW_MEMBER_DOWNLOAD_FAILED",
+                on_sdk_get_attempt=_on_sdk_get_attempt,
+                on_sdk_bytes=_on_sdk_bytes,
+            )
+            if observed_bytes > max_bytes:
+                raise MetadataError("RAW_MEMBER_BUDGET_MISMATCH")
+            digest = _digest(body)
+            row["hash_matched"] = digest == declared_sha
+            if digest != declared_sha:
+                raise MetadataError("RAW_MEMBER_HASH_MISMATCH")
+            member_payload = _parse_raw_member_json(body)
+            if kind == "bars":
+                observed_count = _validate_raw_bars_body(
+                    member_payload,
+                    symbol=symbol,
+                    declared_count=expected_count,
+                    first_bar_time=spec["first_bar_time"],
+                    last_bar_time=spec["last_bar_time"],
+                )
+            else:
+                observed_count = _validate_raw_actions_body(
+                    member_payload, symbol=symbol, declared_count=expected_count
+                )
+            row["observed_count"] = observed_count
+            row["count_matched"] = observed_count == expected_count
+            row["body_shape_verified"] = True
+            _remaining(deadline, mono)
+    except MetadataError as exc:
+        result["reason_class"] = exc.reason_class
+        _publish_counts()
+        return 2, result
+    except Exception:  # noqa: BLE001
+        result["reason_class"] = "CLIENT_UNAVAILABLE"
+        _publish_counts()
+        return 2, result
+
+    if (
+        bytes_lower_bound
+        or observed_gets != RAW_MEMBERS_MAX_GETS
+        or observed_bytes != max_bytes
+        or len(public_rows) != 12
+        or not all(
+            row.get("body_shape_verified") is True
+            and row.get("hash_matched") is True
+            and row.get("size_matched") is True
+            and row.get("count_matched") is True
+            and row.get("member_body_read") is True
+            for row in public_rows
+        )
+    ):
+        result["reason_class"] = "RAW_MEMBER_BUDGET_MISMATCH"
+        _publish_counts()
+        return 2, result
+
+    _publish_counts()
+    result["status"] = "RAW_MEMBERS_INTEGRITY_READY"
+    result["raw_member_content_integrity_verified"] = True
+    result["member_body_read"] = True
     return 0, result
 
 
@@ -2476,6 +2990,10 @@ def run_materialized_identity_read(
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if argv == ["--raw-members-integrity-only"]:
+        code, payload = run_raw_members_integrity_read()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return code
     if argv == ["--raw-manifest-projection-only"]:
         code, payload = run_raw_manifest_projection_read()
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
