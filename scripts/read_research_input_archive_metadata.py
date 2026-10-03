@@ -5,6 +5,7 @@ integrity_only: fixed-generation whole-byte hashes for RAW/complete/P1 plus thre
 contract metadata observations.
 contracts_only: fixed-generation whole-byte hashes for the three RAW-prefix contracts.
 materialized_identity_only: fixed P1 bytes + legacy-lock worker identity check.
+raw_manifest_projection_only: fixed RAW manifest bytes + closed public projection.
 No provider calls, listing, uploads, body dumps, or research qualification claims.
 """
 
@@ -38,6 +39,65 @@ RAW_PREFIX = "research/v2/input/qqqm-boxx-raw-20260925-001/"
 RAW_GENERATION = 1790338090501279
 RAW_SIZE_BYTES = 7580
 RAW_EXPECTED_SHA256 = "cb14a511083c824a748d137a271c93cfe0e8adf38f648905b26e37decf4c6182"
+RAW_MANIFEST_SCHEMA = "qsl.research.raw_sip_input.v1"
+RAW_MANIFEST_SOURCE = "alpaca.stocks.bars.v2_and_corporate_actions.v1"
+RAW_MANIFEST_FEED = "sip"
+RAW_MANIFEST_PRICE_ADJUSTMENT = "raw"
+RAW_MANIFEST_CALENDAR = "XNYS"
+RAW_MANIFEST_TIMEZONE = "America/New_York"
+RAW_MANIFEST_CURRENCY = "USD"
+RAW_MANIFEST_LICENSE_RETENTION = (
+    "private research only; retain in qsl-research-evidence bucket; no redistribution"
+)
+RAW_MANIFEST_BAR_TIMESTAMP_MEANING = (
+    "left edge of daily bar, not decision availability"
+)
+RAW_MANIFEST_CORPORATE_ACTION_LIMITATION = (
+    "provider does not guarantee creation time; historical availability not proven"
+)
+RAW_MANIFEST_SYMBOLS = ("QQQM", "BOXX", "SOXL", "SOXX", "TQQQ", "QQQ")
+RAW_MANIFEST_KINDS = ("bars", "actions")
+RAW_MANIFEST_INPUT_KEYS = frozenset(
+    (symbol, kind) for symbol in RAW_MANIFEST_SYMBOLS for kind in RAW_MANIFEST_KINDS
+)
+RAW_MANIFEST_TOP_KEYS = frozenset(
+    {
+        "schema_version",
+        "retrieved_at",
+        "source",
+        "feed",
+        "price_adjustment",
+        "calendar",
+        "timezone",
+        "currency",
+        "license_retention",
+        "scope",
+        "write_probe",
+        "inputs",
+        "provider_page_requests",
+        "provider_response_bytes",
+        "bar_timestamp_meaning",
+        "corporate_action_limitation",
+        "no_order",
+        "research_only",
+        "execution_authorized",
+    }
+)
+RAW_MANIFEST_INPUT_FIELD_KEYS = frozenset(
+    {
+        "symbol",
+        "kind",
+        "request",
+        "count",
+        "first_bar_time",
+        "last_bar_time",
+        "pages",
+        "complete_pagination",
+    }
+)
+RAW_MANIFEST_PAGE_KEYS = frozenset({"uri", "generation", "bytes", "sha256"})
+RAW_MANIFEST_PROBE_KEYS = frozenset({"uri", "generation", "bytes", "sha256"})
+RAW_DIGITS = re.compile(r"^[1-9][0-9]*$")
 
 R6_COMPLETE_NAME = "complete.json"
 R6_COMPLETE_MAX_BYTES = 64 * 1024
@@ -824,12 +884,13 @@ def _validate_manifest_binding_links(manifest: dict[str, Any]) -> None:
             raise MetadataError("MANIFEST_BINDING_MISMATCH")
 
 
-def read_raw_integrity_group(
+def _read_verified_raw_manifest_bytes(
     client: Any,
     *,
     deadline: float,
     clock: Callable[[], float],
-) -> dict[str, object]:
+) -> tuple[int, int, bytes]:
+    """Reload + download fixed RAW manifest; return verified whole bytes only."""
     generation, size = _reload_metadata(
         client,
         bucket_name=RAW_BUCKET,
@@ -858,13 +919,308 @@ def read_raw_integrity_group(
     if digest != RAW_EXPECTED_SHA256:
         raise MetadataError("RAW_HASH_MISMATCH")
     _remaining(deadline, clock)
+    return generation, size, body
+
+
+def read_raw_integrity_group(
+    client: Any,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    generation, size, body = _read_verified_raw_manifest_bytes(
+        client, deadline=deadline, clock=clock
+    )
     return {
         "status": "INTEGRITY_MATCHED",
         "content_hash_verified": True,
         "generation": generation,
         "size_bytes": size,
-        "sha256": digest,
+        "sha256": _digest(body),
     }
+
+
+def _raw_manifest_pairs_hook(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in items:
+        if key in result:
+            raise MetadataError("RAW_MANIFEST_INVALID")
+        result[key] = value
+    return result
+
+
+def _parse_raw_manifest_json(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_raw_manifest_pairs_hook,
+            parse_constant=lambda _c: (_ for _ in ()).throw(
+                MetadataError("RAW_MANIFEST_INVALID")
+            ),
+        )
+    except MetadataError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise MetadataError("RAW_MANIFEST_INVALID") from exc
+    if not isinstance(payload, dict):
+        raise MetadataError("RAW_MANIFEST_INVALID")
+
+    def _reject_nonfinite(node: object) -> None:
+        if isinstance(node, float) and (math.isnan(node) or math.isinf(node)):
+            raise MetadataError("RAW_MANIFEST_INVALID")
+        if isinstance(node, dict):
+            for value in node.values():
+                _reject_nonfinite(value)
+        elif isinstance(node, list):
+            for value in node:
+                _reject_nonfinite(value)
+
+    _reject_nonfinite(payload)
+    return payload
+
+
+def _require_aware_iso_present(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _validate_raw_page(
+    page: object, *, symbol: str, kind: str, seen_uris: set[str]
+) -> dict[str, object]:
+    if not isinstance(page, dict) or set(page) != RAW_MANIFEST_PAGE_KEYS:
+        raise MetadataError("RAW_MANIFEST_INVALID")
+    uri = page.get("uri")
+    generation = page.get("generation")
+    size = page.get("bytes")
+    sha256 = page.get("sha256")
+    expected_uri = f"gs://{RAW_BUCKET}/{RAW_PREFIX}{kind}/{symbol}/page-001.json"
+    if not isinstance(uri, str) or uri != expected_uri:
+        raise MetadataError("RAW_INPUT_SET_INVALID")
+    if uri in seen_uris:
+        raise MetadataError("RAW_INPUT_SET_INVALID")
+    seen_uris.add(uri)
+    if not isinstance(generation, str) or RAW_DIGITS.fullmatch(generation) is None:
+        raise MetadataError("RAW_MANIFEST_INVALID")
+    size_i = _strict_positive_int(size, reason="RAW_MANIFEST_INVALID")
+    digest = _require_hex64(sha256, reason="RAW_MANIFEST_INVALID")
+    return {
+        "declared_size_bytes": size_i,
+        "declared_sha256": digest,
+        "has_original_generation": True,
+    }
+
+
+def _validate_raw_write_probe(probe: object) -> None:
+    if not isinstance(probe, dict) or set(probe) != RAW_MANIFEST_PROBE_KEYS:
+        raise MetadataError("RAW_MANIFEST_INVALID")
+    uri = probe.get("uri")
+    generation = probe.get("generation")
+    size = probe.get("bytes")
+    sha256 = probe.get("sha256")
+    expected = f"gs://{RAW_BUCKET}/{RAW_PREFIX}_write_probe.json"
+    if not isinstance(uri, str) or uri != expected:
+        raise MetadataError("RAW_MANIFEST_IDENTITY_MISMATCH")
+    if not isinstance(generation, str) or RAW_DIGITS.fullmatch(generation) is None:
+        raise MetadataError("RAW_MANIFEST_INVALID")
+    _strict_positive_int(size, reason="RAW_MANIFEST_INVALID")
+    _require_hex64(sha256, reason="RAW_MANIFEST_INVALID")
+
+
+def _project_raw_manifest(payload: dict[str, Any]) -> dict[str, object]:
+    if set(payload) != RAW_MANIFEST_TOP_KEYS:
+        raise MetadataError("RAW_MANIFEST_INVALID")
+    identity_ok = (
+        payload.get("schema_version") == RAW_MANIFEST_SCHEMA
+        and payload.get("source") == RAW_MANIFEST_SOURCE
+        and payload.get("feed") == RAW_MANIFEST_FEED
+        and payload.get("price_adjustment") == RAW_MANIFEST_PRICE_ADJUSTMENT
+        and payload.get("calendar") == RAW_MANIFEST_CALENDAR
+        and payload.get("timezone") == RAW_MANIFEST_TIMEZONE
+        and payload.get("currency") == RAW_MANIFEST_CURRENCY
+        and payload.get("scope") == RAW_PREFIX
+        and payload.get("no_order") is True
+        and payload.get("research_only") is True
+        and payload.get("execution_authorized") is False
+        and payload.get("bar_timestamp_meaning") == RAW_MANIFEST_BAR_TIMESTAMP_MEANING
+        and payload.get("corporate_action_limitation")
+        == RAW_MANIFEST_CORPORATE_ACTION_LIMITATION
+    )
+    if not identity_ok:
+        raise MetadataError("RAW_MANIFEST_IDENTITY_MISMATCH")
+    license_scope_matches = payload.get("license_retention") == RAW_MANIFEST_LICENSE_RETENTION
+    if not license_scope_matches:
+        raise MetadataError("RAW_MANIFEST_IDENTITY_MISMATCH")
+    retrieved_at = payload.get("retrieved_at")
+    retrieved_at_present = isinstance(retrieved_at, str) and bool(retrieved_at)
+    retrieved_at_valid = _require_aware_iso_present(retrieved_at)
+    if not retrieved_at_present or not retrieved_at_valid:
+        raise MetadataError("RAW_MANIFEST_IDENTITY_MISMATCH")
+    historical_ok = (
+        payload.get("corporate_action_limitation") == RAW_MANIFEST_CORPORATE_ACTION_LIMITATION
+    )
+    if not historical_ok:
+        raise MetadataError("RAW_MANIFEST_IDENTITY_MISMATCH")
+    _validate_raw_write_probe(payload.get("write_probe"))
+    _strict_nonneg_int(payload.get("provider_page_requests"), reason="RAW_MANIFEST_INVALID")
+    _strict_nonneg_int(payload.get("provider_response_bytes"), reason="RAW_MANIFEST_INVALID")
+
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != len(RAW_MANIFEST_INPUT_KEYS):
+        raise MetadataError("RAW_INPUT_SET_INVALID")
+    seen_pairs: set[tuple[str, str]] = set()
+    seen_uris: set[str] = set()
+    projected: dict[tuple[str, str], dict[str, object]] = {}
+    total_bytes = 0
+    available_at_present = False
+    for item in inputs:
+        if not isinstance(item, dict) or set(item) != RAW_MANIFEST_INPUT_FIELD_KEYS:
+            raise MetadataError("RAW_MANIFEST_INVALID")
+        if "available_at" in item:
+            available_at_present = True
+            raise MetadataError("RAW_MANIFEST_INVALID")
+        symbol = item.get("symbol")
+        kind = item.get("kind")
+        if not isinstance(symbol, str) or not isinstance(kind, str):
+            raise MetadataError("RAW_INPUT_SET_INVALID")
+        pair = (symbol, kind)
+        if pair not in RAW_MANIFEST_INPUT_KEYS or pair in seen_pairs:
+            raise MetadataError("RAW_INPUT_SET_INVALID")
+        seen_pairs.add(pair)
+        count = _strict_nonneg_int(item.get("count"), reason="RAW_MANIFEST_INVALID")
+        if item.get("complete_pagination") is not True:
+            raise MetadataError("RAW_INPUT_SET_INVALID")
+        pages = item.get("pages")
+        if not isinstance(pages, list) or len(pages) != 1:
+            raise MetadataError("RAW_INPUT_SET_INVALID")
+        if not isinstance(item.get("request"), dict):
+            raise MetadataError("RAW_MANIFEST_INVALID")
+        first_t = item.get("first_bar_time")
+        last_t = item.get("last_bar_time")
+        if kind == "actions":
+            if first_t is not None or last_t is not None:
+                raise MetadataError("RAW_MANIFEST_INVALID")
+        else:
+            if count == 0:
+                if first_t is not None or last_t is not None:
+                    raise MetadataError("RAW_MANIFEST_INVALID")
+            else:
+                if not isinstance(first_t, str) or not isinstance(last_t, str):
+                    raise MetadataError("RAW_MANIFEST_INVALID")
+                if not _require_aware_iso_present(first_t) or not _require_aware_iso_present(
+                    last_t
+                ):
+                    raise MetadataError("RAW_MANIFEST_INVALID")
+        page_proj = _validate_raw_page(
+            pages[0], symbol=symbol, kind=kind, seen_uris=seen_uris
+        )
+        total_bytes += int(page_proj["declared_size_bytes"])
+        projected[pair] = {
+            "symbol": symbol,
+            "kind": kind,
+            "count": count,
+            "page_count": 1,
+            "declared_size_bytes": page_proj["declared_size_bytes"],
+            "declared_sha256": page_proj["declared_sha256"],
+            "has_original_generation": page_proj["has_original_generation"],
+        }
+    if seen_pairs != RAW_MANIFEST_INPUT_KEYS or len(seen_uris) != len(RAW_MANIFEST_INPUT_KEYS):
+        raise MetadataError("RAW_INPUT_SET_INVALID")
+    ordered = [
+        projected[(symbol, kind)]
+        for symbol in RAW_MANIFEST_SYMBOLS
+        for kind in RAW_MANIFEST_KINDS
+    ]
+    return {
+        "manifest_identity_matched": True,
+        "license_scope_matches": True,
+        "retrieved_at_present": True,
+        "retrieved_at_valid": True,
+        "available_at_present": available_at_present,
+        "historical_availability_limitation_matches": True,
+        "input_count": len(ordered),
+        "total_declared_member_bytes": total_bytes,
+        "inputs": ordered,
+        "budget": {
+            "manifest_get_count": 2,
+            "manifest_bytes": RAW_SIZE_BYTES,
+            "timeout_s": int(OVERALL_BUDGET_S),
+            "planned_member_get_count": 24,
+            "planned_member_bytes": total_bytes,
+            "planned_next_run_with_manifest_reverify_get_count": 26,
+            "planned_next_run_with_manifest_reverify_bytes": total_bytes + RAW_SIZE_BYTES,
+        },
+    }
+
+
+def run_raw_manifest_projection_read(
+    *,
+    client: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    budget_s: float = OVERALL_BUDGET_S,
+    create_client: Callable[[], Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    started = (clock or time.monotonic)()
+    deadline = started + budget_s
+    mono = clock or time.monotonic
+    result: dict[str, object] = {
+        **_base_result(),
+        "member_body_read": False,
+        "member_content_verified": False,
+        "manifest_identity_matched": False,
+        "license_scope_matches": False,
+        "retrieved_at_present": False,
+        "retrieved_at_valid": False,
+        "available_at_present": False,
+        "historical_availability_limitation_matches": False,
+        "input_count": 0,
+        "total_declared_member_bytes": 0,
+        "inputs": [],
+        "budget": {
+            "manifest_get_count": 2,
+            "manifest_bytes": RAW_SIZE_BYTES,
+            "timeout_s": int(OVERALL_BUDGET_S),
+            "planned_member_get_count": 24,
+            "planned_member_bytes": 0,
+            "planned_next_run_with_manifest_reverify_get_count": 26,
+            "planned_next_run_with_manifest_reverify_bytes": RAW_SIZE_BYTES,
+        },
+    }
+    try:
+        _require_actions_identity()
+        if client is None:
+            factory = create_client or _lazy_storage_client
+            client = factory()
+        _remaining(deadline, mono)
+        _generation, _size, body = _read_verified_raw_manifest_bytes(
+            client, deadline=deadline, clock=mono
+        )
+        _remaining(deadline, mono)
+        payload = _parse_raw_manifest_json(body)
+        projection = _project_raw_manifest(payload)
+        _remaining(deadline, mono)
+    except MetadataError as exc:
+        result["reason_class"] = exc.reason_class
+        return 2, result
+    except Exception:  # noqa: BLE001
+        result["reason_class"] = "CLIENT_UNAVAILABLE"
+        return 2, result
+    result.update(projection)
+    result["status"] = "RAW_MANIFEST_PROJECTION_READY"
+    result["member_body_read"] = False
+    result["member_content_verified"] = False
+    result["research_qualification"] = False
+    result["trading_rights"] = False
+    result["license_verified"] = False
+    result["historical_point_in_time_certified"] = False
+    result["completion_identity_authenticated"] = False
+    result["content_verified"] = False
+    result["content_integrity_verified"] = False
+    return 0, result
 
 
 def read_r6_integrity_group(
@@ -2120,6 +2476,10 @@ def run_materialized_identity_read(
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if argv == ["--raw-manifest-projection-only"]:
+        code, payload = run_raw_manifest_projection_read()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return code
     if argv == ["--materialized-identity-only"]:
         code, payload = run_materialized_identity_read()
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
