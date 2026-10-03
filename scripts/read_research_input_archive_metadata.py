@@ -1,9 +1,10 @@
-"""GET-only research archive metadata / integrity / contracts reader.
+"""GET-only research archive metadata / integrity / contracts / materialized reader.
 
 metadata_only: fixed RAW metadata + bounded complete index + four P1 metadata.
 integrity_only: fixed-generation whole-byte hashes for RAW/complete/P1 plus three
 contract metadata observations.
 contracts_only: fixed-generation whole-byte hashes for the three RAW-prefix contracts.
+materialized_identity_only: fixed P1 bytes + legacy-lock worker identity check.
 No provider calls, listing, uploads, body dumps, or research qualification claims.
 """
 
@@ -14,9 +15,12 @@ import json
 import math
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -126,8 +130,270 @@ CONTRACTS_MAX_BODY_BYTES = (
     + int(CONTRACT_PINS["s4_budget_policy.v1.json"]["size_bytes"])
 )
 
+MATERIALIZED_MAX_BODY_BYTES = (
+    int(P1_PINS["binding.json"]["size_bytes"])
+    + int(P1_PINS["manifest.json"]["size_bytes"])
+    + int(P1_PINS["closes.json"]["size_bytes"])
+    + int(P1_PINS["assurance.json"]["size_bytes"])
+)
+LEGACY_SOURCE_COMMIT = "0ae8ac4eb886431f9f9695702d9dd60982919dae"
+LEGACY_UV_LOCK_SHA256 = "56f837bdf65342ebff4e59f8dd3b5f2e351dbb064ca0e1f46204827c50f1afc8"
+EXPECTED_MATERIALIZED_WHOLE_SHA256 = (
+    "6477644fc07a7202cd484e0d0309ecdb871ef347de844ee31fc2e5e63e36bb38"
+)
+EXPECTED_V7_CONFIG_SHA256 = (
+    "843ab4e93e81985c2b3becc61a2f0b971508ccf25afa59acf402e75f574514d1"
+)
+EXPECTED_SESSION_COUNT = 914
+MATERIALIZED_ENTRY_BUDGET_S = 150.0
+MATERIALIZED_WORKER_BUDGET_S = 90.0
+WORKER_CLEANUP_BUDGET_S = 5.0
+WORKER_PROTOCOL = "qsl.materialized_worker.v1"
+WORKER_NETWORK_GUARD_SCOPE = "python_monkeypatch_audit"
+WORKER_BLOCKED_REASONS = frozenset(
+    {
+        "WORKER_ARGV_INVALID",
+        "WORKER_IMPORT_FAILED",
+        "WORKER_COMPUTE_FAILED",
+        "WORKER_TIMEOUT",
+        "WORKER_CLEANUP_FAILED",
+        "WORKER_PROTOCOL_INVALID",
+        "NETWORK_ATTEMPT_REFUSED",
+    }
+)
+WORKER_OK_KEYS = frozenset(
+    {
+        "protocol",
+        "status",
+        "session_count",
+        "v7_config_sha256",
+        "p1_binding_sha256",
+        "p1_manifest_sha256",
+        "candidate_whole_sha256",
+        "internal_materialized_sha256",
+        "internal_verified",
+        "network_guard_attempts",
+        "network_guard_scope",
+        "elapsed_import_s",
+        "elapsed_compute_s",
+        "attempt_count",
+    }
+)
+WORKER_BLOCKED_KEYS = frozenset(
+    {
+        "protocol",
+        "status",
+        "reason_class",
+        "network_guard_attempts",
+        "network_guard_scope",
+        "elapsed_import_s",
+        "elapsed_compute_s",
+        "attempt_count",
+    }
+)
+TASK_ROOT_ENV = "QSL_MATERIALIZED_TASK_ROOT"
+SOURCE_DIR_ENV = "QSL_MATERIALIZED_SOURCE_DIR"
+VENV_PYTHON_ENV = "QSL_MATERIALIZED_VENV_PYTHON"
+SOURCE_COMMIT_ENV = "QSL_MATERIALIZED_SOURCE_COMMIT"
+LEGACY_ORIGIN_PINS: dict[str, str] = {
+    "quant-platform-kit": "5c916917626707c4ee798c6b45a5d43609019816",
+    "quant-strategy-plugins": "6b76d512c8273deb804c0770a203558284778399",
+    "us-equity-strategies": "33d8c09a9aa517cde94f36d2f67e526c340ea6e9",
+}
+LEGACY_VERSION_PINS: dict[str, str] = {
+    "google-cloud-storage": "3.12.0",
+    "pandas": "3.0.3",
+    "numpy": "2.4.6",
+    "exchange-calendars": "4.13.2",
+}
+
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SHA_NAME = re.compile(r"^(?:\.\./|/|gs:|https?:)", re.IGNORECASE)
+
+# Isolated worker body: stdlib + installed legacy package only; no current PYTHONPATH.
+_MATERIALIZED_WORKER_SOURCE = r"""
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+_ATTEMPTS = {"n": 0}
+_PROTOCOL = "qsl.materialized_worker.v1"
+_SCOPE = "python_monkeypatch_audit"
+_AUDIT_EVENTS = {
+    "socket.connect",
+    "socket.getaddrinfo",
+    "socket.sendto",
+    "os.system",
+    "os.fork",
+    "os.posix_spawn",
+    "subprocess.Popen",
+}
+
+
+def _bump() -> None:
+    _ATTEMPTS["n"] += 1
+
+
+def _deny(*_a, **_k):
+    _bump()
+    raise OSError("blocked")
+
+
+def _install_guards() -> None:
+    socket.getaddrinfo = _deny  # type: ignore[assignment]
+    socket.create_connection = _deny  # type: ignore[assignment]
+
+    def _connect(self, *_a, **_k):  # noqa: ANN001
+        _bump()
+        raise OSError("blocked")
+
+    def _sendto(self, *_a, **_k):  # noqa: ANN001
+        _bump()
+        raise OSError("blocked")
+
+    socket.socket.connect = _connect  # type: ignore[method-assign]
+    socket.socket.sendto = _sendto  # type: ignore[method-assign]
+
+    def _popen(*_a, **_k):
+        _bump()
+        raise RuntimeError("blocked")
+
+    subprocess.Popen = _popen  # type: ignore[assignment]
+    subprocess.run = _popen  # type: ignore[assignment]
+    subprocess.call = _popen  # type: ignore[assignment]
+    subprocess.check_call = _popen  # type: ignore[assignment]
+    subprocess.check_output = _popen  # type: ignore[assignment]
+    os.system = _popen  # type: ignore[assignment]
+    if hasattr(os, "fork"):
+        def _fork():
+            _bump()
+            raise OSError("blocked")
+
+        os.fork = _fork  # type: ignore[assignment]
+    if hasattr(os, "posix_spawn"):
+        def _spawn(*_a, **_k):
+            _bump()
+            raise OSError("blocked")
+
+        os.posix_spawn = _spawn  # type: ignore[attr-defined]
+
+    def _audit(event, _args):  # noqa: ANN001
+        if event in _AUDIT_EVENTS:
+            _bump()
+            raise OSError("blocked")
+
+    sys.addaudithook(_audit)
+
+
+def _emit(payload: dict) -> None:
+    sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _blocked(reason: str, *, import_s: float = 0.0, compute_s: float = 0.0) -> int:
+    _emit(
+        {
+            "protocol": _PROTOCOL,
+            "status": "BLOCKED",
+            "reason_class": reason,
+            "network_guard_attempts": int(_ATTEMPTS["n"]),
+            "network_guard_scope": _SCOPE,
+            "elapsed_import_s": round(float(import_s), 6),
+            "elapsed_compute_s": round(float(compute_s), 6),
+            "attempt_count": 1,
+        }
+    )
+    return 2
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        return _blocked("WORKER_ARGV_INVALID")
+    root = Path(sys.argv[1])
+    _install_guards()
+    t0 = time.monotonic()
+    try:
+        from us_equity_snapshot_pipelines.lifecycle.soxl_v7_twelve_single_source_r6 import (
+            materialize_input,
+            read_input,
+        )
+    except Exception:
+        return _blocked("WORKER_IMPORT_FAILED", import_s=time.monotonic() - t0)
+    t1 = time.monotonic()
+    try:
+        members = read_input(root)
+        result = materialize_input(members)
+        if int(_ATTEMPTS["n"]) != 0:
+            return _blocked(
+                "NETWORK_ATTEMPT_REFUSED",
+                import_s=t1 - t0,
+                compute_s=time.monotonic() - t1,
+            )
+        declared_internal = result.get("materialized_input_sha256")
+        without_internal = {
+            key: value for key, value in result.items() if key != "materialized_input_sha256"
+        }
+        recomputed_internal = hashlib.sha256(_canonical(without_internal)).hexdigest()
+        if declared_internal != recomputed_internal:
+            return _blocked(
+                "WORKER_COMPUTE_FAILED",
+                import_s=t1 - t0,
+                compute_s=time.monotonic() - t1,
+            )
+        whole = hashlib.sha256(_canonical(result)).hexdigest()
+        sessions = result.get("sessions")
+        p2 = result.get("p2_identity") if isinstance(result.get("p2_identity"), dict) else {}
+        p1 = result.get("p1_identity") if isinstance(result.get("p1_identity"), dict) else {}
+        payload = {
+            "protocol": _PROTOCOL,
+            "status": "OK",
+            "session_count": len(sessions) if isinstance(sessions, list) else -1,
+            "v7_config_sha256": p2.get("config_sha256"),
+            "p1_binding_sha256": p1.get("binding_sha256"),
+            "p1_manifest_sha256": p1.get("input_manifest_sha256"),
+            "candidate_whole_sha256": whole,
+            "internal_materialized_sha256": recomputed_internal,
+            "internal_verified": True,
+            "network_guard_attempts": int(_ATTEMPTS["n"]),
+            "network_guard_scope": _SCOPE,
+            "elapsed_import_s": round(t1 - t0, 6),
+            "elapsed_compute_s": round(time.monotonic() - t1, 6),
+            "attempt_count": 1,
+        }
+    except Exception:
+        return _blocked(
+            "WORKER_COMPUTE_FAILED",
+            import_s=t1 - t0,
+            compute_s=time.monotonic() - t1,
+        )
+    if int(_ATTEMPTS["n"]) != 0:
+        return _blocked(
+            "NETWORK_ATTEMPT_REFUSED",
+            import_s=t1 - t0,
+            compute_s=time.monotonic() - t1,
+        )
+    _emit(payload)
+    return 0
+
+
+raise SystemExit(main())
+"""
 
 
 class MetadataError(Exception):
@@ -1071,9 +1337,793 @@ def run_contracts_read(
     return 0, result
 
 
+def _direct_url_commit(dist_name: str) -> str | None:
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        dist = distribution(dist_name)
+    except PackageNotFoundError:
+        return None
+    try:
+        raw = dist.read_text("direct_url.json")
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    vcs = payload.get("vcs_info")
+    if not isinstance(vcs, dict):
+        return None
+    commit = vcs.get("commit_id")
+    return commit if isinstance(commit, str) else None
+
+
+def _package_version(dist_name: str) -> str | None:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version(dist_name)
+    except PackageNotFoundError:
+        return None
+
+
+def _uesp_noneditable_under_source(source_dir: Path) -> bool:
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        dist = distribution("us-equity-snapshot-pipelines")
+    except PackageNotFoundError:
+        return False
+    try:
+        raw = dist.read_text("direct_url.json")
+    except Exception:  # noqa: BLE001
+        return False
+    if not raw:
+        return False
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    if payload.get("dir_info", {}).get("editable") is True:
+        return False
+    url = payload.get("url")
+    if not isinstance(url, str):
+        return False
+    try:
+        source_resolved = source_dir.resolve()
+    except OSError:
+        return False
+    # Boolean path containment only; never emit path/URL text.
+    if url.startswith("file:"):
+        parsed = urlparse(url)
+        candidate = Path(parsed.path)
+        try:
+            return source_resolved in candidate.resolve().parents or candidate.resolve() == source_resolved
+        except OSError:
+            return False
+    return False
+
+
+def preflight_materialized_runtime(
+    *,
+    source_dir: str | None = None,
+    source_commit: str | None = None,
+) -> dict[str, object]:
+    src = Path(source_dir or os.environ.get(SOURCE_DIR_ENV, ""))
+    commit = source_commit if source_commit is not None else os.environ.get(SOURCE_COMMIT_ENV, "")
+    if commit != LEGACY_SOURCE_COMMIT:
+        raise MetadataError("RUNTIME_SOURCE_MISMATCH")
+    lock_path = src / "uv.lock"
+    try:
+        lock_bytes = lock_path.read_bytes()
+    except OSError as exc:
+        raise MetadataError("RUNTIME_LOCK_UNAVAILABLE") from exc
+    if _digest(lock_bytes) != LEGACY_UV_LOCK_SHA256:
+        raise MetadataError("RUNTIME_LOCK_MISMATCH")
+    if not sys.version.startswith("3.11"):
+        raise MetadataError("RUNTIME_PYTHON_MISMATCH")
+    version_ok = True
+    for name, expected in LEGACY_VERSION_PINS.items():
+        if _package_version(name) != expected:
+            version_ok = False
+            break
+    origin_ok = True
+    for name, expected in LEGACY_ORIGIN_PINS.items():
+        if _direct_url_commit(name) != expected:
+            origin_ok = False
+            break
+    uesp_ok = _uesp_noneditable_under_source(src)
+    if not version_ok:
+        raise MetadataError("RUNTIME_VERSION_MISMATCH")
+    if not origin_ok:
+        raise MetadataError("RUNTIME_ORIGIN_MISMATCH")
+    if not uesp_ok:
+        raise MetadataError("RUNTIME_UESP_ORIGIN_MISMATCH")
+    return {
+        "source_commit_matched": True,
+        "lock_digest_matched": True,
+        "python_version_matched": True,
+        "dependency_versions_matched": True,
+        "dependency_origins_matched": True,
+        "uesp_noneditable_source_matched": True,
+    }
+
+
+def read_p1_materialize_group(
+    client: Any,
+    *,
+    root_uri: str,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, bytes]:
+    bucket_name, prefix = _parse_root(root_uri)
+    bodies: dict[str, bytes] = {}
+    for key in ("manifest.json", "binding.json", "closes.json", "assurance.json"):
+        pin = P1_PINS[key]
+        object_name = prefix + P1_NAME_MAP[key]
+        generation, size = _reload_metadata(
+            client,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            generation=int(pin["generation"]),
+            expected_generation=int(pin["generation"]),
+            expected_size=int(pin["size_bytes"]),
+            deadline=deadline,
+            clock=clock,
+            mismatch_reason="P1_METADATA_MISMATCH",
+            unavailable_reason="P1_METADATA_UNAVAILABLE",
+        )
+        member = _download_bytes(
+            client,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            generation=generation,
+            size=size,
+            max_size=int(pin["size_bytes"]),
+            deadline=deadline,
+            clock=clock,
+            oversize_reason="P1_OVERSIZE",
+            fail_reason="P1_DOWNLOAD_FAILED",
+        )
+        digest = _digest(member)
+        if digest != pin["sha256"]:
+            raise MetadataError("P1_HASH_MISMATCH")
+        bodies[key] = member
+        if key == "manifest.json":
+            try:
+                manifest = json.loads(
+                    member.decode("utf-8"),
+                    object_pairs_hook=_object_pairs_hook,
+                    parse_constant=lambda _c: (_ for _ in ()).throw(
+                        MetadataError("MANIFEST_JSON_INVALID")
+                    ),
+                )
+            except MetadataError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise MetadataError("MANIFEST_JSON_INVALID") from exc
+            if not isinstance(manifest, dict):
+                raise MetadataError("MANIFEST_JSON_INVALID")
+            _validate_manifest_binding_links(manifest)
+    if _digest(bodies["binding.json"]) != BINDING_SHA256:
+        raise MetadataError("P1_HASH_MISMATCH")
+    _remaining(deadline, clock)
+    return bodies
+
+
+def _require_task_root(task_root: Path) -> None:
+    if task_root.is_symlink() or not task_root.is_dir():
+        raise MetadataError("TASK_ROOT_INVALID")
+    if task_root.stat().st_mode & 0o777 != 0o700:
+        raise MetadataError("TASK_ROOT_INVALID")
+
+
+def _cleanup_dir(path: Path | None) -> bool:
+    if path is None:
+        return True
+    if not path.exists():
+        return True
+    ok = True
+    for child in sorted(path.rglob("*"), reverse=True):
+        try:
+            if child.is_symlink() or child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        except OSError:
+            ok = False
+    try:
+        if path.exists():
+            path.rmdir()
+    except OSError:
+        ok = False
+    return ok and not path.exists()
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write")
+        view = view[written:]
+
+
+def _write_p1_input_dir(task_root: Path, bodies: dict[str, bytes]) -> Path:
+    _require_task_root(task_root)
+    input_dir = task_root / "input"
+    if input_dir.exists() or input_dir.is_symlink():
+        raise MetadataError("INPUT_DIR_EXISTS")
+    input_dir.mkdir(mode=0o700)
+    try:
+        for name in P1_KEYS:
+            path = input_dir / name
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                _write_all(fd, bodies[name])
+            finally:
+                os.close(fd)
+            if path.stat().st_mode & 0o777 != 0o600:
+                raise MetadataError("INPUT_DIR_INVALID")
+        if {path.name for path in input_dir.iterdir()} != set(P1_KEYS):
+            raise MetadataError("INPUT_DIR_INVALID")
+        if input_dir.stat().st_mode & 0o777 != 0o700:
+            raise MetadataError("INPUT_DIR_INVALID")
+        return input_dir
+    except MetadataError:
+        if not _cleanup_dir(input_dir):
+            raise MetadataError("INPUT_CLEANUP_FAILED")
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if not _cleanup_dir(input_dir):
+            raise MetadataError("INPUT_CLEANUP_FAILED") from exc
+        raise MetadataError("INPUT_DIR_INVALID") from exc
+
+
+def _worker_env(*, cache_dir: Path) -> dict[str, str]:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mode = cache_dir.stat().st_mode & 0o777
+    if mode != 0o700:
+        cache_dir.chmod(0o700)
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "TMPDIR": str(cache_dir),
+        "XDG_CACHE_HOME": str(cache_dir),
+        "MPLCONFIGDIR": str(cache_dir),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def process_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Ambiguous: fail closed so cleanup must keep polling / escalate.
+        return True
+    return True
+
+
+def _close_proc_pipes(proc: subprocess.Popen[Any]) -> None:
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def terminate_process_group(
+    proc: subprocess.Popen[Any],
+    *,
+    pgid: int | None = None,
+    budget_s: float = WORKER_CLEANUP_BUDGET_S,
+) -> bool:
+    """TERM→KILL own start_new_session group; True only after bounded absence."""
+    resolved = pgid
+    if resolved is None:
+        try:
+            resolved = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            resolved = None
+    deadline = time.monotonic() + max(0.0, float(budget_s))
+
+    def _signal_group(sig: int) -> None:
+        if resolved is None:
+            return
+        try:
+            os.killpg(resolved, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    _signal_group(signal.SIGTERM)
+    # Leader wait alone is not group cleanup; only bound the leader reap attempt.
+    try:
+        proc.wait(timeout=min(0.2, max(0.0, deadline - time.monotonic())))
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(signal.SIGKILL)
+
+    while True:
+        leader_reaped = proc.poll() is not None
+        group_absent = resolved is None or not process_group_alive(resolved)
+        if leader_reaped and group_absent:
+            # Re-check briefly: SIGKILL delivery can leave a PID visible for ms.
+            stable = True
+            for _ in range(3):
+                if time.monotonic() >= deadline:
+                    stable = False
+                    break
+                time.sleep(0.01)
+                if resolved is not None and process_group_alive(resolved):
+                    stable = False
+                    break
+                if proc.poll() is None:
+                    stable = False
+                    break
+            if stable:
+                try:
+                    proc.wait(timeout=0.05)
+                except subprocess.TimeoutExpired:
+                    pass
+                _close_proc_pipes(proc)
+                return True
+        if time.monotonic() >= deadline:
+            break
+        _signal_group(signal.SIGKILL)
+        time.sleep(0.01)
+
+    try:
+        proc.wait(timeout=0.05)
+    except subprocess.TimeoutExpired:
+        pass
+    _close_proc_pipes(proc)
+    leader_reaped = proc.poll() is not None
+    group_absent = resolved is None or not process_group_alive(resolved)
+    return leader_reaped and group_absent
+
+
+def _blocked_worker_result(reason_class: str) -> dict[str, object]:
+    return {
+        "protocol": WORKER_PROTOCOL,
+        "status": "BLOCKED",
+        "reason_class": reason_class,
+        "network_guard_attempts": 0,
+        "network_guard_scope": WORKER_NETWORK_GUARD_SCOPE,
+        "elapsed_import_s": 0.0,
+        "elapsed_compute_s": 0.0,
+        "attempt_count": 1,
+    }
+
+
+def _protocol_invalid() -> dict[str, object]:
+    return _blocked_worker_result("WORKER_PROTOCOL_INVALID")
+
+
+def _worker_nonneg_number(value: object, *, max_value: float) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if math.isnan(number) or math.isinf(number) or number < 0 or number > max_value:
+        return None
+    return number
+
+
+def _worker_nonneg_int(value: object, *, max_value: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > max_value:
+        return None
+    return value
+
+
+def validate_worker_payload(
+    payload: object, *, returncode: int
+) -> tuple[int, dict[str, object]]:
+    invalid = _protocol_invalid()
+    if not isinstance(payload, dict):
+        return 2, invalid
+    status = payload.get("status")
+    if payload.get("protocol") != WORKER_PROTOCOL or status not in {"OK", "BLOCKED"}:
+        return 2, invalid
+    if status == "OK":
+        if set(payload) != WORKER_OK_KEYS:
+            return 2, invalid
+        if returncode != 0:
+            return 2, invalid
+        attempts = _worker_nonneg_int(payload.get("network_guard_attempts"), max_value=0)
+        attempt_count = _worker_nonneg_int(payload.get("attempt_count"), max_value=1)
+        import_s = _worker_nonneg_number(
+            payload.get("elapsed_import_s"), max_value=MATERIALIZED_WORKER_BUDGET_S
+        )
+        compute_s = _worker_nonneg_number(
+            payload.get("elapsed_compute_s"), max_value=MATERIALIZED_WORKER_BUDGET_S
+        )
+        session_count = _worker_nonneg_int(
+            payload.get("session_count"), max_value=EXPECTED_SESSION_COUNT
+        )
+        digests = (
+            payload.get("v7_config_sha256"),
+            payload.get("p1_binding_sha256"),
+            payload.get("p1_manifest_sha256"),
+            payload.get("candidate_whole_sha256"),
+            payload.get("internal_materialized_sha256"),
+        )
+        if (
+            attempts != 0
+            or attempt_count != 1
+            or import_s is None
+            or compute_s is None
+            or session_count != EXPECTED_SESSION_COUNT
+            or payload.get("network_guard_scope") != WORKER_NETWORK_GUARD_SCOPE
+            or payload.get("internal_verified") is not True
+            or any(not isinstance(item, str) or _HEX64.fullmatch(item) is None for item in digests)
+            or payload.get("v7_config_sha256") != EXPECTED_V7_CONFIG_SHA256
+            or payload.get("p1_binding_sha256") != BINDING_SHA256
+            or payload.get("p1_manifest_sha256") != P1_MANIFEST_SHA256
+        ):
+            return 2, invalid
+        if import_s + compute_s > MATERIALIZED_WORKER_BUDGET_S:
+            return 2, invalid
+        return 0, {
+            "protocol": WORKER_PROTOCOL,
+            "status": "OK",
+            "session_count": EXPECTED_SESSION_COUNT,
+            "v7_config_sha256": EXPECTED_V7_CONFIG_SHA256,
+            "p1_binding_sha256": BINDING_SHA256,
+            "p1_manifest_sha256": P1_MANIFEST_SHA256,
+            "candidate_whole_sha256": str(payload["candidate_whole_sha256"]),
+            "internal_materialized_sha256": str(payload["internal_materialized_sha256"]),
+            "internal_verified": True,
+            "network_guard_attempts": 0,
+            "network_guard_scope": WORKER_NETWORK_GUARD_SCOPE,
+            "elapsed_import_s": import_s,
+            "elapsed_compute_s": compute_s,
+            "attempt_count": 1,
+        }
+
+    if set(payload) - WORKER_BLOCKED_KEYS:
+        return 2, invalid
+    if not WORKER_BLOCKED_KEYS <= set(payload):
+        return 2, invalid
+    reason = payload.get("reason_class")
+    if reason not in WORKER_BLOCKED_REASONS or returncode == 0:
+        return 2, invalid
+    attempts = _worker_nonneg_int(payload.get("network_guard_attempts"), max_value=10_000)
+    attempt_count = _worker_nonneg_int(payload.get("attempt_count"), max_value=1)
+    import_s = _worker_nonneg_number(
+        payload.get("elapsed_import_s"), max_value=MATERIALIZED_WORKER_BUDGET_S
+    )
+    compute_s = _worker_nonneg_number(
+        payload.get("elapsed_compute_s"), max_value=MATERIALIZED_WORKER_BUDGET_S
+    )
+    if (
+        attempts is None
+        or attempt_count != 1
+        or import_s is None
+        or compute_s is None
+        or payload.get("network_guard_scope") != WORKER_NETWORK_GUARD_SCOPE
+    ):
+        return 2, invalid
+    return 2, {
+        "protocol": WORKER_PROTOCOL,
+        "status": "BLOCKED",
+        "reason_class": reason,
+        "network_guard_attempts": attempts,
+        "network_guard_scope": WORKER_NETWORK_GUARD_SCOPE,
+        "elapsed_import_s": import_s,
+        "elapsed_compute_s": compute_s,
+        "attempt_count": 1,
+    }
+
+
+def _parse_worker_stdout(stdout: str, *, returncode: int) -> tuple[int, dict[str, object]]:
+    lines = [line for line in (stdout or "").splitlines() if line.strip()]
+    # Exactly one protocol line; any extra stdout is not ignored as success.
+    if len(lines) != 1:
+        return 2, _protocol_invalid()
+    try:
+        payload = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return 2, _protocol_invalid()
+    return validate_worker_payload(payload, returncode=returncode)
+
+
+def spawn_materialized_worker(
+    *,
+    python_executable: str,
+    input_dir: Path,
+    cache_dir: Path,
+    timeout_s: float = MATERIALIZED_WORKER_BUDGET_S,
+    cleanup_budget_s: float = WORKER_CLEANUP_BUDGET_S,
+    worker_source: str | None = None,
+    proc_holder: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    env = _worker_env(cache_dir=cache_dir)
+    for key in list(env):
+        if key in {"HOME", "CODEX_HOME", "PYTHONPATH", "VIRTUAL_ENV", ROOT_ENV}:
+            raise MetadataError("WORKER_ENV_INVALID")
+    if any(
+        name in env
+        for name in (
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+            "TWELVE_DATA_API_KEY",
+        )
+    ):
+        raise MetadataError("WORKER_ENV_INVALID")
+    source = worker_source if worker_source is not None else _MATERIALIZED_WORKER_SOURCE
+    proc = subprocess.Popen(
+        [python_executable, "-I", "-c", source, str(input_dir)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pgid = None
+    if proc_holder is not None:
+        proc_holder["proc"] = proc
+        proc_holder["pgid"] = pgid
+    timed_out = False
+    cleanup_ok = True
+    stdout = ""
+    try:
+        try:
+            stdout, _stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            cleanup_ok = terminate_process_group(
+                proc, pgid=pgid, budget_s=cleanup_budget_s
+            )
+            try:
+                stdout, _stderr = proc.communicate(timeout=min(5.0, cleanup_budget_s))
+            except subprocess.TimeoutExpired:
+                cleanup_ok = False
+                _close_proc_pipes(proc)
+        # Leader may exit while TERM-ignoring descendants remain in the group.
+        if cleanup_ok and pgid is not None and process_group_alive(pgid):
+            cleanup_ok = terminate_process_group(
+                proc, pgid=pgid, budget_s=cleanup_budget_s
+            )
+            try:
+                if proc.poll() is not None and not (stdout or ""):
+                    # Drain pipes after late group cleanup without unbounded wait.
+                    stdout, _stderr = proc.communicate(timeout=min(1.0, cleanup_budget_s))
+            except Exception:  # noqa: BLE001
+                _close_proc_pipes(proc)
+    except Exception:  # noqa: BLE001
+        cleanup_ok = (
+            terminate_process_group(proc, pgid=pgid, budget_s=cleanup_budget_s)
+            and cleanup_ok
+        )
+        raise
+    finally:
+        if pgid is not None and process_group_alive(pgid):
+            cleanup_ok = (
+                terminate_process_group(proc, pgid=pgid, budget_s=cleanup_budget_s)
+                and cleanup_ok
+            )
+        # Clear holder only after confirmed group absence; else outer finally remediates.
+        if cleanup_ok and proc_holder is not None:
+            proc_holder["proc"] = None
+            proc_holder["pgid"] = None
+    if not cleanup_ok:
+        return 2, _blocked_worker_result("WORKER_CLEANUP_FAILED")
+    if timed_out:
+        return 2, _blocked_worker_result("WORKER_TIMEOUT")
+    return _parse_worker_stdout(
+        stdout or "",
+        returncode=int(proc.returncode if proc.returncode is not None else 2),
+    )
+
+
+def run_materialized_identity_read(
+    *,
+    client: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    root: str | None = None,
+    budget_s: float = MATERIALIZED_ENTRY_BUDGET_S,
+    read_budget_s: float = OVERALL_BUDGET_S,
+    worker_budget_s: float = MATERIALIZED_WORKER_BUDGET_S,
+    create_client: Callable[[], Any] | None = None,
+    spawn_worker: Callable[..., tuple[int, dict[str, object]]] | None = None,
+    preflight: Callable[[], dict[str, object]] | None = None,
+    task_root: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    started = (clock or time.monotonic)()
+    deadline = started + budget_s
+    mono = clock or time.monotonic
+    result: dict[str, object] = {
+        **_base_result(),
+        "materialized_identity_matched": False,
+        "runtime": None,
+        "p1": None,
+        "candidate": None,
+        "worker": None,
+    }
+    input_dir: Path | None = None
+    cleanup_ok = True
+    worker_proc_holder: dict[str, Any] = {"proc": None, "pgid": None}
+
+    def _on_term(_signum: int, _frame: object) -> None:
+        proc = worker_proc_holder.get("proc")
+        pgid = worker_proc_holder.get("pgid")
+        if isinstance(proc, subprocess.Popen):
+            terminate_process_group(
+                proc, pgid=pgid if isinstance(pgid, int) else None
+            )
+        raise MetadataError("ENTRY_TERMINATED")
+
+    previous_term = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _on_term)
+    try:
+        try:
+            _require_actions_identity()
+            runtime = (preflight or preflight_materialized_runtime)()
+            result["runtime"] = runtime
+            root_uri = root if root is not None else os.environ.get(ROOT_ENV, "")
+            task = Path(task_root or os.environ.get(TASK_ROOT_ENV, ""))
+            if not isinstance(root_uri, str) or not root_uri:
+                raise MetadataError("ROOT_MISMATCH")
+            _parse_root(root_uri)
+            _require_task_root(task)
+            declared = os.environ.get(VENV_PYTHON_ENV)
+            if declared is not None and declared != sys.executable:
+                raise MetadataError("RUNTIME_PYTHON_MISMATCH")
+            # Read budget starts before client construction.
+            read_deadline = min(mono() + read_budget_s, deadline)
+            _remaining(read_deadline, mono)
+            if client is None:
+                factory = create_client or _lazy_storage_client
+                client = factory()
+            _remaining(read_deadline, mono)
+            bodies = read_p1_materialize_group(
+                client,
+                root_uri=root_uri,
+                deadline=read_deadline,
+                clock=mono,
+            )
+            result["p1"] = {
+                key: {
+                    "generation": int(P1_PINS[key]["generation"]),
+                    "size_bytes": int(P1_PINS[key]["size_bytes"]),
+                    "sha256": str(P1_PINS[key]["sha256"]),
+                    "content_hash_verified": True,
+                    "body_read": True,
+                }
+                for key in P1_KEYS
+            }
+            _remaining(deadline, mono)
+            input_dir = _write_p1_input_dir(task, bodies)
+            cache_dir = task / "worker-cache"
+            cache_dir.mkdir(mode=0o700, exist_ok=True)
+            _remaining(deadline, mono)
+            worker_timeout = min(worker_budget_s, max(0.1, deadline - mono()))
+            if spawn_worker is None:
+                worker_code, raw_payload = spawn_materialized_worker(
+                    python_executable=sys.executable,
+                    input_dir=input_dir,
+                    cache_dir=cache_dir,
+                    timeout_s=worker_timeout,
+                    proc_holder=worker_proc_holder,
+                )
+            else:
+                worker_code, raw_payload = spawn_worker(
+                    python_executable=sys.executable,
+                    input_dir=input_dir,
+                    cache_dir=cache_dir,
+                    timeout_s=worker_timeout,
+                )
+            worker_code, worker_payload = validate_worker_payload(
+                raw_payload, returncode=worker_code
+            )
+        except MetadataError as exc:
+            result["reason_class"] = exc.reason_class
+            return 2, result
+        except Exception:  # noqa: BLE001
+            result["reason_class"] = "MATERIALIZE_FAILED"
+            return 2, result
+        finally:
+            if input_dir is not None:
+                cleanup_ok = _cleanup_dir(input_dir)
+                if not cleanup_ok and result.get("reason_class") is None:
+                    # Defer final reason until after worker projection when needed.
+                    pass
+
+        result["worker"] = {
+            "network_guard_scope": WORKER_NETWORK_GUARD_SCOPE,
+            "network_guard_attempts": worker_payload.get("network_guard_attempts"),
+            "elapsed_import_s": worker_payload.get("elapsed_import_s"),
+            "elapsed_compute_s": worker_payload.get("elapsed_compute_s"),
+            "attempt_count": 1,
+        }
+        if not cleanup_ok:
+            result["reason_class"] = "INPUT_CLEANUP_FAILED"
+            result["materialized_identity_matched"] = False
+            return 2, result
+        if worker_payload.get("status") != "OK" or worker_code != 0:
+            reason = worker_payload.get("reason_class")
+            result["reason_class"] = (
+                reason if reason in WORKER_BLOCKED_REASONS else "WORKER_PROTOCOL_INVALID"
+            )
+            return 2, result
+        if worker_payload.get("network_guard_attempts") != 0:
+            result["reason_class"] = "NETWORK_ATTEMPT_REFUSED"
+            return 2, result
+
+        whole = worker_payload.get("candidate_whole_sha256")
+        internal = worker_payload.get("internal_materialized_sha256")
+        match = (
+            whole == EXPECTED_MATERIALIZED_WHOLE_SHA256
+            and worker_payload.get("internal_verified") is True
+            and isinstance(internal, str)
+            and _HEX64.fullmatch(internal) is not None
+            and worker_payload.get("session_count") == EXPECTED_SESSION_COUNT
+            and worker_payload.get("v7_config_sha256") == EXPECTED_V7_CONFIG_SHA256
+            and worker_payload.get("p1_binding_sha256") == BINDING_SHA256
+            and worker_payload.get("p1_manifest_sha256") == P1_MANIFEST_SHA256
+        )
+        result["candidate"] = {
+            "expected_whole_sha256": EXPECTED_MATERIALIZED_WHOLE_SHA256,
+            "observed_whole_sha256": whole if isinstance(whole, str) else None,
+            "whole_sha_matched": whole == EXPECTED_MATERIALIZED_WHOLE_SHA256,
+            "internal_materialized_sha256": internal if isinstance(internal, str) else None,
+            "internal_verified": worker_payload.get("internal_verified") is True,
+            "session_count": EXPECTED_SESSION_COUNT,
+            "session_count_matched": worker_payload.get("session_count") == EXPECTED_SESSION_COUNT,
+            "v7_config_sha256": EXPECTED_V7_CONFIG_SHA256,
+            "v7_config_matched": worker_payload.get("v7_config_sha256") == EXPECTED_V7_CONFIG_SHA256,
+            "p1_binding_sha256": BINDING_SHA256,
+            "p1_manifest_sha256": P1_MANIFEST_SHA256,
+        }
+        try:
+            _remaining(deadline, mono)
+        except MetadataError as exc:
+            result["reason_class"] = exc.reason_class
+            return 2, result
+        if not match:
+            result["reason_class"] = "HASH_MISMATCH"
+            return 2, result
+        result["status"] = "MATERIALIZED_IDENTITY_READY"
+        result["materialized_identity_matched"] = True
+        return 0, result
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        proc = worker_proc_holder.get("proc")
+        pgid = worker_proc_holder.get("pgid")
+        if isinstance(proc, subprocess.Popen):
+            terminate_process_group(
+                proc, pgid=pgid if isinstance(pgid, int) else None
+            )
+        elif isinstance(pgid, int) and process_group_alive(pgid):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if input_dir is not None and input_dir.exists():
+            if not _cleanup_dir(input_dir):
+                result["status"] = "BLOCKED"
+                result["materialized_identity_matched"] = False
+                result["reason_class"] = "INPUT_CLEANUP_FAILED"
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if argv == ["--materialized-identity-only"]:
+        code, payload = run_materialized_identity_read()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return code
     if argv == ["--contracts-only"]:
         code, payload = run_contracts_read()
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
