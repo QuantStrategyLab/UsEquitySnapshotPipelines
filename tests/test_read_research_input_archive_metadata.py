@@ -752,43 +752,73 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         "          - metadata_only\n"
         "          - integrity_only\n"
         "          - contracts_only\n"
+        "          - materialized_identity_only\n"
     ) in raw
     research_marker = "  r6-research:\n"
     meta_marker = "  research-input-archive-metadata:\n"
     integrity_marker = "  research-input-archive-integrity:\n"
     contracts_marker = "  research-input-archive-contracts:\n"
+    materialized_marker = "  research-input-archive-materialized-identity:\n"
     assert research_marker in raw
     assert meta_marker in raw
     assert integrity_marker in raw
     assert contracts_marker in raw
+    assert materialized_marker in raw
     research_start = raw.index(research_marker)
     meta_start = raw.index(meta_marker)
     integrity_start = raw.index(integrity_marker)
     contracts_start = raw.index(contracts_marker)
-    assert research_start < meta_start < integrity_start < contracts_start
+    materialized_start = raw.index(materialized_marker)
+    assert research_start < meta_start < integrity_start < contracts_start < materialized_start
     research_block = raw[research_start:meta_start]
     meta_block = raw[meta_start:integrity_start]
     integrity_block = raw[integrity_start:contracts_start]
-    contracts_block = raw[contracts_start:]
+    contracts_block = raw[contracts_start:materialized_start]
+    materialized_block = raw[materialized_start:]
     assert "    if: ${{ inputs.mode == 'preflight' || inputs.mode == 'execute' }}\n" in research_block
     assert "    if: ${{ inputs.mode == 'metadata_only' }}\n" in meta_block
     assert "    if: ${{ inputs.mode == 'integrity_only' }}\n" in integrity_block
     assert "    if: ${{ inputs.mode == 'contracts_only' }}\n" in contracts_block
+    assert "    if: ${{ inputs.mode == 'materialized_identity_only' }}\n" in materialized_block
     assert "environment: market-data-nonlive" in research_block
     assert "environment: market-data-nonlive" in meta_block
     assert "environment: market-data-nonlive" in integrity_block
     assert "environment: market-data-nonlive" in contracts_block
-    for block in (meta_block, integrity_block, contracts_block):
+    assert "environment: market-data-nonlive" in materialized_block
+    assert "timeout-minutes: 20" in materialized_block
+    for block in (meta_block, integrity_block, contracts_block, materialized_block):
         assert "TWELVE_DATA_API_KEY" not in block
         assert "SOXL_V7_R6_LICENSE_EVIDENCE_SHA256" not in block
-        assert "UsEquityStrategies" not in block
         assert "ALPACA" not in block
-        assert "DEADLINE_EXCEEDED" in block
-        assert "124" in block
         assert "2>/dev/null" in block
-    for block in (meta_block, integrity_block):
+    for block in (meta_block, integrity_block, materialized_block):
         assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
     assert "SOXL_V7_R6_PRIVATE_ROOT" not in contracts_block
+    assert "UsEquityStrategies" not in meta_block
+    assert "UsEquityStrategies" not in integrity_block
+    assert "UsEquityStrategies" not in contracts_block
+    assert "git fetch --no-tags --depth=1 origin ${LEGACY_SHA}" in materialized_block
+    assert 'LEGACY_SHA="0ae8ac4eb886431f9f9695702d9dd60982919dae"' in materialized_block
+    assert "timeout --kill-after=10s 300s" in materialized_block
+    assert "timeout --kill-after=10s 600s" in materialized_block
+    assert "timeout 150s" in materialized_block
+    assert "timeout 60s rm -rf --" in materialized_block
+    assert "if: always()" in materialized_block
+    assert "qsl-materialized-identity-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" in materialized_block
+    assert "uv==0.11.19" in materialized_block
+    assert 'uv 0.11.19' in materialized_block
+    assert "UV_CACHE_DIR" in materialized_block
+    assert "PIP_CACHE_DIR" in materialized_block
+    assert "--materialized-identity-only" in materialized_block
+    assert "CODEX_HOME" not in materialized_block
+    auth_marker = "Authenticate existing non-live research identity"
+    prep_marker = "Prepare legacy source and locked venv"
+    assert prep_marker in materialized_block
+    assert auth_marker in materialized_block
+    assert materialized_block.index(prep_marker) < materialized_block.index(auth_marker)
+    assert materialized_block.index(auth_marker) < materialized_block.index(
+        "Verify research input archive materialized identity"
+    )
     assert (
         "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata 2>/dev/null"
         in meta_block
@@ -803,6 +833,7 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
     )
     assert "content_integrity_verified" in integrity_block
     assert "contracts_integrity_verified" in contracts_block
+    assert "materialized_identity_matched" in materialized_block
     assert "if: inputs.mode == 'preflight'" in research_block
     assert "if: inputs.mode == 'execute'" in research_block
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in research_block
@@ -1769,3 +1800,662 @@ def test_contracts_module_main_only_flag_subprocess() -> None:
     assert proc.returncode == 2
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert payload["reason_class"] == "ARGV_REFUSED"
+
+
+def _materialized_actions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    _actions(monkeypatch)
+    task = tmp_path / "task"
+    task.mkdir(mode=0o700)
+    source = task / "source"
+    source.mkdir(mode=0o700)
+    lock = source / "uv.lock"
+    lock.write_bytes(b"synthetic-lock")
+    monkeypatch.setattr(reader, "LEGACY_UV_LOCK_SHA256", _sha(b"synthetic-lock"))
+    monkeypatch.setenv(reader.TASK_ROOT_ENV, str(task))
+    monkeypatch.setenv(reader.SOURCE_DIR_ENV, str(source))
+    monkeypatch.setenv(reader.SOURCE_COMMIT_ENV, reader.LEGACY_SOURCE_COMMIT)
+    monkeypatch.setenv(reader.VENV_PYTHON_ENV, sys.executable)
+    (task / "cache").mkdir(mode=0o700)
+    return task
+
+
+def _materialized_p1_bodies() -> dict[str, bytes]:
+    bodies = _integrity_bodies()
+    return {
+        "binding": bodies["binding"],
+        "manifest": bodies["manifest"],
+        "closes": bodies["closes"],
+        "assurance": bodies["assurance"],
+    }
+
+
+def _materialized_store(bodies: dict[str, bytes]) -> dict[tuple[str, str], dict[str, Any]]:
+    prefix = "exact-study-root/"
+    store: dict[tuple[str, str], dict[str, Any]] = {}
+    mapping = {
+        "binding.json": bodies["binding"],
+        "manifest.json": bodies["manifest"],
+        "closes.json": bodies["closes"],
+        "assurance.json": bodies["assurance"],
+    }
+    for key, body in mapping.items():
+        store[("synthetic-r6-private-bucket", prefix + f"p1/{key}")] = {
+            "generation": int(reader.P1_PINS[key]["generation"]),
+            "size": int(reader.P1_PINS[key]["size_bytes"]),
+            "body": body,
+        }
+    store[(reader.RAW_BUCKET, reader.RAW_OBJECT)] = {
+        "generation": reader.RAW_GENERATION,
+        "size": reader.RAW_SIZE_BYTES,
+        "body": b"RAW-MUST-NOT",
+    }
+    store[(reader.RAW_BUCKET, reader.RAW_PREFIX + reader.CONTRACT_SPECS[0][0])] = {
+        "generation": 1,
+        "size": 1,
+        "body": b"C",
+    }
+    return store
+
+
+def _patch_materialized_pins(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, bytes]) -> None:
+    bind_sha = _sha(bodies["binding"])
+    manifest_sha = _sha(bodies["manifest"])
+    pins = {key: dict(value) for key, value in reader.P1_PINS.items()}
+    pins["binding.json"]["sha256"] = bind_sha
+    pins["manifest.json"]["sha256"] = manifest_sha
+    pins["closes.json"]["sha256"] = _sha(bodies["closes"])
+    pins["assurance.json"]["sha256"] = _sha(bodies["assurance"])
+    monkeypatch.setattr(reader, "P1_PINS", pins)
+    monkeypatch.setattr(reader, "P1_MANIFEST_SHA256", manifest_sha)
+    monkeypatch.setattr(reader, "BINDING_SHA256", bind_sha)
+    monkeypatch.setattr(
+        reader,
+        "MATERIALIZED_MAX_BODY_BYTES",
+        sum(int(pin["size_bytes"]) for pin in pins.values()),
+    )
+
+
+def _ok_worker_payload(
+    *,
+    whole: str | None = None,
+    internal: str | None = None,
+    internal_verified: bool = True,
+    attempts: int = 0,
+) -> dict[str, object]:
+    return {
+        "protocol": reader.WORKER_PROTOCOL,
+        "status": "OK",
+        "session_count": reader.EXPECTED_SESSION_COUNT,
+        "v7_config_sha256": reader.EXPECTED_V7_CONFIG_SHA256,
+        "p1_binding_sha256": reader.BINDING_SHA256,
+        "p1_manifest_sha256": reader.P1_MANIFEST_SHA256,
+        "candidate_whole_sha256": whole or reader.EXPECTED_MATERIALIZED_WHOLE_SHA256,
+        "internal_materialized_sha256": internal or ("a" * 64),
+        "internal_verified": internal_verified,
+        "network_guard_attempts": attempts,
+        "network_guard_scope": reader.WORKER_NETWORK_GUARD_SCOPE,
+        "elapsed_import_s": 0.01,
+        "elapsed_compute_s": 0.02,
+        "attempt_count": 1,
+    }
+
+
+def _fake_spawn(payload: dict[str, object] | None = None, code: int = 0) -> Any:
+    body = payload if payload is not None else _ok_worker_payload()
+
+    def _spawn(**_kwargs: Any) -> tuple[int, dict[str, object]]:
+        return code, body
+
+    return _spawn
+
+
+def test_materialized_budget_constant() -> None:
+    assert reader.MATERIALIZED_MAX_BODY_BYTES == 152109
+    assert reader.EXPECTED_MATERIALIZED_WHOLE_SHA256.startswith("6477644f")
+    assert reader.LEGACY_SOURCE_COMMIT == "0ae8ac4eb886431f9f9695702d9dd60982919dae"
+    assert reader.LEGACY_UV_LOCK_SHA256.startswith("56f837bd")
+
+
+def test_materialized_success_exact_eight_gets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    client = FakeClient(_materialized_store(bodies))
+
+    def fake_preflight() -> dict[str, object]:
+        return {
+            "source_commit_matched": True,
+            "lock_digest_matched": True,
+            "python_version_matched": True,
+            "dependency_versions_matched": True,
+            "dependency_origins_matched": True,
+            "uesp_noneditable_source_matched": True,
+        }
+
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=fake_preflight,
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 0
+    assert payload["status"] == "MATERIALIZED_IDENTITY_READY"
+    assert payload["materialized_identity_matched"] is True
+    assert payload["research_qualification"] is False
+    assert payload["trading_rights"] is False
+    assert payload["content_verified"] is False
+    assert payload["content_integrity_verified"] is False
+    assert payload["license_verified"] is False
+    assert payload["candidate"]["internal_verified"] is True
+    ops = [event[0] for event in client.events]
+    assert ops.count("reload") == 4
+    assert ops.count("download") == 4
+    assert len(client.events) == 8
+    requested = sum(event[1][4] for event in client.events if event[0] == "download")
+    assert requested == 152109
+    assert not any(event[1][1] == reader.RAW_OBJECT for event in client.events)
+    assert not any("contract" in event[1][1] for event in client.events)
+    assert not (task / "input").exists()
+    text = json.dumps(payload)
+    assert "SYN-" not in text
+    assert "gs://" not in text
+    assert "exact-study-root" not in text
+
+
+def test_materialized_runtime_error_stops_before_gcs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    client = FakeClient(_materialized_store(bodies))
+
+    def boom_preflight() -> dict[str, object]:
+        raise reader.MetadataError("RUNTIME_LOCK_MISMATCH")
+
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=boom_preflight,
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "RUNTIME_LOCK_MISMATCH"
+    assert client.events == []
+
+
+def test_materialized_first_error_stops_and_hash_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+
+    client = FakeClient(_materialized_store(bodies))
+    client.store[("synthetic-r6-private-bucket", "exact-study-root/p1/manifest.json")][
+        "generation"
+    ] = 1
+
+    def fake_preflight() -> dict[str, object]:
+        return {"ok": True}
+
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=fake_preflight,
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "P1_METADATA_MISMATCH"
+    assert len([e for e in client.events if e[0] == "reload"]) == 1
+    assert not any(e[0] == "download" for e in client.events)
+
+    client = FakeClient(_materialized_store(bodies))
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=fake_preflight,
+        spawn_worker=_fake_spawn(_ok_worker_payload(whole="0" * 64)),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "HASH_MISMATCH"
+    assert payload["candidate"]["observed_whole_sha256"] == "0" * 64
+    assert payload["candidate"]["expected_whole_sha256"] == reader.EXPECTED_MATERIALIZED_WHOLE_SHA256
+    assert payload["candidate"]["internal_verified"] is True
+    assert payload["materialized_identity_matched"] is False
+
+
+def test_materialized_worker_env_and_timeout_reap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o700)
+    env = reader._worker_env(cache_dir=cache)
+    assert "HOME" not in env
+    assert "CODEX_HOME" not in env
+    assert "PYTHONPATH" not in env
+    assert reader.ROOT_ENV not in env
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
+    assert env["TMPDIR"] == str(cache)
+
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    marker = tmp_path / "worker-pids.txt"
+    hang = f"""
+import os, signal, time, sys
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+with open({str(marker)!r}, "w", encoding="utf-8") as fh:
+    fh.write(f"{{os.getpid()}} {{child}} {{os.getpgrp()}}\\n")
+while True:
+    time.sleep(1)
+"""
+    holder: dict[str, object] = {}
+    code, payload = reader.spawn_materialized_worker(
+        python_executable=sys.executable,
+        input_dir=tmp_path,
+        cache_dir=cache,
+        timeout_s=0.4,
+        worker_source=hang,
+        proc_holder=holder,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_TIMEOUT"
+    assert holder.get("proc") is None
+    assert holder.get("pgid") is None
+    assert marker.exists()
+    leader_pid, child_pid, pgid = (int(x) for x in marker.read_text(encoding="utf-8").split())
+    assert _pid_alive(leader_pid) is False
+    assert _pid_alive(child_pid) is False
+    assert reader.process_group_alive(pgid) is False
+
+    # Leader exits first; child ignores TERM and keeps pipes open until group KILL.
+    marker2 = tmp_path / "worker-pids-2.txt"
+    leader_exit = f"""
+import os, signal, time, sys
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # Keep inherited stdout/stderr open so parent communicate cannot finish early.
+    while True:
+        time.sleep(1)
+with open({str(marker2)!r}, "w", encoding="utf-8") as fh:
+    fh.write(f"{{os.getpid()}} {{child}} {{os.getpgrp()}}\\n")
+sys.exit(0)
+"""
+    holder2: dict[str, object] = {}
+    code, payload = reader.spawn_materialized_worker(
+        python_executable=sys.executable,
+        input_dir=tmp_path,
+        cache_dir=cache,
+        timeout_s=0.5,
+        cleanup_budget_s=reader.WORKER_CLEANUP_BUDGET_S,
+        worker_source=leader_exit,
+        proc_holder=holder2,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_TIMEOUT"
+    assert payload["status"] == "BLOCKED"
+    assert holder2.get("proc") is None
+    assert holder2.get("pgid") is None
+    assert marker2.exists()
+    _leader_pid, child_pid2, pgid2 = (int(x) for x in marker2.read_text(encoding="utf-8").split())
+    assert _pid_alive(child_pid2) is False
+    assert reader.process_group_alive(pgid2) is False
+
+    # Cleanup budget exhaustion must keep holder for outer remedy; never READY.
+    marker3 = tmp_path / "worker-pids-3.txt"
+    hang2 = f"""
+import os, signal, time, sys
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True:
+        time.sleep(1)
+with open({str(marker3)!r}, "w", encoding="utf-8") as fh:
+    fh.write(f"{{os.getpid()}} {{child}} {{os.getpgrp()}}\\n")
+while True:
+    time.sleep(1)
+"""
+    holder3: dict[str, object] = {}
+    real_group_alive = reader.process_group_alive
+    monkeypatch.setattr(reader, "process_group_alive", lambda _pgid: True)
+    code, payload = reader.spawn_materialized_worker(
+        python_executable=sys.executable,
+        input_dir=tmp_path,
+        cache_dir=cache,
+        timeout_s=0.3,
+        cleanup_budget_s=0.05,
+        worker_source=hang2,
+        proc_holder=holder3,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_CLEANUP_FAILED"
+    assert payload["status"] == "BLOCKED"
+    assert isinstance(holder3.get("proc"), subprocess.Popen)
+    assert isinstance(holder3.get("pgid"), int)
+    # Remediate own group after the failure assertion (test hygiene, not production API).
+    stuck = holder3["proc"]
+    stuck_pgid = holder3["pgid"]
+    assert isinstance(stuck, subprocess.Popen)
+    assert isinstance(stuck_pgid, int)
+    monkeypatch.setattr(reader, "process_group_alive", real_group_alive)
+    assert reader.terminate_process_group(stuck, pgid=stuck_pgid, budget_s=5.0) is True
+    holder3["proc"] = None
+    holder3["pgid"] = None
+
+
+def test_materialized_cli_guards(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    code, payload = reader.run_materialized_identity_read(
+        create_client=lambda: (_ for _ in ()).throw(AssertionError("no client")),
+        preflight=lambda: (_ for _ in ()).throw(AssertionError("no preflight")),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "ENV_REFUSED"
+
+    _materialized_actions(monkeypatch, tmp_path)
+    assert reader.main(["--materialized-identity-only", "extra"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ARGV_REFUSED"
+
+
+def test_materialized_output_redaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+
+    class ExplodingBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            raise RuntimeError("secret-token gs://private/path credentials=xyz")
+
+    class ExplodingBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return ExplodingBlob(self.store, self.name, name, generation, self.events)
+
+    class ExplodingClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return ExplodingBucket(self.store, name, self.events)
+
+    code, payload = reader.run_materialized_identity_read(
+        client=ExplodingClient(_materialized_store(bodies)),
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 2
+    text = json.dumps(payload)
+    assert "secret-token" not in text
+    assert "credentials=" not in text
+    assert "gs://private/path" not in text
+
+
+def test_materialized_worker_protocol_rejects_noise_and_unsafe_fields() -> None:
+    ok = _ok_worker_payload()
+    code, payload = reader._parse_worker_stdout(
+        "noise\n" + json.dumps(ok) + "\n", returncode=0
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    bad_reason = {
+        "protocol": reader.WORKER_PROTOCOL,
+        "status": "BLOCKED",
+        "reason_class": "SYN-PRIVATE-PATH-TEXT",
+        "network_guard_attempts": 0,
+        "network_guard_scope": reader.WORKER_NETWORK_GUARD_SCOPE,
+        "elapsed_import_s": 0.0,
+        "elapsed_compute_s": 0.0,
+        "attempt_count": 1,
+    }
+    code, payload = reader.validate_worker_payload(bad_reason, returncode=2)
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+    assert "SYN-PRIVATE" not in json.dumps(payload)
+
+    bad_attempts = dict(ok)
+    bad_attempts["network_guard_attempts"] = {"x": 1}
+    code, payload = reader.validate_worker_payload(bad_attempts, returncode=0)
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    bad_bool = dict(ok)
+    bad_bool["network_guard_attempts"] = True
+    code, payload = reader.validate_worker_payload(bad_bool, returncode=0)
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    bad_nan = dict(ok)
+    bad_nan["elapsed_import_s"] = float("nan")
+    code, payload = reader.validate_worker_payload(bad_nan, returncode=0)
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    bad_digest = dict(ok)
+    bad_digest["candidate_whole_sha256"] = "not-a-digest"
+    code, payload = reader.validate_worker_payload(bad_digest, returncode=0)
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    code, payload = reader.validate_worker_payload(ok, returncode=2)
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+
+def test_materialized_guard_nonzero_and_caught_network_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    client = FakeClient(_materialized_store(bodies))
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(_ok_worker_payload(attempts=1)),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+    assert payload["materialized_identity_matched"] is False
+
+    blocked = {
+        "protocol": reader.WORKER_PROTOCOL,
+        "status": "BLOCKED",
+        "reason_class": "NETWORK_ATTEMPT_REFUSED",
+        "network_guard_attempts": 1,
+        "network_guard_scope": reader.WORKER_NETWORK_GUARD_SCOPE,
+        "elapsed_import_s": 0.1,
+        "elapsed_compute_s": 0.1,
+        "attempt_count": 1,
+    }
+    code, payload = reader.run_materialized_identity_read(
+        client=FakeClient(_materialized_store(bodies)),
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(blocked, code=2),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "NETWORK_ATTEMPT_REFUSED"
+
+
+def test_materialized_slow_client_zero_gets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    clock = MutableClock(0.0)
+    created: list[FakeClient] = []
+
+    def slow_factory() -> FakeClient:
+        clock.now = 31.0
+        client = FakeClient(_materialized_store(bodies))
+        created.append(client)
+        return client
+
+    code, payload = reader.run_materialized_identity_read(
+        clock=clock,
+        create_client=slow_factory,
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+        read_budget_s=30.0,
+        budget_s=150.0,
+    )
+    assert code == 2
+    assert payload["reason_class"] == "DEADLINE_EXCEEDED"
+    assert created
+    assert created[0].events == []
+
+
+def test_materialized_partial_input_cleanup_and_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    real_open = os.open
+    calls = {"n": 0}
+
+    def flaky_open(path: str, flags: int, mode: int = 0o777) -> int:  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] >= 2 and str(path).endswith("manifest.json"):
+            raise OSError("synthetic write fail")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+    with pytest.raises(reader.MetadataError) as excinfo:
+        reader._write_p1_input_dir(
+            task,
+            {
+                "binding.json": bodies["binding"],
+                "manifest.json": bodies["manifest"],
+                "closes.json": bodies["closes"],
+                "assurance.json": bodies["assurance"],
+            },
+        )
+    assert excinfo.value.reason_class in {"INPUT_DIR_INVALID", "INPUT_CLEANUP_FAILED"}
+    assert not (task / "input").exists()
+
+
+def test_materialized_input_shortwrite_completes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    real_write = os.write
+    state = {"n": 0}
+
+    def short_then_rest(fd: int, data: bytes | memoryview) -> int:  # noqa: ANN001
+        state["n"] += 1
+        raw = data.tobytes() if isinstance(data, memoryview) else bytes(data)
+        if state["n"] == 1 and len(raw) > 1:
+            return real_write(fd, raw[:1])
+        return real_write(fd, raw)
+
+    monkeypatch.setattr(os, "write", short_then_rest)
+    input_dir = reader._write_p1_input_dir(
+        task,
+        {
+            "binding.json": bodies["binding"],
+            "manifest.json": bodies["manifest"],
+            "closes.json": bodies["closes"],
+            "assurance.json": bodies["assurance"],
+        },
+    )
+    assert state["n"] >= 2
+    for name, key in (
+        ("binding.json", "binding"),
+        ("manifest.json", "manifest"),
+        ("closes.json", "closes"),
+        ("assurance.json", "assurance"),
+    ):
+        path = input_dir / name
+        assert path.read_bytes() == bodies[key]
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert input_dir.stat().st_mode & 0o777 == 0o700
+    assert reader._cleanup_dir(input_dir) is True
+
+
+def test_materialized_cleanup_failure_blocks_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    client = FakeClient(_materialized_store(bodies))
+    monkeypatch.setattr(reader, "_cleanup_dir", lambda _path: False)
+    code, payload = reader.run_materialized_identity_read(
+        client=client,
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "INPUT_CLEANUP_FAILED"
+    assert payload["materialized_identity_matched"] is False
+    assert payload["status"] == "BLOCKED"
+
+
+def test_materialized_internal_verified_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    code, payload = reader.run_materialized_identity_read(
+        client=FakeClient(_materialized_store(bodies)),
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(_ok_worker_payload(internal_verified=False)),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "WORKER_PROTOCOL_INVALID"
+
+    # Whole and internal digests are distinct fields; mismatching whole keeps internal.
+    code, payload = reader.run_materialized_identity_read(
+        client=FakeClient(_materialized_store(bodies)),
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(
+            _ok_worker_payload(whole="b" * 64, internal="c" * 64)
+        ),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "HASH_MISMATCH"
+    assert payload["candidate"]["observed_whole_sha256"] == "b" * 64
+    assert payload["candidate"]["internal_materialized_sha256"] == "c" * 64
+    assert payload["candidate"]["internal_verified"] is True
+    assert payload["candidate"]["whole_sha_matched"] is False
+
+
+def test_materialized_wrong_venv_python_env_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    task = _materialized_actions(monkeypatch, tmp_path)
+    monkeypatch.setenv(reader.VENV_PYTHON_ENV, "/tmp/other-venv/bin/python")
+    bodies = _materialized_p1_bodies()
+    _patch_materialized_pins(monkeypatch, bodies)
+    code, payload = reader.run_materialized_identity_read(
+        client=FakeClient(_materialized_store(bodies)),
+        preflight=lambda: {"ok": True},
+        spawn_worker=_fake_spawn(),
+        task_root=str(task),
+    )
+    assert code == 2
+    assert payload["reason_class"] == "RUNTIME_PYTHON_MISMATCH"
