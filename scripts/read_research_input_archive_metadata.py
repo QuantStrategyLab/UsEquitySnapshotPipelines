@@ -1,9 +1,10 @@
-"""GET-only research archive metadata / integrity reader for original RAW + R6 pins.
+"""GET-only research archive metadata / integrity / contracts reader.
 
 metadata_only: fixed RAW metadata + bounded complete index + four P1 metadata.
 integrity_only: fixed-generation whole-byte hashes for RAW/complete/P1 plus three
-contract metadata observations. No provider calls, listing, uploads, body dumps,
-or research qualification claims.
+contract metadata observations.
+contracts_only: fixed-generation whole-byte hashes for the three RAW-prefix contracts.
+No provider calls, listing, uploads, body dumps, or research qualification claims.
 """
 
 from __future__ import annotations
@@ -99,6 +100,30 @@ CONTRACT_SPECS: tuple[tuple[str, str], ...] = (
         "s4_budget_policy.v1.json",
         "8c7a4410717c52222bb09c91a9c5d6774524625b8b2ad3226ffb2cd28dd31bbd",
     ),
+)
+# Fixed pins for contracts_only whole-byte integrity (independent of CONTRACT_SPECS
+# metadata-only observations used by integrity_only).
+CONTRACT_PINS: dict[str, dict[str, object]] = {
+    "tqqq_qqq_guard_cash_contract.v1.json": {
+        "generation": 1790498207123297,
+        "size_bytes": 3620,
+        "sha256": "7b603312762262ebb2fe90c86bef2ed0b7914ab26586b0b9db93ee39b4d1e60b",
+    },
+    "boxx_outer_cash_policy.v1.json": {
+        "generation": 1790498221615335,
+        "size_bytes": 2986,
+        "sha256": "cfed32767cb367ccce7ef880c3c15f82d50b99fe805d542e85839fc67270c905",
+    },
+    "s4_budget_policy.v1.json": {
+        "generation": 1790498234696597,
+        "size_bytes": 1764,
+        "sha256": "8c7a4410717c52222bb09c91a9c5d6774524625b8b2ad3226ffb2cd28dd31bbd",
+    },
+}
+CONTRACTS_MAX_BODY_BYTES = (
+    int(CONTRACT_PINS["tqqq_qqq_guard_cash_contract.v1.json"]["size_bytes"])
+    + int(CONTRACT_PINS["boxx_outer_cash_policy.v1.json"]["size_bytes"])
+    + int(CONTRACT_PINS["s4_budget_policy.v1.json"]["size_bytes"])
 )
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -738,6 +763,59 @@ def read_contracts_metadata_group(
     return {"status": "METADATA_MATCHED", "contracts": contracts}
 
 
+def read_contracts_integrity_group(
+    client: Any,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    contracts: dict[str, object] = {}
+    for name, pin in CONTRACT_PINS.items():
+        object_name = RAW_PREFIX + name
+        pinned_generation = int(pin["generation"])
+        pinned_size = int(pin["size_bytes"])
+        pinned_sha = str(pin["sha256"])
+        generation, size = _reload_metadata(
+            client,
+            bucket_name=RAW_BUCKET,
+            object_name=object_name,
+            generation=pinned_generation,
+            expected_generation=pinned_generation,
+            expected_size=pinned_size,
+            deadline=deadline,
+            clock=clock,
+            mismatch_reason="CONTRACT_METADATA_MISMATCH",
+            unavailable_reason="CONTRACT_METADATA_UNAVAILABLE",
+        )
+        body = _download_bytes(
+            client,
+            bucket_name=RAW_BUCKET,
+            object_name=object_name,
+            generation=generation,
+            size=size,
+            max_size=pinned_size,
+            deadline=deadline,
+            clock=clock,
+            oversize_reason="CONTRACT_OVERSIZE",
+            fail_reason="CONTRACT_DOWNLOAD_FAILED",
+        )
+        digest = _digest(body)
+        if digest != pinned_sha:
+            raise MetadataError("CONTRACT_HASH_MISMATCH")
+        _remaining(deadline, clock)
+        contracts[name] = {
+            "name": name,
+            "generation": generation,
+            "size_bytes": size,
+            "expected_sha256": pinned_sha,
+            "observed_sha256": digest,
+            "body_read": True,
+            "content_hash_verified": True,
+        }
+    _remaining(deadline, clock)
+    return contracts
+
+
 def _lazy_storage_client() -> Any:
     # Force the exact SDK knob before imports/ctor. Caller "false" must not re-enable
     # background bucket metadata GETs; getenv is consulted dynamically per span.
@@ -945,9 +1023,61 @@ def run_integrity_read(
     return 2, result
 
 
+def run_contracts_read(
+    *,
+    client: Any | None = None,
+    clock: Callable[[], float] | None = None,
+    budget_s: float = OVERALL_BUDGET_S,
+    create_client: Callable[[], Any] | None = None,
+) -> tuple[int, dict[str, object]]:
+    started = (clock or time.monotonic)()
+    deadline = started + budget_s
+    mono = clock or time.monotonic
+    result: dict[str, object] = {
+        **_base_result(),
+        "contracts_integrity_verified": False,
+        "contracts": None,
+    }
+    try:
+        _require_actions_identity()
+        if client is None:
+            factory = create_client or _lazy_storage_client
+            client = factory()
+    except MetadataError as exc:
+        result["reason_class"] = exc.reason_class
+        return 2, result
+    except Exception:  # noqa: BLE001
+        result["reason_class"] = "CLIENT_UNAVAILABLE"
+        return 2, result
+
+    try:
+        _remaining(deadline, mono)
+        # Fixed RAW bucket/prefix pins only; no R6 root, RAW manifest, or P1 access.
+        result["contracts"] = read_contracts_integrity_group(
+            client, deadline=deadline, clock=mono
+        )
+        _remaining(deadline, mono)
+    except MetadataError as exc:
+        result["status"] = "BLOCKED"
+        result["reason_class"] = exc.reason_class
+        return 2, result
+    except Exception:  # noqa: BLE001
+        result["status"] = "BLOCKED"
+        result["reason_class"] = "CONTRACT_METADATA_UNAVAILABLE"
+        return 2, result
+
+    result["status"] = "CONTRACTS_INTEGRITY_READY"
+    result["contracts_integrity_verified"] = True
+    return 0, result
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if argv == ["--contracts-only"]:
+        code, payload = run_contracts_read()
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return code
     if argv == ["--integrity-only"]:
         code, payload = run_integrity_read()
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
