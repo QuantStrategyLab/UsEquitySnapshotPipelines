@@ -751,35 +751,44 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         "          - execute\n"
         "          - metadata_only\n"
         "          - integrity_only\n"
+        "          - contracts_only\n"
     ) in raw
     research_marker = "  r6-research:\n"
     meta_marker = "  research-input-archive-metadata:\n"
     integrity_marker = "  research-input-archive-integrity:\n"
+    contracts_marker = "  research-input-archive-contracts:\n"
     assert research_marker in raw
     assert meta_marker in raw
     assert integrity_marker in raw
+    assert contracts_marker in raw
     research_start = raw.index(research_marker)
     meta_start = raw.index(meta_marker)
     integrity_start = raw.index(integrity_marker)
-    assert research_start < meta_start < integrity_start
+    contracts_start = raw.index(contracts_marker)
+    assert research_start < meta_start < integrity_start < contracts_start
     research_block = raw[research_start:meta_start]
     meta_block = raw[meta_start:integrity_start]
-    integrity_block = raw[integrity_start:]
+    integrity_block = raw[integrity_start:contracts_start]
+    contracts_block = raw[contracts_start:]
     assert "    if: ${{ inputs.mode == 'preflight' || inputs.mode == 'execute' }}\n" in research_block
     assert "    if: ${{ inputs.mode == 'metadata_only' }}\n" in meta_block
     assert "    if: ${{ inputs.mode == 'integrity_only' }}\n" in integrity_block
+    assert "    if: ${{ inputs.mode == 'contracts_only' }}\n" in contracts_block
     assert "environment: market-data-nonlive" in research_block
     assert "environment: market-data-nonlive" in meta_block
     assert "environment: market-data-nonlive" in integrity_block
-    for block in (meta_block, integrity_block):
+    assert "environment: market-data-nonlive" in contracts_block
+    for block in (meta_block, integrity_block, contracts_block):
         assert "TWELVE_DATA_API_KEY" not in block
         assert "SOXL_V7_R6_LICENSE_EVIDENCE_SHA256" not in block
         assert "UsEquityStrategies" not in block
         assert "ALPACA" not in block
-        assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
         assert "DEADLINE_EXCEEDED" in block
         assert "124" in block
         assert "2>/dev/null" in block
+    for block in (meta_block, integrity_block):
+        assert "SOXL_V7_R6_PRIVATE_ROOT: ${{ secrets.SOXL_V7_R6_PRIVATE_ROOT }}" in block
+    assert "SOXL_V7_R6_PRIVATE_ROOT" not in contracts_block
     assert (
         "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata 2>/dev/null"
         in meta_block
@@ -788,7 +797,12 @@ def test_workflow_mode_job_and_secret_isolation() -> None:
         "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata --integrity-only 2>/dev/null"
         in integrity_block
     )
+    assert (
+        "timeout 30s uv run --no-sync python -m scripts.read_research_input_archive_metadata --contracts-only 2>/dev/null"
+        in contracts_block
+    )
     assert "content_integrity_verified" in integrity_block
+    assert "contracts_integrity_verified" in contracts_block
     assert "if: inputs.mode == 'preflight'" in research_block
     assert "if: inputs.mode == 'execute'" in research_block
     assert "TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}" in research_block
@@ -1403,6 +1417,347 @@ def test_integrity_module_main_only_flag_subprocess() -> None:
             "-m",
             "scripts.read_research_input_archive_metadata",
             "--integrity-only",
+            "gs://evil",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["reason_class"] == "ARGV_REFUSED"
+
+
+def _contracts_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", reader.ALLOWED_REPOSITORY)
+    monkeypatch.delenv(reader.ROOT_ENV, raising=False)
+
+
+def _contracts_bodies() -> dict[str, bytes]:
+    bodies: dict[str, bytes] = {}
+    for name, pin in reader.CONTRACT_PINS.items():
+        size = int(pin["size_bytes"])
+        bodies[name] = _pad_to(f"SYN-CONTRACT-{name}-".encode("utf-8"), size)
+    return bodies
+
+
+def _patch_contract_pins(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, bytes]) -> None:
+    pins = {name: dict(pin) for name, pin in reader.CONTRACT_PINS.items()}
+    for name, body in bodies.items():
+        assert len(body) == int(pins[name]["size_bytes"])
+        pins[name]["sha256"] = _sha(body)
+    monkeypatch.setattr(reader, "CONTRACT_PINS", pins)
+
+
+def _contracts_store(bodies: dict[str, bytes]) -> dict[tuple[str, str], dict[str, Any]]:
+    store: dict[tuple[str, str], dict[str, Any]] = {
+        (reader.RAW_BUCKET, reader.RAW_OBJECT): {
+            "generation": reader.RAW_GENERATION,
+            "size": reader.RAW_SIZE_BYTES,
+            "body": b"RAW-MUST-NOT-BE-READ",
+        },
+        ("synthetic-r6-private-bucket", "exact-study-root/complete.json"): {
+            "generation": 1,
+            "size": 3,
+            "body": b"{}",
+        },
+    }
+    for key in reader.P1_KEYS:
+        store[("synthetic-r6-private-bucket", f"exact-study-root/p1/{key}")] = {
+            "generation": 1,
+            "size": 1,
+            "body": b"P",
+        }
+    for name, body in bodies.items():
+        pin = reader.CONTRACT_PINS[name]
+        store[(reader.RAW_BUCKET, reader.RAW_PREFIX + name)] = {
+            "generation": int(pin["generation"]),
+            "size": int(pin["size_bytes"]),
+            "body": body,
+        }
+    return store
+
+
+def test_contracts_real_pin_constants_and_budget() -> None:
+    assert reader.CONTRACTS_MAX_BODY_BYTES == 8370
+    assert list(reader.CONTRACT_PINS) == [name for name, _sha256 in reader.CONTRACT_SPECS]
+    assert reader.CONTRACT_PINS["tqqq_qqq_guard_cash_contract.v1.json"] == {
+        "generation": 1790498207123297,
+        "size_bytes": 3620,
+        "sha256": "7b603312762262ebb2fe90c86bef2ed0b7914ab26586b0b9db93ee39b4d1e60b",
+    }
+    assert reader.CONTRACT_PINS["boxx_outer_cash_policy.v1.json"] == {
+        "generation": 1790498221615335,
+        "size_bytes": 2986,
+        "sha256": "cfed32767cb367ccce7ef880c3c15f82d50b99fe805d542e85839fc67270c905",
+    }
+    assert reader.CONTRACT_PINS["s4_budget_policy.v1.json"] == {
+        "generation": 1790498234696597,
+        "size_bytes": 1764,
+        "sha256": "8c7a4410717c52222bb09c91a9c5d6774524625b8b2ad3226ffb2cd28dd31bbd",
+    }
+    for name, expected_sha in reader.CONTRACT_SPECS:
+        assert reader.CONTRACT_PINS[name]["sha256"] == expected_sha
+
+
+def test_contracts_success_exact_six_gets_and_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    _contracts_actions(monkeypatch)
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+    assert reader.CONTRACTS_MAX_BODY_BYTES == 8370
+    client = FakeClient(_contracts_store(bodies))
+    code, payload = reader.run_contracts_read(client=client)
+    assert code == 0
+    assert payload["status"] == "CONTRACTS_INTEGRITY_READY"
+    assert payload["contracts_integrity_verified"] is True
+    assert payload["research_qualification"] is False
+    assert payload["trading_rights"] is False
+    assert payload["license_verified"] is False
+    assert payload["historical_point_in_time_certified"] is False
+    assert payload["completion_identity_authenticated"] is False
+    assert payload["content_verified"] is False
+    assert payload["content_integrity_verified"] is False
+    assert "raw" not in payload
+    assert "r6" not in payload
+    contracts = payload["contracts"]
+    assert isinstance(contracts, dict)
+    for name, body in bodies.items():
+        item = contracts[name]
+        assert item["name"] == name
+        assert item["generation"] == reader.CONTRACT_PINS[name]["generation"]
+        assert item["size_bytes"] == reader.CONTRACT_PINS[name]["size_bytes"]
+        assert item["expected_sha256"] == _sha(body)
+        assert item["observed_sha256"] == _sha(body)
+        assert item["body_read"] is True
+        assert item["content_hash_verified"] is True
+    ops = [event[0] for event in client.events]
+    assert ops.count("reload") == 3
+    assert ops.count("download") == 3
+    assert len(client.events) == 6
+    requested = sum(event[1][4] for event in client.events if event[0] == "download")
+    assert requested == 8370
+    for event in client.events:
+        assert event[1][0] == reader.RAW_BUCKET
+        assert event[1][1] != reader.RAW_OBJECT
+        assert not event[1][1].endswith("complete.json")
+        assert "/p1/" not in event[1][1]
+    text = json.dumps(payload)
+    assert "SYN-CONTRACT" not in text
+    assert "gs://" not in text
+    assert reader.RAW_BUCKET not in text
+    assert "RAW-MUST-NOT" not in text
+
+
+def test_contracts_no_raw_p1_root_or_temp_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _contracts_actions(monkeypatch)
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+
+    class GuardBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            if self.name == reader.RAW_OBJECT or self.name.endswith("complete.json") or "/p1/" in self.name:
+                raise AssertionError(f"unexpected reload {self.name}")
+            return super().reload(**kwargs)
+
+        def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+            if self.name == reader.RAW_OBJECT or self.name.endswith("complete.json") or "/p1/" in self.name:
+                raise AssertionError(f"unexpected download {self.name}")
+            return super().download_as_bytes(**kwargs)
+
+    class GuardBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return GuardBlob(self.store, self.name, name, generation, self.events)
+
+    class GuardClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            if name != reader.RAW_BUCKET:
+                raise AssertionError(f"unexpected bucket {name}")
+            return GuardBucket(self.store, name, self.events)
+
+    def boom_write(*_a: object, **_k: object) -> None:
+        raise AssertionError("path write unreachable")
+
+    monkeypatch.setattr(Path, "write_bytes", boom_write)
+    monkeypatch.setattr(Path, "write_text", boom_write)
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom_write)
+    monkeypatch.setattr(tempfile, "mkstemp", boom_write)
+    client = GuardClient(_contracts_store(bodies))
+    code, _payload = reader.run_contracts_read(client=client)
+    assert code == 0
+    assert reader.ROOT_ENV not in os.environ
+
+
+def test_contracts_wrong_gen_size_hash_and_first_error_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contracts_actions(monkeypatch)
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+    first_name = next(iter(reader.CONTRACT_PINS))
+
+    client = FakeClient(_contracts_store(bodies))
+    client.store[(reader.RAW_BUCKET, reader.RAW_PREFIX + first_name)]["generation"] = 1
+    code, result = reader.run_contracts_read(client=client)
+    assert code == 2
+    assert result["reason_class"] == "CONTRACT_METADATA_MISMATCH"
+    assert result["contracts_integrity_verified"] is False
+    assert len([e for e in client.events if e[0] == "reload"]) == 1
+    assert not any(e[0] == "download" for e in client.events)
+
+    client = FakeClient(_contracts_store(bodies))
+    client.store[(reader.RAW_BUCKET, reader.RAW_PREFIX + first_name)]["size"] = (
+        int(reader.CONTRACT_PINS[first_name]["size_bytes"]) + 1
+    )
+    code, result = reader.run_contracts_read(client=client)
+    assert code == 2
+    assert result["reason_class"] == "CONTRACT_METADATA_MISMATCH"
+    assert not any(e[0] == "download" for e in client.events)
+
+    client = FakeClient(_contracts_store(bodies))
+    client.store[(reader.RAW_BUCKET, reader.RAW_PREFIX + first_name)]["body"] = (
+        b"y" * int(reader.CONTRACT_PINS[first_name]["size_bytes"])
+    )
+    code, result = reader.run_contracts_read(client=client)
+    assert code == 2
+    assert result["reason_class"] == "CONTRACT_HASH_MISMATCH"
+    assert len([e for e in client.events if e[0] == "download"]) == 1
+    assert len([e for e in client.events if e[0] == "reload"]) == 1
+
+    # Truncated body after metadata match fails download length check.
+    class ShortBlob(FakeBlob):
+        def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+            content = super().download_as_bytes(**kwargs)
+            return content[:-1]
+
+    class ShortBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return ShortBlob(self.store, self.name, name, generation, self.events)
+
+    class ShortClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return ShortBucket(self.store, name, self.events)
+
+    client = ShortClient(_contracts_store(bodies))
+    code, result = reader.run_contracts_read(client=client)
+    assert code == 2
+    assert result["reason_class"] == "CONTRACT_DOWNLOAD_FAILED"
+
+
+def test_contracts_deadline_after_last_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    _contracts_actions(monkeypatch)
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+    clock = MutableClock(0.0)
+    last_name = list(reader.CONTRACT_PINS)[-1]
+
+    class OverrunBlob(FakeBlob):
+        def download_as_bytes(self, **kwargs: Any) -> bytes:  # type: ignore[override]
+            content = super().download_as_bytes(**kwargs)
+            if self.name.endswith(last_name):
+                clock.now = 31.0
+            return content
+
+    class OverrunBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return OverrunBlob(self.store, self.name, name, generation, self.events)
+
+    class OverrunClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return OverrunBucket(self.store, name, self.events)
+
+    client = OverrunClient(_contracts_store(bodies))
+    code, result = reader.run_contracts_read(client=client, clock=clock, budget_s=30.0)
+    assert code == 2
+    assert result["reason_class"] == "DEADLINE_EXCEEDED"
+    assert result["contracts_integrity_verified"] is False
+    assert result["status"] == "BLOCKED"
+
+
+def test_contracts_output_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    _contracts_actions(monkeypatch)
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+
+    class ExplodingBlob(FakeBlob):
+        def reload(self, **kwargs: Any) -> None:  # type: ignore[override]
+            raise RuntimeError("secret-token gs://private/path credentials=xyz amount=9.99")
+
+    class ExplodingBucket(FakeBucket):
+        def blob(self, name: str, *, generation: int | None = None) -> FakeBlob:
+            return ExplodingBlob(self.store, self.name, name, generation, self.events)
+
+    class ExplodingClient(FakeClient):
+        def bucket(self, name: str) -> FakeBucket:
+            return ExplodingBucket(self.store, name, self.events)
+
+    client = ExplodingClient(_contracts_store(bodies))
+    code, payload = reader.run_contracts_read(client=client)
+    assert code == 2
+    text = json.dumps(payload)
+    assert "secret-token" not in text
+    assert "credentials=" not in text
+    assert "gs://private/path" not in text
+    assert "9.99" not in text
+    assert payload["reason_class"] == "CONTRACT_METADATA_UNAVAILABLE"
+
+
+def test_contracts_cli_env_and_argv_guards(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setenv("GITHUB_REPOSITORY", reader.ALLOWED_REPOSITORY)
+    created = {"client": False}
+
+    def boom() -> FakeClient:
+        created["client"] = True
+        raise AssertionError("client must not be created")
+
+    code, payload = reader.run_contracts_read(create_client=boom)
+    assert code == 2
+    assert payload["reason_class"] == "ENV_REFUSED"
+    assert created["client"] is False
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "QuantStrategyLab/Other")
+    code, payload = reader.run_contracts_read(create_client=boom)
+    assert code == 2
+    assert payload["reason_class"] == "ENV_REFUSED"
+    assert created["client"] is False
+
+    _contracts_actions(monkeypatch)
+    assert reader.main(["--contracts-only", "gs://evil"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["reason_class"] == "ARGV_REFUSED"
+    assert "gs://" not in json.dumps(out)
+
+    bodies = _contracts_bodies()
+    _patch_contract_pins(monkeypatch, bodies)
+    client = FakeClient(_contracts_store(bodies))
+    monkeypatch.setattr(reader, "_lazy_storage_client", lambda: client)
+    assert reader.main(["--contracts-only"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "CONTRACTS_INTEGRITY_READY"
+    assert out["contracts_integrity_verified"] is True
+
+
+def test_contracts_module_main_only_flag_subprocess() -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"GITHUB_ACTIONS", "GITHUB_REPOSITORY", reader.ROOT_ENV}
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.read_research_input_archive_metadata",
+            "--contracts-only",
             "gs://evil",
         ],
         cwd=REPO_ROOT,
