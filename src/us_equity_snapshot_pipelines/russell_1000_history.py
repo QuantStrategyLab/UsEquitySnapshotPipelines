@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from html.parser import HTMLParser
@@ -1032,7 +1032,10 @@ IWB_SEC_COVERED_NPORT_FIELDS = (
     "invstOrSecs",
     "invstOrSec",
     "name",
+    "lei",
+    "title",
     "identifiers",
+    "other",
     "tickers",
     "assetCat",
     "issuerCat",
@@ -1049,6 +1052,13 @@ IWB_SEC_COVERED_NPORT_FIELDS = (
     "units",
     "pctVal",
 )
+# Official N-PORT 1.13 lexical maxima; no checksum or issuer/security-ID validation.
+IWB_SEC_ISSUER_IDENTIFIER_MAX_CHARS = 20
+IWB_SEC_TITLE_MAX_CHARS = 150
+IWB_SEC_OTHER_IDENTIFIER_MAX_CHARS = 150
+IWB_SEC_IDENTIFIER_MAX_COUNT = 100
+# Scope these names to holdings: official signature/title is nportcommon.
+IWB_SEC_HOLDING_LEXICAL_FIELDS = frozenset({"lei", "title", "other"})
 IWB_SEC_EQUITY_ASSET_CATS = frozenset({"EC", "EP"})
 IWB_SEC_NON_EQUITY_ASSET_HINTS = frozenset(
     {
@@ -1100,7 +1110,25 @@ class IwbSecFilingIndexRecord:
 
 
 @dataclass(frozen=True)
+class IwbSecOtherIdentifierRecord:
+    """Source-declared opaque value and qualifier, never a tradable ticker alias."""
+
+    description: str
+    value: str
+
+
+@dataclass(frozen=True)
 class IwbSecHoldingRecord:
+    """Parsed holding with optional, unvalidated source lexical evidence.
+
+    Appended evidence fields are keyword-only and excluded from equality/hash
+    to preserve existing positional constructors and record identity semantics.
+    Record equality/hash therefore does not establish full evidence equality;
+    compare the evidence explicitly and retain the binding's raw XML SHA256.
+    ``dataclasses.asdict`` adds issuer_identifier, security_title and
+    other_identifiers keys; it is not an unchanged serialized schema.
+    """
+
     name: str
     ticker: str | None
     cusip: str | None
@@ -1116,6 +1144,10 @@ class IwbSecHoldingRecord:
     units: str | None = None
     percent_value: str | None = None
     issuer_category_description: str | None = None
+    # Source <lei> permits LEI, RSSD or N/A; issuer-level, not security identity.
+    issuer_identifier: str | None = field(default=None, kw_only=True, compare=False)
+    security_title: str | None = field(default=None, kw_only=True, compare=False)
+    other_identifiers: tuple[IwbSecOtherIdentifierRecord, ...] = field(default=(), kw_only=True, compare=False)
 
 
 @dataclass(frozen=True)
@@ -1675,11 +1707,12 @@ def _iwb_sec_parse_xml_root(payload: bytes) -> ET.Element:
     )
     if namespace is None:
         _iwb_sec_fail("N-PORT XML root namespace is not supported")
-    # Both allowed roots enforce the same rule. Changing a root must not skip
-    # validation of consumed fields or the structural containers we traverse.
+    # Both allowed roots enforce the same rule. New lexical fields are checked
+    # at their consumed holding paths, since signature/title uses nportcommon.
+    globally_covered_fields = set(IWB_SEC_COVERED_NPORT_FIELDS) - IWB_SEC_HOLDING_LEXICAL_FIELDS
     for node in root.iter():
         local = _iwb_sec_local_name(node.tag)
-        if local in IWB_SEC_COVERED_NPORT_FIELDS and node.tag != f"{{{namespace}}}{local}":
+        if local in globally_covered_fields and node.tag != f"{{{namespace}}}{local}":
             _iwb_sec_fail("N-PORT consumed field namespace mismatch")
     return root
 
@@ -1692,6 +1725,49 @@ def _iwb_sec_identifier_value(node: ET.Element) -> str | None:
     return text or attribute or None
 
 
+def _iwb_sec_optional_bounded_lexical_text(
+    holding: ET.Element, local_name: str, *, max_chars: int
+) -> str | None:
+    nodes = _iwb_sec_direct_children(holding, local_name)
+    if not nodes:
+        return None
+    expected_tag = holding.tag.removesuffix("invstOrSec") + local_name
+    if any(node.tag != expected_tag for node in nodes):
+        _iwb_sec_fail("N-PORT consumed field namespace mismatch")
+    _iwb_sec_singleton_text(holding, local_name, direct_only=True)
+    if list(nodes[0]) or nodes[0].attrib:
+        _iwb_sec_fail(f"invalid N-PORT lexical field structure: {local_name}")
+    value = nodes[0].text or ""
+    if not 1 <= len(value) <= max_chars:
+        _iwb_sec_fail(f"invalid N-PORT lexical field length: {local_name}")
+    return value
+
+
+def _iwb_sec_qualified_other_identifiers(identifiers: ET.Element | None) -> tuple[IwbSecOtherIdentifierRecord, ...]:
+    if identifiers is None:
+        return ()
+    if len(list(identifiers)) > IWB_SEC_IDENTIFIER_MAX_COUNT:
+        _iwb_sec_fail("N-PORT identifier count exceeds official schema maximum")
+    nodes = _iwb_sec_direct_children(identifiers, "other")
+    if len(nodes) != len(_iwb_sec_find_all(identifiers, "other")):
+        _iwb_sec_fail("N-PORT misplaced or nested other identifier")
+    result: list[IwbSecOtherIdentifierRecord] = []
+    for node in nodes:
+        if node.tag != identifiers.tag.removesuffix("identifiers") + "other":
+            _iwb_sec_fail("N-PORT consumed field namespace mismatch")
+        if list(node) or (node.text or "").strip() or set(node.attrib) != {"otherDesc", "value"}:
+            _iwb_sec_fail("invalid N-PORT qualified other identifier structure")
+        description = node.attrib["otherDesc"]
+        value = node.attrib["value"]
+        if not all(text.strip() and 1 <= len(text) <= IWB_SEC_OTHER_IDENTIFIER_MAX_CHARS
+                   for text in (description, value)):
+            _iwb_sec_fail("invalid N-PORT qualified other identifier length")
+        # Retain parsed lexical characters, case, source order and repetitions without merging
+        # namespaces, asserting canonical identity or synthesizing a ticker.
+        result.append(IwbSecOtherIdentifierRecord(description=description, value=value))
+    return tuple(result)
+
+
 def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
     name_nodes = [child for child in list(holding) if _iwb_sec_local_name(child.tag) == "name"]
     if len(name_nodes) > 1:
@@ -1701,6 +1777,11 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
     if len(identifiers_nodes) > 1:
         _iwb_sec_fail("duplicate required singleton N-PORT field: identifiers")
     identifiers = identifiers_nodes[0] if identifiers_nodes else None
+    issuer_identifier = _iwb_sec_optional_bounded_lexical_text(
+        holding, "lei", max_chars=IWB_SEC_ISSUER_IDENTIFIER_MAX_CHARS
+    )
+    security_title = _iwb_sec_optional_bounded_lexical_text(holding, "title", max_chars=IWB_SEC_TITLE_MAX_CHARS)
+    other_identifiers = _iwb_sec_qualified_other_identifiers(identifiers)
     cusip_nodes = _iwb_sec_direct_children(holding, "cusip")
     isin_nodes: list[ET.Element] = []
     if identifiers is not None:
@@ -1806,6 +1887,9 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
         units=_iwb_sec_singleton_text(holding, "units", required=False, direct_only=True),
         percent_value=_iwb_sec_singleton_text(holding, "pctVal", required=False, direct_only=True),
         issuer_category_description=issuer_description,
+        issuer_identifier=issuer_identifier,
+        security_title=security_title,
+        other_identifiers=other_identifiers,
     )
 
 
@@ -1928,6 +2012,9 @@ def parse_iwb_sec_nport_xml_bytes(
                         units=holding.units,
                         percent_value=holding.percent_value,
                         issuer_category_description=holding.issuer_category_description,
+                        issuer_identifier=holding.issuer_identifier,
+                        security_title=holding.security_title,
+                        other_identifiers=holding.other_identifiers,
                     )
                 )
             else:
