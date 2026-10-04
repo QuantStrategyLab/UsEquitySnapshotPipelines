@@ -534,6 +534,90 @@ def test_no_length_and_explicit_identity_encoding_can_complete():
     assert opener.calls[0][0].get_header("User-agent") == config().user_agent
 
 
+def cli_args(output_dir):
+    return [
+        "--run",
+        "--index-url",
+        capture.INDEX_URL,
+        "--xml-url",
+        capture.XML_URL,
+        "--accepted-timezone",
+        "America/New_York",
+        "--version-id",
+        "synthetic-cli",
+        "--output-dir",
+        str(output_dir),
+        "--user-agent-env",
+        "TEST_SEC_USER_AGENT",
+    ]
+
+
+def test_cli_synthetic_proxy_parser_exception_never_leaks_identity(monkeypatch, tmp_path, capsys):
+    from urllib.request import _parse_proxy
+
+    class SyntheticProxyOpener:
+        def open(self, _request, timeout):
+            assert timeout == 30
+            # Exercise the actual stdlib error without configuring any proxy or
+            # performing a socket/HTTP request. These credentials are synthetic.
+            _parse_proxy("http:/fixture_user:fixture_secret@proxy.invalid")
+
+    monkeypatch.setenv("TEST_SEC_USER_AGENT", "Synthetic Test operator@example.invalid")
+    monkeypatch.setattr(capture, "build_opener", lambda *_args: SyntheticProxyOpener())
+    assert capture.main(cli_args(tmp_path)) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out)["error"] == "CAPTURE_UNEXPECTED_FAILURE"
+    assert json.loads(output.out)["status"] == "failed"
+    assert not output.err
+    assert "fixture_secret" not in output.out
+    assert "fixture_user" not in output.out
+    assert "operator@example.invalid" not in output.out
+    assert not (tmp_path / "synthetic-cli" / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("stage", ["parser", "store"])
+def test_cli_unclassified_parser_store_failure_is_sanitized(monkeypatch, tmp_path, capsys, stage):
+    import us_equity_snapshot_pipelines.russell_1000_history as adapter
+
+    clock, _, opener, store = setup_capture()
+
+    def unclassified(*_args, **_kwargs):
+        raise RuntimeError("synthetic_private_exception_secret")
+
+    monkeypatch.setenv("TEST_SEC_USER_AGENT", config().user_agent)
+    monkeypatch.setattr(capture, "build_opener", lambda *_args: opener)
+    monkeypatch.setattr(capture, "SystemClock", lambda: clock)
+    monkeypatch.setattr(capture, "LocalStore", lambda _root: store)
+    if stage == "parser":
+        monkeypatch.setattr(adapter, "parse_iwb_sec_filing_index_html", unclassified)
+    else:
+        monkeypatch.setattr(store, "create_and_verify", unclassified)
+    assert capture.main(cli_args(tmp_path)) == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "status": "failed",
+        "error": "CAPTURE_UNEXPECTED_FAILURE",
+        "http_status": None,
+        "production_eligible": False,
+        "trading_eligible": False,
+    }
+    assert "synthetic_private_exception_secret" not in output.out
+    assert not output.err
+    assert not store.published
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt(), SystemExit(17)])
+def test_cli_preserves_base_exception_controls(monkeypatch, tmp_path, control):
+    def interrupted(*_args, **_kwargs):
+        raise control
+
+    monkeypatch.setenv("TEST_SEC_USER_AGENT", config().user_agent)
+    monkeypatch.setattr(capture, "build_opener", interrupted)
+    with pytest.raises(type(control)) as error:
+        capture.main(cli_args(tmp_path))
+    assert error.value is control
+
+
 def test_import_help_missing_arguments_and_missing_explicit_identity_have_zero_network(monkeypatch, capsys):
     importlib.reload(capture)
     # reload resets the patched global, so deny real opener creation again.

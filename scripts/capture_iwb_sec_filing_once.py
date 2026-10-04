@@ -419,6 +419,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 1
+    except Exception:  # noqa: BLE001 - suppress unclassified proxy/parser/storage details
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": "CAPTURE_UNEXPECTED_FAILURE",
+                    "http_status": None,
+                    "production_eligible": False,
+                    "trading_eligible": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
     print(
         json.dumps(
             {
