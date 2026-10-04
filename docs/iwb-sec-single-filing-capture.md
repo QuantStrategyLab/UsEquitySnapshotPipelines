@@ -8,6 +8,13 @@ operation, workflow, production promotion, or trading action is part of this
 implementation or its tests. It adds no registry or new dependencies and does not
 change the existing parser, namespace rules, binder, or cutoff selector.
 
+The separately authorized real attempt on 2026-10-04 stopped after its only
+index request with `SEC_INDEX_INPUT_REJECTED`; no XML was requested. The previous
+entry point wrote raw files only after parsing/binding succeeded, so that attempt
+left no raw bytes or response-completion metadata. The rejected structure and
+parser root cause remain unknown. This retention change cannot reconstruct that
+missing evidence and does not authorize another real request or change a parser.
+
 The one fixed target is:
 
 | Field | Required target |
@@ -60,7 +67,8 @@ field is offset-free; the existing DST/ambiguity rules remain unchanged.
 
 ## Transport and failure boundaries
 
-- At most two serial requests: complete index, then complete XML
+- At most two serial requests: complete index, verified local raw/response
+  receipt storage, index parsing/identity checks, then complete XML
 - At least one monotonic second from index response completion to the XML start
 - `timeout=30` for each urllib request; monotonic elapsed checks reject any
   successfully returned response exceeding 30 seconds. The underlying urllib
@@ -70,7 +78,8 @@ field is offset-free; the existing DST/ambiguity rules remain unchanged.
 - No redirects, retries, pagination, accession discovery, extra documents, XSD
   downloads, CAPTCHA solving, or cloud/broker/provider calls
 - HTTP 403/429 and other non-200 statuses fail immediately. Recognized HTTP-200
-  challenge bodies fail; there is no attempt to bypass them
+  challenge bodies fail; there is no attempt to bypass them or retain them as
+  complete-response evidence
 - Only absent or `identity` Content-Encoding is supported; gzip/br/other
   compression, duplicate/invalid Content-Length, oversized or length-mismatched
   responses, empty bodies, and malformed/truncated supported HTML/XML fail
@@ -90,7 +99,9 @@ evidence retention; the operator must choose an appropriately private directory.
 ## Completion-time receipt and create-only storage
 
 The aware wall-clock timestamp is sampled immediately after each response's EOF,
-before parsing, response context cleanup, or local writes. Both times are retained.
+before parsing, response context cleanup, or local writes, and recorded in UTC
+with its actual subsecond precision. Both times are retained when both safe
+complete responses are received.
 `observed_at = max(index_completed_at, xml_completed_at)`, preserving subsecond
 precision. It is never Accepted, report-period end, a fabricated lag, or the later
 disk-write/readback time. The operator remains responsible for a trustworthy
@@ -111,17 +122,51 @@ it never establishes availability.
 The output directory contains a newly reserved version directory with:
 
 - `filing-index.html`: unchanged index bytes
+- `filing-index.html.response.json`: create-only index response metadata
 - `primary_doc.xml`: unchanged XML bytes
-- `manifest.json`: success receipt only after the two raw exclusive writes,
-  exact-byte readbacks, size checks, and SHA-256 checks succeeded
+- `primary_doc.xml.response.json`: create-only XML response metadata
+- `manifest.json`: success receipt only after both raw/response-receipt exclusive
+  writes, exact-byte readbacks, size/SHA-256 checks, and all existing parsing,
+  fixed-identity checks, and binding succeeded
+
+Each complete response that passes the existing HTTP/URL/encoding/budget/deadline,
+EOF/length, and challenge boundaries is immediately stored before its document
+parser runs. Its response receipt records only the fixed URL, HTTP 200, byte
+length, SHA-256, actual UTC `completed_at`, and these explicit boundaries:
+
+```json
+{
+  "schema_version": "qsl.research.iwb_sec_single_filing_response_receipt.v1",
+  "status": "response_received_not_validated",
+  "raw_xsd_validation": "not_validated",
+  "production_eligible": false,
+  "trading_eligible": false
+}
+```
+
+This is a transport-receipt record, not a validated filing or success manifest.
+It contains no User-Agent/email, proxy setting, or response headers. Its status
+is not rewritten on success; the separately published manifest provides the
+existing parsing/binding result without repeating or overwriting raw writes.
+An index-parser/identity failure retains only the index raw and response receipt,
+and starts no XML request. An XML-parser/binding failure retains both raw/receipt
+pairs. Neither failure publishes `manifest.json` or reports `capture_complete`.
+Non-200, challenge, oversized, deadline-exceeded, and transport-incomplete
+responses produce no raw/receipt pair for the rejected response; an earlier safe
+index pair remains. Clean transport EOF can still yield malformed or unsupported
+document syntax; retained bytes do not claim document completeness or validity.
+Raw or receipt storage/readback failure stops before that document's parser and
+before any later request. A storage failure may leave an incomplete file or a
+raw file without its receipt; it never fabricates verified receipt metadata.
 
 Version reservation and raw writes are create-only; an existing version directory
 fails before any request. The manifest is first exclusively written and verified
 as `.manifest.pending`, then atomically hard-linked to the new canonical
 `manifest.json` without replacement. This requires a local filesystem supporting
 hard links. Failure before publication leaves no canonical success manifest.
-Failed attempt directories/raw files may remain as incomplete evidence; never
-reuse or overwrite them. A post-publication pending-file cleanup failure may
+Failed attempt directories/raw/response receipts are retained for diagnosis;
+they are not deleted on failure and must never be reused or overwritten. A
+post-publication pending-file cleanup failure may
 leave the verified pending copy alongside the valid receipt. This design does
 not promise power-loss durability or a distributed transaction.
 
@@ -152,7 +197,9 @@ action/terminal-price evidence, or production/trading qualification.
 `tests/test_capture_iwb_sec_filing_once.py` constructs all HTML/XML in the test;
 its fake opener, clock, and storage never read a real filing or make a request.
 Local filesystem tests verify exact bytes, create-only behavior, corrupted
-readbacks, and atomic manifest publication. Run the focused regression checks
+readbacks, parser-failure evidence retention, rejection without fabricated
+response receipts, storage gating, UTC completion times, and atomic success
+manifest publication. Run the focused regression checks
 with the repository's configured offline Python environment:
 
 ```bash

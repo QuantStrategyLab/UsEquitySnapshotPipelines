@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -878,6 +879,148 @@ def test_iwb_sec_rejects_truncated_index_html() -> None:
     assert b"</body>" not in structured_truncated
     with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated"):
         parse_iwb_sec_filing_index_html(structured_truncated, accepted_timezone=_NY)
+
+
+def _synthetic_html401_index(*, ending: bytes = b"", extra_links: bytes = b"") -> bytes:
+    # Minimal structural equivalent only; no captured page, filer name or address.
+    payload = _synthetic_index_html_sec_style().replace(
+        b"<!DOCTYPE html>",
+        b'<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" '
+        b'"http://www.w3.org/TR/html4/loose.dtd">',
+    )
+    return payload.replace(b"</body></html>", extra_links + ending)
+
+
+@pytest.mark.parametrize("ending", [b"", b"</body>", b"</html>", b"</body></html>"])
+def test_iwb_sec_html401_optional_wrapper_end_tags(ending, _no_network) -> None:
+    parsed = parse_iwb_sec_filing_index_html(_synthetic_html401_index(ending=ending), accepted_timezone=_NY)
+    assert parsed.cik == IWB_SEC_FILING_CIK
+    assert parsed.accession_number == _SYNTHETIC_ACCESSION
+    assert parsed.form_type == "NPORT-P"
+    assert parsed.report_period.isoformat() == "2026-03-31"
+    assert parsed.accepted_at == datetime(2026, 5, 22, 15, 5, 15, tzinfo=_NY)
+
+
+def test_iwb_sec_html401_optional_wrappers_with_series_class_links(_no_network) -> None:
+    links = (
+        b'<table class="tableSeries"><tr><td>Series <a href="/cgi-bin/browse-edgar?action=getcompany&amp;CIK=S000004347">series</a></td></tr>'
+        b'<tr><td>Class <a href="/cgi-bin/browse-edgar?CIK=C000012077&amp;action=getcompany">class</a></td></tr></table>'
+        b'<div><a href="/cgi-bin/browse-edgar?CIK=0001100663&amp;action=getcompany">filer</a></div>'
+    )
+    payload = _synthetic_html401_index(extra_links=links).replace(
+        b'<div class="info">2026-05-22 15:05:15</div>',
+        b'<div class="info"><span>2026-05-22</span> <strong>15:05:15</strong></div>',
+    )
+    parsed = parse_iwb_sec_filing_index_html(payload, accepted_timezone=_NY)
+    assert parsed.cik == IWB_SEC_FILING_CIK
+    assert parsed.accepted_at == datetime(2026, 5, 22, 15, 5, 15, tzinfo=_NY)
+    assert parsed.index_sha256 == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("variant", ["html5", "missing_doctype", "commented_doctype", "misplaced_doctype", "duplicate_doctype"])
+def test_iwb_sec_optional_wrapper_ends_require_supported_declaration(variant, _no_network) -> None:
+    payload = _synthetic_html401_index()
+    declaration, content = payload.split(b">", 1)
+    declaration += b">"
+    if variant == "html5":
+        payload = b"<!DOCTYPE html>" + content
+    elif variant == "missing_doctype":
+        payload = content
+    elif variant == "commented_doctype":
+        payload = b"<!--" + declaration + b"-->" + content
+    elif variant == "misplaced_doctype":
+        payload = content + declaration
+    else:
+        payload = declaration + payload
+    with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated|malformed"):
+        parse_iwb_sec_filing_index_html(payload, accepted_timezone=_NY)
+
+
+@pytest.mark.parametrize("ending", [b"", b"</body></html>"])
+@pytest.mark.parametrize("suffix", [b'<div class="info">unfinished', b"<table>", b"<strong>unfinished", b'<a href="'])
+def test_iwb_sec_unfinished_required_structure_rejected_even_with_wrapper_ends(ending, suffix, _no_network) -> None:
+    with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated|malformed"):
+        parse_iwb_sec_filing_index_html(_synthetic_html401_index() + suffix + ending, accepted_timezone=_NY)
+
+
+@pytest.mark.parametrize("ending", [b"</body>", b"</body></html>"])
+@pytest.mark.parametrize("suffix", [b"unexpected text", b"<div></div>"])
+def test_iwb_sec_content_after_explicit_wrapper_end_rejected(ending, suffix, _no_network) -> None:
+    with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated|malformed"):
+        parse_iwb_sec_filing_index_html(_synthetic_html401_index(ending=ending) + suffix, accepted_timezone=_NY)
+
+
+@pytest.mark.parametrize("query", [
+    "CIK=S000004347", "CIK=C000012077", "action=getcompany&CIK=S000004347",
+    "CIK=C000012077&amp;action=getcompany", "CIK=S000004347&CIK=C000012077",
+    "CIK=0001100663&action=getcompany", "action=getcompany&amp;CIK=0001100663&owner=include",
+    "CIK=0001100663&CIK=0001100663", "CIK=1100663&CIK=0001100663", "cik=%30%30%30%31%31%30%30%36%36%33",
+    "notCIK=0000000001", "redirect=CIK%3D0000000001",
+])
+def test_iwb_sec_complete_cik_query_values(query, _no_network) -> None:
+    link = f'<a href="/cgi-bin/browse-edgar?{query}">link</a>'.encode()
+    parsed = parse_iwb_sec_filing_index_html(
+        _synthetic_index_html_sec_style().replace(b"</body>", link + b"</body>"), accepted_timezone=_NY,
+    )
+    assert parsed.cik == IWB_SEC_FILING_CIK
+
+
+@pytest.mark.parametrize("query", [
+    "CIK=0000000001&action=getcompany", "action=getcompany&amp;CIK=0000000001&owner=include",
+    "CIK=0001100663&CIK=0000000001", "CIK=S000004347&CIK=0000000001",
+])
+def test_iwb_sec_conflicting_numeric_cik_query_rejected(query, _no_network) -> None:
+    link = f'<a href="/cgi-bin/browse-edgar?{query}">link</a>'.encode()
+    with pytest.raises(IwbSecFilingAdapterError, match="duplicate conflicting filing index field: cik"):
+        parse_iwb_sec_filing_index_html(
+            _synthetic_index_html_sec_style().replace(b"</body>", link + b"</body>"), accepted_timezone=_NY,
+        )
+
+
+@pytest.mark.parametrize("query", [
+    "CIK=", "CIK=BAD0001100663", "CIK=S000004347X", "CIK=C000012077X", "CIK=S00004347",
+    "CIK=C0000012077", "CIK=0001100663%20", "CIK=0001100663%ZZ", "CIK=0001100663%26CIK%3D0000000001",
+])
+def test_iwb_sec_invalid_complete_cik_query_rejected(query, _no_network) -> None:
+    link = f'<a href="/cgi-bin/browse-edgar?{query}">link</a>'.encode()
+    with pytest.raises(IwbSecFilingAdapterError, match="invalid CIK"):
+        parse_iwb_sec_filing_index_html(
+            _synthetic_index_html_sec_style().replace(b"</body>", link + b"</body>"), accepted_timezone=_NY,
+        )
+
+
+@pytest.mark.parametrize("suffix", [b"<", b"</", b'<a href="', b"<!-- unfinished", b"<script>unfinished"])
+def test_iwb_sec_html401_unfinished_markup_rejected(suffix, _no_network) -> None:
+    with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated"):
+        parse_iwb_sec_filing_index_html(_synthetic_html401_index() + suffix, accepted_timezone=_NY)
+
+
+@pytest.mark.parametrize("old,new", [
+    (b'<div class="info">2026-05-22 15:05:15</div>', b'<div class="info">2026-05-22 15:05:15'),
+    (b'<div class="info">2026-05-22 15:05:15</div>', b'<div class="info">2026-05-22 15:05:15<span></span>'),
+    (b"<td>NPORT-P</td>", b"<td>NPORT-P"),
+    (b"<td>NPORT-P</td></tr>", b"<td>NPORT-P</td>"),
+    (b"</table>", b""),
+    (b"\n  \n</div>\n", b"\n  \n"),
+])
+def test_iwb_sec_html401_critical_structure_end_tags_required(old, new, _no_network) -> None:
+    payload = _synthetic_html401_index()
+    assert old in payload
+    payload = payload.replace(old, new, 1)
+    with pytest.raises(IwbSecFilingAdapterError, match="incomplete or truncated|malformed"):
+        parse_iwb_sec_filing_index_html(payload, accepted_timezone=_NY)
+
+
+@pytest.mark.parametrize("old,new,message", [
+    (b'<div class="infoHead">Accepted</div><div class="info">2026-05-22 15:05:15</div>', b"", "missing fields: accepted"),
+    (b'<table class="tableFile">', b'<table class="unsupported">', "missing fields: form_type"),
+    (b"<th>Type</th>", b"<th>Unsupported column</th>", "primary document row is missing or malformed"),
+])
+def test_iwb_sec_html401_missing_fields_and_unsupported_tables(old, new, message, _no_network) -> None:
+    payload = _synthetic_html401_index().replace(b'<div class="formHeader">Form NPORT-P</div>', b"")
+    assert old in payload
+    with pytest.raises(IwbSecFilingAdapterError, match=message):
+        parse_iwb_sec_filing_index_html(payload.replace(old, new, 1), accepted_timezone=_NY)
 
 
 def test_iwb_sec_rejects_bad_form_and_cik_grammar() -> None:

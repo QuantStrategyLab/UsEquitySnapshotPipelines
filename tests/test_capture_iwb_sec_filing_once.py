@@ -9,7 +9,7 @@ import json
 import runpy
 import socket
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -115,10 +115,11 @@ class FakeOpener:
 
 
 class FakeStore:
-    def __init__(self, clock, *, corrupt=None, fail=None):
+    def __init__(self, clock, *, corrupt=None, fail=None, duration=3600):
         self.clock = clock
         self.corrupt = corrupt
         self.fail = fail
+        self.duration = duration
         self.items = {}
         self.events = []
         self.published = False
@@ -128,7 +129,7 @@ class FakeStore:
 
     def create_and_verify(self, name, body):
         self.events.append(("raw", name))
-        self.clock.advance(3600)
+        self.clock.advance(self.duration)
         if name == self.fail:
             raise capture.CaptureError("LOCAL_WRITE_OR_READBACK_FAILED")
         self.items[name] = body
@@ -179,6 +180,53 @@ def setup_capture(*, index=None, xml=None, first_headers=None, second_headers=No
     return clock, responses, opener, store
 
 
+def assert_response_receipt(receipt_body, *, body, response, url):
+    receipt = json.loads(receipt_body)
+    assert receipt == {
+        "schema_version": "qsl.research.iwb_sec_single_filing_response_receipt.v1",
+        "status": "response_received_not_validated",
+        "url": url,
+        "http_status": 200,
+        "bytes": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "completed_at": response.completed_at.astimezone(UTC).isoformat(),
+        "raw_xsd_validation": "not_validated",
+        "production_eligible": False,
+        "trading_eligible": False,
+    }
+    assert "operator@example.invalid" not in receipt_body.decode()
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_complete_invalid_document_retains_exact_raw_and_receipts_without_manifest(tmp_path, which):
+    bodies = [index_bytes(), xml_bytes()]
+    bodies[which] = b"<html><body>Unsupported synthetic document</body></html>" if which == 0 else b"<wrong/>"
+    clock, responses, opener, _ = setup_capture(index=bodies[0], xml=bodies[1])
+    expected_error = "SEC_INDEX_INPUT_REJECTED" if which == 0 else "SEC_XML_OR_BINDING_INPUT_REJECTED"
+    with pytest.raises(capture.CaptureError, match=expected_error):
+        capture.run_capture(config(), opener=opener, clock=clock, storage=capture.LocalStore(tmp_path))
+    directory = tmp_path / config().version_id
+    names = ["filing-index.html", "primary_doc.xml"][: which + 1]
+    assert {path.name for path in directory.iterdir()} == {
+        name for raw_name in names for name in [raw_name, raw_name + ".response.json"]
+    }
+    for position, name in enumerate(names):
+        assert (directory / name).read_bytes() == bodies[position]
+        assert_response_receipt(
+            (directory / (name + ".response.json")).read_bytes(),
+            body=bodies[position],
+            response=responses[position],
+            url=[capture.INDEX_URL, capture.XML_URL][position],
+        )
+    assert len(opener.calls) == which + 1
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    other_clock, _, other_opener, _ = setup_capture()
+    with pytest.raises(capture.CaptureError, match="LOCAL_VERSION_ALREADY_EXISTS"):
+        capture.run_capture(config(), opener=other_opener, clock=other_clock, storage=capture.LocalStore(tmp_path))
+    assert other_opener.calls == []
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
 def test_complete_receipt_uses_response_completion_before_storage_and_preserves_bytes():
     clock, responses, opener, store = setup_capture()
     result = capture.run_capture(config(), opener=opener, clock=clock, storage=store)
@@ -186,7 +234,7 @@ def test_complete_receipt_uses_response_completion_before_storage_and_preserves_
     assert [call[0].full_url for call in opener.calls] == [capture.INDEX_URL, capture.XML_URL]
     assert all(call[1] == 30 for call in opener.calls)
     assert opener.calls[1][2] - (opener.calls[0][2] + 0.25) >= 1.0
-    assert clock.sleeps == [1.0]
+    assert clock.sleeps == []  # Slow, verified index storage already satisfies the interval.
     assert result.version.observed_at == max(response.completed_at for response in responses)
     assert result.version.observed_at < clock.now() - timedelta(hours=1)
     manifest = json.loads(store.items["manifest.json"])
@@ -199,10 +247,39 @@ def test_complete_receipt_uses_response_completion_before_storage_and_preserves_
     assert manifest["first_public_visibility_proven"] is False
     assert store.items["filing-index.html"] == index_bytes()
     assert store.items["primary_doc.xml"] == xml_bytes()
+    for position, name in enumerate(["filing-index.html", "primary_doc.xml"]):
+        assert_response_receipt(
+            store.items[name + ".response.json"],
+            body=store.items[name],
+            response=responses[position],
+            url=[capture.INDEX_URL, capture.XML_URL][position],
+        )
+        assert store.events.count(("raw", name)) == 1
     for entry in manifest["raw_objects"]:
         assert entry["sha256"] == hashlib.sha256(store.items[entry["name"]]).hexdigest()
     assert "operator@example.invalid" not in json.dumps(manifest)
     assert store.events[-1][0] == "manifest"
+
+
+def test_fast_storage_still_waits_from_complete_index_receipt():
+    clock, _, opener, store = setup_capture(duration=0)
+    capture.run_capture(config(), opener=opener, clock=clock, storage=store)
+    assert clock.sleeps == [1.0]
+    assert opener.calls[1][2] - (opener.calls[0][2] + 0.25) == 1.0
+
+
+def test_response_completion_receipts_are_actual_utc_even_for_non_utc_clock():
+    clock, responses, opener, store = setup_capture()
+    clock.wall = clock.wall.astimezone(timezone(timedelta(hours=8)))
+    result = capture.run_capture(config(), opener=opener, clock=clock, storage=store)
+    for position, name in enumerate(["filing-index.html", "primary_doc.xml"]):
+        assert_response_receipt(
+            store.items[name + ".response.json"],
+            body=store.items[name],
+            response=responses[position],
+            url=[capture.INDEX_URL, capture.XML_URL][position],
+        )
+        assert result.manifest["responses"][position]["completed_at"].endswith("+00:00")
 
 
 @pytest.mark.parametrize(
@@ -231,15 +308,19 @@ def test_invalid_scope_or_configuration_has_zero_requests(changes):
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 308, 403, 429, 500])
-def test_http_status_fails_without_retry_or_xml(status):
+@pytest.mark.parametrize("which", [0, 1])
+def test_http_status_fails_without_retry_or_rejected_response_receipt(status, which):
     clock, _, opener, store = setup_capture()
-    opener.responses[0] = HTTPError(capture.INDEX_URL, status, "secret detail", {}, io.BytesIO(b"secret"))
+    opener.responses[which] = HTTPError(
+        [capture.INDEX_URL, capture.XML_URL][which], status, "secret detail", {}, io.BytesIO(b"secret")
+    )
     with pytest.raises(capture.CaptureError) as error:
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert str(error.value) == "SEC_HTTP_REJECTED"
     assert error.value.status == status
-    assert len(opener.calls) == 1
+    assert len(opener.calls) == which + 1
     assert not store.published
+    assert set(store.items) == ({"filing-index.html", "filing-index.html.response.json"} if which else set())
 
 
 @pytest.mark.parametrize("error", [URLError("secret"), TimeoutError("secret"), OSError("secret")])
@@ -250,6 +331,7 @@ def test_transport_errors_are_sanitized_without_retry(error):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert len(opener.calls) == 1
     assert not store.published
+    assert not store.items
 
 
 @pytest.mark.parametrize(
@@ -264,12 +346,17 @@ def test_transport_errors_are_sanitized_without_retry(error):
         {"Content-Length": str(capture.MAX_INDEX_BYTES + 1)},
     ],
 )
-def test_unsupported_encoding_length_and_truncation_fail_closed(headers):
-    clock, _, opener, store = setup_capture(first_headers=headers)
+@pytest.mark.parametrize("which", [0, 1])
+def test_unsupported_encoding_length_and_truncation_fail_closed(headers, which):
+    clock, responses, opener, store = setup_capture()
+    responses[which].headers = Message()
+    for key, value in headers.items():
+        responses[which].headers[key] = value
     with pytest.raises(capture.CaptureError):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
-    assert len(opener.calls) == 1
+    assert len(opener.calls) == which + 1
     assert not store.published
+    assert set(store.items) == ({"filing-index.html", "filing-index.html.response.json"} if which else set())
 
 
 @pytest.mark.parametrize("which,limit", [(0, capture.MAX_INDEX_BYTES), (1, capture.MAX_XML_BYTES)])
@@ -280,6 +367,7 @@ def test_absent_length_reads_to_eof_but_never_accepts_over_budget(which, limit):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert len(opener.calls) == which + 1
     assert not store.published
+    assert set(store.items) == ({"filing-index.html", "filing-index.html.response.json"} if which else set())
 
 
 def test_duplicate_length_or_silent_redirect_rejected():
@@ -293,6 +381,7 @@ def test_duplicate_length_or_silent_redirect_rejected():
             capture.run_capture(config(), opener=opener, clock=clock, storage=store)
         assert len(opener.calls) == 1
         assert not store.published
+        assert not store.items
 
 
 @pytest.mark.parametrize(
@@ -303,12 +392,15 @@ def test_duplicate_length_or_silent_redirect_rejected():
         b"<html><body>Verify you are human: CAPTCHA</body></html>",
     ],
 )
-def test_http_200_challenge_fails_without_retry(body):
-    clock, _, opener, store = setup_capture(index=body)
+@pytest.mark.parametrize("which", [0, 1])
+def test_http_200_challenge_fails_without_retry_or_rejected_response_receipt(body, which):
+    clock, _, opener, store = setup_capture()
+    opener.responses[which] = FakeResponse(body, clock)
     with pytest.raises(capture.CaptureError, match="SEC_CHALLENGE_REJECTED"):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
-    assert len(opener.calls) == 1
+    assert len(opener.calls) == which + 1
     assert not store.published
+    assert set(store.items) == ({"filing-index.html", "filing-index.html.response.json"} if which else set())
 
 
 @pytest.mark.parametrize(
@@ -334,7 +426,11 @@ def test_identity_period_namespace_or_document_shape_conflicts_never_publish(whi
     with pytest.raises(capture.CaptureError):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert not store.published
-    assert not store.items
+    names = ["filing-index.html", "primary_doc.xml"][: which + 1]
+    assert set(store.items) == {name for raw_name in names for name in [raw_name, raw_name + ".response.json"]}
+    for position, name in enumerate(names):
+        assert store.items[name] == bodies[position]
+        assert json.loads(store.items[name + ".response.json"])["status"] == "response_received_not_validated"
     assert len(opener.calls) == which + 1
 
 
@@ -369,7 +465,7 @@ def test_existing_accepted_dst_rules_are_fail_closed_before_xml(accepted):
 
 
 def test_observed_max_is_conservative_under_wall_clock_adjustment():
-    clock, responses, opener, store = setup_capture()
+    clock, responses, opener, store = setup_capture(duration=0)
     original_read = responses[1].read
     adjusted = False
 
@@ -398,15 +494,6 @@ def test_exact_byte_limit_is_accepted_only_after_eof(which, limit):
     assert result.manifest["responses"][which]["bytes"] == limit
 
 
-def test_second_http_rejection_stops_at_two_without_raw_or_manifest():
-    clock, _, opener, store = setup_capture()
-    opener.responses[1] = HTTPError(capture.XML_URL, 429, "secret", {}, io.BytesIO(b"secret"))
-    with pytest.raises(capture.CaptureError, match="SEC_HTTP_REJECTED"):
-        capture.run_capture(config(), opener=opener, clock=clock, storage=store)
-    assert len(opener.calls) == 2
-    assert not store.items
-
-
 def test_advertised_truncated_length_and_http_incomplete_read_rejected():
     from http.client import IncompleteRead
 
@@ -415,6 +502,7 @@ def test_advertised_truncated_length_and_http_incomplete_read_rejected():
     with pytest.raises(capture.CaptureError, match="SEC_CONTENT_LENGTH_MISMATCH"):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert not store.published
+    assert set(store.items) == {"filing-index.html", "filing-index.html.response.json"}
     clock, responses, opener, store = setup_capture()
 
     def truncated(_size):
@@ -424,15 +512,65 @@ def test_advertised_truncated_length_and_http_incomplete_read_rejected():
     with pytest.raises(capture.CaptureError, match="SEC_TRANSPORT_FAILED"):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert len(opener.calls) == 1
+    assert not store.items
 
 
-@pytest.mark.parametrize("fail", ["filing-index.html", "primary_doc.xml", "manifest.json"])
-def test_storage_failure_never_produces_success_manifest(fail):
+@pytest.mark.parametrize(
+    "fail,requests",
+    [
+        ("filing-index.html", 1),
+        ("filing-index.html.response.json", 1),
+        ("primary_doc.xml", 2),
+        ("primary_doc.xml.response.json", 2),
+        ("manifest.json", 2),
+    ],
+)
+def test_storage_failure_stops_without_continuing_or_success_manifest(fail, requests):
     clock, _, opener, store = setup_capture(fail=fail)
     with pytest.raises(capture.CaptureError):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert not store.published
     assert "manifest.json" not in store.items
+    assert len(opener.calls) == requests
+
+
+@pytest.mark.parametrize(
+    "fail,parser_name",
+    [
+        ("filing-index.html", "parse_iwb_sec_filing_index_html"),
+        ("filing-index.html.response.json", "parse_iwb_sec_filing_index_html"),
+        ("primary_doc.xml", "parse_iwb_sec_nport_xml_bytes"),
+        ("primary_doc.xml.response.json", "parse_iwb_sec_nport_xml_bytes"),
+    ],
+)
+def test_raw_or_receipt_storage_failure_does_not_enter_that_document_parser(monkeypatch, fail, parser_name):
+    import us_equity_snapshot_pipelines.russell_1000_history as adapter
+
+    def premature_parser(*_args, **_kwargs):
+        pytest.fail("Parser entered before its raw and response receipt were verified")
+
+    monkeypatch.setattr(adapter, parser_name, premature_parser)
+    clock, _, opener, store = setup_capture(fail=fail)
+    with pytest.raises(capture.CaptureError, match="LOCAL_WRITE_OR_READBACK_FAILED"):
+        capture.run_capture(config(), opener=opener, clock=clock, storage=store)
+    assert len(opener.calls) == (1 if fail.startswith("filing-index") else 2)
+    assert not store.published
+
+
+@pytest.mark.parametrize("name", ["filing-index.html", "filing-index.html.response.json"])
+def test_wrong_storage_readback_metadata_stops_before_xml(name):
+    clock, _, opener, store = setup_capture()
+    original_create = store.create_and_verify
+
+    def wrong_metadata(object_name, body):
+        entry = original_create(object_name, body)
+        return {**entry, "bytes": entry["bytes"] + 1} if object_name == name else entry
+
+    store.create_and_verify = wrong_metadata
+    with pytest.raises(capture.CaptureError, match="LOCAL_READBACK_METADATA_MISMATCH"):
+        capture.run_capture(config(), opener=opener, clock=clock, storage=store)
+    assert len(opener.calls) == 1
+    assert not store.published
 
 
 def test_raw_readback_mismatch_prevents_manifest():
@@ -450,6 +588,12 @@ def test_local_create_only_and_atomic_manifest(tmp_path):
     assert json.loads((directory / "manifest.json").read_bytes()) == result.manifest
     assert (directory / "filing-index.html").read_bytes() == index_bytes()
     assert (directory / "primary_doc.xml").read_bytes() == xml_bytes()
+    assert json.loads((directory / "filing-index.html.response.json").read_bytes())["status"] == (
+        "response_received_not_validated"
+    )
+    assert json.loads((directory / "primary_doc.xml.response.json").read_bytes())["status"] == (
+        "response_received_not_validated"
+    )
     assert not (directory / ".manifest.pending").exists()
     other_clock, _, other_opener, _ = setup_capture()
     with pytest.raises(capture.CaptureError, match="LOCAL_VERSION_ALREADY_EXISTS"):
@@ -457,13 +601,16 @@ def test_local_create_only_and_atomic_manifest(tmp_path):
     assert other_opener.calls == []
 
 
-def test_local_existing_raw_or_manifest_never_overwritten(tmp_path):
+@pytest.mark.parametrize(
+    "name", ["filing-index.html", "filing-index.html.response.json", "primary_doc.xml", "primary_doc.xml.response.json"]
+)
+def test_local_existing_raw_receipt_or_manifest_never_overwritten(tmp_path, name):
     store = capture.LocalStore(tmp_path)
     store.reserve("test-local")
-    store.create_and_verify("filing-index.html", b"first")
+    store.create_and_verify(name, b"first")
     with pytest.raises(capture.CaptureError, match="LOCAL_WRITE_OR_READBACK_FAILED"):
-        store.create_and_verify("filing-index.html", b"second")
-    assert (tmp_path / "test-local" / "filing-index.html").read_bytes() == b"first"
+        store.create_and_verify(name, b"second")
+    assert (tmp_path / "test-local" / name).read_bytes() == b"first"
     (tmp_path / "test-local" / "manifest.json").write_bytes(b"existing manifest")
     with pytest.raises(capture.CaptureError, match="LOCAL_MANIFEST_PUBLICATION_FAILED"):
         store.publish_manifest(b"new manifest")
@@ -471,7 +618,13 @@ def test_local_existing_raw_or_manifest_never_overwritten(tmp_path):
 
 
 def test_local_raw_and_manifest_readback_mismatch_never_publish(tmp_path, monkeypatch):
-    for corrupt_name in ["primary_doc.xml", ".manifest.pending"]:
+    for corrupt_name in [
+        "filing-index.html",
+        "filing-index.html.response.json",
+        "primary_doc.xml",
+        "primary_doc.xml.response.json",
+        ".manifest.pending",
+    ]:
         store = capture.LocalStore(tmp_path / corrupt_name)
         original = Path.read_bytes
 
@@ -484,6 +637,7 @@ def test_local_raw_and_manifest_readback_mismatch_never_publish(tmp_path, monkey
             clock, _, opener, _ = setup_capture()
             with pytest.raises(capture.CaptureError, match="LOCAL_READBACK_MISMATCH"):
                 capture.run_capture(config(), opener=opener, clock=clock, storage=store)
+            assert len(opener.calls) == (1 if corrupt_name.startswith("filing-index") else 2)
         assert not (tmp_path / corrupt_name / config().version_id / "manifest.json").exists()
 
 
@@ -508,7 +662,7 @@ def test_observed_after_accepted_cutoff_and_same_accession_revision_semantics():
 
 def test_observation_before_accepted_and_invalid_clock_fail_closed():
     for wall in [datetime(2026, 5, 22, 19, 0, tzinfo=UTC), datetime(2026, 10, 4, 12, 0)]:
-        clock, _, opener, store = setup_capture()
+        clock, _, opener, store = setup_capture(duration=0)
         clock.wall = wall
         with pytest.raises(capture.CaptureError):
             capture.run_capture(config(), opener=opener, clock=clock, storage=store)
@@ -521,7 +675,7 @@ def test_timeout_budget_and_unverified_sleep_do_not_start_extra_request():
     with pytest.raises(capture.CaptureError, match="SEC_REQUEST_DEADLINE_EXCEEDED"):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
     assert len(opener.calls) == 1
-    clock, _, opener, store = setup_capture()
+    clock, _, opener, store = setup_capture(duration=0)
     clock.sleep = lambda seconds: None
     with pytest.raises(capture.CaptureError, match="SEC_REQUEST_INTERVAL_UNVERIFIED"):
         capture.run_capture(config(), opener=opener, clock=clock, storage=store)
