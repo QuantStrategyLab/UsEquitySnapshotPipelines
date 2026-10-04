@@ -2210,6 +2210,11 @@ def _iwb_sec_lazy_mss():
 
 
 def _iwb_sec_require_bridgeable_membership(version: IwbSecFilingInputVersion) -> tuple[str, ...]:
+    """Repeat the lexical code-presence invariant for publicly constructible records.
+
+    A status or preserved raw hash does not authenticate reconstructed fields;
+    this defensive check is not independent verification of raw membership.
+    """
     if not version.holdings:
         _iwb_sec_fail("canonical bridge rejected: empty holdings")
     blocking = [holding for holding in version.holdings if holding.status != "resolved_equity"]
@@ -2221,6 +2226,11 @@ def _iwb_sec_require_bridgeable_membership(version: IwbSecFilingInputVersion) ->
     for holding in version.holdings:
         if not holding.ticker:
             _iwb_sec_fail("canonical bridge rejected: resolved equity missing ticker")
+        if not (
+            _iwb_sec_has_security_identifier_evidence(holding.cusip)
+            or _iwb_sec_has_security_identifier_evidence(holding.isin)
+        ):
+            _iwb_sec_fail("canonical bridge rejected: resolved equity missing security identifier evidence")
         if holding.ticker not in symbols:
             symbols.append(holding.ticker)
     if not symbols:
@@ -2229,10 +2239,14 @@ def _iwb_sec_require_bridgeable_membership(version: IwbSecFilingInputVersion) ->
 
 
 def iwb_sec_research_candidate_symbols(version: IwbSecFilingInputVersion) -> tuple[str, ...]:
-    """Explicit partial research helper; not an ordinary complete contract input."""
+    """Partial research helper repeating code presence, not complete identity verification."""
     symbols: list[str] = []
     for holding in version.holdings:
-        if holding.ticker and holding.status == "resolved_equity" and holding.ticker not in symbols:
+        if (
+            holding.ticker and holding.status == "resolved_equity" and holding.ticker not in symbols
+            and (_iwb_sec_has_security_identifier_evidence(holding.cusip)
+                 or _iwb_sec_has_security_identifier_evidence(holding.isin))
+        ):
             symbols.append(holding.ticker)
     return tuple(symbols)
 
