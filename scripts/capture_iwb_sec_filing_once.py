@@ -182,7 +182,7 @@ def _fetch_once(
                     raise CaptureError("SEC_RESPONSE_TOO_LARGE")
                 if not chunk:
                     # Immediately after EOF, before parsing, closing, or local writes.
-                    completed_at = _aware(clock.now())
+                    completed_at = _aware(clock.now()).astimezone(UTC)
                     completed_monotonic = _monotonic(clock)
                     break
                 parts.append(chunk)
@@ -216,7 +216,7 @@ def _fetch_once(
 
 
 class LocalStore:
-    """New version directory, exclusive files, exact-byte/hash readback, manifest last."""
+    """New version directory, exclusive raw/receipt files, verified readback, manifest last."""
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -236,7 +236,13 @@ class LocalStore:
         self.directory = directory
 
     def create_and_verify(self, name: str, body: bytes) -> dict[str, Any]:
-        if self.directory is None or name not in {"filing-index.html", "primary_doc.xml", ".manifest.pending"}:
+        if self.directory is None or name not in {
+            "filing-index.html",
+            "filing-index.html.response.json",
+            "primary_doc.xml",
+            "primary_doc.xml.response.json",
+            ".manifest.pending",
+        }:
             raise CaptureError("LOCAL_OBJECT_OUT_OF_SCOPE")
         path = self.directory / name
         try:
@@ -265,6 +271,27 @@ class LocalStore:
             (self.directory / ".manifest.pending").unlink()
         except OSError:
             pass
+
+
+def _retain_response(storage: Any, *, name: str, body: bytes, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Preserve safe complete bytes before parsing; this receipt makes no validation claim."""
+    entry = storage.create_and_verify(name, body)
+    if entry != {"name": name, "bytes": len(body), "sha256": _sha(body)}:
+        raise CaptureError("LOCAL_READBACK_METADATA_MISMATCH")
+    response_receipt = {
+        "schema_version": "qsl.research.iwb_sec_single_filing_response_receipt.v1",
+        "status": "response_received_not_validated",
+        **receipt,
+        "raw_xsd_validation": "not_validated",
+        "production_eligible": False,
+        "trading_eligible": False,
+    }
+    receipt_body = (json.dumps(response_receipt, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    receipt_name = name + ".response.json"
+    receipt_entry = storage.create_and_verify(receipt_name, receipt_body)
+    if receipt_entry != {"name": receipt_name, "bytes": len(receipt_body), "sha256": _sha(receipt_body)}:
+        raise CaptureError("LOCAL_READBACK_METADATA_MISMATCH")
+    return entry
 
 
 def run_capture(
@@ -296,6 +323,7 @@ def run_capture(
         limit=MAX_INDEX_BYTES,
         user_agent=config.user_agent,
     )
+    raw_objects = [_retain_response(storage, name="filing-index.html", body=index_body, receipt=index_receipt)]
     try:
         index = parse_iwb_sec_filing_index_html(index_body, accepted_timezone=config.accepted_timezone)
     except IwbSecFilingAdapterError:
@@ -314,6 +342,7 @@ def run_capture(
         limit=MAX_XML_BYTES,
         user_agent=config.user_agent,
     )
+    raw_objects.append(_retain_response(storage, name="primary_doc.xml", body=xml_body, receipt=xml_receipt))
     observed_at = max(datetime.fromisoformat(item["completed_at"]) for item in (index_receipt, xml_receipt))
     try:
         meta, _ = parse_iwb_sec_nport_xml_bytes(xml_body, expected_index=index)
@@ -335,12 +364,6 @@ def run_capture(
         )
     except IwbSecFilingAdapterError:
         raise CaptureError("SEC_XML_OR_BINDING_INPUT_REJECTED") from None
-    raw_objects = []
-    for name, body in (("filing-index.html", index_body), ("primary_doc.xml", xml_body)):
-        entry = storage.create_and_verify(name, body)
-        if entry != {"name": name, "bytes": len(body), "sha256": _sha(body)}:
-            raise CaptureError("LOCAL_READBACK_METADATA_MISMATCH")
-        raw_objects.append(entry)
     manifest = {
         "schema_version": "qsl.research.iwb_sec_single_filing_receipt.v1",
         "status": "capture_complete",

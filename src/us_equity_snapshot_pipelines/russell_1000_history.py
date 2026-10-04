@@ -18,7 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -1299,7 +1299,12 @@ def _iwb_sec_localize_strict(naive: datetime, tzinfo: timezone | ZoneInfo) -> da
 
 
 class _IwbSecIndexHTMLExtractor(HTMLParser):
-    """Minimal labeled-field extractor for synthetic SEC-style index HTML."""
+    """Bounded labeled-field/tableFile extractor; not a transport validator."""
+
+    _VOID_TAGS = frozenset({
+        "area", "base", "basefont", "br", "col", "frame", "hr", "img", "input", "isindex", "link", "meta", "param",
+    })
+    _OPTIONAL_CONTENT_TAGS = frozenset({"p", "li", "dt", "dd", "colgroup", "thead", "tbody", "tfoot", "option"})
 
     _LABEL_MAP = {
         "accession number": "accession_number",
@@ -1317,6 +1322,7 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         self.primary_document_types: list[str] = []
         self.saw_table_file = False
         self._capture: str | None = None
+        self._capture_depth = 0
         self._buffer: list[str] = []
         self._pending_info_head: str | None = None
         self._in_table_file = False
@@ -1326,16 +1332,58 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         self._row_cells: list[str] = []
         self._header_cells: list[str] = []
         self.text_fragments: list[str] = []
+        self._open_required_tags: list[str] = []
+        self._saw_html = False
+        self._saw_body = False
+        self._body_closed = False
+        self._html_closed = False
+        self._saw_declaration = False
+        self._optional_wrapper_ends = False
+
+    def handle_decl(self, decl: str) -> None:
+        if self._saw_html or self._saw_declaration:
+            _iwb_sec_fail("filing index HTML is malformed or truncated")
+        self._saw_declaration = True
+        # Only this explicitly supported HTML 4.01 declaration permits the
+        # optional HTML/BODY end tags. All consumed fields/containers still close.
+        self._optional_wrapper_ends = re.fullmatch(
+            r'''(?i)DOCTYPE\s+HTML\s+PUBLIC\s+(['"])-//W3C//DTD HTML 4\.01 Transitional//EN\1\s+'''
+            r'''(['"])http://www\.w3\.org/TR/html4/loose\.dtd\2\s*''', decl,
+        ) is not None
+
+    def _requires_end_tag(self, tag: str) -> bool:
+        # Other tables (e.g. tableSeries) are not parsed as document records.
+        # HTML4 allows their row/cell ends to be omitted; tableFile is stricter.
+        return tag not in self._VOID_TAGS and tag not in self._OPTIONAL_CONTENT_TAGS and (
+            tag not in {"tr", "td", "th"} or self._in_table_file
+        )
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._body_closed or self._html_closed:
+            _iwb_sec_fail("filing index HTML is malformed or truncated")
+        if tag == "html":
+            if self._saw_html or self._open_required_tags:
+                _iwb_sec_fail("filing index HTML is malformed or truncated")
+            self._saw_html = True
+        elif tag == "body":
+            if self._saw_body or self._open_required_tags != ["html"]:
+                _iwb_sec_fail("filing index HTML is malformed or truncated")
+            self._saw_body = True
+        if self._requires_end_tag(tag):
+            self._open_required_tags.append(tag)
         attr_map = {key.lower(): (value or "") for key, value in attrs}
         classes = tuple(attr_map.get("class", "").lower().split())
         href = attr_map.get("href", "")
-        if "cik" in href.lower():
-            match = re.search(r"(\d{1,10})\s*$", href.replace("/", " ").strip())
-            if match is not None:
-                self.fields["cik"].append(match.group(1))
+        for name, value in parse_qsl(urlsplit(href).query, keep_blank_values=True):
+            if name.lower() != "cik":
+                continue
+            if _IWB_SEC_CIK_RE.fullmatch(value):
+                self.fields["cik"].append(value.zfill(10))
+            elif re.fullmatch(r"[SC][0-9]{9}", value) is None:
+                _iwb_sec_fail("invalid CIK query value")
         if tag == "table" and "tablefile" in classes:
+            if self._in_table_file:
+                _iwb_sec_fail("filing index HTML is malformed or truncated")
             self._in_table_file = True
             self.saw_table_file = True
             self._header_cells = []
@@ -1356,6 +1404,19 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
             self._start_capture("form_header")
 
     def handle_endtag(self, tag: str) -> None:
+        if self._html_closed or (self._body_closed and tag != "html"):
+            _iwb_sec_fail("filing index HTML is malformed or truncated")
+        if tag == "html" and self._optional_wrapper_ends and self._open_required_tags == ["html", "body"]:
+            self._open_required_tags.pop()
+            self._body_closed = True
+        if self._requires_end_tag(tag):
+            if not self._open_required_tags or self._open_required_tags[-1] != tag:
+                _iwb_sec_fail("filing index HTML is incomplete or truncated")
+            self._open_required_tags.pop()
+        if tag == "body":
+            self._body_closed = True
+        elif tag == "html":
+            self._html_closed = True
         if self._in_table_file and self._in_cell and tag in {"td", "th"}:
             self._in_cell = False
             self._row_cells.append(unescape("".join(self._cell_buffer)).strip())
@@ -1369,7 +1430,7 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         if self._in_table_file and tag == "table":
             self._in_table_file = False
             return
-        if self._capture is None:
+        if self._capture is None or len(self._open_required_tags) != self._capture_depth - 1:
             return
         text = unescape("".join(self._buffer)).strip()
         capture = self._capture
@@ -1396,6 +1457,8 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
                 self.fields["form_type"].append(text)
 
     def handle_data(self, data: str) -> None:
+        if (self._body_closed or self._html_closed) and data.strip():
+            _iwb_sec_fail("filing index HTML is malformed or truncated")
         self.text_fragments.append(data)
         if self._in_cell:
             self._cell_buffer.append(data)
@@ -1416,7 +1479,10 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
             self.fields["accession_number"].append(accession_match.group(1))
 
     def _start_capture(self, kind: str) -> None:
+        if self._capture is not None:
+            _iwb_sec_fail("filing index HTML is malformed or truncated")
         self._capture = kind
+        self._capture_depth = len(self._open_required_tags)
         self._buffer = []
 
     def _finish_table_row(self, cells: list[str]) -> None:
@@ -1444,8 +1510,15 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
             self.primary_document_types.append(doc_type)
 
     def unfinished(self) -> bool:
+        # This checks supported HTML shape only. The caller's collection receipt,
+        # not this parser, is the evidence for HTTP response completion.
+        allowed_open = ([], ["html"], ["html", "body"]) if self._optional_wrapper_ends else ([],)
         return (
-            self._capture is not None
+            not self._saw_html
+            or not self._saw_body
+            or bool(self.rawdata)
+            or self._open_required_tags not in allowed_open
+            or self._capture is not None
             or self._pending_info_head is not None
             or self._in_cell
             or self._in_tr
@@ -1465,17 +1538,6 @@ def _iwb_sec_extract_colon_fields(html_text: str) -> dict[str, list[str]]:
     for key, pattern in patterns.items():
         fields[key].extend(match.group(1).strip() for match in pattern.finditer(html_text))
     return fields
-
-
-def _iwb_sec_require_complete_index_html(html_text: str) -> None:
-    """Reject obviously incomplete supported-subset index documents.
-
-    This is only bounded shape/completeness validation for the declared HTML
-    subset. It does not prove genuine HTTP response completion.
-    """
-    lowered = html_text.lower()
-    if "</body>" not in lowered or "</html>" not in lowered:
-        _iwb_sec_fail("filing index HTML is incomplete or truncated")
 
 
 def _iwb_sec_extract_index_fields(html_text: str) -> dict[str, str]:
@@ -1552,7 +1614,6 @@ def parse_iwb_sec_filing_index_html(
         raise IwbSecFilingAdapterError("filing index HTML is not valid UTF-8") from exc
     if "<" not in text:
         _iwb_sec_fail("filing index HTML is malformed or truncated")
-    _iwb_sec_require_complete_index_html(text)
     fields = _iwb_sec_extract_index_fields(text)
     cik = _iwb_sec_normalize_cik(fields["cik"])
     if cik != IWB_SEC_FILING_CIK:
