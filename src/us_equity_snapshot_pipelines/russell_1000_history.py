@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import csv
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
+from html.parser import HTMLParser
+from types import MappingProxyType
+from zoneinfo import ZoneInfo
+import csv
+import hashlib
 import io
 import json
 import re
 import ssl
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote, urlencode
@@ -985,3 +993,1043 @@ def collect_symbol_universe(
 
 def write_interval_universe_history(history: pd.DataFrame, output_path: str | Path) -> None:
     write_table(history, output_path)
+
+
+# --- Offline IWB SEC N-PORT filing-index/XML adapter (path B preparation) ---
+#
+# Pure helpers over caller-supplied raw bytes. Synthetic fixtures cover only the
+# field subset listed in IWB_SEC_COVERED_NPORT_FIELDS and must not be read as a
+# verified live SEC XML schema sample. Event/terminal-price evidence is not
+# supplied here; those business requirements stay explicitly incomplete.
+
+IWB_SEC_FILING_CIK = "0001100663"
+IWB_SEC_FILING_SERIES_ID = "S000004347"
+IWB_SEC_FILING_CLASS_ID = "C000012077"
+IWB_SEC_FILING_TICKER = "IWB"
+IWB_SEC_FILING_MAX_INDEX_BYTES = 1_048_576
+IWB_SEC_FILING_MAX_XML_BYTES = 8_388_608
+IWB_SEC_FILING_SOURCE_ID = "iwb_sec_nport_public_holdings_proxy"
+IWB_SEC_FILING_UNIVERSE_ID = "iwb_sec_nport_public_holdings_proxy"
+IWB_SEC_SUPPORTED_FORMS = frozenset({"NPORT-P", "NPORT-P/A"})
+IWB_SEC_COVERED_NPORT_FIELDS = (
+    "headerData",
+    "issuerCredentials",
+    "cik",
+    "seriesClassInfo",
+    "seriesId",
+    "classId",
+    "ticker",
+    "genInfo",
+    "repPdDate",
+    "invstOrSecs",
+    "invstOrSec",
+    "identifiers",
+    "tickers",
+    "assetCat",
+    "issuerCat",
+    "submissionType",
+)
+IWB_SEC_EQUITY_ASSET_CATS = frozenset({"EC", "EP"})
+IWB_SEC_NON_EQUITY_ASSET_HINTS = frozenset(
+    {
+        "ABS",
+        "ABS-MBS",
+        "ABS-O",
+        "COMM",
+        "DBT",
+        "DER",
+        "DIR",
+        "LON",
+        "RA",
+        "RE",
+        "SN",
+        "STIV",
+        "UST",
+        "CASH",
+    }
+)
+_IWB_SEC_ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_IWB_SEC_CIK_RE = re.compile(r"^[0-9]{1,10}$")
+_IWB_SEC_ACCEPTED_OFFSET_RE = re.compile(
+    r"^(?P<naive>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})"
+    r"(?P<frac>\.\d+)?"
+    r"(?P<offset>Z|[+-]\d{2}:?\d{2})$"
+)
+_IWB_SEC_ACCEPTED_NAIVE_RE = re.compile(
+    r"^(?P<naive>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?P<frac>\.\d+)?$"
+)
+_IWB_SEC_FORBIDDEN_XML_TEXT_RE = re.compile(
+    r"(?is)<!DOCTYPE\b|<!ENTITY\b|SYSTEM\s+(['\"])[^'\"]+\1|PUBLIC\s+(['\"])[^'\"]+\2|"
+    r"<\?xml-stylesheet\b"
+)
+_IWB_SEC_XML_DECL_ENCODING_RE = re.compile(
+    rb"""(?is)<\?xml\b[^>]*\bencoding\s*=\s*(['"])\s*([^'"]+)\s*\1"""
+)
+class IwbSecFilingAdapterError(ValueError):
+    """Raised when offline IWB SEC filing bytes cannot be bound safely."""
+
+
+@dataclass(frozen=True)
+class IwbSecFilingIndexRecord:
+    accession_number: str
+    form_type: str
+    report_period: date
+    accepted_at: datetime
+    cik: str
+    index_sha256: str
+
+
+@dataclass(frozen=True)
+class IwbSecHoldingRecord:
+    name: str
+    ticker: str | None
+    cusip: str | None
+    isin: str | None
+    asset_cat: str | None
+    issuer_cat: str | None
+    status: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IwbSecFilingInputVersion:
+    accession_number: str
+    version_id: str
+    form_type: str
+    report_period: date
+    accepted_at: datetime
+    observed_at: datetime
+    cik: str
+    series_id: str
+    class_id: str
+    ticker: str
+    index_sha256: str
+    xml_sha256: str
+    raw_binding_sha256: str
+    holdings: tuple[IwbSecHoldingRecord, ...]
+    incomplete_items: tuple[Mapping[str, object], ...]
+    qualification: str
+    trading_eligible: bool
+    covered_nport_fields: tuple[str, ...]
+    schema_claim: str
+
+
+def _iwb_sec_fail(message: str) -> None:
+    raise IwbSecFilingAdapterError(message)
+
+
+def _iwb_sec_sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _iwb_sec_require_bytes(raw: object, *, label: str, max_bytes: int) -> bytes:
+    if not isinstance(raw, (bytes, bytearray)):
+        _iwb_sec_fail(f"{label} must be raw bytes")
+    payload = bytes(raw)
+    if not payload:
+        _iwb_sec_fail(f"{label} is empty")
+    if len(payload) > max_bytes:
+        _iwb_sec_fail(f"{label} exceeds size limit ({max_bytes} bytes)")
+    return payload
+
+
+def _iwb_sec_require_aware(value: object, label: str) -> datetime:
+    if not isinstance(value, datetime):
+        _iwb_sec_fail(f"{label} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        _iwb_sec_fail(f"{label} must be timezone-aware")
+    return value
+
+
+def _iwb_sec_local_name(tag: str) -> str:
+    if not isinstance(tag, str):
+        return ""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    return tag
+
+
+def _iwb_sec_find_all(root: ET.Element, local_name: str) -> list[ET.Element]:
+    return [element for element in root.iter() if _iwb_sec_local_name(element.tag) == local_name]
+
+
+def _iwb_sec_direct_children(parent: ET.Element, local_name: str) -> list[ET.Element]:
+    return [child for child in list(parent) if _iwb_sec_local_name(child.tag) == local_name]
+
+
+def _iwb_sec_require_exact_one_direct_child(parent: ET.Element, local_name: str) -> ET.Element:
+    nodes = _iwb_sec_direct_children(parent, local_name)
+    if not nodes:
+        _iwb_sec_fail(f"N-PORT XML missing {local_name}")
+    if len(nodes) != 1:
+        _iwb_sec_fail(f"N-PORT XML duplicate structural container: {local_name}")
+    # Reject the same container also nested elsewhere under this parent.
+    nested = _iwb_sec_find_all(parent, local_name)
+    if len(nested) != 1:
+        _iwb_sec_fail(f"N-PORT XML misplaced or nested structural container: {local_name}")
+    return nodes[0]
+
+
+def _iwb_sec_require_exact_one_container(root: ET.Element, local_name: str) -> ET.Element:
+    nodes = _iwb_sec_find_all(root, local_name)
+    if not nodes:
+        _iwb_sec_fail(f"N-PORT XML missing {local_name}")
+    if len(nodes) != 1:
+        _iwb_sec_fail(f"N-PORT XML duplicate structural container: {local_name}")
+    return nodes[0]
+
+
+def _iwb_sec_singleton_text(scope: ET.Element, local_name: str, *, required: bool = True) -> str | None:
+    """Require exact-one element node; blank text is malformed; identical duplicates reject."""
+    nodes = [element for element in scope.iter() if _iwb_sec_local_name(element.tag) == local_name]
+    if not nodes:
+        if required:
+            _iwb_sec_fail(f"missing required N-PORT field: {local_name}")
+        return None
+    if len(nodes) != 1:
+        _iwb_sec_fail(f"duplicate required singleton N-PORT field: {local_name}")
+    text = "".join(nodes[0].itertext()).strip()
+    if not text:
+        _iwb_sec_fail(f"blank N-PORT field: {local_name}")
+    return text
+
+
+def _iwb_sec_parse_report_period(value: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise IwbSecFilingAdapterError("invalid report period") from exc
+
+
+def _iwb_sec_normalize_cik(value: str) -> str:
+    text = (value or "").strip()
+    if not _IWB_SEC_CIK_RE.fullmatch(text):
+        _iwb_sec_fail("invalid CIK grammar")
+    return text.zfill(10)
+
+
+def _iwb_sec_normalize_form(value: str) -> str:
+    form_type = unescape(value or "").strip().upper().replace(" ", "")
+    if form_type.startswith("FORM"):
+        form_type = form_type[4:].lstrip()
+    if form_type not in IWB_SEC_SUPPORTED_FORMS:
+        _iwb_sec_fail(f"unsupported form type: {form_type or '<empty>'}")
+    return form_type
+
+
+def _iwb_sec_parse_accepted_at(
+    raw_value: str,
+    *,
+    accepted_timezone: str | timezone | ZoneInfo | None,
+) -> datetime:
+    text = unescape(raw_value).strip()
+    candidate = text
+    if "T" not in candidate[:19] and " " in candidate:
+        candidate = candidate.replace(" ", "T", 1)
+    offset_match = _IWB_SEC_ACCEPTED_OFFSET_RE.fullmatch(candidate)
+    naive_match = _IWB_SEC_ACCEPTED_NAIVE_RE.fullmatch(candidate)
+    if offset_match is not None:
+        frac = offset_match.group("frac")
+        offset = offset_match.group("offset")
+        naive = datetime.fromisoformat(offset_match.group("naive") + (frac or ""))
+        if offset == "Z":
+            return naive.replace(tzinfo=timezone.utc)
+        sign = 1 if offset[0] == "+" else -1
+        hhmm = offset[1:].replace(":", "")
+        hours = int(hhmm[:2])
+        minutes = int(hhmm[2:] or "0")
+        return naive.replace(tzinfo=timezone(sign * timedelta(hours=hours, minutes=minutes)))
+    if naive_match is None:
+        _iwb_sec_fail("invalid Accepted timestamp")
+    if accepted_timezone is None:
+        _iwb_sec_fail("Accepted lacks timezone/offset; caller must supply accepted_timezone")
+    if isinstance(accepted_timezone, str):
+        try:
+            tzinfo = ZoneInfo(accepted_timezone)
+        except Exception as exc:  # noqa: BLE001 - surface as adapter error
+            raise IwbSecFilingAdapterError("invalid accepted_timezone") from exc
+    else:
+        tzinfo = accepted_timezone
+    naive = datetime.fromisoformat(naive_match.group("naive") + (naive_match.group("frac") or ""))
+    if naive.tzinfo is not None:
+        _iwb_sec_fail("Accepted timestamp already timezone-aware but mismatched parser path")
+    return _iwb_sec_localize_strict(naive, tzinfo)
+
+
+def _iwb_sec_localize_strict(naive: datetime, tzinfo: timezone | ZoneInfo) -> datetime:
+    if not isinstance(tzinfo, ZoneInfo):
+        return naive.replace(tzinfo=tzinfo)
+    fold0 = naive.replace(tzinfo=tzinfo, fold=0)
+    fold1 = naive.replace(tzinfo=tzinfo, fold=1)
+    round_trip = fold0.astimezone(timezone.utc).astimezone(tzinfo)
+    if round_trip.replace(tzinfo=None) != naive:
+        _iwb_sec_fail("Accepted timestamp does not exist in the supplied timezone")
+    if fold0.utcoffset() != fold1.utcoffset():
+        _iwb_sec_fail("Accepted timestamp is ambiguous in the supplied timezone")
+    return fold0
+
+
+class _IwbSecIndexHTMLExtractor(HTMLParser):
+    """Minimal labeled-field extractor for synthetic SEC-style index HTML."""
+
+    _LABEL_MAP = {
+        "accession number": "accession_number",
+        "period of report": "report_period",
+        "accepted": "accepted",
+        "filing date": "filing_date",
+        "form": "form_type",
+        "form type": "form_type",
+        "cik": "cik",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.fields: dict[str, list[str]] = defaultdict(list)
+        self.primary_document_types: list[str] = []
+        self.saw_table_file = False
+        self._capture: str | None = None
+        self._buffer: list[str] = []
+        self._pending_info_head: str | None = None
+        self._in_table_file = False
+        self._in_tr = False
+        self._in_cell = False
+        self._cell_buffer: list[str] = []
+        self._row_cells: list[str] = []
+        self._header_cells: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {key.lower(): (value or "") for key, value in attrs}
+        classes = tuple(attr_map.get("class", "").lower().split())
+        href = attr_map.get("href", "")
+        if "cik" in href.lower():
+            match = re.search(r"(\d{1,10})\s*$", href.replace("/", " ").strip())
+            if match is not None:
+                self.fields["cik"].append(match.group(1))
+        if tag == "table" and "tablefile" in classes:
+            self._in_table_file = True
+            self.saw_table_file = True
+            self._header_cells = []
+            return
+        if self._in_table_file and tag == "tr":
+            self._in_tr = True
+            self._row_cells = []
+            return
+        if self._in_table_file and self._in_tr and tag in {"td", "th"}:
+            self._in_cell = True
+            self._cell_buffer = []
+            return
+        if tag == "div" and "infohead" in classes:
+            self._start_capture("info_head")
+        elif tag == "div" and "info" in classes and "infohead" not in classes:
+            self._start_capture("info")
+        elif tag in {"div", "span"} and "formheader" in classes:
+            self._start_capture("form_header")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._in_table_file and self._in_cell and tag in {"td", "th"}:
+            self._in_cell = False
+            self._row_cells.append(unescape("".join(self._cell_buffer)).strip())
+            self._cell_buffer = []
+            return
+        if self._in_table_file and self._in_tr and tag == "tr":
+            self._in_tr = False
+            self._finish_table_row(self._row_cells)
+            self._row_cells = []
+            return
+        if self._in_table_file and tag == "table":
+            self._in_table_file = False
+            return
+        if self._capture is None:
+            return
+        text = unescape("".join(self._buffer)).strip()
+        capture = self._capture
+        self._capture = None
+        self._buffer = []
+        if not text:
+            return
+        if capture == "info_head":
+            self._pending_info_head = text
+            return
+        if capture == "info":
+            if self._pending_info_head is None:
+                return
+            key = self._LABEL_MAP.get(self._pending_info_head.strip().lower())
+            self._pending_info_head = None
+            if key is not None:
+                self.fields[key].append(text)
+            return
+        if capture == "form_header":
+            form_match = re.search(r"(?i)\bForm\s+([A-Za-z0-9/-]+)", text)
+            if form_match is not None:
+                self.fields["form_type"].append(form_match.group(1))
+            elif text.upper().startswith("NPORT"):
+                self.fields["form_type"].append(text)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell:
+            self._cell_buffer.append(data)
+            return
+        if self._capture is not None:
+            self._buffer.append(data)
+            return
+        text = data.strip()
+        if not text:
+            return
+        cik_match = re.search(r"(?i)\bCIK\b\s*[#:]?\s*([^\s<]+)", text)
+        if cik_match is not None:
+            self.fields["cik"].append(cik_match.group(1).strip("()[]"))
+        accession_match = re.search(r"(?i)\bAccession\s+Number\b\s*[#:]?\s*([0-9]{10}-[0-9]{2}-[0-9]{6})", text)
+        if accession_match is not None:
+            self.fields["accession_number"].append(accession_match.group(1))
+
+    def _start_capture(self, kind: str) -> None:
+        self._capture = kind
+        self._buffer = []
+
+    def _finish_table_row(self, cells: list[str]) -> None:
+        if not cells:
+            return
+        lowered = [cell.strip().lower() for cell in cells]
+        header_tokens = {"seq", "type", "form type", "description", "document", "form"}
+        if any(cell in header_tokens for cell in lowered) and all(
+            cell in header_tokens or cell == "" for cell in lowered
+        ):
+            self._header_cells = lowered
+            return
+        if not self._header_cells:
+            # Minimal Form Type | value row support.
+            if len(cells) >= 2 and cells[0].strip().lower() in {"form type", "form"}:
+                self.primary_document_types.append(cells[1].strip())
+            return
+        row = {name: cells[index].strip() for index, name in enumerate(self._header_cells) if index < len(cells)}
+        seq = row.get("seq", "")
+        doc_type = row.get("type") or row.get("form type") or ""
+        description = row.get("description", "").lower()
+        if seq == "1" or description == "primary document":
+            if not doc_type:
+                _iwb_sec_fail("filing index primary document row is malformed")
+            self.primary_document_types.append(doc_type)
+
+    def unfinished(self) -> bool:
+        return (
+            self._capture is not None
+            or self._pending_info_head is not None
+            or self._in_cell
+            or self._in_tr
+            or self._in_table_file
+        )
+
+
+def _iwb_sec_extract_colon_fields(html_text: str) -> dict[str, list[str]]:
+    patterns = {
+        "cik": re.compile(r"(?is)\bCIK\b\s*:\s*([^\s<]+)"),
+        "accession_number": re.compile(r"(?is)\bAccession\s+Number\b\s*:\s*([0-9]{10}-[0-9]{2}-[0-9]{6})"),
+        "form_type": re.compile(r"(?is)\bForm(?:\s+Type)?\b\s*:\s*([A-Za-z0-9/-]+)"),
+        "report_period": re.compile(r"(?is)\bPeriod\s+of\s+Report\b\s*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})"),
+        "accepted": re.compile(r"(?is)\bAccepted\b\s*:\s*([^\s<][^<\r\n]*)"),
+    }
+    fields: dict[str, list[str]] = defaultdict(list)
+    for key, pattern in patterns.items():
+        fields[key].extend(match.group(1).strip() for match in pattern.finditer(html_text))
+    return fields
+
+
+def _iwb_sec_require_complete_index_html(html_text: str) -> None:
+    """Reject obviously incomplete supported-subset index documents.
+
+    This is only bounded shape/completeness validation for the declared HTML
+    subset. It does not prove genuine HTTP response completion.
+    """
+    lowered = html_text.lower()
+    if "</body>" not in lowered or "</html>" not in lowered:
+        _iwb_sec_fail("filing index HTML is incomplete or truncated")
+
+
+def _iwb_sec_extract_index_fields(html_text: str) -> dict[str, str]:
+    extractor = _IwbSecIndexHTMLExtractor()
+    try:
+        extractor.feed(html_text)
+        if extractor.unfinished():
+            _iwb_sec_fail("filing index HTML is incomplete or truncated")
+        extractor.close()
+    except IwbSecFilingAdapterError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - malformed HTML is an adapter failure
+        raise IwbSecFilingAdapterError("filing index HTML is malformed or truncated") from exc
+    merged: dict[str, list[str]] = defaultdict(list)
+    for source in (extractor.fields, _iwb_sec_extract_colon_fields(html_text)):
+        for key, values in source.items():
+            merged[key].extend(values)
+    header_forms = {value.strip() for value in merged.get("form_type", []) if value and value.strip()}
+    primary_types = {value.strip() for value in extractor.primary_document_types if value and value.strip()}
+    if extractor.saw_table_file and not primary_types:
+        _iwb_sec_fail("filing index primary document row is missing or malformed")
+    if primary_types:
+        if len(primary_types) != 1:
+            _iwb_sec_fail("duplicate conflicting filing index primary document type")
+        primary_form = next(iter(primary_types))
+        try:
+            normalized_primary = _iwb_sec_normalize_form(primary_form)
+        except IwbSecFilingAdapterError as exc:
+            raise IwbSecFilingAdapterError(f"unsupported primary document type: {primary_form}") from exc
+        if header_forms:
+            normalized_headers: set[str] = set()
+            for raw_header in header_forms:
+                try:
+                    normalized_headers.add(_iwb_sec_normalize_form(raw_header))
+                except IwbSecFilingAdapterError as exc:
+                    raise IwbSecFilingAdapterError(
+                        "filing index has conflicting or unsupported header form"
+                    ) from exc
+            # Require exact agreement; do not drop conflicting headers that happen to
+            # include the primary type.
+            if normalized_headers != {normalized_primary}:
+                _iwb_sec_fail("filing index header form disagrees with primary document type")
+        merged["form_type"] = [normalized_primary]
+    # Filing Date is collected for ambiguity checks but is not Accepted/availability.
+    required = ("cik", "accession_number", "form_type", "report_period", "accepted")
+    missing = [key for key in required if not merged.get(key)]
+    if missing:
+        _iwb_sec_fail(f"filing index missing fields: {', '.join(missing)}")
+    singleton: dict[str, str] = {}
+    for key in required:
+        unique = {value.strip() for value in merged[key] if value and value.strip()}
+        if len(unique) != 1:
+            _iwb_sec_fail(f"duplicate conflicting filing index field: {key}")
+        singleton[key] = next(iter(unique))
+    return singleton
+
+
+def parse_iwb_sec_filing_index_html(
+    raw_index_html: bytes,
+    *,
+    accepted_timezone: str | timezone | ZoneInfo | None = None,
+) -> IwbSecFilingIndexRecord:
+    """Parse caller-supplied SEC filing-index HTML bytes for the IWB series."""
+    payload = _iwb_sec_require_bytes(
+        raw_index_html, label="filing index HTML", max_bytes=IWB_SEC_FILING_MAX_INDEX_BYTES
+    )
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise IwbSecFilingAdapterError("filing index HTML is not valid UTF-8") from exc
+    if "<" not in text:
+        _iwb_sec_fail("filing index HTML is malformed or truncated")
+    _iwb_sec_require_complete_index_html(text)
+    fields = _iwb_sec_extract_index_fields(text)
+    cik = _iwb_sec_normalize_cik(fields["cik"])
+    if cik != IWB_SEC_FILING_CIK:
+        _iwb_sec_fail(f"filing index CIK is not IWB trust CIK {IWB_SEC_FILING_CIK}")
+    accession = fields["accession_number"]
+    if not _IWB_SEC_ACCESSION_RE.fullmatch(accession):
+        _iwb_sec_fail("invalid accession number")
+    form_type = _iwb_sec_normalize_form(fields["form_type"])
+    accepted_at = _iwb_sec_parse_accepted_at(fields["accepted"], accepted_timezone=accepted_timezone)
+    return IwbSecFilingIndexRecord(
+        accession_number=accession,
+        form_type=form_type,
+        report_period=_iwb_sec_parse_report_period(fields["report_period"]),
+        accepted_at=accepted_at,
+        cik=cik,
+        index_sha256=_iwb_sec_sha256(payload),
+    )
+
+
+def _iwb_sec_reject_unsafe_xml_text(text: str) -> None:
+    if _IWB_SEC_FORBIDDEN_XML_TEXT_RE.search(text):
+        _iwb_sec_fail("N-PORT XML rejects DTD/entity/external subset constructs")
+
+
+def _iwb_sec_decode_xml_utf8_only(payload: bytes) -> bytes:
+    """Reject non-UTF-8 / BOM / UTF-16/32 payloads; return screened UTF-8 bytes only."""
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00", b"\xef\xbb\xbf")):
+        _iwb_sec_fail("N-PORT XML rejects BOM/UTF-16/UTF-32 encodings")
+    if b"\x00" in payload:
+        _iwb_sec_fail("N-PORT XML rejects NUL-bearing alternate encodings")
+    decl = _IWB_SEC_XML_DECL_ENCODING_RE.search(payload)
+    if decl is not None:
+        encoding_name = decl.group(2).decode("ascii", errors="replace").strip().lower()
+        if encoding_name not in {"utf-8", "utf8"}:
+            _iwb_sec_fail(f"N-PORT XML encoding is not UTF-8: {encoding_name}")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise IwbSecFilingAdapterError("N-PORT XML is not valid UTF-8") from exc
+    _iwb_sec_reject_unsafe_xml_text(text)
+    return text.encode("utf-8")
+
+
+def _iwb_sec_parse_xml_root(payload: bytes) -> ET.Element:
+    screened = _iwb_sec_decode_xml_utf8_only(payload)
+    try:
+        root = ET.fromstring(screened)
+    except ET.ParseError as exc:
+        raise IwbSecFilingAdapterError("N-PORT XML is malformed or truncated") from exc
+    if _iwb_sec_local_name(root.tag) != "edgarSubmission":
+        _iwb_sec_fail("N-PORT XML root must be edgarSubmission")
+    return root
+
+
+def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
+    name_nodes = [child for child in list(holding) if _iwb_sec_local_name(child.tag) == "name"]
+    if len(name_nodes) > 1:
+        _iwb_sec_fail("duplicate required singleton N-PORT field: name")
+    name = "".join(name_nodes[0].itertext()).strip() if name_nodes else ""
+    identifiers_nodes = [child for child in list(holding) if _iwb_sec_local_name(child.tag) == "identifiers"]
+    if len(identifiers_nodes) > 1:
+        _iwb_sec_fail("duplicate required singleton N-PORT field: identifiers")
+    identifiers = identifiers_nodes[0] if identifiers_nodes else None
+    cusip_values = []
+    isin_values = []
+    if identifiers is not None:
+        cusip_nodes = [node for node in identifiers.iter() if _iwb_sec_local_name(node.tag) == "cusip"]
+        isin_nodes = [node for node in identifiers.iter() if _iwb_sec_local_name(node.tag) == "isin"]
+        if len(cusip_nodes) > 1:
+            _iwb_sec_fail("duplicate required singleton N-PORT field: cusip")
+        if len(isin_nodes) > 1:
+            _iwb_sec_fail("duplicate required singleton N-PORT field: isin")
+        if cusip_nodes:
+            cusip_text = "".join(cusip_nodes[0].itertext()).strip()
+            if cusip_text:
+                cusip_values.append(cusip_text)
+        if isin_nodes:
+            isin_text = "".join(isin_nodes[0].itertext()).strip()
+            if isin_text:
+                isin_values.append(isin_text)
+    cusip = cusip_values[0] if cusip_values else None
+    isin = isin_values[0] if isin_values else None
+    ticker_candidates: list[str] = []
+    search_roots = [node for node in (identifiers, holding) if node is not None]
+    seen_ticker_nodes: set[int] = set()
+    for root in search_roots:
+        for tickers_node in _iwb_sec_find_all(root, "tickers"):
+            for child in list(tickers_node):
+                if _iwb_sec_local_name(child.tag) != "ticker":
+                    continue
+                node_id = id(child)
+                if node_id in seen_ticker_nodes:
+                    continue
+                seen_ticker_nodes.add(node_id)
+                text = "".join(child.itertext()).strip().upper()
+                if text:
+                    ticker_candidates.append(text)
+        for child in list(root):
+            if _iwb_sec_local_name(child.tag) != "ticker":
+                continue
+            node_id = id(child)
+            if node_id in seen_ticker_nodes:
+                continue
+            seen_ticker_nodes.add(node_id)
+            text = "".join(child.itertext()).strip().upper()
+            if text:
+                ticker_candidates.append(text)
+    unique_tickers = list(dict.fromkeys(ticker_candidates))
+    asset_cat = _iwb_sec_singleton_text(holding, "assetCat", required=False)
+    issuer_cat = _iwb_sec_singleton_text(holding, "issuerCat", required=False)
+    reasons: list[str] = []
+    ticker: str | None
+    if not unique_tickers:
+        ticker = None
+        reasons.append("missing_ticker")
+    elif len(unique_tickers) > 1:
+        ticker = None
+        reasons.append("conflicting_ticker_identity")
+    else:
+        ticker = unique_tickers[0]
+    asset_upper = (asset_cat or "").strip().upper()
+    name_upper = name.upper()
+    if not asset_upper:
+        reasons.append("missing_asset_cat")
+    elif asset_upper in IWB_SEC_NON_EQUITY_ASSET_HINTS or asset_upper not in IWB_SEC_EQUITY_ASSET_CATS:
+        reasons.append(f"non_equity_or_unsupported_asset_cat:{asset_upper or 'unknown'}")
+    if "CONTINGENT" in name_upper:
+        reasons.append("contingent_consideration_unresolved")
+    if "SPINOFF" in name_upper or "SPIN-OFF" in name_upper:
+        reasons.append("spinoff_unresolved")
+    if "CASH" in name_upper and asset_upper in {"CASH", "STIV"}:
+        reasons.append("cash_consideration_unresolved")
+    reasons.extend(
+        (
+            "event_evidence_not_supplied",
+            "terminal_price_evidence_not_supplied",
+            "corporate_action_consideration_unresolved",
+        )
+    )
+    blocking = {
+        "missing_ticker",
+        "conflicting_ticker_identity",
+        "missing_asset_cat",
+        "contingent_consideration_unresolved",
+        "spinoff_unresolved",
+        "cash_consideration_unresolved",
+    }
+    if any(reason in blocking or reason.startswith("non_equity_or_unsupported_asset_cat:") for reason in reasons):
+        if "missing_ticker" in reasons or "conflicting_ticker_identity" in reasons:
+            status = "unresolved"
+        else:
+            status = "unsupported"
+    else:
+        status = "resolved_equity"
+    return IwbSecHoldingRecord(
+        name=name,
+        ticker=ticker,
+        cusip=cusip,
+        isin=isin,
+        asset_cat=asset_cat,
+        issuer_cat=issuer_cat,
+        status=status,
+        reasons=tuple(dict.fromkeys(reasons)),
+    )
+
+
+def parse_iwb_sec_nport_xml_bytes(
+    raw_xml: bytes,
+    *,
+    expected_index: IwbSecFilingIndexRecord | None = None,
+) -> tuple[dict[str, object], tuple[IwbSecHoldingRecord, ...]]:
+    """Parse caller-supplied namespaced N-PORT XML bytes for the IWB class."""
+    payload = _iwb_sec_require_bytes(raw_xml, label="N-PORT XML", max_bytes=IWB_SEC_FILING_MAX_XML_BYTES)
+    root = _iwb_sec_parse_xml_root(payload)
+    header = _iwb_sec_require_exact_one_direct_child(root, "headerData")
+    form_data = _iwb_sec_require_exact_one_direct_child(root, "formData")
+    series_info = _iwb_sec_require_exact_one_container(header, "seriesClassInfo")
+    gen_info = _iwb_sec_require_exact_one_direct_child(form_data, "genInfo")
+    holdings_parent = _iwb_sec_require_exact_one_direct_child(form_data, "invstOrSecs")
+
+    cik_text = _iwb_sec_singleton_text(header, "cik")
+    assert cik_text is not None
+    cik = _iwb_sec_normalize_cik(cik_text)
+    if cik != IWB_SEC_FILING_CIK:
+        _iwb_sec_fail(f"N-PORT CIK is not IWB trust CIK {IWB_SEC_FILING_CIK}")
+    series_id = _iwb_sec_singleton_text(series_info, "seriesId")
+    class_id = _iwb_sec_singleton_text(series_info, "classId")
+    ticker = (_iwb_sec_singleton_text(series_info, "ticker") or "").strip().upper()
+    if series_id != IWB_SEC_FILING_SERIES_ID:
+        _iwb_sec_fail(
+            f"N-PORT seriesId {series_id!r} is not IWB series {IWB_SEC_FILING_SERIES_ID}; "
+            "wrong growth/other series rejected"
+        )
+    if class_id != IWB_SEC_FILING_CLASS_ID:
+        _iwb_sec_fail(f"N-PORT classId {class_id!r} is not IWB class {IWB_SEC_FILING_CLASS_ID}")
+    if ticker != IWB_SEC_FILING_TICKER:
+        _iwb_sec_fail(f"N-PORT ticker {ticker!r} is not {IWB_SEC_FILING_TICKER}")
+    report_period_text = _iwb_sec_singleton_text(gen_info, "repPdDate")
+    assert report_period_text is not None
+    report_period = _iwb_sec_parse_report_period(report_period_text)
+    accession = _iwb_sec_singleton_text(header, "accessionNumber", required=False)
+    submission_type = _iwb_sec_singleton_text(form_data, "submissionType", required=False)
+    if submission_type is not None:
+        submission_type = _iwb_sec_normalize_form(submission_type)
+    if expected_index is not None:
+        if expected_index.cik != cik:
+            _iwb_sec_fail("index/XML CIK mismatch")
+        if expected_index.report_period != report_period:
+            _iwb_sec_fail("index/XML report period mismatch")
+        if accession is not None and accession != expected_index.accession_number:
+            _iwb_sec_fail("index/XML accession mismatch")
+        if submission_type is not None and submission_type != expected_index.form_type:
+            _iwb_sec_fail("index/XML submissionType mismatch")
+        if expected_index.form_type not in IWB_SEC_SUPPORTED_FORMS:
+            _iwb_sec_fail(f"unsupported form type: {expected_index.form_type}")
+    holding_nodes: list[ET.Element] = []
+    for child in list(holdings_parent):
+        local = _iwb_sec_local_name(child.tag)
+        if local != "invstOrSec":
+            _iwb_sec_fail(f"unrecognized invstOrSecs child: {local}")
+        holding_nodes.append(child)
+    if not holding_nodes:
+        _iwb_sec_fail("N-PORT XML invstOrSecs is empty")
+    nested_holdings = _iwb_sec_find_all(holdings_parent, "invstOrSec")
+    if len(nested_holdings) != len(holding_nodes):
+        _iwb_sec_fail("malformed nested or misplaced invstOrSec placement")
+    holdings = tuple(_iwb_sec_classify_holding(node) for node in holding_nodes)
+    ticker_to_cusips: dict[str, set[str]] = defaultdict(set)
+    ticker_to_isins: dict[str, set[str]] = defaultdict(set)
+    cusip_to_tickers: dict[str, set[str]] = defaultdict(set)
+    isin_to_tickers: dict[str, set[str]] = defaultdict(set)
+    for holding in holdings:
+        if not holding.ticker:
+            continue
+        if holding.cusip:
+            ticker_to_cusips[holding.ticker].add(holding.cusip)
+            cusip_to_tickers[holding.cusip].add(holding.ticker)
+        if holding.isin:
+            ticker_to_isins[holding.ticker].add(holding.isin)
+            isin_to_tickers[holding.isin].add(holding.ticker)
+    conflict_tickers = {
+        symbol
+        for symbol in set(ticker_to_cusips) | set(ticker_to_isins)
+        if len(ticker_to_cusips.get(symbol, ())) > 1 or len(ticker_to_isins.get(symbol, ())) > 1
+    }
+    conflict_cusips = {value for value, symbols in cusip_to_tickers.items() if len(symbols) > 1}
+    conflict_isins = {value for value, symbols in isin_to_tickers.items() if len(symbols) > 1}
+    if conflict_tickers or conflict_cusips or conflict_isins:
+        rebuilt: list[IwbSecHoldingRecord] = []
+        for holding in holdings:
+            reasons = list(holding.reasons)
+            if (
+                (holding.ticker and holding.ticker in conflict_tickers)
+                or (holding.cusip and holding.cusip in conflict_cusips)
+                or (holding.isin and holding.isin in conflict_isins)
+            ):
+                reasons.append("identity_or_code_reuse_conflict")
+                rebuilt.append(
+                    IwbSecHoldingRecord(
+                        name=holding.name,
+                        ticker=holding.ticker,
+                        cusip=holding.cusip,
+                        isin=holding.isin,
+                        asset_cat=holding.asset_cat,
+                        issuer_cat=holding.issuer_cat,
+                        status="unresolved",
+                        reasons=tuple(dict.fromkeys(reasons)),
+                    )
+                )
+            else:
+                rebuilt.append(holding)
+        holdings = tuple(rebuilt)
+    meta: dict[str, object] = {
+        "cik": cik,
+        "series_id": series_id,
+        "class_id": class_id,
+        "ticker": ticker,
+        "report_period": report_period,
+        "accession_number": accession,
+        "submission_type": submission_type,
+        "xml_sha256": _iwb_sec_sha256(payload),
+        "covered_nport_fields": IWB_SEC_COVERED_NPORT_FIELDS,
+        "schema_claim": "synthetic_subset_not_verified_sec_sample",
+    }
+    return meta, holdings
+
+
+def _iwb_sec_incomplete_items(holdings: Sequence[IwbSecHoldingRecord]) -> tuple[Mapping[str, object], ...]:
+    items: list[Mapping[str, object]] = [
+        MappingProxyType(
+            {
+                "kind": "holding_incomplete",
+                "name": holding.name,
+                "ticker": holding.ticker,
+                "status": holding.status,
+                "reasons": holding.reasons,
+            }
+        )
+        for holding in holdings
+    ]
+    items.append(
+        MappingProxyType(
+            {
+                "kind": "adapter_incomplete",
+                "reasons": (
+                    "event_evidence_not_supplied",
+                    "terminal_price_evidence_not_supplied",
+                    "not_full_equity_universe_claim",
+                    "trading_qualification_false",
+                ),
+            }
+        )
+    )
+    return tuple(items)
+
+
+def bind_iwb_sec_filing_input_version(
+    *,
+    index_html_bytes: bytes,
+    nport_xml_bytes: bytes,
+    observed_at: datetime,
+    version_id: str,
+    accepted_timezone: str | timezone | ZoneInfo | None = None,
+    qualification: str = "synthetic",
+) -> IwbSecFilingInputVersion:
+    """Bind index+XML bytes to one immutable observed input version.
+
+    ``observed_at`` must be the caller-supplied observation-completed aware
+    timestamp after the complete response was in hand. Accepted/report period
+    never become availability. No clock/lag is fabricated here.
+    """
+    if not isinstance(version_id, str) or not version_id.strip():
+        _iwb_sec_fail("version_id is required")
+    if not isinstance(qualification, str) or not qualification.strip():
+        _iwb_sec_fail("qualification is required")
+    observed = _iwb_sec_require_aware(observed_at, "observed_at")
+    index_payload = _iwb_sec_require_bytes(
+        index_html_bytes, label="filing index HTML", max_bytes=IWB_SEC_FILING_MAX_INDEX_BYTES
+    )
+    xml_payload = _iwb_sec_require_bytes(
+        nport_xml_bytes, label="N-PORT XML", max_bytes=IWB_SEC_FILING_MAX_XML_BYTES
+    )
+    index_record = parse_iwb_sec_filing_index_html(
+        index_payload, accepted_timezone=accepted_timezone
+    )
+    meta, holdings = parse_iwb_sec_nport_xml_bytes(xml_payload, expected_index=index_record)
+    if observed <= index_record.accepted_at:
+        _iwb_sec_fail("observed_at must be after Accepted and after complete response")
+    return IwbSecFilingInputVersion(
+        accession_number=index_record.accession_number,
+        version_id=version_id.strip(),
+        form_type=index_record.form_type,
+        report_period=index_record.report_period,
+        accepted_at=index_record.accepted_at,
+        observed_at=observed,
+        cik=str(meta["cik"]),
+        series_id=str(meta["series_id"]),
+        class_id=str(meta["class_id"]),
+        ticker=str(meta["ticker"]),
+        index_sha256=index_record.index_sha256,
+        xml_sha256=str(meta["xml_sha256"]),
+        raw_binding_sha256=_iwb_sec_sha256(index_payload + b"\0" + xml_payload),
+        holdings=holdings,
+        incomplete_items=_iwb_sec_incomplete_items(holdings),
+        qualification=qualification.strip(),
+        trading_eligible=False,
+        covered_nport_fields=IWB_SEC_COVERED_NPORT_FIELDS,
+        schema_claim="synthetic_subset_not_verified_sec_sample",
+    )
+
+
+def select_iwb_sec_filing_input_version_at_cutoff(
+    versions: Sequence[IwbSecFilingInputVersion],
+    *,
+    decision_at: datetime,
+) -> IwbSecFilingInputVersion:
+    """Select the unique known input version available at ``decision_at``.
+
+    All supplied versions must share one report-period/fund revision family.
+    Accepted orders source filings but never establishes availability. Same
+    accession revisions then use observed time; equal-time conflicts fail.
+    """
+    deadline = _iwb_sec_require_aware(decision_at, "decision_at")
+    if not versions:
+        _iwb_sec_fail("no filing input versions supplied")
+    periods = {version.report_period for version in versions}
+    if len(periods) != 1:
+        _iwb_sec_fail("mixed report-period filing versions are not one revision family")
+    families = {(version.cik, version.series_id, version.class_id, version.ticker) for version in versions}
+    if len(families) != 1:
+        _iwb_sec_fail("mixed fund-identity filing versions are not one revision family")
+    known = [version for version in versions if version.observed_at <= deadline]
+    if not known:
+        _iwb_sec_fail("no filing input version known at decision cutoff")
+    newest_accepted = max(version.accepted_at for version in known)
+    accepted_newest = [version for version in known if version.accepted_at == newest_accepted]
+    latest_observed = max(version.observed_at for version in accepted_newest)
+    latest = [version for version in accepted_newest if version.observed_at == latest_observed]
+    digests = {version.raw_binding_sha256 for version in latest}
+    identities = {(version.accession_number, version.version_id) for version in latest}
+    if len(latest) != 1 or len(digests) != 1 or len(identities) != 1:
+        _iwb_sec_fail("equal-time conflicting filing versions at decision cutoff")
+    return latest[0]
+
+
+def _iwb_sec_ceil_utc_second(value: datetime) -> datetime:
+    utc_value = value.astimezone(timezone.utc)
+    if utc_value.microsecond:
+        return utc_value.replace(microsecond=0) + timedelta(seconds=1)
+    return utc_value.replace(microsecond=0)
+
+
+def _iwb_sec_floor_utc_second(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _iwb_sec_mss_observation_available_at(observed_at: datetime) -> str:
+    """Convert observation time to MSS second-resolution UTC without rounding earlier."""
+    observed = _iwb_sec_require_aware(observed_at, "observed_at")
+    return _iwb_sec_ceil_utc_second(observed).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iwb_sec_mss_decision_at(decision_at: datetime) -> str:
+    """Floor decision precision for MSS seconds; never ceil a decision later."""
+    deadline = _iwb_sec_require_aware(decision_at, "decision_at")
+    return _iwb_sec_floor_utc_second(deadline).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iwb_sec_lazy_mss():
+    try:
+        from market_signal_sources.artifacts.point_in_time_universe import (
+            build_point_in_time_universe_snapshot,
+            validate_universe_snapshot_for_decision,
+        )
+    except ImportError as exc:  # pragma: no cover - depends on local editable install
+        raise IwbSecFilingAdapterError(
+            "MarketSignalSources point_in_time_universe is not importable"
+        ) from exc
+    return build_point_in_time_universe_snapshot, validate_universe_snapshot_for_decision
+
+
+def _iwb_sec_require_bridgeable_membership(version: IwbSecFilingInputVersion) -> tuple[str, ...]:
+    if not version.holdings:
+        _iwb_sec_fail("canonical bridge rejected: empty holdings")
+    blocking = [holding for holding in version.holdings if holding.status != "resolved_equity"]
+    if blocking:
+        _iwb_sec_fail(
+            "canonical bridge rejected: unresolved/unsupported/identity-conflicting membership rows present"
+        )
+    symbols: list[str] = []
+    for holding in version.holdings:
+        if not holding.ticker:
+            _iwb_sec_fail("canonical bridge rejected: resolved equity missing ticker")
+        if holding.ticker not in symbols:
+            symbols.append(holding.ticker)
+    if not symbols:
+        _iwb_sec_fail("canonical bridge rejected: no resolved equity membership")
+    return tuple(symbols)
+
+
+def iwb_sec_research_candidate_symbols(version: IwbSecFilingInputVersion) -> tuple[str, ...]:
+    """Explicit partial research helper; not an ordinary complete contract input."""
+    symbols: list[str] = []
+    for holding in version.holdings:
+        if holding.ticker and holding.status == "resolved_equity" and holding.ticker not in symbols:
+            symbols.append(holding.ticker)
+    return tuple(symbols)
+
+
+def build_iwb_sec_point_in_time_universe_snapshot(
+    version: IwbSecFilingInputVersion,
+    *,
+    license_scope: str = "sec_public_edgar_synthetic_offline",
+) -> dict[str, object]:
+    """Bridge one fully resolved membership version into the existing MSS constructor."""
+    symbols = _iwb_sec_require_bridgeable_membership(version)
+    build_snapshot, _validate_for_decision = _iwb_sec_lazy_mss()
+    return build_snapshot(
+        universe_id=IWB_SEC_FILING_UNIVERSE_ID,
+        effective_date=version.report_period.isoformat(),
+        available_at=_iwb_sec_mss_observation_available_at(version.observed_at),
+        source_id=IWB_SEC_FILING_SOURCE_ID,
+        raw_artifact_sha256=version.raw_binding_sha256,
+        license_scope=license_scope,
+        constituents=symbols,
+    )
+
+
+def validate_iwb_sec_universe_snapshot_for_decision(
+    snapshot: Mapping[str, object],
+    *,
+    decision_at: datetime,
+) -> dict[str, object]:
+    """Validate MSS snapshot with floored decision precision and direct causal check."""
+    _build_snapshot, validate_for_decision = _iwb_sec_lazy_mss()
+    deadline = _iwb_sec_require_aware(decision_at, "decision_at")
+    available_text = snapshot.get("available_at")
+    if not isinstance(available_text, str):
+        _iwb_sec_fail("invalid universe snapshot available_at")
+    try:
+        available_at = datetime.strptime(available_text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise IwbSecFilingAdapterError("invalid universe snapshot available_at") from exc
+    decision_floor = _iwb_sec_floor_utc_second(deadline)
+    if available_at > decision_floor:
+        _iwb_sec_fail("universe snapshot was unavailable at decision time")
+    return validate_for_decision(snapshot, decision_at=_iwb_sec_mss_decision_at(deadline))
+
+
+def iwb_sec_universe_rows_for_ues(
+    version: IwbSecFilingInputVersion,
+) -> tuple[Mapping[str, object], ...]:
+    """UES-facing rows for fully resolved membership only; fail closed otherwise."""
+    symbols = _iwb_sec_require_bridgeable_membership(version)
+    return tuple(
+        MappingProxyType({"symbol": symbol, "visible_at": version.observed_at}) for symbol in symbols
+    )
