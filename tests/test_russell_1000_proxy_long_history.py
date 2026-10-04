@@ -491,6 +491,52 @@ def test_iwb_sec_official_accession_label_and_repeated_primary_rows(_no_network)
     assert index.form_type == "NPORT-P"
 
 
+@pytest.mark.parametrize("variant", ["foreign_root", "foreign_form_data"])
+def test_iwb_sec_rejects_foreign_root_and_form_data_namespace(variant, _no_network) -> None:
+    payload = _official_shape_nport_xml()
+    if variant == "foreign_root":
+        payload = payload.replace(b"http://www.sec.gov/edgar/nport", b"http://example.invalid/not-sec")
+    else:
+        payload = payload.replace(
+            b"<formData>", b'<foreign:formData xmlns:foreign="http://example.invalid/not-sec">'
+        ).replace(b"</formData>", b"</foreign:formData>")
+    with pytest.raises(IwbSecFilingAdapterError, match="namespace"):
+        parse_iwb_sec_nport_xml_bytes(payload)
+
+
+@pytest.mark.parametrize("namespace", [b"", b"http://www.sec.gov/edgar/nport/"])
+def test_iwb_sec_rejects_unqualified_and_lookalike_root_namespace(namespace, _no_network) -> None:
+    payload = _official_shape_nport_xml().replace(b"http://www.sec.gov/edgar/nport", namespace)
+    with pytest.raises(IwbSecFilingAdapterError, match="root namespace"):
+        parse_iwb_sec_nport_xml_bytes(payload)
+
+
+@pytest.mark.parametrize("root_namespace", [b"http://www.sec.gov/edgar/nport", _NS.encode()])
+@pytest.mark.parametrize("field", [b"filerInfo", b"filer", b"name"])
+def test_iwb_sec_checks_identity_containers_and_fields_under_both_allowed_roots(
+    root_namespace, field, _no_network
+) -> None:
+    payload = _official_shape_nport_xml().replace(b"http://www.sec.gov/edgar/nport", root_namespace)
+    payload = payload.replace(
+        b"<" + field + b">", b'<foreign:' + field + b' xmlns:foreign="http://example.invalid/not-sec">', 1
+    ).replace(b"</" + field + b">", b"</foreign:" + field + b">", 1)
+    with pytest.raises(IwbSecFilingAdapterError, match="namespace"):
+        parse_iwb_sec_nport_xml_bytes(payload)
+
+
+def test_iwb_sec_preserves_legacy_namespace_and_official_prefix_spelling(_no_network) -> None:
+    legacy = _bind(observed_at=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc))
+    assert legacy.trading_eligible is False
+    assert legacy.schema_claim == "synthetic_subset_not_verified_sec_sample"
+    prefixed = _official_shape_nport_xml().replace(
+        b'<edgarSubmission xmlns="http://www.sec.gov/edgar/nport">',
+        b'<sec:edgarSubmission xmlns="http://www.sec.gov/edgar/nport" xmlns:sec="http://www.sec.gov/edgar/nport">',
+    ).replace(b"</edgarSubmission>", b"</sec:edgarSubmission>")
+    version = _bind(observed_at=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc), xml=prefixed)
+    assert version.trading_eligible is False
+    assert iwb_sec_research_candidate_symbols(version) == ()
+
+
 def test_iwb_sec_offline_adapter_binds_identity_and_keeps_mixed_rows() -> None:
     observed = datetime(2026, 5, 22, 20, 0, 0, tzinfo=timezone.utc)
     version = _bind(observed_at=observed, holdings_xml=_MIXED_HOLDINGS)

@@ -1008,6 +1008,9 @@ IWB_SEC_FILING_SERIES_ID = "S000004347"
 IWB_SEC_FILING_CLASS_ID = "C000012077"
 IWB_SEC_FILING_TICKER = "IWB"
 IWB_SEC_NPORT_NAMESPACE = "http://www.sec.gov/edgar/nport"
+# Preserve only the namespace of the already committed offline test fixtures;
+# it is not an SEC namespace or a live-source/schema-validation assertion.
+IWB_SEC_LEGACY_SYNTHETIC_NPORT_NAMESPACE = "http://example.invalid/synthetic-nport-subset"
 IWB_SEC_FILING_MAX_INDEX_BYTES = 1_048_576
 IWB_SEC_FILING_MAX_XML_BYTES = 8_388_608
 IWB_SEC_FILING_SOURCE_ID = "iwb_sec_nport_public_holdings_proxy"
@@ -1015,16 +1018,20 @@ IWB_SEC_FILING_UNIVERSE_ID = "iwb_sec_nport_public_holdings_proxy"
 IWB_SEC_SUPPORTED_FORMS = frozenset({"NPORT-P", "NPORT-P/A"})
 IWB_SEC_COVERED_NPORT_FIELDS = (
     "headerData",
+    "filerInfo",
+    "filer",
     "issuerCredentials",
     "cik",
     "seriesClassInfo",
     "seriesId",
     "classId",
     "ticker",
+    "formData",
     "genInfo",
     "repPdDate",
     "invstOrSecs",
     "invstOrSec",
+    "name",
     "identifiers",
     "tickers",
     "assetCat",
@@ -1596,13 +1603,22 @@ def _iwb_sec_parse_xml_root(payload: bytes) -> ET.Element:
         raise IwbSecFilingAdapterError("N-PORT XML is malformed or truncated") from exc
     if _iwb_sec_local_name(root.tag) != "edgarSubmission":
         _iwb_sec_fail("N-PORT XML root must be edgarSubmission")
-    if root.tag == f"{{{IWB_SEC_NPORT_NAMESPACE}}}edgarSubmission":
-        # Ignore prefix spelling, but never treat a foreign namespaced field as
-        # a SEC field merely because its local name matches a consumed field.
-        for node in root.iter():
-            if _iwb_sec_local_name(node.tag) in IWB_SEC_COVERED_NPORT_FIELDS:
-                if node.tag != f"{{{IWB_SEC_NPORT_NAMESPACE}}}{_iwb_sec_local_name(node.tag)}":
-                    _iwb_sec_fail("N-PORT consumed field namespace mismatch")
+    namespace = next(
+        (
+            candidate
+            for candidate in (IWB_SEC_NPORT_NAMESPACE, IWB_SEC_LEGACY_SYNTHETIC_NPORT_NAMESPACE)
+            if root.tag == f"{{{candidate}}}edgarSubmission"
+        ),
+        None,
+    )
+    if namespace is None:
+        _iwb_sec_fail("N-PORT XML root namespace is not supported")
+    # Both allowed roots enforce the same rule. Changing a root must not skip
+    # validation of consumed fields or the structural containers we traverse.
+    for node in root.iter():
+        local = _iwb_sec_local_name(node.tag)
+        if local in IWB_SEC_COVERED_NPORT_FIELDS and node.tag != f"{{{namespace}}}{local}":
+            _iwb_sec_fail("N-PORT consumed field namespace mismatch")
     return root
 
 
