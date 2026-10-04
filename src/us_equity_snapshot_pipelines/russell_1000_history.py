@@ -998,14 +998,19 @@ def write_interval_universe_history(history: pd.DataFrame, output_path: str | Pa
 # --- Offline IWB SEC N-PORT filing-index/XML adapter (path B preparation) ---
 #
 # Pure helpers over caller-supplied raw bytes. Synthetic fixtures cover only the
-# field subset listed in IWB_SEC_COVERED_NPORT_FIELDS and must not be read as a
-# verified live SEC XML schema sample. Event/terminal-price evidence is not
+# field subset listed in IWB_SEC_COVERED_NPORT_FIELDS. A minimal structural
+# equivalent also covers fields inspected in the 2026-03-31 public submission;
+# this is not full SEC schema validation or full raw-sample capture. Event/terminal-price evidence is not
 # supplied here; those business requirements stay explicitly incomplete.
 
 IWB_SEC_FILING_CIK = "0001100663"
 IWB_SEC_FILING_SERIES_ID = "S000004347"
 IWB_SEC_FILING_CLASS_ID = "C000012077"
 IWB_SEC_FILING_TICKER = "IWB"
+IWB_SEC_NPORT_NAMESPACE = "http://www.sec.gov/edgar/nport"
+# Preserve only the namespace of the already committed offline test fixtures;
+# it is not an SEC namespace or a live-source/schema-validation assertion.
+IWB_SEC_LEGACY_SYNTHETIC_NPORT_NAMESPACE = "http://example.invalid/synthetic-nport-subset"
 IWB_SEC_FILING_MAX_INDEX_BYTES = 1_048_576
 IWB_SEC_FILING_MAX_XML_BYTES = 8_388_608
 IWB_SEC_FILING_SOURCE_ID = "iwb_sec_nport_public_holdings_proxy"
@@ -1013,21 +1018,36 @@ IWB_SEC_FILING_UNIVERSE_ID = "iwb_sec_nport_public_holdings_proxy"
 IWB_SEC_SUPPORTED_FORMS = frozenset({"NPORT-P", "NPORT-P/A"})
 IWB_SEC_COVERED_NPORT_FIELDS = (
     "headerData",
+    "filerInfo",
+    "filer",
     "issuerCredentials",
     "cik",
     "seriesClassInfo",
     "seriesId",
     "classId",
     "ticker",
+    "formData",
     "genInfo",
     "repPdDate",
     "invstOrSecs",
     "invstOrSec",
+    "name",
     "identifiers",
     "tickers",
     "assetCat",
     "issuerCat",
+    "issuerConditional",
     "submissionType",
+    "accessionNumber",
+    "regCik",
+    "repPdEnd",
+    "cusip",
+    "isin",
+    "curCd",
+    "valUSD",
+    "balance",
+    "units",
+    "pctVal",
 )
 IWB_SEC_EQUITY_ASSET_CATS = frozenset({"EC", "EP"})
 IWB_SEC_NON_EQUITY_ASSET_HINTS = frozenset(
@@ -1089,6 +1109,13 @@ class IwbSecHoldingRecord:
     issuer_cat: str | None
     status: str
     reasons: tuple[str, ...]
+    # Source lexical values, not prices, weights, FX conversions or event evidence.
+    currency: str | None = None
+    value_usd: str | None = None
+    balance: str | None = None
+    units: str | None = None
+    percent_value: str | None = None
+    issuer_category_description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1179,9 +1206,11 @@ def _iwb_sec_require_exact_one_container(root: ET.Element, local_name: str) -> E
     return nodes[0]
 
 
-def _iwb_sec_singleton_text(scope: ET.Element, local_name: str, *, required: bool = True) -> str | None:
+def _iwb_sec_singleton_text(
+    scope: ET.Element, local_name: str, *, required: bool = True, direct_only: bool = False
+) -> str | None:
     """Require exact-one element node; blank text is malformed; identical duplicates reject."""
-    nodes = [element for element in scope.iter() if _iwb_sec_local_name(element.tag) == local_name]
+    nodes = _iwb_sec_direct_children(scope, local_name) if direct_only else _iwb_sec_find_all(scope, local_name)
     if not nodes:
         if required:
             _iwb_sec_fail(f"missing required N-PORT field: {local_name}")
@@ -1296,6 +1325,7 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         self._cell_buffer: list[str] = []
         self._row_cells: list[str] = []
         self._header_cells: list[str] = []
+        self.text_fragments: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = {key.lower(): (value or "") for key, value in attrs}
@@ -1366,6 +1396,7 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
                 self.fields["form_type"].append(text)
 
     def handle_data(self, data: str) -> None:
+        self.text_fragments.append(data)
         if self._in_cell:
             self._cell_buffer.append(data)
             return
@@ -1378,7 +1409,9 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         cik_match = re.search(r"(?i)\bCIK\b\s*[#:]?\s*([^\s<]+)", text)
         if cik_match is not None:
             self.fields["cik"].append(cik_match.group(1).strip("()[]"))
-        accession_match = re.search(r"(?i)\bAccession\s+Number\b\s*[#:]?\s*([0-9]{10}-[0-9]{2}-[0-9]{6})", text)
+        accession_match = re.search(
+            r"(?i)\bAccession\s+(?:Number\b|No\.)\s*[#:]?\s*([0-9]{10}-[0-9]{2}-[0-9]{6})", text
+        )
         if accession_match is not None:
             self.fields["accession_number"].append(accession_match.group(1))
 
@@ -1390,7 +1423,7 @@ class _IwbSecIndexHTMLExtractor(HTMLParser):
         if not cells:
             return
         lowered = [cell.strip().lower() for cell in cells]
-        header_tokens = {"seq", "type", "form type", "description", "document", "form"}
+        header_tokens = {"seq", "type", "form type", "description", "document", "form", "size"}
         if any(cell in header_tokens for cell in lowered) and all(
             cell in header_tokens or cell == "" for cell in lowered
         ):
@@ -1457,6 +1490,10 @@ def _iwb_sec_extract_index_fields(html_text: str) -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001 - malformed HTML is an adapter failure
         raise IwbSecFilingAdapterError("filing index HTML is malformed or truncated") from exc
     merged: dict[str, list[str]] = defaultdict(list)
+    # Official "SEC Accession No." may split label/value across strong/div
+    # tags. Match the accumulated text, rather than assume a labeled info div.
+    accession_pattern = r"(?i)\bAccession\s+(?:Number\b|No\.)\s*[#:]?\s*([0-9]{10}-[0-9]{2}-[0-9]{6})"
+    merged["accession_number"].extend(re.findall(accession_pattern, " ".join(extractor.text_fragments)))
     for source in (extractor.fields, _iwb_sec_extract_colon_fields(html_text)):
         for key, values in source.items():
             merged[key].extend(values)
@@ -1567,7 +1604,31 @@ def _iwb_sec_parse_xml_root(payload: bytes) -> ET.Element:
         raise IwbSecFilingAdapterError("N-PORT XML is malformed or truncated") from exc
     if _iwb_sec_local_name(root.tag) != "edgarSubmission":
         _iwb_sec_fail("N-PORT XML root must be edgarSubmission")
+    namespace = next(
+        (
+            candidate
+            for candidate in (IWB_SEC_NPORT_NAMESPACE, IWB_SEC_LEGACY_SYNTHETIC_NPORT_NAMESPACE)
+            if root.tag == f"{{{candidate}}}edgarSubmission"
+        ),
+        None,
+    )
+    if namespace is None:
+        _iwb_sec_fail("N-PORT XML root namespace is not supported")
+    # Both allowed roots enforce the same rule. Changing a root must not skip
+    # validation of consumed fields or the structural containers we traverse.
+    for node in root.iter():
+        local = _iwb_sec_local_name(node.tag)
+        if local in IWB_SEC_COVERED_NPORT_FIELDS and node.tag != f"{{{namespace}}}{local}":
+            _iwb_sec_fail("N-PORT consumed field namespace mismatch")
     return root
+
+
+def _iwb_sec_identifier_value(node: ET.Element) -> str | None:
+    text = "".join(node.itertext()).strip()
+    attribute = node.attrib.get("value", "").strip()
+    if text and attribute and text != attribute:
+        _iwb_sec_fail(f"conflicting identifier text/value: {_iwb_sec_local_name(node.tag)}")
+    return text or attribute or None
 
 
 def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
@@ -1579,25 +1640,17 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
     if len(identifiers_nodes) > 1:
         _iwb_sec_fail("duplicate required singleton N-PORT field: identifiers")
     identifiers = identifiers_nodes[0] if identifiers_nodes else None
-    cusip_values = []
-    isin_values = []
+    cusip_nodes = _iwb_sec_direct_children(holding, "cusip")
+    isin_nodes: list[ET.Element] = []
     if identifiers is not None:
-        cusip_nodes = [node for node in identifiers.iter() if _iwb_sec_local_name(node.tag) == "cusip"]
-        isin_nodes = [node for node in identifiers.iter() if _iwb_sec_local_name(node.tag) == "isin"]
-        if len(cusip_nodes) > 1:
-            _iwb_sec_fail("duplicate required singleton N-PORT field: cusip")
-        if len(isin_nodes) > 1:
-            _iwb_sec_fail("duplicate required singleton N-PORT field: isin")
-        if cusip_nodes:
-            cusip_text = "".join(cusip_nodes[0].itertext()).strip()
-            if cusip_text:
-                cusip_values.append(cusip_text)
-        if isin_nodes:
-            isin_text = "".join(isin_nodes[0].itertext()).strip()
-            if isin_text:
-                isin_values.append(isin_text)
-    cusip = cusip_values[0] if cusip_values else None
-    isin = isin_values[0] if isin_values else None
+        cusip_nodes.extend(_iwb_sec_find_all(identifiers, "cusip"))
+        isin_nodes = _iwb_sec_find_all(identifiers, "isin")
+    if len(cusip_nodes) > 1:
+        _iwb_sec_fail("duplicate required singleton N-PORT field: cusip")
+    if len(isin_nodes) > 1:
+        _iwb_sec_fail("duplicate required singleton N-PORT field: isin")
+    cusip = _iwb_sec_identifier_value(cusip_nodes[0]) if cusip_nodes else None
+    isin = _iwb_sec_identifier_value(isin_nodes[0]) if isin_nodes else None
     ticker_candidates: list[str] = []
     search_roots = [node for node in (identifiers, holding) if node is not None]
     seen_ticker_nodes: set[int] = set()
@@ -1610,7 +1663,7 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
                 if node_id in seen_ticker_nodes:
                     continue
                 seen_ticker_nodes.add(node_id)
-                text = "".join(child.itertext()).strip().upper()
+                text = (_iwb_sec_identifier_value(child) or "").upper()
                 if text:
                     ticker_candidates.append(text)
         for child in list(root):
@@ -1620,12 +1673,19 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
             if node_id in seen_ticker_nodes:
                 continue
             seen_ticker_nodes.add(node_id)
-            text = "".join(child.itertext()).strip().upper()
+            text = (_iwb_sec_identifier_value(child) or "").upper()
             if text:
                 ticker_candidates.append(text)
     unique_tickers = list(dict.fromkeys(ticker_candidates))
-    asset_cat = _iwb_sec_singleton_text(holding, "assetCat", required=False)
-    issuer_cat = _iwb_sec_singleton_text(holding, "issuerCat", required=False)
+    asset_cat = _iwb_sec_singleton_text(holding, "assetCat", required=False, direct_only=True)
+    issuer_cat = _iwb_sec_singleton_text(holding, "issuerCat", required=False, direct_only=True)
+    issuer_description = None
+    conditional = _iwb_sec_direct_children(holding, "issuerConditional")
+    if len(conditional) > 1 or (conditional and issuer_cat is not None):
+        _iwb_sec_fail("duplicate required singleton N-PORT field: issuer category")
+    if conditional:
+        issuer_cat = conditional[0].attrib.get("issuerCat", "").strip() or None
+        issuer_description = conditional[0].attrib.get("desc", "").strip() or None
     reasons: list[str] = []
     ticker: str | None
     if not unique_tickers:
@@ -1679,6 +1739,12 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
         issuer_cat=issuer_cat,
         status=status,
         reasons=tuple(dict.fromkeys(reasons)),
+        currency=_iwb_sec_singleton_text(holding, "curCd", required=False, direct_only=True),
+        value_usd=_iwb_sec_singleton_text(holding, "valUSD", required=False, direct_only=True),
+        balance=_iwb_sec_singleton_text(holding, "balance", required=False, direct_only=True),
+        units=_iwb_sec_singleton_text(holding, "units", required=False, direct_only=True),
+        percent_value=_iwb_sec_singleton_text(holding, "pctVal", required=False, direct_only=True),
+        issuer_category_description=issuer_description,
     )
 
 
@@ -1687,7 +1753,7 @@ def parse_iwb_sec_nport_xml_bytes(
     *,
     expected_index: IwbSecFilingIndexRecord | None = None,
 ) -> tuple[dict[str, object], tuple[IwbSecHoldingRecord, ...]]:
-    """Parse caller-supplied namespaced N-PORT XML bytes for the IWB class."""
+    """Parse an inspected field subset; this is not full N-PORT XSD validation."""
     payload = _iwb_sec_require_bytes(raw_xml, label="N-PORT XML", max_bytes=IWB_SEC_FILING_MAX_XML_BYTES)
     root = _iwb_sec_parse_xml_root(payload)
     header = _iwb_sec_require_exact_one_direct_child(root, "headerData")
@@ -1703,7 +1769,7 @@ def parse_iwb_sec_nport_xml_bytes(
         _iwb_sec_fail(f"N-PORT CIK is not IWB trust CIK {IWB_SEC_FILING_CIK}")
     series_id = _iwb_sec_singleton_text(series_info, "seriesId")
     class_id = _iwb_sec_singleton_text(series_info, "classId")
-    ticker = (_iwb_sec_singleton_text(series_info, "ticker") or "").strip().upper()
+    declared_ticker = _iwb_sec_singleton_text(series_info, "ticker", required=False)
     if series_id != IWB_SEC_FILING_SERIES_ID:
         _iwb_sec_fail(
             f"N-PORT seriesId {series_id!r} is not IWB series {IWB_SEC_FILING_SERIES_ID}; "
@@ -1711,13 +1777,25 @@ def parse_iwb_sec_nport_xml_bytes(
         )
     if class_id != IWB_SEC_FILING_CLASS_ID:
         _iwb_sec_fail(f"N-PORT classId {class_id!r} is not IWB class {IWB_SEC_FILING_CLASS_ID}")
-    if ticker != IWB_SEC_FILING_TICKER:
-        _iwb_sec_fail(f"N-PORT ticker {ticker!r} is not {IWB_SEC_FILING_TICKER}")
+    if declared_ticker is not None and declared_ticker.upper() != IWB_SEC_FILING_TICKER:
+        _iwb_sec_fail(f"N-PORT ticker {declared_ticker!r} is not {IWB_SEC_FILING_TICKER}")
+    # The public XML omits the fund ticker. This fixed fund mapping is valid
+    # only after exact CIK/series/class checks; it never maps holding tickers.
+    ticker = IWB_SEC_FILING_TICKER
+    gen_cik = _iwb_sec_singleton_text(gen_info, "regCik", required=False)
+    if gen_cik is not None and _iwb_sec_normalize_cik(gen_cik) != cik:
+        _iwb_sec_fail("N-PORT genInfo regCik mismatch")
+    gen_series = _iwb_sec_singleton_text(gen_info, "seriesId", required=False)
+    if gen_series is not None and gen_series != series_id:
+        _iwb_sec_fail("N-PORT genInfo seriesId mismatch")
     report_period_text = _iwb_sec_singleton_text(gen_info, "repPdDate")
     assert report_period_text is not None
     report_period = _iwb_sec_parse_report_period(report_period_text)
+    report_end_text = _iwb_sec_singleton_text(gen_info, "repPdEnd", required=False)
     accession = _iwb_sec_singleton_text(header, "accessionNumber", required=False)
-    submission_type = _iwb_sec_singleton_text(form_data, "submissionType", required=False)
+    # Official submissionType is in headerData; retain the legacy synthetic
+    # placement while rejecting duplicates/conflicts anywhere in the document.
+    submission_type = _iwb_sec_singleton_text(root, "submissionType", required=False)
     if submission_type is not None:
         submission_type = _iwb_sec_normalize_form(submission_type)
     if expected_index is not None:
@@ -1783,6 +1861,12 @@ def parse_iwb_sec_nport_xml_bytes(
                         issuer_cat=holding.issuer_cat,
                         status="unresolved",
                         reasons=tuple(dict.fromkeys(reasons)),
+                        currency=holding.currency,
+                        value_usd=holding.value_usd,
+                        balance=holding.balance,
+                        units=holding.units,
+                        percent_value=holding.percent_value,
+                        issuer_category_description=holding.issuer_category_description,
                     )
                 )
             else:
@@ -1793,7 +1877,9 @@ def parse_iwb_sec_nport_xml_bytes(
         "series_id": series_id,
         "class_id": class_id,
         "ticker": ticker,
+        "ticker_origin": "xml_declared" if declared_ticker else "pinned_cik_series_class_identity",
         "report_period": report_period,
+        "report_period_end": _iwb_sec_parse_report_period(report_end_text) if report_end_text else None,
         "accession_number": accession,
         "submission_type": submission_type,
         "xml_sha256": _iwb_sec_sha256(payload),
