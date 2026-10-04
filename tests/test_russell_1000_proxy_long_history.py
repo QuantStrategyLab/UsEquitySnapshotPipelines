@@ -373,6 +373,124 @@ def _bind(
     )
 
 
+# Minimal structural equivalent of the official 2026-03-31 filing, not raw
+# captured SEC bytes or a full/schema-valid filing. Security names/identifiers
+# and values below are synthetic. Source inspected through SEC submission text:
+# https://www.sec.gov/Archives/edgar/data/1100663/000100472626003726/0001004726-26-003726.txt
+def _official_shape_nport_xml() -> bytes:
+    return b'''<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport">
+  <headerData>
+    <submissionType>NPORT-P</submissionType>
+    <filerInfo>
+      <filer><issuerCredentials><cik>0001100663</cik></issuerCredentials></filer>
+      <seriesClassInfo><seriesId>S000004347</seriesId><classId>C000012077</classId></seriesClassInfo>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <genInfo><regCik>0001100663</regCik><seriesId>S000004347</seriesId>
+      <repPdEnd>2026-03-31</repPdEnd><repPdDate>2026-03-31</repPdDate></genInfo>
+    <invstOrSecs>
+      <invstOrSec><name>Structure Equity</name><cusip>111111111</cusip>
+        <identifiers><isin value="US1111111111"/><other otherDesc="Internal" value="111111111"/></identifiers>
+        <balance>10.00000000</balance><units>NS</units><curCd>USD</curCd>
+        <valUSD>100.00000000</valUSD><pctVal>0.010000000000</pctVal>
+        <assetCat>EC</assetCat><issuerCat>CORP</issuerCat>
+      </invstOrSec>
+      <invstOrSec><name>Structure Cash Fund</name><cusip>222222222</cusip>
+        <identifiers><isin value="US2222222222"/></identifiers>
+        <balance>20.00000000</balance><units>NS</units><curCd>USD</curCd>
+        <valUSD>20.00000000</valUSD><pctVal>0.002000000000</pctVal>
+        <assetCat>STIV</assetCat><issuerCat>RF</issuerCat>
+      </invstOrSec>
+      <invstOrSec><name>Structure Index Future</name><cusip>N/A</cusip>
+        <identifiers><isin value="N/A"/><ticker value="FUTM26"/></identifiers>
+        <balance>2.00000000</balance><units>NC</units><curCd>USD</curCd>
+        <valUSD>-5.00000000</valUSD><pctVal>-0.000500000000</pctVal>
+        <assetCat>DE</assetCat><issuerConditional issuerCat="OTHER" desc="Index Future"/>
+        <derivativeInfo><futrDeriv><curCd>USD</curCd></futrDeriv></derivativeInfo>
+      </invstOrSec>
+    </invstOrSecs>
+  </formData>
+</edgarSubmission>'''
+
+
+def test_iwb_sec_official_structure_preserves_identifiers_and_unresolved_rows(_no_network) -> None:
+    meta, holdings = parse_iwb_sec_nport_xml_bytes(_official_shape_nport_xml())
+    assert meta["ticker"] == "IWB"
+    assert meta["ticker_origin"] == "pinned_cik_series_class_identity"
+    assert meta["submission_type"] == "NPORT-P"
+    assert meta["report_period_end"].isoformat() == "2026-03-31"
+    assert len(holdings) == 3
+    equity = holdings[0]
+    assert equity.cusip == "111111111"
+    assert equity.isin == "US1111111111"
+    assert equity.ticker is None and equity.status == "unresolved"
+    assert "missing_ticker" in equity.reasons
+    assert (equity.currency, equity.value_usd, equity.balance, equity.units, equity.percent_value) == (
+        "USD", "100.00000000", "10.00000000", "NS", "0.010000000000"
+    )
+    assert "non_equity_or_unsupported_asset_cat:STIV" in holdings[1].reasons
+    future = holdings[2]
+    assert future.ticker == "FUTM26" and future.status == "unsupported"
+    assert future.issuer_cat == "OTHER" and future.issuer_category_description == "Index Future"
+    assert future.currency == "USD" and future.value_usd == "-5.00000000"
+    version = _bind(
+        observed_at=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+        xml=_official_shape_nport_xml(),
+    )
+    assert version.trading_eligible is False
+    assert iwb_sec_research_candidate_symbols(version) == ()
+    with pytest.raises(IwbSecFilingAdapterError, match="canonical bridge rejected"):
+        iwb_sec_universe_rows_for_ues(version)
+
+
+@pytest.mark.parametrize(("old", "new", "message"), [
+    (b"<submissionType>NPORT-P</submissionType>", b"<submissionType>NPORT-P/A</submissionType>", "submissionType mismatch"),
+    (b"<regCik>0001100663</regCik>", b"<regCik>0000000001</regCik>", "regCik mismatch"),
+    (b"<genInfo><regCik>0001100663</regCik><seriesId>S000004347</seriesId>",
+     b"<genInfo><regCik>0001100663</regCik><seriesId>S000999999</seriesId>", "genInfo seriesId mismatch"),
+    (b"<seriesClassInfo>", b"<seriesClassInfo><ticker>IWF</ticker>", "ticker"),
+    (b'<isin value="US1111111111"/>', b'<isin value="US1111111111">US9999999999</isin>', "conflicting identifier"),
+    (b"<cusip>111111111</cusip>", b"<cusip>111111111</cusip><cusip>111111111</cusip>", "duplicate required singleton"),
+    (b"<assetCat>EC</assetCat>", b'<assetCat xmlns="http://example.invalid/foreign">EC</assetCat>', "namespace"),
+])
+def test_iwb_sec_official_structure_rejects_conflicting_identity(old, new, message, _no_network) -> None:
+    payload = _official_shape_nport_xml().replace(old, new, 1)
+    with pytest.raises(IwbSecFilingAdapterError, match=message):
+        _bind(observed_at=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc), xml=payload)
+
+
+def test_iwb_sec_official_header_form_and_attribute_ticker_variants(_no_network) -> None:
+    payload = _official_shape_nport_xml().replace(
+        b'<isin value="US1111111111"/>', b'<isin value="US1111111111"/><ticker value="SHAPE"/>'
+    )
+    meta, holdings = parse_iwb_sec_nport_xml_bytes(payload)
+    assert holdings[0].ticker == "SHAPE" and holdings[0].status == "resolved_equity"
+    assert meta["submission_type"] == "NPORT-P"
+    duplicate_form = payload.replace(b"<formData>", b"<formData><submissionType>NPORT-P</submissionType>")
+    with pytest.raises(IwbSecFilingAdapterError, match="duplicate required singleton"):
+        parse_iwb_sec_nport_xml_bytes(duplicate_form)
+
+
+def test_iwb_sec_official_accession_label_and_repeated_primary_rows(_no_network) -> None:
+    # Structural equivalent of the inspected index text, not captured HTML.
+    payload = _synthetic_index_html_sec_style(include_exhibit_row=False).replace(
+        b'<div class="infoHead">Accession Number</div><div class="info">0001004726-26-003726</div>',
+        b'<div><strong>SEC Accession No.</strong> 0001004726-26-003726</div>',
+    ).replace(
+        b"<tr><th>Seq</th><th>Description</th><th>Type</th></tr>",
+        b"<tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>",
+    ).replace(
+        b"<tr><td>1</td><td>Primary Document</td><td>NPORT-P</td></tr>",
+        b"<tr><td>1</td><td></td><td>primary_doc.html</td><td>NPORT-P</td><td></td></tr>"
+        b"<tr><td>1</td><td></td><td>primary_doc.xml</td><td>NPORT-P</td><td>966054</td></tr>",
+    )
+    index = parse_iwb_sec_filing_index_html(payload, accepted_timezone=_NY)
+    assert index.accession_number == _SYNTHETIC_ACCESSION
+    assert index.form_type == "NPORT-P"
+
+
 def test_iwb_sec_offline_adapter_binds_identity_and_keeps_mixed_rows() -> None:
     observed = datetime(2026, 5, 22, 20, 0, 0, tzinfo=timezone.utc)
     version = _bind(observed_at=observed, holdings_xml=_MIXED_HOLDINGS)
