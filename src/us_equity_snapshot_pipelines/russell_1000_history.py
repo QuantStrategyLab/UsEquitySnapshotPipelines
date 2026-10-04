@@ -1038,6 +1038,7 @@ IWB_SEC_COVERED_NPORT_FIELDS = (
     "issuerCat",
     "issuerConditional",
     "submissionType",
+    "accessionNumber",
     "regCik",
     "repPdEnd",
     "cusip",

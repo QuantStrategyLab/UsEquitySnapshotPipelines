@@ -524,6 +524,18 @@ def test_iwb_sec_checks_identity_containers_and_fields_under_both_allowed_roots(
         parse_iwb_sec_nport_xml_bytes(payload)
 
 
+@pytest.mark.parametrize("root_namespace", [b"http://www.sec.gov/edgar/nport", _NS.encode()])
+def test_iwb_sec_rejects_foreign_accession_namespace(root_namespace, _no_network) -> None:
+    payload = _official_shape_nport_xml().replace(b"http://www.sec.gov/edgar/nport", root_namespace)
+    payload = payload.replace(
+        b"</headerData>",
+        b'<foreign:accessionNumber xmlns:foreign="urn:foreign">'
+        b"0000000000-26-000001</foreign:accessionNumber></headerData>",
+    )
+    with pytest.raises(IwbSecFilingAdapterError, match="namespace"):
+        parse_iwb_sec_nport_xml_bytes(payload)
+
+
 def test_iwb_sec_preserves_legacy_namespace_and_official_prefix_spelling(_no_network) -> None:
     legacy = _bind(observed_at=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc))
     assert legacy.trading_eligible is False
