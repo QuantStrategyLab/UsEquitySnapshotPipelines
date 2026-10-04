@@ -1725,6 +1725,15 @@ def _iwb_sec_identifier_value(node: ET.Element) -> str | None:
     return text or attribute or None
 
 
+def _iwb_sec_has_security_identifier_evidence(value: str | None) -> bool:
+    """Exclude only absent values and official NA_TYPE's exact N/A placeholder.
+
+    Presence is lexical evidence, not checksum validity or a security-master
+    match. Do not guess additional sentinels or normalize opaque source codes.
+    """
+    return bool(value) and value != "N/A"
+
+
 def _iwb_sec_optional_bounded_lexical_text(
     holding: ET.Element, local_name: str, *, max_chars: int
 ) -> str | None:
@@ -1844,6 +1853,12 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
         reasons.append("missing_asset_cat")
     elif asset_upper in IWB_SEC_NON_EQUITY_ASSET_HINTS or asset_upper not in IWB_SEC_EQUITY_ASSET_CATS:
         reasons.append(f"non_equity_or_unsupported_asset_cat:{asset_upper or 'unknown'}")
+    # Conservative identity qualification: a declared ticker plus issuer/title
+    # or opaque other ID does not supply security-code evidence for an equity.
+    if asset_upper in IWB_SEC_EQUITY_ASSET_CATS and not (
+        _iwb_sec_has_security_identifier_evidence(cusip) or _iwb_sec_has_security_identifier_evidence(isin)
+    ):
+        reasons.append("security_identifier_evidence_not_supplied")
     if "CONTINGENT" in name_upper:
         reasons.append("contingent_consideration_unresolved")
     if "SPINOFF" in name_upper or "SPIN-OFF" in name_upper:
@@ -1864,9 +1879,12 @@ def _iwb_sec_classify_holding(holding: ET.Element) -> IwbSecHoldingRecord:
         "contingent_consideration_unresolved",
         "spinoff_unresolved",
         "cash_consideration_unresolved",
+        "security_identifier_evidence_not_supplied",
     }
     if any(reason in blocking or reason.startswith("non_equity_or_unsupported_asset_cat:") for reason in reasons):
-        if "missing_ticker" in reasons or "conflicting_ticker_identity" in reasons:
+        if any(reason in reasons for reason in (
+            "missing_ticker", "conflicting_ticker_identity", "security_identifier_evidence_not_supplied"
+        )):
             status = "unresolved"
         else:
             status = "unsupported"
@@ -1973,10 +1991,10 @@ def parse_iwb_sec_nport_xml_bytes(
     for holding in holdings:
         if not holding.ticker:
             continue
-        if holding.cusip:
+        if _iwb_sec_has_security_identifier_evidence(holding.cusip):
             ticker_to_cusips[holding.ticker].add(holding.cusip)
             cusip_to_tickers[holding.cusip].add(holding.ticker)
-        if holding.isin:
+        if _iwb_sec_has_security_identifier_evidence(holding.isin):
             ticker_to_isins[holding.ticker].add(holding.isin)
             isin_to_tickers[holding.isin].add(holding.ticker)
     conflict_tickers = {
