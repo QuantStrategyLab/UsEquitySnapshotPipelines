@@ -103,3 +103,10 @@ python -m pytest -q
 ## License
 
 See [LICENSE](LICENSE).
+
+## Crisis research implementation
+
+The crisis response and context algorithms are maintained in QuantStrategyPlugins.
+USEQ uses its existing pinned QSP dependency and retains the `useq-backtest-crisis-response`
+and `useq-build-crisis-context-pack` commands and their existing input/output behavior.
+Frozen research results retain the code versions recorded with those results.
