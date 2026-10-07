@@ -14,7 +14,12 @@ WORKFLOW = Path(".github/workflows/publish-strategy-plugins.yml")
 RUSSELL_WORKFLOW = Path(".github/workflows/run-russell-live-ledger.yml")
 PYPROJECT = Path("pyproject.toml")
 ALERT_MODULE = Path("src/us_equity_snapshot_pipelines/strategy_plugin_alerts.py")
-MARKET_REGIME_PLUGIN_REF = "6b76d512c8273deb804c0770a203558284778399"
+
+
+def _strategy_plugin_ref() -> str:
+    refs = re.findall(r"QuantStrategyPlugins\.git@([0-9a-f]{40})", PYPROJECT.read_text(encoding="utf-8"))
+    assert len(refs) == 1
+    return refs[0]
 
 
 def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
@@ -104,7 +109,7 @@ def test_strategy_plugin_dependency_supports_market_regime_control() -> None:
     assert len(qpk_refs) == 1
     strategy_refs = re.findall(r"UsEquityStrategies\.git@([0-9a-f]{40})", pyproject)
     assert len(strategy_refs) == 1
-    assert f"QuantStrategyPlugins.git@{MARKET_REGIME_PLUGIN_REF}" in pyproject
+    assert f"QuantStrategyPlugins.git@{_strategy_plugin_ref()}" in pyproject
     assert "google-cloud-storage>=2.18" in pyproject
     assert "QuantStrategyPlugins.git@" + "v0.1.6" not in pyproject
 
@@ -205,7 +210,7 @@ def test_russell_live_ledger_workflow_upload_artifact_guard() -> None:
 
 def test_installed_strategy_plugin_revision_matches_manifest() -> None:
     source = json.loads(distribution("quant-strategy-plugins").read_text("direct_url.json"))
-    assert source["vcs_info"]["commit_id"] == MARKET_REGIME_PLUGIN_REF
+    assert source["vcs_info"]["commit_id"] == _strategy_plugin_ref()
 
 
 @pytest.mark.parametrize("plugin", ["crisis", "taco"])
