@@ -69,34 +69,37 @@ def object_uri(value: str, root: str) -> str:
 
 
 def inventory(root: str, command=subprocess.run) -> dict:
-    """gsutil ls only: no GET body, copy, credentials, or metadata dumps."""
-    proc = command(["gsutil", "ls", "-L", "-a", root + "**"],
+    """Metadata-only gcloud listing; auth's exported WIF is unsupported by gsutil."""
+    proc = command(["gcloud", "storage", "ls", "--json", "--all-versions", root + "**", "--quiet"],
                    capture_output=True, text=True, timeout=90, check=False)
     if proc.returncode:
+        if re.search(r"\b403\b|PERMISSION_DENIED", proc.stderr):
+            raise ArchiveError("METADATA_LIST_FORBIDDEN")
+        if re.search(r"\b401\b|UNAUTHENTICATED", proc.stderr):
+            raise ArchiveError("METADATA_LIST_UNAUTHENTICATED")
         raise ArchiveError("METADATA_LIST_DENIED_OR_UNAVAILABLE")
     if len(proc.stdout) > 4 * 1024 * 1024:
         raise ArchiveError("METADATA_INVENTORY_LIMIT")
-    objects, current = [], None
-    for line in proc.stdout.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("gs://") and stripped.endswith(":"):
-            uri = stripped[:-1]
-            name = uri.split("#", 1)[0]
-            object_uri(name, root)
-            current = {"name": name[len(root):], "generation": None,
-                       "bytes": None, "sha256": None}
-            objects.append(current)
-            if len(objects) > MAX_OBJECTS:
-                raise ArchiveError("METADATA_INVENTORY_LIMIT")
-        elif current:
-            for key, field in (("Generation:", "generation"), ("Content-Length:", "bytes")):
-                if stripped.startswith(key):
-                    value = stripped[len(key):].strip()
-                    if value.isdigit():
-                        current[field] = value
-            match = re.fullmatch(r"sha256:\s*([0-9a-f]{64})", stripped)
-            if match:
-                current["sha256"] = match[1]
+    try:
+        records = json.loads(proc.stdout)
+    except ValueError:
+        raise ArchiveError("METADATA_LIST_SCHEMA_INVALID") from None
+    if not isinstance(records, list) or len(records) > MAX_OBJECTS:
+        raise ArchiveError("METADATA_INVENTORY_LIMIT")
+    objects = []
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("metadata"), dict):
+            raise ArchiveError("METADATA_LIST_SCHEMA_INVALID")
+        name = record.get("url", "").split("#", 1)[0]
+        object_uri(name, root)
+        meta = record["metadata"]
+        generation, size = str(meta.get("generation", "")), str(meta.get("size", ""))
+        if not generation.isdigit() or not size.isdigit():
+            raise ArchiveError("METADATA_LIST_SCHEMA_INVALID")
+        custom = meta.get("metadata", {})
+        digest = custom.get("sha256") if isinstance(custom, dict) else None
+        objects.append({"name": name[len(root):], "generation": generation, "bytes": size,
+                        "sha256": digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else None})
     matches = [o for o in objects if o["sha256"] == LEGACY_DIGEST]
     return {"status": "METADATA_INVENTORY_COMPLETE", "objects": objects,
             "legacy_digest": LEGACY_DIGEST, "legacy_metadata_matches": matches,

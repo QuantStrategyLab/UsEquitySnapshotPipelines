@@ -38,11 +38,12 @@ def test_metadata_scan_never_reads_bodies_or_claims_missing_content():
     root = "gs://demo-bucket/research/v2/input/"
     def command(args, **kwargs):
         calls.append(args)
-        return SimpleNamespace(returncode=0, stdout=root + "fixture/manifest.json#123:\n"
-                               "    Generation: 123\n    Content-Length: 70\n"
-                               "    Metadata:\n      unrelated-private-field: do-not-export\n")
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{
+            "url": root + "fixture/manifest.json#123", "type": "cloud_object",
+            "metadata": {"generation": "123", "size": "70",
+                         "metadata": {"unrelated-private-field": "do-not-export"}}}]))
     result = archive.inventory(root, command)
-    assert calls == [["gsutil", "ls", "-L", "-a", root + "**"]]
+    assert calls == [["gcloud", "storage", "ls", "--json", "--all-versions", root + "**", "--quiet"]]
     assert result["objects_without_sha256_metadata"] == 1
     assert result["legacy_metadata_matches"] == []
     assert result["digest_absence_is_not_content_absence"] and not result["real_data_read"]
