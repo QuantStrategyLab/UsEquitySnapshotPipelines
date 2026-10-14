@@ -26,6 +26,8 @@ Inventory exports names, generations, sizes and only the `sha256` custom metadat
 field. Objects without that metadata cannot be ruled out by SHA-256; inventory
 must not claim that the registered content never existed or was not moved.
 Native cloud/provider diagnostics and all other custom metadata remain suppressed.
+Storage uses the repository-locked SDK version and disables its background bucket
+metadata query, following the existing read-only archive reader.
 
 Regeneration freezes the approved Alpaca SIP raw daily bars plus corporate
 actions, six symbols, 2021-12-01 through 2026-08-25 (BOXX begins 2022-12-28).
