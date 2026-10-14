@@ -1,0 +1,56 @@
+name: SOXL V7 Read-Only Shadow Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: Read existing immutable V7 receipts and publish aggregate evidence only.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soxl-v7-readonly-shadow-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: inputs.execute == true && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: market-data-nonlive
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Install existing locked validation runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate with existing non-live identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - name: Read and validate existing receipts without acquiring or writing cloud data
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        run: uv run --no-sync python -m scripts.audit_soxl_v7_shadow
+      - name: Upload aggregate audit only
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soxl-v7-readonly-shadow-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}/soxl-v7-readonly-audit/summary.json
+          if-no-files-found: ignore
+          retention-days: 14
