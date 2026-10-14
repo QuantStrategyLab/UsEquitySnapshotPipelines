@@ -146,3 +146,29 @@ def test_store_enforces_create_only_and_exact_generation_readback():
     assert calls[0]["if_generation_match"] == 0 and calls[0]["retry"] is None
     assert calls[2]["if_generation_match"] == 321 and calls[2]["retry"] is None
     assert result["sha256"] == blob.metadata["sha256"] == archive.sha(b"{}")
+
+
+def test_registered_calendar_coverage_and_pagination_are_validated():
+    import exchange_calendars
+    calendar = exchange_calendars.get_calendar("XNYS", start="2021-12-01", end="2026-08-25")
+    rows = [{"t": str(s.date()) + "T05:00:00Z", "o": 10., "h": 11., "l": 9., "c": 10., "v": 1}
+            for s in calendar.sessions_in_range("2021-12-01", "2026-08-25")]
+    class Provider:
+        def get(self, path, params):
+            return {"symbol": "SOXL", "bars": rows[500:] if "page_token" in params else rows[:500],
+                    "next_page_token": None if "page_token" in params else "synthetic-token"}
+    store = MemoryStore()
+    result = archive.collect(Provider(), store, "SOXL", "bars")
+    assert result["count"] == 1187 and len(result["pages"]) == 2
+    assert all(b"synthetic-token" not in body for body in store.objects.values())
+
+
+def test_one_missing_session_is_rejected_before_page_write():
+    class Provider:
+        def get(self, path, params):
+            return {"symbol": "SOXL", "bars": [{"t": "2021-12-02T05:00:00Z",
+                    "o": 10., "h": 11., "l": 9., "c": 10., "v": 1}]}
+    store = MemoryStore()
+    with pytest.raises(archive.ArchiveError, match="BAR_VALIDATION_FAILED"):
+        archive.collect(Provider(), store, "SOXL", "bars")
+    assert store.objects == {}
