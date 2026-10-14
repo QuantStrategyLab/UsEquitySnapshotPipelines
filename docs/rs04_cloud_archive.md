@@ -15,7 +15,7 @@ No IAM, production configuration, broker, server or deployment operation exists.
 
 | Setting | Default and meaning |
 | --- | --- |
-| `mode` | `inventory`: `gsutil ls -L -a` within the approved input root, with no object body reads |
+| `mode` | `inventory`: `gcloud storage ls --json --all-versions` within the approved input root, with no object body reads |
 | `input_root` | Empty; falls back to repository variable `RS04_INPUT_ROOT`. Must be `gs://<approved-private-bucket>/research/v2/input/`. No personal bucket is embedded in code. |
 | `dataset_id` | `rs04-alpaca-raw-20261015`. Use a new directory for a separately authorized acquisition; existing objects cannot be overwritten. |
 | `effective_config_uri` | Empty: records `LIVE_CONFIG_URI_UNAVAILABLE`. If supplied, must be an existing JSON object under the approved input root. Reads its exact generation and stores key names/types only, never values or value digests. |
@@ -56,3 +56,10 @@ always returns `PARKED`; archive recovery alone must not remove those protection
 Register and review the new source identity in the comparison consumer before
 one new comparison dispatch. No live or shadow recommendation follows from
 archive creation.
+
+The first metadata-only execution failed because `gsutil` does not consume the
+WIF credentials exported by [google-github-actions/auth](https://github.com/google-github-actions/auth).
+The corrected reader uses the officially recommended `gcloud storage` command
+with the same identity and metadata-only scope. HTTP 401/403 diagnostics are
+reported as fixed reason codes without native error text. This is a client
+compatibility repair, not an IAM change or a source acquisition retry.
