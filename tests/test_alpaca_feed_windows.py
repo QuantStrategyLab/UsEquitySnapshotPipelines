@@ -38,6 +38,7 @@ def test_recent_only_and_explicit_delay_only_and_feed_override():
 
 @pytest.mark.parametrize("env", [
     {"ALPACA_SIP_MIN_DELAY_MINUTES": "0"}, {"ALPACA_SIP_MIN_DELAY_MINUTES": "nan"},
+    {"ALPACA_SIP_MIN_DELAY_MINUTES": "15"},
     {"ALPACA_FEED_RECENT": "sip"}, {"ALPACA_FEED_HISTORICAL": "unknown"},
 ])
 def test_invalid_config_fails_before_requests(env):

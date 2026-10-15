@@ -88,6 +88,9 @@ def diagnose(env, *, now: datetime, opener) -> dict:
         if stop:
             break
     return {"schema_version": "qsl.alpaca_access_diagnostic.v2", "date_cutoff": cutoff,
+            "requested_end": end.isoformat(),
+            "sip_min_delay_minutes": float(env.get("ALPACA_SIP_MIN_DELAY_MINUTES", "16")),
+            "recent_tail_policy": env.get("ALPACA_FEED_RECENT", "iex"),
             "price_basis": "split_dividend_adjusted", "segments": records,
             "status": "ALPACA_ACCESS_OK" if records and not stop else "ALPACA_DIAGNOSTIC_STOPPED",
             "max_requests": 12, "no_retry": True, "no_order": True,

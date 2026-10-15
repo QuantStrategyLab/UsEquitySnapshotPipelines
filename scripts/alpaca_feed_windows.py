@@ -13,8 +13,8 @@ def feed_windows(start: datetime, end: datetime, *, now: datetime,
         raise ValueError("ALPACA_WINDOW_TIMEZONE_REQUIRED")
     start, end, now = (value.astimezone(UTC) for value in (start, end, now))
     delay = float(env.get("ALPACA_SIP_MIN_DELAY_MINUTES", "16"))
-    if not math.isfinite(delay) or delay < 15:
-        raise ValueError("ALPACA_SIP_MIN_DELAY_MINUTES must be at least 15")
+    if not math.isfinite(delay) or delay < 16:
+        raise ValueError("ALPACA_SIP_MIN_DELAY_MINUTES must be at least 16")
     historical = env.get("ALPACA_FEED_HISTORICAL", "sip").lower()
     recent = env.get("ALPACA_FEED_RECENT", "iex").lower()
     if historical not in {"sip", "iex"} or recent not in {"iex", "none"}:

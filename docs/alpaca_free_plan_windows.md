@@ -7,7 +7,7 @@ Frozen archive producers retain their existing fixed historical contracts.
 
 | Environment / GitHub variable | Default | Meaning |
 | --- | --- | --- |
-| `ALPACA_SIP_MIN_DELAY_MINUTES` | `16` | Historical SIP end is clamped to `now - delay`. Finite values of at least 15 minutes are accepted. |
+| `ALPACA_SIP_MIN_DELAY_MINUTES` | `16` | Historical SIP end is clamped to `now - delay`. Finite values of at least 16 minutes are accepted, preserving the operational margin. |
 | `ALPACA_FEED_HISTORICAL` | `sip` | Historical segment feed; accepts `sip` or explicitly selected `iex`. |
 | `ALPACA_FEED_RECENT` | `iex` | Only the recent tail uses IEX; `none` explicitly omits that tail. SIP is rejected for this interval. |
 
