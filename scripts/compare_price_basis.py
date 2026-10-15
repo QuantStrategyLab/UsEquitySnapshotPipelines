@@ -46,6 +46,18 @@ def day(value):
         raise ResearchStop("INVALID_DATE") from None
 
 
+def reporting_dates(meta):
+    as_of = day(meta.get("as_of"))
+    value = meta.get("inception")
+    inception = None if value in (None, "", "unknown") else day(value)
+    require(inception is None or inception <= as_of, "INCEPTION_INVALID")
+    try:
+        two_years = as_of.replace(year=as_of.year - 2)
+    except ValueError:  # Feb 29
+        two_years = as_of.replace(year=as_of.year - 2, day=28)
+    return as_of, inception, two_years
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
@@ -88,6 +100,7 @@ def validate_arm(arm, limits):
     for key in ("gross_return", "net_return_1x", "net_return_2x"):
         require(number(arm.get(key)) > -1, "INVALID_RETURN")
     require(number(arm.get("turnover")) >= 0, "INVALID_TURNOVER")
+    require(type(arm.get("trade_count")) is int and arm["trade_count"] >= 0, "TRADE_COUNT_REQUIRED")
     require(arm["net_return_1x"] <= arm["gross_return"] + 1e-10, "COST_ORDER_INVALID")
     require(arm["net_return_2x"] <= arm["net_return_1x"] + 1e-10, "COST_STRESS_INVALID")
 
@@ -146,11 +159,16 @@ def daily_comparison(row, size_edges):
     symbols = set(da) | set(db)
     signal_keys = set(a["signals"]) | set(b["signals"])
     require(set(a["signals"]) == set(b["signals"]), "SIGNAL_COVERAGE_MISMATCH")
+    position_diff = any(v != 0 for v in delta)
+    order_diff = any(a["orders"].get(s, 0) != b["orders"].get(s, 0) for s in symbols)
     return {
         "weight_delta": max(delta), "weight_l1": sum(delta),
         "asset_day_deltas": delta,
         "cash_weight_delta": abs(sum(wa.values()) - sum(wb.values())),
-        "decision_diff": da != db, "trade_vs_no_trade_diff": bool(da) != bool(db),
+        "decision_diff": position_diff or order_diff,
+        "position_diff": position_diff,
+        "order_size_diff": any(abs(a["orders"].get(s, 0)) != abs(b["orders"].get(s, 0)) for s in symbols),
+        "trade_vs_no_trade_diff": bool(da) != bool(db),
         "direction_diff": any(da.get(s, (0, 0))[0] != db.get(s, (0, 0))[0] for s in symbols),
         "size_bucket_diff": any(da.get(s, (0, -1))[1] != db.get(s, (0, -1))[1] for s in symbols),
         "signal_diff": any(a["signals"][s] != b["signals"][s] for s in signal_keys),
@@ -160,7 +178,8 @@ def daily_comparison(row, size_edges):
 def summarize(rows, size_edges):
     comparisons = [daily_comparison(row, size_edges) for row in rows]
     out = {"sessions": len(rows)}
-    for key in ("decision_diff", "trade_vs_no_trade_diff", "direction_diff", "size_bucket_diff", "signal_diff"):
+    for key in ("decision_diff", "position_diff", "order_size_diff", "trade_vs_no_trade_diff",
+                "direction_diff", "size_bucket_diff", "signal_diff"):
         out[key + "_days"] = sum(c[key] for c in comparisons)
     out["daily_max_abs_weight_delta"] = quantiles([c["weight_delta"] for c in comparisons])
     out["daily_l1_weight_delta"] = quantiles([c["weight_l1"] for c in comparisons])
@@ -179,20 +198,16 @@ def performance(rows, arm, field):
         peak = max(peak, nav)
         drawdown = min(drawdown, nav / peak - 1)
     years = ((day(rows[-1]["session"]) - day(rows[0]["session"])).days + 1) / 365.25
-    return {"cagr": nav ** (1 / years) - 1, "max_drawdown": drawdown,
+    return {"total_return": nav - 1, "trade_count": sum(row[arm]["trade_count"] for row in rows),
+            "cagr": nav ** (1 / years) - 1, "max_drawdown": drawdown,
             "turnover_sum": sum(row[arm]["turnover"] for row in rows)}
 
 
 def compare(meta, bundle, expected_sessions):
     validate_metadata(meta)
     require(isinstance(bundle, dict) and isinstance(bundle.get("rows"), list), "BUNDLE_INVALID")
-    as_of, inception = day(meta.get("as_of")), day(meta.get("inception"))
-    require(inception <= as_of, "INCEPTION_INVALID")
-    try:
-        two_years = as_of.replace(year=as_of.year - 2)
-    except ValueError:  # Feb 29
-        two_years = as_of.replace(year=as_of.year - 2, day=28)
-    start = min(inception, two_years)
+    as_of, inception, two_years = reporting_dates(meta)
+    start = min(inception, two_years) if inception else two_years
     expected = [s for s in expected_sessions if start <= day(s) <= as_of]
     require(bool(expected), "CALENDAR_EMPTY")
     require(expected == sorted(set(expected)), "CALENDAR_SESSIONS_INVALID")
@@ -207,9 +222,13 @@ def compare(meta, bundle, expected_sessions):
     threshold_edges = meta["threshold_bucket_edges"]
     windows = {}
     for name, lower in (("trailing_two_years", two_years), ("since_inception", inception)):
+        if lower is None:
+            windows[name] = {"status": "NOT_COMPUTED", "reason": "INCEPTION_UNKNOWN",
+                             "sessions": None, "performance": None}
+            continue
         subset = [r for r in rows if day(r["session"]) >= lower]
         require(bool(subset), "WINDOW_EMPTY")
-        stats = summarize(subset, size_edges)
+        stats = {"status": "AGGREGATED", **summarize(subset, size_edges)}
         stats["performance"] = {}
         for field in ("gross_return", "net_return_1x", "net_return_2x"):
             a, b = (performance(subset, arm, field) for arm in ("baseline", "candidate"))
@@ -258,23 +277,43 @@ def cloud_guard():
 
 def reference(ref, root):
     require(isinstance(ref, dict), "OBJECT_REFERENCE_REQUIRED")
-    uri = ref.get("uri", "")
-    parsed = urlsplit(uri)
-    require(parsed.scheme == "gs" and parsed.netloc and not parsed.query and not parsed.fragment,
-            "GCS_URI_REQUIRED")
-    require(uri.startswith(root.rstrip("/") + "/"), "OBJECT_OUTSIDE_INPUT_ROOT")
+    require(isinstance(root, str) and re.fullmatch(r"gs://[a-z0-9][a-z0-9._-]+/research/[A-Za-z0-9._/-]+", root),
+            "APPROVED_RESEARCH_INPUT_ROOT_REQUIRED")
+    parsed = urlsplit(root.rstrip("/"))
     require(all(p not in ("", ".", "..") for p in parsed.path[1:].split("/")), "OBJECT_PATH_INVALID")
+    object_name = ref.get("object")
+    require(isinstance(object_name, str) and all(p not in ("", ".", "..") for p in object_name.split("/")),
+            "OBJECT_PATH_INVALID")
+    require(object_name.startswith(parsed.path[1:] + "/"), "OBJECT_OUTSIDE_INPUT_ROOT")
     require(str(ref.get("generation", "")).isdigit() and int(ref["generation"]) > 0,
             "OBJECT_GENERATION_REQUIRED")
-    require(SHA.fullmatch(ref.get("sha256", "")), "OBJECT_DIGEST_REQUIRED")
-    return parsed
+    require(isinstance(ref.get("sha256"), str) and SHA.fullmatch(ref["sha256"]), "OBJECT_DIGEST_REQUIRED")
+    return parsed.netloc, object_name
+
+
+def validate_manifest(manifest, root):
+    require(isinstance(manifest, dict) and manifest.get("schema_version") == 1, "SCHEMA_VERSION_INVALID")
+    targets = manifest.get("targets", [])
+    require(isinstance(targets, list) and 1 <= len(targets) <= 32, "TARGET_COUNT_INVALID")
+    ids = set()
+    for target in targets:
+        require(isinstance(target, dict), "TARGET_INVALID")
+        alias = target.get("alias", "")
+        require(isinstance(alias, str) and re.fullmatch(r"target-[1-9][0-9]?", alias) and alias not in ids,
+                "TARGET_ALIAS_INVALID")
+        ids.add(alias)
+        require(isinstance(target.get("metadata"), dict), "REPLAY_METADATA_REQUIRED")
+        validate_metadata(target["metadata"])
+        reporting_dates(target["metadata"])
+        reference(target.get("replay_bundle"), root)
+    return targets
 
 
 def read_object(ref, root, client):
-    parsed = reference(ref, root)
+    bucket_name, object_name = reference(ref, root)
     try:
         generation = int(ref["generation"])
-        blob = client.bucket(parsed.netloc).blob(parsed.path[1:], generation=generation)
+        blob = client.bucket(bucket_name).blob(object_name, generation=generation)
         blob.reload(if_generation_match=generation, retry=None, timeout=30)
         require(0 < blob.size <= MAX_OBJECT_BYTES, "OBJECT_SIZE_LIMIT")
         body = blob.download_as_bytes(if_generation_match=generation, retry=None, timeout=60)
@@ -296,9 +335,7 @@ def main():
     try:
         cloud_guard()
         root = os.environ.get("PRICE_BASIS_INPUT_ROOT", "")
-        require(re.fullmatch(r"gs://[a-z0-9][a-z0-9._-]+/research/[A-Za-z0-9._/-]+", root),
-                "APPROVED_RESEARCH_INPUT_ROOT_REQUIRED")
-        ref = {"uri": os.environ.get("PRICE_BASIS_MANIFEST_URI", ""),
+        ref = {"object": os.environ.get("PRICE_BASIS_MANIFEST_OBJECT", ""),
                "generation": os.environ.get("PRICE_BASIS_MANIFEST_GENERATION", ""),
                "sha256": os.environ.get("PRICE_BASIS_MANIFEST_SHA256", "")}
         reference(ref, root)
@@ -314,20 +351,15 @@ def main():
         client = storage.Client(project=os.environ["GOOGLE_CLOUD_PROJECT"],
                                 credentials=Credentials(os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"]))
         manifest = read_object(ref, root, client)
-        require(manifest.get("schema_version") == 1, "SCHEMA_VERSION_INVALID")
-        targets = manifest.get("targets", [])
-        require(isinstance(targets, list) and 1 <= len(targets) <= 32, "TARGET_COUNT_INVALID")
+        # Validate the complete reviewed read set before fetching any ledger.
+        targets = validate_manifest(manifest, root)
         results = []
-        ids = set()
         for target in targets:
             # Public-safe aliases only; no private target names are echoed.
-            alias = target.get("alias", "")
-            require(re.fullmatch(r"target-[1-9][0-9]?", alias) and alias not in ids, "TARGET_ALIAS_INVALID")
-            ids.add(alias)
+            alias = target["alias"]
             metadata = target["metadata"]
-            validate_metadata(metadata)
-            as_of = day(metadata["as_of"])
-            lower = min(day(metadata["inception"]), as_of - timedelta(days=3 * 366))
+            as_of, inception, two_years = reporting_dates(metadata)
+            lower = min(inception, two_years) if inception else two_years
             # Extend beyond both reporting boundaries for +-5 trading-day action windows.
             calendar = xcals.get_calendar(metadata["calendar"], start=lower - timedelta(days=15),
                                          end=as_of + timedelta(days=15))

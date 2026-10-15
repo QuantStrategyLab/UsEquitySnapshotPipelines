@@ -1,10 +1,9 @@
-# Paired price-basis replay comparison (draft)
+# Paired price-basis replay comparison
 
-This is a cloud-only **aggregation stage**, not a strategy replay generator.
-It compares two existing, frozen replay ledgers produced by the actual strategy,
-portfolio, plugin and fill/cost implementation. Missing ledgers cannot be
-replaced by synthetic prices, current holdings, or target-weight-only returns.
-This draft has no real-market comparison results and grants no deployment authority.
+This cloud-only aggregation stage compares two frozen replay ledgers produced by
+the strategy, portfolio, plugin and fill/cost implementation. The producer supplies
+independent simulated states for both price bases. Missing ledgers leave the
+comparison unavailable.
 
 ## Price basis
 
@@ -12,8 +11,7 @@ The explicit `price_basis` values are `raw_unadjusted`, `split_adjusted`,
 `split_dividend_adjusted`, and `total_return_index`. There is **no implicit default**
 or fallback. Provider `Close` and `Adj Close` are column names, not universal basis
 definitions. In particular, yfinance `Close` with `auto_adjust=False` is the
-split-adjusted series used by the IBKR #602 path; it is not an unadjusted tape.
-These draft names should be reconciled with the shared market-data standard before adoption.
+split-adjusted series; it is not an unadjusted tape.
 
 ## Workflow and access
 
@@ -21,32 +19,86 @@ These draft names should be reconciled with the shared market-data standard befo
 branch and uses the existing `market-data-nonlive` environment and research
 identity variables. Permissions match the existing research workflows:
 `contents: read` and `id-token: write`. No secret inputs, new service identities,
-roles, provider API calls, cloud writes, broker clients, or order APIs are added.
+roles, provider API calls, cloud writes, broker clients, or order APIs are used.
 The auth client supplies a masked short-lived access token directly to the storage
 client through the step environment; credential files are disabled. Stop on an
-access denial; do not change permissions. Draft branches cannot run the real-data job.
+access denial; do not change permissions. Only the default branch runs the data job.
 
-Inputs have no private defaults: `input_root` must identify an already approved
-`gs://.../research/...` prefix. `manifest_uri`, `manifest_generation`, and
-`manifest_sha256` pin one existing manifest. Every replay bundle is similarly
-generation- and digest-pinned inside that root. Each read is bounded to 64 MiB,
-without retries. Only `price-basis-aggregate.json` is uploaded, with seven-day
+The workflow accepts these dispatch inputs:
+
+| Input | Required | Default | Purpose |
+|---|---|---|---|
+| `input_root` | Yes | none | Existing permitted `gs://<bucket>/research/<prefix>` root. |
+| `manifest_object` | Yes | none | Reviewed object name, including its full prefix, without `gs://` or a bucket. |
+| `manifest_generation` | Yes | none | Exact positive object generation. |
+| `manifest_sha256` | Yes | none | Lowercase SHA256 of the reviewed manifest bytes. |
+
+The root selects one bucket. The manifest and every replay bundle must be inside
+that root, with an exact object name, generation and SHA256. The storage client
+performs only object metadata GET and object media GET, both pinned to the same
+generation with a generation-match precondition. It never lists objects, searches
+prefixes, follows a latest pointer or fetches source datasets declared in metadata.
+No `storage.objects.list` permission is needed. Invalid references stop the job;
+all bundle references are checked before the first bundle read. There is no
+discovery or access-denial fallback.
+
+Each read is bounded to 64 MiB without retries. Only
+`price-basis-aggregate.json` is uploaded, with seven-day
 retention. Input rows, prices, dates, symbols, holdings, order intents, private
 paths and provider exception text are never written to logs or uploaded.
 The manifest supports at most 32 public aliases (`target-1` etc.).
 
+## Supply a reviewed manifest
+
+Prepare the manifest in the permitted cloud environment, review the full object
+references and metadata, then record its generation and SHA256. An input catalog
+or effective-config projection alone is not a comparison manifest. The manifest
+must contain `targets`, each with complete metadata and a frozen replay bundle.
+Reviewers supply the exact manifest identity through dispatch inputs; no repository
+variable, secret or IAM change is needed.
+
+For example, set `INPUT_ROOT` to `gs://<bucket>/research/<prefix>`,
+`MANIFEST_OBJECT` to `research/<prefix>/manifest.json`, and the generation and
+digest variables to the reviewed values. Dispatch from the default branch:
+
+```bash
+gh workflow run price-basis-comparison.yml \
+  --repo QuantStrategyLab/UsEquitySnapshotPipelines --ref '<default-branch>' \
+  -f input_root="$INPUT_ROOT" \
+  -f manifest_object="$MANIFEST_OBJECT" \
+  -f manifest_generation="$MANIFEST_GENERATION" \
+  -f manifest_sha256="$MANIFEST_SHA256"
+```
+
+The command submits references only. Run the job in cloud and keep source market
+and account data there. The manifest filename is configurable. Every
+`replay_bundle` reference uses this shape, with a reviewed digest in place of the
+placeholder:
+
+```json
+{
+  "object": "research/<prefix>/paired-replay.json",
+  "generation": "123456789",
+  "sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
 ## Frozen input contract
 
 The root manifest is `{"schema_version":1,"targets":[...]}`. Each target has an
-`alias`, `metadata`, and `replay_bundle` reference (`uri`, `generation`, `sha256`).
+`alias`, `metadata`, and `replay_bundle` reference (`object`, `generation`, `sha256`).
 The source of effective production configuration must be a non-secret cloud
 projection; this workflow does not read secret stores or inspect credentials.
 
 `metadata` requires:
 
-- `schema_version: 1`, `comparison_kind: signal_price_basis`, `as_of`, actual
-  `inception`, and `calendar` (an explicit exchange-calendars calendar such as `XNYS`).
+- `schema_version: 1`, `comparison_kind: signal_price_basis`, `as_of`, and
+  `calendar` (an explicit exchange-calendars calendar such as `XNYS`).
   Calendar package version is fixed to 4.13.2; there is no calendar default.
+  `inception` is the actual first live order/fill date when known. If absent,
+  null, empty or `unknown`, the trailing-two-year window is still aggregated and
+  `since_inception` reports `NOT_COMPUTED` with reason `INCEPTION_UNKNOWN` and null
+  performance. Invalid dates and inception after `as_of` are errors.
 - `baseline` and `candidate`: explicit `price_basis`, 40-character
   `platform_revision` and `strategy_revision`, and `effective_config_sha256`.
   Code revisions and effective-config digests must match between arms. The basis
@@ -90,7 +142,8 @@ schema, populated from its independently replayed state:
     "gross_return": 0.001,
     "net_return_1x": 0.0009,
     "net_return_2x": 0.0008,
-    "turnover": 0.01
+    "turnover": 0.01,
+    "trade_count": 1
   }
 }
 ```
@@ -103,6 +156,11 @@ decision and guards; never submitted orders. Empty means no trade. Whole shares,
 minimum notional and no-trade filters must already be applied by the producer.
 `turnover` is actual simulated one-way security fill notional divided by pre-fill
 NAV, including entry and exit; it is not half-L1 target turnover.
+`trade_count` is a required nonnegative integer counting simulated fill executions
+for that session and arm. Count partial fills separately, and exclude canceled or
+unfilled orders. It is supplied by the producer, never inferred from the net
+`orders` map, which can hide multiple or offsetting fills. Counts and turnover
+are reported alongside each return path from the same arm's fill accounting.
 `threshold_distances` contains signed dimensionless relative distances to relevant
 decision boundaries, with the normalization defined in the producer evidence.
 Both arms must provide thresholds on every day when applicable.
@@ -112,7 +170,9 @@ five-session neighborhoods intersect a window. Verify the completeness assertion
 against the pinned actions archive, including split/dividend corrections.
 
 The producer must provide every calendar session from the earlier of actual
-inception and two years before `as_of`, without duplicates or gaps. For each
+inception and two years before `as_of`, without duplicates or gaps. If inception
+is unknown, coverage starts two years before `as_of`. This still requires the
+correct inherited state and warmup for that window. For each
 reporting window, the inherited state and starting NAV must be documented.
 Missing historical plugins, portfolio marks, option chains, cost schedules,
 corporate actions or warmup leave the research **not comparable**; this aggregator
@@ -126,20 +186,22 @@ For trailing two years and since inception, the report contains:
   delta, daily L1 delta, and all asset-day absolute deltas (union of nonzero/explicit
   weight keys, not an invented full universe). Residual cash-weight deltas are
   reported separately. All weights use fractions of NAV.
-- Decision difference days, trade/no-trade differences, direction differences
-  (including entry/exit), and size-bucket differences. These counts can overlap.
+- Decision difference days include any exact security-weight or signed order-size
+  change, including changes within the same size bucket. Exact position differences
+  and absolute order-size differences also have separate day counts. Missing and
+  explicit zero entries are equivalent. Trade/no-trade, direction (including
+  entry/exit), and size-bucket differences are separate counts. Counts can overlap.
 - Dividend and split neighborhoods of ±5 **trading sessions**, deduplicated by
   session, plus baseline nearest-threshold buckets. Thresholds not applicable are
   counted separately; empty groups return null quantiles, never zero estimates.
-- Calendar-day CAGR, signed maximum drawdown including initial NAV, cumulative
-  one-way turnover, and candidate-minus-baseline differences for gross, 1× and
+- Compounded total return, simulated fill count, calendar-day CAGR, signed maximum
+  drawdown including initial NAV, cumulative one-way turnover, and
+  candidate-minus-baseline differences for gross, 1× and
   2× cost paths. Returns must be unitized/TWR so external deposits are not profit.
 
 The output status is `AGGREGATED_REPLAY_INPUTS_NOT_EXECUTION_CERTIFICATION`.
 Digest/schema checks demonstrate input integrity, not the truth of producer
 declarations or real production equivalence. Review producer evidence separately.
-The workflow cannot run from a Draft PR while the default-branch gate is preserved;
-this is an explicit handoff limitation, not permission to merge or bypass that gate.
 
 ## Synthetic verification
 
