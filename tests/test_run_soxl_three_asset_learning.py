@@ -576,7 +576,7 @@ def _development_summary() -> dict[str, object]:
             "actor": "Pigbibi",
             "event_name": "workflow_dispatch",
             "ref": "refs/heads/main",
-            "repository": "QuantStrategyLab/PersonalAIService",
+            "repository": "QuantStrategyLab/QuantAIService",
             "run_attempt": 1,
             "run_id": "34376283866",
         },
