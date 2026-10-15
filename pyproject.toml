@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 ai = [
   "quant-strategy-plugins[ai]",
-  "ai-gateway-client @ git+https://github.com/QuantStrategyLab/PersonalAIService.git@65c8bcf432f578f657c12d5dab0e16ebec0bef5a",
+  "ai-gateway-client @ git+https://github.com/QuantStrategyLab/AIAuditBridge.git@65c8bcf432f578f657c12d5dab0e16ebec0bef5a",
 ]
 test = ["pytest>=8"]
 

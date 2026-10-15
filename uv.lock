@@ -16,7 +16,7 @@ resolution-markers = [
 [[package]]
 name = "ai-gateway-client"
 version = "0.1.0"
-source = { git = "https://github.com/QuantStrategyLab/PersonalAIService.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a#65c8bcf432f578f657c12d5dab0e16ebec0bef5a" }
+source = { git = "https://github.com/QuantStrategyLab/AIAuditBridge.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a#65c8bcf432f578f657c12d5dab0e16ebec0bef5a" }
 
 [[package]]
 name = "beautifulsoup4"
@@ -912,7 +912,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ai-gateway-client", marker = "extra == 'ai'", git = "https://github.com/QuantStrategyLab/PersonalAIService.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a" },
+    { name = "ai-gateway-client", marker = "extra == 'ai'", git = "https://github.com/QuantStrategyLab/AIAuditBridge.git?rev=65c8bcf432f578f657c12d5dab0e16ebec0bef5a" },
     { name = "exchange-calendars", specifier = "==4.13.2" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "pandas", specifier = ">=2.0" },
