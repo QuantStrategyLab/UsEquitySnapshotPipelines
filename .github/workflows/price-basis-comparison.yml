@@ -1,0 +1,79 @@
+name: Paired Price Basis Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_root:
+        description: Existing approved gs:// input prefix under research/ (no default)
+        type: string
+        required: true
+      manifest_object:
+        description: Reviewed manifest object name including its prefix inside input_root (no gs://)
+        type: string
+        required: true
+      manifest_generation:
+        description: Exact existing object generation
+        type: string
+        required: true
+      manifest_sha256:
+        description: SHA256 of the exact manifest bytes
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: paired-price-basis-research
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: market-data-nonlive
+    env:
+      GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PRICE_BASIS_INPUT_ROOT: ${{ inputs.input_root }}
+      PRICE_BASIS_MANIFEST_OBJECT: ${{ inputs.manifest_object }}
+      PRICE_BASIS_MANIFEST_GENERATION: ${{ inputs.manifest_generation }}
+      PRICE_BASIS_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Validate exact manifest reference before authentication
+        run: python scripts/compare_price_basis.py --preflight
+      - name: Synthetic tests without cloud access
+        run: python -m unittest discover -s tests -p test_compare_price_basis.py -v
+      - name: Install existing cloud research dependencies
+        run: python -m pip install 'google-cloud-storage==3.12.0' 'exchange-calendars==4.13.2'
+      - name: Authenticate existing research identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          create_credentials_file: false
+          export_environment_variables: false
+          token_format: access_token
+      - name: Read exact reviewed objects and aggregate replay ledgers
+        # Use the action's in-memory access token through a restricted client.
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: python scripts/compare_price_basis.py
+      - name: Upload only the fixed aggregate output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: paired-price-basis-aggregate
+          path: ${{ runner.temp }}/price-basis-aggregate.json
+          if-no-files-found: error
+          retention-days: 7
