@@ -104,7 +104,7 @@ def test_denial_preserves_only_safe_message_and_status_without_retry(status):
 
 
 def test_error_body_sanitizer_removes_credentials_and_personal_values():
-    text = "denied synthetic-secret U12345678 test@example.invalid https://synthetic.invalid/?token=x token=abc"
+    text = "denied synthetic-secret U00000001 test@example.invalid https://synthetic.invalid/?token=x token=abc"
     exc = HTTPError("ignored", 403, "ignored", {}, BytesIO(json.dumps({"message": text}).encode()))
     message = safe_message(exc, ("synthetic-secret",))
-    assert all(x not in message for x in ("synthetic-secret", "U12345678", "@", "http", "abc"))
+    assert all(x not in message for x in ("synthetic-secret", "U00000001", "@", "http", "abc"))
