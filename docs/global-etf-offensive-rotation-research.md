@@ -94,8 +94,8 @@ Passing this gate produces `candidate_for_live_promotion_review`, not an automat
 ## Run command
 
 ```bash
-PYTHONPATH=src:/Users/lisiyi/Projects/UsEquityStrategies/src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+PYTHONPATH=src:$PROJECTS_ROOT/UsEquityStrategies/src \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --download \
   --price-start 2010-01-01 \
@@ -267,7 +267,7 @@ Command used local downloaded Yahoo/yfinance data after the initial download com
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_offensive_rotation_research_20260620/downloaded_price_history.csv \
   --output-dir data/output/global_etf_offensive_rotation_research_20260620
@@ -302,7 +302,7 @@ Additional split run:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_offensive_rotation_research_20260620/downloaded_price_history.csv \
   --periods 'pre_covid_2015_2019:2015-01-01:2019-12-31,covid_rate_2020_2022:2020-01-01:2022-12-30,post_2023:2023-01-01:,recent_2025:2025-06-01:' \
@@ -374,7 +374,7 @@ After the robustness split showed that replacing the defensive baseline with the
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --download \
   --price-start 2010-01-01 \
@@ -405,7 +405,7 @@ The live gate was added after the liveable composite pass to avoid promoting the
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --download \
   --price-start 2010-01-01 \
@@ -435,7 +435,7 @@ To avoid selecting `liveable_blend_baseline80_fast20` as a single overfit point,
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --download \
   --price-start 2010-01-01 \
@@ -471,7 +471,7 @@ The runner now supports generating the same cross-cost live-readiness table in o
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_cost_stress_25bps_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -527,7 +527,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_cost_stress_25bps_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -576,7 +576,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -626,7 +626,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -652,7 +652,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -692,7 +692,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -717,7 +717,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
@@ -756,7 +756,7 @@ Command pattern:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.global_etf_offensive_rotation_research \
   --prices data/output/global_etf_dynamic_cost_research_20260620/downloaded_price_history.csv \
   --turnover-cost-bps 5 \
