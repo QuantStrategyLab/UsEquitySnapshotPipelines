@@ -34,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: market-data-nonlive
+    env:
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
