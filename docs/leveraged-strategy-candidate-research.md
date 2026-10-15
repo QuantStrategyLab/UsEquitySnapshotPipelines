@@ -82,7 +82,7 @@ Reference URLs:
 
 ## Local command
 
-From `/Users/lisiyi/Projects/UsEquitySnapshotPipelines`:
+From `$PROJECTS_ROOT/UsEquitySnapshotPipelines`:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \

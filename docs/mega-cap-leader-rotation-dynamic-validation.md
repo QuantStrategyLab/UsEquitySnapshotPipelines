@@ -623,7 +623,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest \
   --download --dynamic-universe \
   --universe-start 2024-01-01 \
@@ -699,7 +699,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_backtest \
   --download --dynamic-universe \
   --universe-start 2017-09-01 \
@@ -894,7 +894,7 @@ Command:
 
 ```bash
 PYTHONPATH=src \
-  /Users/lisiyi/Projects/UsEquitySnapshotPipelines/.venv/bin/python \
+  $PROJECTS_ROOT/UsEquitySnapshotPipelines/.venv/bin/python \
   -m us_equity_snapshot_pipelines.mega_cap_leader_rotation_live_readiness \
   --summary data/output/russell_top50_product_data_full_concentration_20260620/concentration_variant_summary.csv \
   --rolling data/output/russell_top50_product_data_full_concentration_20260620/concentration_variant_rolling_summary.csv \

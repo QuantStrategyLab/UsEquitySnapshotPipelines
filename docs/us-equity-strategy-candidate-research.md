@@ -94,7 +94,7 @@ These references are inputs for candidate design only. Live admission still depe
 
 ## Local command
 
-From `/Users/lisiyi/Projects/UsEquitySnapshotPipelines`:
+From `$PROJECTS_ROOT/UsEquitySnapshotPipelines`:
 
 ```bash
 PYTHONPATH=src:../UsEquityStrategies/src:../QuantPlatformKit/src \
