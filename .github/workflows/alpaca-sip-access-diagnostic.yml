@@ -18,99 +18,27 @@ permissions:
 jobs:
   classify-sip-access:
     runs-on: ubuntu-latest
-    # This environment already holds the non-live market-data-only secrets.
-    # The job does not obtain cloud or order permissions.
+    timeout-minutes: 8
     environment: market-data-nonlive
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
-      - name: Classify Alpaca SIP access without persisting market data
+      - name: Classify explicit historical and recent feed segments
         env:
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           DATE_CUTOFF: ${{ inputs.date_cutoff }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from datetime import UTC, date, datetime
-          from urllib.error import HTTPError, URLError
-          from urllib.parse import urlencode
-          from urllib.request import Request, urlopen
-
-          starts = {
-              "QQQ": "2018-01-02",
-              "TQQQ": "2018-01-02",
-              "QQQM": "2020-10-13",
-              "SOXL": "2022-01-03",
-              "SOXX": "2022-01-03",
-              "BOXX": "2022-12-28",
-          }
-          date_cutoff = os.environ.get("DATE_CUTOFF", "")
-          try:
-              if date.fromisoformat(date_cutoff).isoformat() != date_cutoff:
-                  raise ValueError
-          except ValueError:
-              raise SystemExit("DATE_CUTOFF must be an exact YYYY-MM-DD date") from None
-
-          def classify(symbol: str, start: str) -> str:
-              query = urlencode(
-                  {
-                      "symbols": symbol,
-                      "timeframe": "1Day",
-                      "start": start,
-                      "end": date_cutoff,
-                      "adjustment": "all",
-                      "feed": "sip",
-                      "sort": "asc",
-                      "limit": "10000",
-                  }
-              )
-              request = Request(
-                  f"https://data.alpaca.markets/v2/stocks/bars?{query}",
-                  headers={
-                      "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY_ID"],
-                      "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET_KEY"],
-                  },
-              )
-              try:
-                  # Deliberately inspect only the HTTP result.  The body is never
-                  # parsed, printed, written, uploaded, or included in an artifact.
-                  with urlopen(request, timeout=30):
-                      return "ALPACA_SIP_ACCESS_OK"
-              except HTTPError as exc:
-                  return {
-                      401: "ALPACA_AUTHENTICATION_FAILED",
-                      403: "ALPACA_SIP_ACCESS_FORBIDDEN",
-                      429: "ALPACA_RATE_LIMITED",
-                  }.get(exc.code, "ALPACA_REQUEST_REJECTED")
-              except (TimeoutError, URLError, OSError):
-                  return "ALPACA_TRANSPORT_UNAVAILABLE"
-
-          symbol_statuses = {symbol: "ALPACA_SECRET_NOT_CONFIGURED" for symbol in starts}
-          if os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_API_SECRET_KEY"):
-              symbol_statuses = {
-                  symbol: classify(symbol, start) for symbol, start in starts.items()
-              }
-          distinct_statuses = set(symbol_statuses.values())
-          if distinct_statuses == {"ALPACA_SIP_ACCESS_OK"}:
-              status = "ALPACA_SIP_ACCESS_OK"
-          elif len(distinct_statuses) == 1:
-              status = next(iter(distinct_statuses))
-          else:
-              status = "ALPACA_SIP_ACCESS_PARTIALLY_AVAILABLE"
-
-          result = {
-              "schema_version": "qsl.alpaca_sip_access_diagnostic.v1",
-              "status": status,
-              "symbol_statuses": symbol_statuses,
-              "date_cutoff": date_cutoff,
-              "observed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-          }
-          rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
-          print(f"ALPACA_SIP_DIAGNOSTIC={rendered}")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write(f"ALPACA_SIP_DIAGNOSTIC={rendered}\n")
-          PY
+          ALPACA_SIP_MIN_DELAY_MINUTES: ${{ vars.ALPACA_SIP_MIN_DELAY_MINUTES || '16' }}
+          ALPACA_FEED_HISTORICAL: ${{ vars.ALPACA_FEED_HISTORICAL || 'sip' }}
+          ALPACA_FEED_RECENT: ${{ vars.ALPACA_FEED_RECENT || 'iex' }}
+        run: python scripts/alpaca_access_diagnostic.py
+      - name: Upload sanitized diagnostic only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpaca-access-diagnostic
+          path: diagnostic.json
+          if-no-files-found: error
+          retention-days: 14
