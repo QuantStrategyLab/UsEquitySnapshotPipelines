@@ -1,0 +1,74 @@
+name: Research Input Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_uri:
+        description: Existing private research plan object (no credentials)
+        required: true
+        type: string
+      plan_generation:
+        description: Exact immutable plan generation
+        required: true
+        type: string
+      plan_bytes:
+        description: Exact plan byte size
+        required: true
+        type: string
+      plan_sha256:
+        description: Exact plan SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: research-input-pilot
+  cancel-in-progress: false
+
+jobs:
+  inputs:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: market-data-nonlive
+    env:
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install existing locked research runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+      - name: Authenticate existing research identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Run create-only input pilot
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          RESEARCH_INPUT_ROOT: ${{ vars.RS04_INPUT_ROOT }}
+          PILOT_PLAN_URI: ${{ inputs.plan_uri }}
+          PILOT_PLAN_GENERATION: ${{ inputs.plan_generation }}
+          PILOT_PLAN_BYTES: ${{ inputs.plan_bytes }}
+          PILOT_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          PILOT_SUMMARY_FILE: ${{ runner.temp }}/pilot-coverage-summary.json
+        run: uv run --no-sync python scripts/research_input_pilot.py
+      - name: Export allowlisted coverage and hash summary only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pilot-coverage-summary
+          path: ${{ runner.temp }}/pilot-coverage-summary.json
+          retention-days: 1
+          if-no-files-found: error

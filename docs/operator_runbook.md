@@ -51,7 +51,7 @@ Optional inputs:
 
 For the strategy-plugin publish workflow, manual GCS prefix overrides are only
 accepted when `execute_publish=true` if they remain under
-`gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`.
+`gs://<bucket>/strategy-artifacts/us_equity/<scope>/plugins/<plugin>`.
 
 `Publish Strategy Plugins` builds both strategy artifacts and the unified
 `notification_targets.market_regime_notification` artifact. The manual-review
@@ -72,19 +72,19 @@ The workflow always uploads generated files as a GitHub Actions artifact.
 `Update Source Input Data` runs once per month at `00:15 UTC` on the 1st day of the month. It refreshes the shared Russell 1000 inputs used by the monthly snapshot profile:
 
 ```text
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_symbol_aliases.csv
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_snapshot_metadata.csv
-gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
+gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
+gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_history.csv
+gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_symbol_aliases.csv
+gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_universe_snapshot_metadata.csv
+gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 ```
 
 `Publish Snapshot Artifacts` runs after source-input refresh and builds:
 
 ```text
 profiles=russell_top50_leader_rotation
-prices_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
-universe_path=gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
+prices_path=gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_price_history.csv
+universe_path=gs://<bucket>/strategy-artifacts/us_equity/inputs/r1000_official_monthly_v2_alias/r1000_latest_holdings_snapshot.csv
 execute_publish=true
 ```
 
@@ -92,8 +92,8 @@ Default scheduled output prefix:
 
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
-| `russell_top50_leader_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
-| `global_etf_rotation` | none | `gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/global_etf_rotation` |
+| `russell_top50_leader_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
+| `global_etf_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/global_etf_rotation` |
 
 ## Russell Phase-1 Shadow Cycle (named variants + rollback review)
 
