@@ -36,6 +36,18 @@ UsEquitySnapshotPipelines 是 QuantStrategyLab 的美股 snapshot 与证据流�
 
 UsEquityStrategies 和美股执行平台只消费已经提升的产物和 runtime-enabled profile。
 
+## 可选 AI 审核客户端
+
+`python -m pip install -e '.[ai]'` 通过固定版本的 QuantStrategyPlugins AI extra
+安装网关 SDK。默认安装不包含该 SDK；使用 `python -m pip install -e '.[test,ai]'`
+可安装完整测试套件所需依赖，包括使用模拟数据的 SDK 集成检查。
+AI extra 还直接声明同一 SDK 的 Git URL，以兼容传递 URL 依赖的解析，
+不会引入另一套 SDK 实现。
+
+安装依赖不会开启 crisis/TACO AI 审核，也不会修改发布工作流、权限、服务配置、
+模型设置或执行权限。AI 审核默认关闭；显式开启后，若未设置网关 URL，审核会跳过。
+Codex 的输出仅作建议，不能修改路由或写回 shadow feedback。
+
 ## 这些产物用来做什么
 
 Snapshot artifact 的作用是让策略判断可复现：包括 ranking 输入、feature snapshot、manifest、validation summary 和提升证据。它们不是宣传式收益承诺。下游仓库提升 profile 前，应在适用场景下检查最新短、中、长周期产物。
@@ -89,3 +101,10 @@ python -m pytest -q
 ## 许可证
 
 详见 [LICENSE](LICENSE)。
+
+## 危机研究
+
+危机响应和危机上下文算法由 QuantStrategyPlugins 维护。
+本仓库使用 `pyproject.toml` 声明的依赖版本，提供 `useq-backtest-crisis-response`
+和 `useq-build-crisis-context-pack` 命令。
+固定的研究结果保留生成时记录的代码版本。
