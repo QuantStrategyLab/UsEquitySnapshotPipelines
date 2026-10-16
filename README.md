@@ -38,7 +38,7 @@ UsEquityStrategies and US execution platforms consume only promoted artifacts an
 
 ## Optional AI audit client
 
-`python -m pip install -e '.[ai]'` installs the existing gateway SDK through the pinned
+`python -m pip install -e '.[ai]'` installs the gateway SDK through the pinned
 QuantStrategyPlugins AI extra. The default install does not include this SDK; use
 `python -m pip install -e '.[test,ai]'` for the full test suite, including its synthetic
 SDK integration checks.
@@ -104,9 +104,9 @@ python -m pytest -q
 
 See [LICENSE](LICENSE).
 
-## Crisis research implementation
+## Crisis research
 
 The crisis response and context algorithms are maintained in QuantStrategyPlugins.
-USEQ uses its existing pinned QSP dependency and retains the `useq-backtest-crisis-response`
-and `useq-build-crisis-context-pack` commands and their existing input/output behavior.
+This repository uses the dependency revision declared in `pyproject.toml` and exposes
+the `useq-backtest-crisis-response` and `useq-build-crisis-context-pack` commands.
 Frozen research results retain the code versions recorded with those results.
