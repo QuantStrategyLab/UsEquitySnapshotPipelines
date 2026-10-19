@@ -119,7 +119,9 @@ def artificial_archive():
     inventory = {"schema_version": "research_input_inventory.v1", "alpaca": entries}
     ref = client.put(base + "input-inventory.json", study.encode(inventory), "9999")
     contract = {"inventory": study.identity(ref), "leaves": tuple(leaves),
-                "inventory_uri_sha256": study.sha(ref["uri"].encode())}
+                "inventory_uri_sha256": study.sha(ref["uri"].encode()),
+                "control_scope": {"bucket_sha256": study.sha(b"synthetic-only"),
+                                  "research_root_uri_sha256": study.sha(root.encode())}}
     plan = {"schema": "qsl.archived_core_retrospective_plan.v1", "study_id": study.STUDY, "run_id": "12345",
             "window": {"start": str(study.START), "end": str(study.END)}, "inventory": ref,
             "output_prefix": root + "new/" + study.STUDY + "/12345/", "execution_approved": True,
@@ -354,14 +356,29 @@ def test_hard_caps_before_io(archive, cap):
     assert client.calls == []
 
 
-def test_real_cores_complete_offline_positive_and_private_outputs(archive, monkeypatch):
+def fake_dispatch(monkeypatch, tmp_path, plan_ref):
+    for key, value in {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+                       "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "12345",
+                       "RS04_ENVIRONMENT": "market-data-nonlive"}.items():
+        monkeypatch.setenv(key, value)
+    event = tmp_path / "dispatch.json"
+    event.write_bytes(study.encode({"inputs": {"plan_" + key: str(value) for key, value in plan_ref.items()}}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("RS04_SUMMARY_FILE", str(tmp_path / "summary.json"))
+
+
+def test_real_cores_complete_offline_positive_and_private_outputs(archive, monkeypatch, tmp_path, capsys):
+    from google.cloud import storage
     from us_equity_strategies.research import kelly_core_return_generator as core
     from us_equity_strategies.strategies import soxl_soxx_trend_income, tqqq_growth_income
     client, root, _inv, _ref, contract, plan = archive
     installed, digest = study.verify_runtime()
     bucket, prefix = study.validate_plan(plan, root, "12345", contract)
-    budget = study.Budget()
-    store = study.ArchiveStore(client, budget, bucket, prefix)
+    for key, value in contract.items():
+        monkeypatch.setitem(study.ARCHIVE, key, value)
+    monkeypatch.setattr(storage, "Client", lambda: client)
+    plan_ref = client.put(root + "control/plan.json", study.encode(plan), "6001")
+    fake_dispatch(monkeypatch, tmp_path, plan_ref)
     calls = {"TQQQ": 0, "SOXL": 0, "tqqq_builder": 0, "soxl_builder": 0}
     for owner, name, key in ((core, "generate_tqqq_core_path", "TQQQ"),
                              (core, "generate_soxl_core_path", "SOXL"),
@@ -374,14 +391,20 @@ def test_real_cores_complete_offline_positive_and_private_outputs(archive, monke
             calls[_key] += 1
             return _fn(*args, **kwargs)
         monkeypatch.setattr(owner, name, wrapper)
-    summary = study.run(plan, store, installed, digest, contract)
+    assert study.main([]) == 0
+    output = capsys.readouterr()
+    assert not output.err
+    summary = study.decode(output.out)
+    assert summary == study.decode((tmp_path / "summary.json").read_bytes())
+    assert summary["installed_code_identities"] == installed and summary["configuration_digest"] == digest
     assert calls["TQQQ"] == calls["SOXL"] == 1
     assert calls["tqqq_builder"] > 0 and calls["soxl_builder"] > 0
     assert summary["status"] == "COMPLETED" and summary["sessions"] == 856
     assert len([c for c in client.calls if c[0] == "create"]) == 5
-    assert len(client.calls) == 23  # 13 input reads, 5 create/readback pairs
-    assert budget.input_bytes < 2 * 1024**2 and budget.retained_bytes < 16 * 1024**2
-    assert budget.summary()["provider_calls"] == 0
+    assert len(client.calls) == 24  # control + inventory + 12 leaves, 5 create/readback pairs
+    counters = summary["operation_counters"]
+    assert counters["input_bytes"] < 2 * 1024**2 and counters["private_output_bytes"] < 16 * 1024**2
+    assert counters["provider_calls"] == 0
     private = study.decode(client.objects[bucket, prefix + "private_comparison_summary.json"][0])
     daily = study.decode(client.objects[bucket, prefix + "private_core_paths.json"][0])
     prepared = study.decode(client.objects[bucket, prefix + "technical_summary.json"][0])
@@ -419,6 +442,27 @@ def test_public_error_never_echoes_private_exception(monkeypatch, capsys):
     output = capsys.readouterr()
     assert "STOPPED" in output.out
     assert all(s not in output.out + output.err for s in ("gs://", "999", "PRICE_SENTINEL", "API_SECRET_SENTINEL"))
+
+
+@pytest.mark.parametrize("uri", ["gs://wrong-synthetic-bucket/control/plan.json",
+                                  "gs://synthetic-only/outside-root/plan.json",
+                                  "gs://synthetic-only/unit-other/control/plan.json"])
+def test_control_plan_scope_rejects_before_client_or_read(archive, monkeypatch, tmp_path, capsys, uri):
+    from google.cloud import storage
+    client, _root, _inv, _ref, contract, plan = archive
+    for key, value in contract.items():
+        monkeypatch.setitem(study.ARCHIVE, key, value)
+    constructions = []
+
+    def client_factory():
+        constructions.append(True)
+        return client
+    monkeypatch.setattr(storage, "Client", client_factory)
+    fake_dispatch(monkeypatch, tmp_path, client.put(uri, study.encode(plan), "6001"))
+    assert study.main([]) == 1
+    output = capsys.readouterr()
+    assert "STOPPED" in output.out and not output.err
+    assert constructions == [] and client.calls == []
 
 
 def test_workflow_is_offline_by_default_and_uses_existing_identity():

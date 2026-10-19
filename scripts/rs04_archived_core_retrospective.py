@@ -42,6 +42,10 @@ COSTS = {"effective_bps_per_side": [5, 10, 15], "role": "hypothetical_sensitivit
 # Immutable metadata only. Private locations enter exclusively through the plan.
 ARCHIVE = {
     "inventory_uri_sha256": "16a9f778df1e6cd2512e6a0665325701cbfc0f2d1aa73570ea5ba233ab401fd0",
+    "control_scope": {
+        "bucket_sha256": "c8b30363b2765372f896308813a00db7159e3de14f8db33b20e7a25ccbd3c12d",
+        "research_root_uri_sha256": "5a7e0cfb13251633f9d75b37f1cef81dfd25deb382f108020ebd1d4bfcf09c18",
+    },
     "inventory": {"generation": "1792044148695461", "bytes": 73385,
                   "sha256": "31387418ffab9764fb8fb1615a15262fb1e48637b76ca61cf319379481a4bd29"},
     "leaves": (
@@ -493,6 +497,19 @@ def dispatch_plan_ref(event_path):
                        "bytes": int(inputs["plan_bytes"]), "sha256": inputs["plan_sha256"]}, 16 * 1024)
 
 
+def control_plan_root(ref, contract=ARCHIVE):
+    """Bind routing before any client/read, without disclosing private locations."""
+    bucket, path = gcs_uri(object_ref(ref, 16 * 1024)["uri"])
+    scope = contract["control_scope"]
+    require(sha(bucket.encode()) == scope["bucket_sha256"], "CONTROL_PLAN_PREFIX_REJECTED")
+    parts = path.split("/")
+    for end in range(1, len(parts)):
+        root = f"gs://{bucket}/" + "/".join(parts[:end]) + "/"
+        if sha(root.encode()) == scope["research_root_uri_sha256"]:
+            return root
+    raise Stop("CONTROL_PLAN_PREFIX_REJECTED")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify-runtime", action="store_true")
@@ -508,6 +525,7 @@ def main(argv=None):
             return 0
         cloud_gate(os.environ)
         plan_ref = dispatch_plan_ref(os.environ["GITHUB_EVENT_PATH"])
+        root = control_plan_root(plan_ref)
         bucket, path = gcs_uri(plan_ref["uri"])
         from google.cloud import storage
         budget = Budget()
@@ -516,8 +534,9 @@ def main(argv=None):
             store = ArchiveStore(storage.Client(), budget, bucket, path.rsplit("/", 1)[0] + "/")
             plan = decode(store.read_input(plan_ref, 16 * 1024))
             source_bucket, source_path = gcs_uri(object_ref(plan["inventory"])["uri"])
-            root = f"gs://{source_bucket}/" + source_path.rsplit("/", 2)[0] + "/"
-            require(bucket == source_bucket and path.startswith(gcs_uri(root)[1]), "CONTROL_PLAN_PREFIX_REJECTED")
+            source_root = f"gs://{source_bucket}/" + source_path.rsplit("/", 2)[0] + "/"
+            require(bucket == source_bucket and root == source_root and path.startswith(gcs_uri(root)[1]),
+                    "CONTROL_PLAN_PREFIX_REJECTED")
             bucket, output_prefix = validate_plan(plan, root, os.environ["GITHUB_RUN_ID"])
             store.bucket, store.prefix = bucket, output_prefix
             summary = run(plan, store, installed, digest)
