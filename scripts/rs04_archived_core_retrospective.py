@@ -5,6 +5,11 @@ No provider, account, Kelly runner, optimizer or production configuration is rea
 The only command that reads archive bytes requires the existing protected cloud
 context and a separately approved immutable private control plan. Unit tests inject
 an artificial archive contract and storage client; the command cannot select one.
+
+Plan v2 uses a caller-issued UUID nonce and a UTC expiry within 24 hours. Its
+canonical output prefix depends only on the pinned study/root and nonce. A changed
+nonce changes the immutable plan identity and requires fresh external approval;
+this program never mints/retries nonces or maintains a global billing ledger.
 """
 from __future__ import annotations
 
@@ -19,9 +24,10 @@ import signal
 import sys
 import time
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from importlib.metadata import distribution, version
 from pathlib import Path
+from uuid import RFC_4122, UUID
 
 from research_input_pilot import Stop, Store, bar_dates, coverage, encode, gcs_uri, now, sha
 
@@ -97,15 +103,21 @@ def decode(body):
 
 class Budget:
     """Small caller budget; the original pilot Budget is deliberately untouched."""
-    def __init__(self):
+    def __init__(self, *, expires_at=None):
         self.started = time.monotonic()
         self.storage_operations = self.storage_transfer_bytes = self.retained_bytes = 0
         self.input_bytes = self.output_objects = 0
+        self.control_input_bytes = self.market_input_bytes = 0
+        self.control_storage_operations = self.market_read_operations = self.control_read_attempts = 0
+        self.claim_attempted = False
+        self.expires_at = expires_at
 
     def check(self):
         require(time.monotonic() - self.started <= 1200, "WALL_TIME_LIMIT")
+        if self.expires_at is not None:
+            require(utc_now() < self.expires_at, "PLAN_EXPIRED")
 
-    def storage(self, transfer=0, retained=0):
+    def storage(self, transfer=0, retained=0, *, control=False):
         self.check()
         require(type(transfer) is int and transfer >= 0 and type(retained) is int and retained >= 0,
                 "BUDGET_VALUE_INVALID")
@@ -115,27 +127,70 @@ class Budget:
         self.storage_operations += 1
         self.storage_transfer_bytes += transfer
         self.retained_bytes += retained
+        self.control_storage_operations += int(control)
 
-    def input(self, size):
+    def input(self, size, *, control=False):
         self.check()
+        require(type(size) is int and size >= 0, "BUDGET_VALUE_INVALID")
         require(self.input_bytes + size <= 2 * 1024**2, "INPUT_BYTE_LIMIT")
         self.input_bytes += size
+        if control:
+            self.control_input_bytes += size
+        else:
+            self.market_input_bytes += size
 
     def summary(self):
         return {"storage_operations": self.storage_operations, "storage_transfer_bytes": self.storage_transfer_bytes,
                 "private_output_bytes": self.retained_bytes, "private_output_objects": self.output_objects,
-                "input_bytes": self.input_bytes, "provider_calls": 0, "automatic_retries": 0}
+                "input_bytes": self.input_bytes, "control_input_bytes": self.control_input_bytes,
+                "market_input_bytes": self.market_input_bytes, "control_read_attempts": self.control_read_attempts,
+                "control_storage_operations": self.control_storage_operations,
+                "market_read_operations": self.market_read_operations, "provider_calls": 0, "automatic_retries": 0}
 
 
 class ArchiveStore(Store):
+    def read_control(self, ref, contract=ARCHIVE):
+        ref = object_ref(ref, 16 * 1024)
+        control_plan_root(ref, contract)
+        require(self.budget.control_read_attempts == 0, "CONTROL_READ_LIMIT")
+        self.budget.control_read_attempts += 1
+        self.budget.input(ref["bytes"], control=True)
+        # One exact-generation metadata request bounds the subsequent whole-byte
+        # body read. Reserve 64KiB for metadata transfer; failed/unknown reads keep
+        # their charged reservations. Neither request is retried.
+        self.budget.storage(transfer=64 * 1024, control=True)
+        bucket, path = gcs_uri(ref["uri"])
+        generation = int(ref["generation"])
+        try:
+            blob = self.client.bucket(bucket).blob(path, generation=generation)
+            blob.reload(if_generation_match=generation, retry=None, timeout=30)
+        except Exception:
+            raise Stop("CONTROL_METADATA_READ_FAILED") from None
+        require(blob.size == ref["bytes"] and str(blob.generation) == ref["generation"],
+                "CONTROL_OBJECT_IDENTITY_MISMATCH")
+        self.budget.storage(transfer=ref["bytes"], control=True)
+        try:
+            body = blob.download_as_bytes(if_generation_match=generation, raw_download=True, retry=None, timeout=30)
+        except Exception:
+            raise Stop("CONTROL_BODY_READ_FAILED") from None
+        require(len(body) == ref["bytes"] and sha(body) == ref["sha256"], "CONTROL_OBJECT_IDENTITY_MISMATCH")
+        return body
+
     def read_input(self, ref, max_bytes=2 * 1024**2):
         ref = object_ref(ref, max_bytes)
         self.budget.input(ref["bytes"])
-        return self.read(ref)
+        before = self.budget.storage_operations
+        try:
+            return self.read(ref)
+        finally:
+            self.budget.market_read_operations += self.budget.storage_operations - before
 
     def create(self, relative, body):
         require(relative in NAMES and self.budget.output_objects < 5, "OUTPUT_OBJECT_LIMIT")
         require(len(body) + self.budget.retained_bytes <= 16 * 1024**2, "OUTPUT_BYTE_LIMIT")
+        if relative == "intent.json":
+            require(not self.budget.claim_attempted, "CLAIM_ALREADY_ATTEMPTED")
+            self.budget.claim_attempted = True
         # Reserve even on an uncertain result. Never retry or write a failure seal
         # after an unknown write; the operator must inspect that run privately.
         self.budget.output_objects += 1
@@ -180,14 +235,46 @@ def cloud_gate(env):
             and re.fullmatch(r"[1-9][0-9]{0,24}", env.get("GITHUB_RUN_ID", "")), "CLOUD_CONTEXT_REJECTED")
 
 
+def utc_now():
+    return datetime.now(UTC)
+
+
+def plan_deadline(value, *, instant=None):
+    require(type(value) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value),
+            "PLAN_VALIDITY_REJECTED")
+    try:
+        deadline = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        raise Stop("PLAN_VALIDITY_REJECTED") from None
+    remaining = deadline - (utc_now() if instant is None else instant)
+    require(timedelta(0) < remaining <= timedelta(hours=24), "PLAN_VALIDITY_REJECTED")
+    return deadline
+
+
+def nonce_output_prefix(root, nonce, contract=ARCHIVE):
+    require(type(nonce) is str, "PLAN_NONCE_REJECTED")
+    try:
+        parsed = UUID(nonce)
+    except ValueError:
+        raise Stop("PLAN_NONCE_REJECTED") from None
+    require(str(parsed) == nonce and parsed.version == 4 and parsed.variant == RFC_4122, "PLAN_NONCE_REJECTED")
+    bucket, _prefix = gcs_uri(root)
+    scope = contract["control_scope"]
+    require(root.endswith("/") and sha(bucket.encode()) == scope["bucket_sha256"]
+            and sha(root.encode()) == scope["research_root_uri_sha256"], "RESEARCH_ROOT_REJECTED")
+    # Stable study/nonce namespace: plan versions and run IDs cannot select a second claim.
+    return root + STUDY + "/nonce/" + nonce + "/"
+
+
 def validate_plan(plan, root, run_id, contract=ARCHIVE):
-    require(set(plan) == {"schema", "study_id", "run_id", "window", "inventory", "output_prefix",
+    require(plan.get("schema") == "qsl.archived_core_retrospective_plan.v2", "PLAN_VERSION_REJECTED")
+    require(set(plan) == {"schema", "study_id", "plan_nonce", "expires_at", "window", "inventory", "output_prefix",
                           "execution_approved", "cloud_cap_usd", "estimated_cloud_usd", "retention_estimate_days",
                           "soft_delete_days", "retention_conditions_unchanged"}, "PLAN_FIELDS_REJECTED")
-    require(plan["schema"] == "qsl.archived_core_retrospective_plan.v1" and plan["study_id"] == STUDY,
-            "PLAN_SCOPE_REJECTED")
-    require(type(run_id) is str and re.fullmatch(r"[1-9][0-9]{0,24}", run_id) and plan["run_id"] == run_id,
-            "RUN_ID_REJECTED")
+    require(plan["study_id"] == STUDY, "PLAN_SCOPE_REJECTED")
+    require(type(run_id) is str and re.fullmatch(r"[1-9][0-9]{0,24}", run_id), "RUN_ID_REJECTED")
+    plan_deadline(plan["expires_at"])
+    canonical = nonce_output_prefix(root, plan["plan_nonce"], contract)
     require(plan["window"] == {"start": START.isoformat(), "end": END.isoformat()}, "WINDOW_REJECTED")
     require(plan["execution_approved"] is True and type(plan["cloud_cap_usd"]) in (int, float)
             and plan["cloud_cap_usd"] == .10 and type(plan["estimated_cloud_usd"]) in (int, float)
@@ -200,10 +287,11 @@ def validate_plan(plan, root, run_id, contract=ARCHIVE):
     source_bucket, source_path = gcs_uri(ref["uri"])
     require(source_bucket == bucket and source_path.startswith(prefix)
             and source_path.endswith("/input-inventory.json") and identity(ref) == contract["inventory"]
+            and ref["uri"].rsplit("/", 2)[0] + "/" == root
             and sha(ref["uri"].encode()) == contract["inventory_uri_sha256"],
             "FIXED_INVENTORY_IDENTITY_MISMATCH")
     out_bucket, out_prefix = gcs_uri(plan["output_prefix"])
-    require(out_bucket == bucket and out_prefix.startswith(prefix) and out_prefix.endswith(f"/{STUDY}/{run_id}/")
+    require(plan["output_prefix"] == canonical and out_bucket == bucket and out_prefix.startswith(prefix)
             and re.fullmatch(r"[A-Za-z0-9_./-]+", out_prefix)
             and not out_prefix.startswith(source_path.rsplit("/", 1)[0] + "/"), "OUTPUT_PREFIX_REJECTED")
     return bucket, out_prefix
@@ -444,18 +532,36 @@ def technical_summary(*, run_id, started, inventory, pages, source_digest, insta
     return result
 
 
-def run(plan, store, installed, config_digest, contract=ARCHIVE):
+def run(plan_body, store, installed, config_digest, contract=ARCHIVE, *, plan_ref, run_id):
     started, outputs = now(), {}
+    plan_ref = object_ref(plan_ref, 16 * 1024)
+    require(type(plan_body) is bytes and len(plan_body) == plan_ref["bytes"]
+            and sha(plan_body) == plan_ref["sha256"], "CONTROL_OBJECT_IDENTITY_MISMATCH")
+    root = control_plan_root(plan_ref, contract)
+    plan = decode(plan_body)
+    bucket, prefix = validate_plan(plan, root, run_id, contract)
+    deadline = plan_deadline(plan["expires_at"])
+    store.budget.expires_at = min(store.budget.expires_at or deadline, deadline)
+    require(store.budget.input_bytes + contract["inventory"]["bytes"] + sum(x[3] for x in contract["leaves"])
+            <= 2 * 1024**2, "INPUT_BYTE_LIMIT")
+    store.bucket, store.prefix = bucket, prefix
     ref = object_ref(plan["inventory"])
-    require(identity(ref) == contract["inventory"] and sha(ref["uri"].encode()) == contract["inventory_uri_sha256"],
-            "FIXED_INVENTORY_IDENTITY_MISMATCH")
+    execution = {"plan_nonce": plan["plan_nonce"], "run_id": run_id,
+                 "control_plan_identity": identity(plan_ref), "control_plan_location_sha256": sha(plan_ref["uri"].encode())}
+    # The stable nonce prefix and this server-side conditional create are the
+    # sole claim. No inventory or leaf bytes are read until its hash readback
+    # succeeds. Existing/unknown/failed claims stop without resume or retry.
+    outputs[NAMES[0]] = store.create(NAMES[0], encode({"schema": "qsl.archived_core_intent.v2", **execution,
+                                                     "source_inventory_identity": identity(ref),
+                                                     "source_inventory_location_sha256": contract["inventory_uri_sha256"],
+                                                     "installed_code_identities": installed,
+                                                     "configuration_digest": config_digest,
+                                                     "qualification": QUALIFICATION}))
     inventory = decode(store.read_input(ref))
     selected = select_pages(inventory, ref, contract)
     total = ref["bytes"] + sum(e["pages"][0]["bytes"] for e in selected.values())
     require(store.budget.input_bytes + total - ref["bytes"] <= 2 * 1024**2, "INPUT_BYTE_LIMIT")
     source_digest = sha(encode([identity(ref)] + [object_ref(selected[k]["pages"][0]) for k in sorted(selected)]))
-    outputs[NAMES[0]] = store.create(NAMES[0], encode({"schema": "qsl.archived_core_intent.v1", "run_id": plan["run_id"],
-                                                     "source_digest": source_digest, "qualification": QUALIFICATION}))
     bodies = {key: decode(store.read_input(entry["pages"][0])) for key, entry in selected.items()}
     try:
         bars, actions, sessions, counts = normalize(selected, bodies)
@@ -463,7 +569,7 @@ def run(plan, store, installed, config_digest, contract=ARCHIVE):
     except Exception:
         # Computation failed after whole-byte source checks; retain a payload-free
         # private failure record. Storage/identity/write failures never get here.
-        store.create(NAMES[4], encode({"schema": "qsl.archived_core_terminal.v1", "status": "STOPPED",
+        store.create(NAMES[4], encode({"schema": "qsl.archived_core_terminal.v2", **execution, "status": "STOPPED",
                                       "reason_codes": ["CONTROLLED_STOP"]}))
         raise Stop("COMPUTATION_STOPPED") from None
     store.budget.check()
@@ -474,13 +580,14 @@ def run(plan, store, installed, config_digest, contract=ARCHIVE):
                "boxx": "held_ETF_total_return_once_not_risk_free_or_residual_cash"}
     outputs[NAMES[1]] = store.create(NAMES[1], encode({"schema": "qsl.archived_core_paths.v1", "paths": daily}))
     outputs[NAMES[2]] = store.create(NAMES[2], encode(private))
-    summary_args = dict(run_id=plan["run_id"], started=started, inventory=ref, pages=selected,
+    summary_args = dict(run_id=run_id, started=started, inventory=ref, pages=selected,
                         source_digest=source_digest, installed=installed, config_digest=config_digest,
                         counts=counts, outputs=outputs, budget=store.budget)
     summary = technical_summary(**summary_args, status="PREPARED")
     outputs[NAMES[3]] = store.create(NAMES[3], encode(summary))
     # Self hashes are deliberately absent; terminal seals only completed predecessors.
-    outputs[NAMES[4]] = store.create(NAMES[4], encode({"schema": "qsl.archived_core_terminal.v1", "status": "COMPLETED",
+    outputs[NAMES[4]] = store.create(NAMES[4], encode({"schema": "qsl.archived_core_terminal.v2", **execution,
+                                                     "status": "COMPLETED",
                                                      "outputs": {k: identity(v) for k, v in outputs.items()}}))
     return technical_summary(**summary_args)
 
@@ -506,6 +613,9 @@ def control_plan_root(ref, contract=ARCHIVE):
     for end in range(1, len(parts)):
         root = f"gs://{bucket}/" + "/".join(parts[:end]) + "/"
         if sha(root.encode()) == scope["research_root_uri_sha256"]:
+            relative = path[len(gcs_uri(root)[1]):]
+            require(re.fullmatch(r"control/[A-Za-z0-9][A-Za-z0-9_-]{0,95}\.json", relative),
+                    "CONTROL_FILE_PATH_REJECTED")
             return root
     raise Stop("CONTROL_PLAN_PREFIX_REJECTED")
 
@@ -532,14 +642,17 @@ def main(argv=None):
         # Environment OIDC is the sole credential source, as in the original pilot.
         with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             store = ArchiveStore(storage.Client(), budget, bucket, path.rsplit("/", 1)[0] + "/")
-            plan = decode(store.read_input(plan_ref, 16 * 1024))
-            source_bucket, source_path = gcs_uri(object_ref(plan["inventory"])["uri"])
-            source_root = f"gs://{source_bucket}/" + source_path.rsplit("/", 2)[0] + "/"
-            require(bucket == source_bucket and root == source_root and path.startswith(gcs_uri(root)[1]),
-                    "CONTROL_PLAN_PREFIX_REJECTED")
-            bucket, output_prefix = validate_plan(plan, root, os.environ["GITHUB_RUN_ID"])
-            store.bucket, store.prefix = bucket, output_prefix
-            summary = run(plan, store, installed, digest)
+            body = store.read_control(plan_ref)
+            plan = decode(body)
+            validate_plan(plan, root, os.environ["GITHUB_RUN_ID"])
+            budget.expires_at = plan_deadline(plan["expires_at"])
+            # Preserve the original application timer and also stop CPU work at
+            # expiry; the Budget independently checks expiry before every I/O.
+            remaining = min(signal.getitimer(signal.ITIMER_REAL)[0],
+                            (budget.expires_at - utc_now()).total_seconds())
+            require(remaining > 0, "WALL_TIME_LIMIT")
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            summary = run(body, store, installed, digest, plan_ref=plan_ref, run_id=os.environ["GITHUB_RUN_ID"])
         summary_file = os.environ.get("RS04_SUMMARY_FILE")
         if summary_file:
             Path(summary_file).write_bytes(encode(summary))
