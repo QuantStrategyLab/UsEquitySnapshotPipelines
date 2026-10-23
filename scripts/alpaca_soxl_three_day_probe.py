@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+from http.client import HTTPException
 import json
 import math
 import os
@@ -114,7 +115,7 @@ def probe(env, *, opener) -> dict:
         result.update(http_status=exc.code, status={401: "AUTHENTICATION_FAILED", 403: "FEED_FORBIDDEN",
                       429: "RATE_LIMITED"}.get(exc.code, "HTTP_REQUEST_FAILED"))
         exc.close()
-    except (URLError, TimeoutError, OSError):
+    except (HTTPException, URLError, TimeoutError, OSError):
         result["status"] = "TRANSPORT_FAILED"
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         result.update(status="RESPONSE_SCHEMA_REJECTED", schema_valid=False, exit_code=24)

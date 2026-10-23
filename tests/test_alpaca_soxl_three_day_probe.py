@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
+from http.client import BadStatusLine, IncompleteRead
 import io
 import json
 from pathlib import Path
 import runpy
+import socket
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
@@ -17,6 +19,16 @@ VALIDATE = MODULE["validate"]
 ENV = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "GITHUB_REF": "refs/heads/main",
        "GITHUB_RUN_ATTEMPT": "1", "DATE_CUTOFF": "2026-10-21",
        "ALPACA_API_KEY_ID": "test-key-not-a-credential", "ALPACA_API_SECRET_KEY": "test-secret-not-a-credential"}
+
+
+@pytest.fixture(autouse=True)
+def forbid_network(monkeypatch):
+    def denied(*_args, **_kwargs):
+        raise AssertionError("Network is forbidden in probe tests")
+    for name in ("connect", "connect_ex"):
+        monkeypatch.setattr(socket.socket, name, denied)
+    monkeypatch.setattr(socket, "create_connection", denied)
+    monkeypatch.setattr(socket, "getaddrinfo", denied)
 
 
 def payload():
@@ -49,6 +61,9 @@ def test_one_fixed_get_records_schema_coverage_hash_without_values():
     assert len(opener.requests) == result["requests_attempted"] == 1
     request = opener.requests[0]
     assert request.get_method() == "GET"
+    headers = {name.lower(): value for name, value in request.header_items()}
+    assert headers["apca-api-key-id"] == ENV["ALPACA_API_KEY_ID"]
+    assert headers["apca-api-secret-key"] == ENV["ALPACA_API_SECRET_KEY"]
     assert urlparse(request.full_url).path == "/v2/stocks/SOXL/bars"
     assert parse_qs(urlparse(request.full_url).query) == {
         name: [value] for name, value in MODULE["PARAMS"].items()}
@@ -144,6 +159,28 @@ def test_existing_output_blocks_main_without_request(tmp_path, monkeypatch, caps
     assert MODULE["main"]() == 21
     assert Path("diagnostic.json").read_text() == "original"
     assert capsys.readouterr().out.strip() == "OUTPUT_EXISTS_NO_REQUEST"
+
+
+@pytest.mark.parametrize("error", [None, BadStatusLine("private-protocol-response"),
+                                  IncompleteRead(b"private-protocol-response", 100)])
+def test_main_writes_sanitized_result_for_success_and_protocol_failures(tmp_path, monkeypatch, capsys, error):
+    monkeypatch.chdir(tmp_path)
+    for name, value in ENV.items():
+        monkeypatch.setenv(name, value)
+    opener = FakeOpener(error=error)
+    monkeypatch.setitem(MODULE["main"].__globals__, "build_opener", lambda *_handlers: opener)
+    exit_code = MODULE["main"]()
+    artifact = Path("diagnostic.json").read_text()
+    result = json.loads(artifact)
+    captured = capsys.readouterr()
+    assert len(opener.requests) == result["requests_attempted"] == 1
+    assert exit_code == result["exit_code"] == (0 if error is None else 22)
+    assert result["status"] == ("SCHEMA_AND_COVERAGE_PASS" if error is None else "TRANSPORT_FAILED")
+    assert captured.err == ""
+    assert json.loads(captured.out.removeprefix("ALPACA_SOXL_PROBE=")) == result
+    for forbidden in ("private-protocol-response", ENV["ALPACA_API_KEY_ID"], ENV["ALPACA_API_SECRET_KEY"],
+                      '"bars"', '"o":', '"vw":'):
+        assert forbidden not in artifact + captured.out + captured.err
 
 
 def test_redirect_handler_refuses_followup():
