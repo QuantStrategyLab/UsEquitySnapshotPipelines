@@ -20,7 +20,7 @@ The command expects a CSV with one date column and daily return columns:
 Example:
 
 ```bash
-PYTHONPATH=src python3 -m us_equity_snapshot_pipelines.live_strategy_health \
+PYTHONPATH=src python3 -m us_equity_snapshot_pipelines.pipelines.live_strategy_health \
   --returns data/output/global_etf_rotation_optimization_research_20260620/portfolio_and_tracker_returns.csv \
   --strategies live_quarterly_conf_vol_gate,monthly_conf_vol_gate \
   --primary-benchmark buy_hold_SPY \

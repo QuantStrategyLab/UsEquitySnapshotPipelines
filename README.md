@@ -90,6 +90,8 @@ python -m pytest -q
 
 ## Safety and contribution notes
 
+- AI assistants and maintainers follow [AGENTS.md](AGENTS.md).
+
 - Keep generated data, credentials, and private account details out of Git unless the artifact is intentionally public and documented.
 - Prefer reproducible commands and explicit output directories.
 - Do not promote a research artifact to live use without the documented validation evidence.
