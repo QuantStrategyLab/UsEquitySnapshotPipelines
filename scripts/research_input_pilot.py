@@ -248,7 +248,10 @@ def acquire_alpaca(plan, provider, store):
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
     import exchange_calendars as xcals
     from importlib.metadata import version
-    calendar = xcals.get_calendar("XNYS", start="1990-01-01", end=plan["end"])
+    # Keep the calendar's bounds past a non-session end; provider requests and
+    # coverage still use the exact declared end, without fetching later bars.
+    calendar_end = (date.fromisoformat(plan["end"]) + timedelta(days=7)).isoformat()
+    calendar = xcals.get_calendar("XNYS", start="1990-01-01", end=calendar_end)
     result = []
     for item in plan["instruments"]:
         symbol, start, end = item["symbol"], item["start"], plan["end"]
