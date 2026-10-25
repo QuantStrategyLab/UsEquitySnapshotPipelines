@@ -1,5 +1,9 @@
 # Cloud-only research input pilot
 
+For exact readback of a predeclared benchmark window from an existing archive,
+see [frozen benchmark input readback](benchmark_reference_readback.md). It retains
+provider-adjusted security returns as a diagnostic, without issuing account policy.
+
 The manual `Research Input Pilot` workflow inventories exact-generation objects
 and acquires explicitly configured historical inputs into a new private prefix.
 It has no strategy replay, publisher, broker, release or deployment entry point.
