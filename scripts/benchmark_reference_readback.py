@@ -66,8 +66,11 @@ def prepare_reference(inventory_ref, read_object, *, symbol, start, end, frozen_
     manifest = read(inventory_ref)
     require(isinstance(manifest, dict) and manifest.get("schema_version") == "research_input_inventory.v1"
             and manifest.get("research_only") is True, "REFERENCE_INVENTORY_REQUIRED")
-    available = timestamp(manifest.get("created_at"))
-    require(available <= timestamp(frozen_at) <= timestamp(observed_at), "REFERENCE_NOT_AVAILABLE_AT_FREEZE")
+    # The producer stamps created_at at run START, before acquiring pages.
+    # Availability comes from the exact final object's native metadata instead.
+    available = timestamp(inventory_ref.get("available_at_utc"))
+    require(timestamp(manifest.get("created_at")) <= available <= timestamp(frozen_at) <= timestamp(observed_at),
+            "REFERENCE_NOT_AVAILABLE_AT_FREEZE")
     entries = [row for row in manifest.get("alpaca", []) if isinstance(row, dict)
                and row.get("symbol") == symbol and row.get("vendor_adjustment") == "all"]
     require(len(entries) == 1, "REFERENCE_ADJUSTED_SOURCE_NOT_UNIQUE")
@@ -129,7 +132,8 @@ def prepare_reference(inventory_ref, read_object, *, symbol, start, end, frozen_
                "baseline_session": wanted[0], "first_session": wanted[1], "last_session": wanted[-1],
                "observations": len(returns), "source_objects_verified": 1 + len(pages),
                "source_inventory_sha256": inventory_ref["sha256"], "input_sha256": input_hash,
-               "max_drawdown_loss_fraction": loss, "source_available_at": manifest["created_at"],
+               "max_drawdown_loss_fraction": loss, "source_available_at": inventory_ref["available_at_utc"],
+               "source_time_basis": "CALLER_SUPPLIED_EXACT_OBJECT_CREATION_METADATA",
                "frozen_at": frozen_at, "observed_at": observed_at, "return_basis": "PROVIDER_ADJUSTED_CLOSE_RATIO",
                "account_costs_included": False, "net_account_path_verified": False,
                "historical_pit_established": False, "risk_policy_qualified": False,

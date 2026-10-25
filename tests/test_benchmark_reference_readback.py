@@ -45,8 +45,9 @@ def fixture():
 
     manifest, entry = inputs()
 
-    def run(*, changed=None, reader=None, **kwargs):
+    def run(*, changed=None, reader=None, available_at="2000-01-07T12:00:00Z", **kwargs):
         ref = put("input-inventory.json", changed or manifest)
+        ref["available_at_utc"] = available_at
         parameters = dict(symbol="TEST", start="2000-01-03", end="2000-01-06",
                           frozen_at="2000-01-08T00:00:00Z", observed_at="2000-01-08T01:00:00Z")
         parameters.update(kwargs)
@@ -141,6 +142,21 @@ def test_non_session_reference_end_preserves_requested_period():
     entry["pages"] = [page]
     entry["coverage"]["requested_end"] = "2000-01-09"
     manifest["created_at"] = "2000-01-10T12:00:00Z"
-    _, summary = run(end="2000-01-09", frozen_at="2000-01-11T00:00:00Z", observed_at="2000-01-11T01:00:00Z")
+    _, summary = run(end="2000-01-09", available_at="2000-01-10T12:00:00Z",
+                     frozen_at="2000-01-11T00:00:00Z", observed_at="2000-01-11T01:00:00Z")
     assert summary["requested_end"] == "2000-01-09" and summary["last_session"] == "2000-01-07"
     assert summary["observations"] == 5
+
+
+def test_manifest_run_start_is_not_mislabeled_as_data_availability():
+    run, manifest, *_ = fixture()
+    manifest["created_at"] = "2000-01-07T00:00:00Z"
+    _, summary = run()
+    assert summary["source_available_at"] == "2000-01-07T12:00:00Z"
+    assert summary["source_time_basis"] == "CALLER_SUPPLIED_EXACT_OBJECT_CREATION_METADATA"
+
+
+def test_missing_exact_object_availability_is_not_inferred_from_run_start():
+    run, *_ = fixture()
+    with pytest.raises(Stop, match="REFERENCE_TIME_INVALID"):
+        run(available_at=None)

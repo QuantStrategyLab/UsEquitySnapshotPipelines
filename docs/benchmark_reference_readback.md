@@ -8,9 +8,12 @@ diagnostic summary may leave that environment. This seam has no default symbol,
 window, percentage, account or selected policy, and no credential or storage writer.
 
 The input inventory and every page require exact generation, byte count and SHA-256.
-Pages must belong to the selected symbol under the inventory's original dataset
-prefix, have complete ordered pagination, and declare their acquisition time no
-later than the inventory's availability. Availability must precede the declared
+The caller also supplies `available_at_utc` from the exact inventory generation's
+native object-creation metadata. The manifest's `created_at` is the producer's run
+start, so it must not be relabelled as data availability. Pages must belong to the
+selected symbol under the inventory's original dataset prefix, have complete
+ordered pagination, and declare acquisition no later than availability.
+Availability must precede the declared
 freeze, which must not exceed the caller's declared observation time. Calendar
 versions must match the installed locked version. The selected
 daily sessions and preceding baseline session must be present exactly, with no
