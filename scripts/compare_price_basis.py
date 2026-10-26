@@ -103,6 +103,16 @@ def validate_arm(arm, limits):
     require(type(arm.get("trade_count")) is int and arm["trade_count"] >= 0, "TRADE_COUNT_REQUIRED")
     require(arm["net_return_1x"] <= arm["gross_return"] + 1e-10, "COST_ORDER_INVALID")
     require(arm["net_return_2x"] <= arm["net_return_1x"] + 1e-10, "COST_STRESS_INVALID")
+    if "cost_paths" in arm:
+        paths = arm["cost_paths"]
+        require(isinstance(paths, dict) and set(paths) == {"gross_return", "net_return_1x", "net_return_2x"},
+                "COST_PATH_COVERAGE_REQUIRED")
+        for field, path in paths.items():
+            require(isinstance(path, dict) and "cost_paths" not in path, "COST_PATH_INVALID")
+            require(number(path.get("return")) == number(arm[field]), "COST_PATH_RETURN_MISMATCH")
+            validate_arm({**path, **{key: path["return"] for key in paths}}, limits)
+        for key in ("signals", "weights", "orders", "threshold_distances", "trade_count", "turnover"):
+            require(arm[key] == paths["net_return_1x"][key], "COST_PATH_DECISION_MISMATCH")
 
 
 def edges(values):
@@ -198,9 +208,10 @@ def performance(rows, arm, field):
         peak = max(peak, nav)
         drawdown = min(drawdown, nav / peak - 1)
     years = ((day(rows[-1]["session"]) - day(rows[0]["session"])).days + 1) / 365.25
-    return {"total_return": nav - 1, "trade_count": sum(row[arm]["trade_count"] for row in rows),
+    ledgers = [row[arm].get("cost_paths", {}).get(field, row[arm]) for row in rows]
+    return {"total_return": nav - 1, "trade_count": sum(ledger["trade_count"] for ledger in ledgers),
             "cagr": nav ** (1 / years) - 1, "max_drawdown": drawdown,
-            "turnover_sum": sum(row[arm]["turnover"] for row in rows)}
+            "turnover_sum": sum(ledger["turnover"] for ledger in ledgers)}
 
 
 def compare(meta, bundle, expected_sessions):
@@ -216,8 +227,10 @@ def compare(meta, bundle, expected_sessions):
     for row in rows:
         for arm in ("baseline", "candidate"):
             validate_arm(row.get(arm, {}), meta["limits"])
-            require(bool(row[arm]["threshold_distances"]) == meta["thresholds_applicable"],
-                    "THRESHOLD_COVERAGE_MISMATCH")
+            paths = row[arm].get("cost_paths", {}).values()
+            for ledger in [row[arm], *paths]:
+                require(bool(ledger["threshold_distances"]) == meta["thresholds_applicable"],
+                        "THRESHOLD_COVERAGE_MISMATCH")
     size_edges = meta["size_bucket_edges"]
     threshold_edges = meta["threshold_bucket_edges"]
     windows = {}
@@ -292,6 +305,8 @@ def reference(ref, root):
 
 
 def validate_manifest(manifest, root):
+    require(isinstance(manifest, dict) and manifest.get("artifact_kind") != "SYNTHETIC_NO_DISPATCH",
+            "SYNTHETIC_MANIFEST_NOT_DISPATCHABLE")
     require(isinstance(manifest, dict) and manifest.get("schema_version") == 1, "SCHEMA_VERSION_INVALID")
     targets = manifest.get("targets", [])
     require(isinstance(targets, list) and 1 <= len(targets) <= 32, "TARGET_COUNT_INVALID")
