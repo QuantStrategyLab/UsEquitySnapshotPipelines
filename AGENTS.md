@@ -39,6 +39,8 @@ python -m pytest -q
 CI also runs an isolated locked TQQQ runtime check and a separate review-delivery
 job. Research workflows that read real market data are not local checks.
 
+Organization documentation rules are checked by `python scripts/check_style.py`, which also runs in CI as the `Documentation check` job.
+
 ## Naming and documentation
 
 - Developer documentation is English by default; Chinese siblings use
