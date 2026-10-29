@@ -1,6 +1,6 @@
 # 操作运行手册
 
-[English](operator_runbook.md)
+[English](operator-runbook.md)
 
 本仓库是 snapshot-backed 美股策略的上游 artifact 生产仓库。券商平台仓库仍然只是下游消费者。
 

@@ -73,7 +73,7 @@ python -m pytest -q
 
 ## Useful docs
 
-- [`docs/artifact_contract.md`](docs/artifact_contract.md)
+- [`docs/artifact-contract.md`](docs/artifact-contract.md)
 - [`docs/crisis-context-research-v2.md`](docs/crisis-context-research-v2.md)
 - [`docs/crisis-response-live-promotion-spec.md`](docs/crisis-response-live-promotion-spec.md)
 - [`docs/crisis-response-research-roadmap.md`](docs/crisis-response-research-roadmap.md)
@@ -81,7 +81,7 @@ python -m pytest -q
 - [`docs/global-etf-rotation-snapshot-management.md`](docs/global-etf-rotation-snapshot-management.md)
 - [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
 - [`docs/live-strategy-health-report.md`](docs/live-strategy-health-report.md)
-- [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
+- [`docs/live-strategy-optimization-feedback.md`](docs/live-strategy-optimization-feedback.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
 - [`docs/tqqq-p3-strategy-performance-contract.md`](docs/tqqq-p3-strategy-performance-contract.md)
