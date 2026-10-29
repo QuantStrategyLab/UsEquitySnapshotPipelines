@@ -4,8 +4,8 @@ tier = "pipeline"
 upgrade_ring = "ring_c"
 allow_legacy = false
 enforce_bundle = true
-artifact_contract = "docs/artifact_contract.md"
-snapshot_contract = "docs/artifact_contract.md"
+artifact_contract = "docs/artifact-contract.md"
+snapshot_contract = "docs/artifact-contract.md"
 
 [qsl.compat]
 bundle = "2026.09.1"

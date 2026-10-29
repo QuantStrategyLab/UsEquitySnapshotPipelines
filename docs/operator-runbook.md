@@ -1,6 +1,6 @@
 # Operator Runbook
 
-[简体中文](operator_runbook.zh-CN.md)
+[简体中文](operator-runbook.zh-CN.md)
 
 This repo is the upstream artifact producer for snapshot-backed US equity strategies. Broker platform repos remain downstream consumers.
 
