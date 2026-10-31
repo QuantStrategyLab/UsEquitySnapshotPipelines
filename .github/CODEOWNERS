@@ -1,0 +1,9 @@
+
+
+# Risk-sensitive changes require the repository owner.
+/.github/CODEOWNERS @Pigbibi
+/.github/workflows/ @Pigbibi
+/scripts/research_mega_cap_leader_rotation_frequency_risk.py @Pigbibi
+/src/us_equity_snapshot_pipelines/lifecycle/soxl_core_only_v7_long_horizon_risk_observation.py @Pigbibi
+/src/us_equity_snapshot_pipelines/lifecycle/tqqq_evidence_risk_mandate.py @Pigbibi
+/src/us_equity_snapshot_pipelines/mega_cap_leader_rotation_frequency_risk_research.py @Pigbibi
