@@ -56,10 +56,10 @@ def test_write_strategy_plugin_release_manifest_creates_versioned_release(tmp_pa
 def test_normalize_strategy_plugin_gcs_prefix_accepts_known_artifact_root() -> None:
     assert (
         normalize_strategy_plugin_gcs_prefix(
-            "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+            "gs://synthetic-runtime-logs/strategy-artifacts/us_equity/"
             "soxl_soxx_trend_income/plugins/market_regime_control/"
         )
-        == "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
+        == "gs://synthetic-runtime-logs/strategy-artifacts/us_equity/"
         "soxl_soxx_trend_income/plugins/market_regime_control"
     )
 
@@ -69,10 +69,10 @@ def test_normalize_strategy_plugin_gcs_prefix_accepts_known_artifact_root() -> N
     [
         "",
         "gs://other-bucket/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control",
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity",
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/market_regime_control",
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins",
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/../plugins/market_regime_control",
+        "gs://synthetic-runtime-logs/strategy-artifacts/us_equity",
+        "gs://synthetic-runtime-logs/strategy-artifacts/us_equity/tqqq_growth_income/market_regime_control",
+        "gs://synthetic-runtime-logs/strategy-artifacts/us_equity/tqqq_growth_income/plugins",
+        "gs://synthetic-runtime-logs/strategy-artifacts/us_equity/tqqq_growth_income/../plugins/market_regime_control",
     ],
 )
 def test_normalize_strategy_plugin_gcs_prefix_rejects_out_of_policy_prefix(prefix: str) -> None:
