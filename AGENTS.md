@@ -70,6 +70,8 @@ Organization documentation rules are checked by `python scripts/check_style.py`,
 
 ## Do not
 
+- Only the owner, or a reviewer explicitly authorized by the owner, may apply the `owner-approved` label; coding agents must never apply it to their own PRs.
+
 - Do not treat a published artifact, a pipeline run or a filled manifest as proof
   of historical point-in-time coverage.
 - Do not download or read raw financial data, or start a research run, without
