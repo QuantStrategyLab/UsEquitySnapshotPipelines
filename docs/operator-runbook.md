@@ -33,12 +33,17 @@ Use the `Publish Snapshot Artifacts` workflow.
 
 Required input:
 
-- `profile`, currently only `russell_top50_leader_rotation`
+- `profile`: `russell_top50_leader_rotation` or `global_etf_rotation`
 
-For production data, set both:
+For Russell Top50 production data, set both:
 
 - `prices_path`
 - `universe_path`
+
+Global ETF uses the ETF universe in its strategy config, without a Russell
+universe input. When `prices_path` is omitted, its builder downloads Yahoo chart
+history. To use an existing price file locally, pass `--prices` to the Global ETF
+builder. `use_sample_data=true` is only a synthetic workflow smoke test.
 
 Optional inputs:
 
@@ -94,6 +99,11 @@ Default scheduled output prefix:
 | --- | --- | --- |
 | `russell_top50_leader_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
 | `global_etf_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/global_etf_rotation` |
+
+Global ETF has a separate weekday schedule in `Publish Snapshot Artifacts` at
+`22:30 UTC`, Monday through Friday; it does not wait for the Russell monthly
+source-input refresh. The scheduled `Snapshot Artifact Health` matrix checks both
+profiles, and either profile can also be selected for a manual health check.
 
 ## Russell Phase-1 Shadow Cycle (named variants + rollback review)
 
@@ -197,7 +207,7 @@ Outputs:
 
 The publish workflow runs this automatically after a successful Global ETF snapshot build.
 
-The publish workflow keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
+Russell Top50 publication keeps a defensive month-end trading-day guard: if the resolved `snapshot_as_of` is not the last NYSE trading day of that snapshot month, it writes a skip artifact and does not publish to GCS.
 
 ## Monthly AI Review
 
