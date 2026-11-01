@@ -1,5 +1,7 @@
 # Alpaca free-plan request windows
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 The manual Alpaca access diagnostic uses `scripts/alpaca_feed_windows.py` to plan
 explicit, disjoint inclusive request intervals. The helper is reusable by research
 acquisition callers; it does not change any scheduled snapshot or trading consumer.

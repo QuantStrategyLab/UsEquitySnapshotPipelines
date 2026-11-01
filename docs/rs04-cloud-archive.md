@@ -1,5 +1,7 @@
 # RS-04 cloud archive recovery
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 The registered `b5a3dd40cb0d4260fb15492108bde7ab544ac0d191807943637b8216a6808482`
 archive was produced on 2026-10-11 in a private box, according to the UES
 RS-04e preregistration. No GCS URI or cloud producer was registered. The older
@@ -20,7 +22,7 @@ No IAM, production configuration, broker, server or deployment operation exists.
 | `dataset_id` | `rs04-alpaca-raw-20261015`. Use a new directory for a separately authorized acquisition; existing objects cannot be overwritten. |
 | `effective_config_uri` | Empty: records `LIVE_CONFIG_URI_UNAVAILABLE`. If supplied, must be an existing JSON object under the approved input root. Reads its exact generation and stores key names/types only, never values or value digests. |
 | OIDC variables | Existing `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT`, `GCP_PROJECT_ID` |
-| Provider credentials | Existing protected `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` in the research environment; consumed only by the regeneration step |
+| Provider credentials | Removed from this repository; regeneration is disabled. Public acquisition uses QuantPlatformKit repository secrets |
 
 Inventory exports names, generations, sizes and only the `sha256` custom metadata
 field. Objects without that metadata cannot be ruled out by SHA-256; inventory
