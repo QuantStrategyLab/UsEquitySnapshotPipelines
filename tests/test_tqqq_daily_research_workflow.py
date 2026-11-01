@@ -194,8 +194,8 @@ def test_daily_research_workflow_uses_v3_terminal_and_evidence_package() -> None
 def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
-    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
+    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" not in workflow
+    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" not in workflow
     assert "date_cutoff=cutoff" in workflow
     assert "assess_tqqq_core_only_p1_input_health" in workflow
     assert "build_tqqq_core_only_p1_input_unavailable_health" in workflow

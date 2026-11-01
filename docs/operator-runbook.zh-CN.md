@@ -1,5 +1,7 @@
 # 操作运行手册
 
+> 迁移说明：本仓库的 Alpaca 采集工作流已停用，公共行情采集迁至 [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit)。`market-data-nonlive` 中的两项 Alpaca 密钥已删除。下文采集操作仅供历史参考；当前行为见 [迁移说明](alpaca-migration.md)。
+
 [English](operator-runbook.md)
 
 本仓库是 snapshot-backed 美股策略的上游 artifact 生产仓库。券商平台仓库仍然只是下游消费者。

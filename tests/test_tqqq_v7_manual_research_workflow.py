@@ -30,8 +30,8 @@ def test_v7_workflow_requires_scope_record_before_provider_and_retains_no_raw_ba
     assert "Verify external non-live scope record before provider access" in workflow
     assert "Re-verify external non-live scope record" in workflow
     assert "config/tqqq_p1_p3_mandates" in workflow
-    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
-    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
+    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" not in workflow
+    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" not in workflow
     assert '"$root/binding.json" "$root/bars.json" "$root/manifest.json"' in workflow
     assert "relative-benchmark-policy.v1.json" not in workflow
     assert "--no-clobber" in workflow
