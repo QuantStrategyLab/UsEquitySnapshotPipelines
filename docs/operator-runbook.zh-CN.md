@@ -6,9 +6,10 @@
 
 ## 本仓库生产的 Snapshot Profiles
 
-当前唯一面向运行时发布的 snapshot profile 是：
+当前面向运行时发布的 snapshot profiles：
 
 - `russell_top50_leader_rotation`
+- `global_etf_rotation`
 
 `russell_1000_multi_factor_defensive` 因长期只小幅跑赢 SPY、回撤优势不足，已从本仓库运行时契约中退役。`tech_communication_pullback_enhancement` 以及已退役的 Russell Top50 dynamic/leveraged 研究变体均保留为归档研究，不再出现在 publish 或 health workflow。
 
@@ -32,12 +33,16 @@ python scripts/build_russell_top50_leader_rotation_snapshot.py \
 
 必填输入：
 
-- `profile`，当前只支持 `russell_top50_leader_rotation`
+- `profile`：`russell_top50_leader_rotation` 或 `global_etf_rotation`
 
-生产数据路径需要同时设置：
+Russell Top50 的生产数据路径需要同时设置：
 
 - `prices_path`
 - `universe_path`
+
+Global ETF 使用策略配置中的 ETF 池，不需要 Russell universe。未提供
+`prices_path` 时，builder 会下载 Yahoo chart 历史数据；已有价格文件可通过
+本地 builder 的 `--prices` 输入。`use_sample_data=true` 仅用于合成数据测试。
 
 常用可选输入：
 
@@ -90,8 +95,13 @@ execute_publish=true
 | Profile | Extra config | GCS prefix |
 | --- | --- | --- |
 | `russell_top50_leader_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging` |
+| `global_etf_rotation` | none | `gs://<bucket>/strategy-artifacts/us_equity/global_etf_rotation` |
 
-workflow 仍保留月末交易日 guard：如果解析得到的 `snapshot_as_of` 不是该月份最后一个 NYSE 交易日，会写出 skip artifact，并且不会发布到 GCS。
+Global ETF 由 `Publish Snapshot Artifacts` 的独立工作日计划在周一至周五
+`22:30 UTC` 刷新，不依赖 Russell 月度输入刷新。`Snapshot Artifact Health`
+的定时矩阵覆盖两个 profile，手动检查也可选择任意一个。
+
+Russell Top50 保留月末交易日 guard：如果解析得到的 `snapshot_as_of` 不是该月份最后一个 NYSE 交易日，会写出 skip artifact，并且不会发布到 GCS。
 
 ## 月度 AI Review
 
