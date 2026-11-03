@@ -52,16 +52,16 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "market_regime_control.v1" in workflow
     assert 'notification_target = "${PLUGIN_NOTIFICATION_TARGET}"' in workflow
     assert "--notification-targets" in workflow
+    # The destination is a repository variable, not a literal. Asserting the
+    # literal here is what made the bucket name impossible to move: the test
+    # would fail on the change that removed it, and the value stayed.
+    assert "MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX }}" in workflow
+    assert "MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX }}" in workflow
     assert (
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control"
+        "MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: "
+        "${{ vars.MARKET_REGIME_CONTROL_SOXL_STRATEGY_GCS_PREFIX }}"
     ) in workflow
-    assert (
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/"
-        "market_regime_notification/plugins/market_regime_control"
-    ) in workflow
-    assert (
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/market_regime_control"
-    ) in workflow
+    assert "gs://" not in workflow
     assert "name: strategy-plugin-market-regime-control-${{ matrix.output_scope }}-${{ github.run_id }}" in workflow
     assert "realized_vol_threshold = 0.30" in workflow
     assert "realized_vol_requires_confirmation = true" in workflow
@@ -121,9 +121,7 @@ def test_strategy_plugin_publish_workflow_keeps_legacy_artifact_jobs() -> None:
     assert "taco-rebound-shadow:" in workflow
     assert "PLUGIN_NAME: crisis_response_shadow" in workflow
     assert "PLUGIN_NAME: taco_rebound_shadow" in workflow
-    assert (
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow"
-    ) in workflow
+    assert "TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX }}" in workflow
     assert "INPUT_SOXL_GCS_PREFIX" not in workflow
     assert "soxl_soxx_trend_income/plugins/crisis_response_shadow" not in workflow
     assert 'benchmark_symbol = "${PLUGIN_BENCHMARK_SYMBOL}"' in workflow
@@ -178,9 +176,7 @@ def test_strategy_plugin_publish_workflow_publishes_ibit_zscore_exit_artifact() 
     assert "notification_only" in workflow
     assert "IBIT zscore artifact must remain notification-only until promotion evidence passes" in workflow
     assert "IBIT zscore artifact must be mountable as strategy metadata" not in workflow
-    assert (
-        "gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit"
-    ) in workflow
+    assert "IBIT_ZSCORE_GCS_PREFIX: ${{ vars.IBIT_ZSCORE_EXIT_GCS_PREFIX }}" in workflow
     assert "name: strategy-plugin-ibit-zscore-exit-${{ github.run_id }}" in workflow
     assert "${{ env.RESEARCH_OUTPUT_DIR }}" in workflow
 

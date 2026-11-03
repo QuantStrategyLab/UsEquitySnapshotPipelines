@@ -7,7 +7,7 @@ name: Monthly Snapshot Review
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: "Optional Publish Snapshot Artifacts run id to review"
+        description: "Optional publish run for ancillary evidence; snapshots use latest per strategy"
         required: false
         default: ""
       report_month:
@@ -51,28 +51,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Resolve source run
-        id: source
-        run: |
-          set -euo pipefail
-          run_id="${{ inputs.source_run_id || github.event.workflow_run.id || '' }}"
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          if [ -n "${run_id}" ]; then
-            echo "Reviewing artifacts from run ${run_id}."
-          else
-            echo "No source run id supplied; review bundle will inspect local data/output only."
-          fi
-
-      - name: Download source artifacts
-        if: steps.source.outputs.run_id != ''
+      - name: Collect latest snapshot artifacts per strategy
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
-          mkdir -p data/output/monthly_review_inputs
-          gh run download "${{ steps.source.outputs.run_id }}" \
+          python scripts/collect_monthly_review_artifacts.py \
             --repo "${GITHUB_REPOSITORY}" \
-            --dir data/output/monthly_review_inputs
+            --source-run-id "$SOURCE_RUN_ID" \
+            --output-dir data/output/monthly_review_inputs \
+            --report-dir data/output/monthly_report_bundle
+
+      - name: Append source coverage
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f data/output/monthly_report_bundle/source_coverage.md ]; then
+            cat data/output/monthly_report_bundle/source_coverage.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Build live strategy health reports
         run: |
@@ -176,6 +173,12 @@ jobs:
             --artifact-root "${artifact_root}" \
             --output-dir data/output/monthly_report_bundle \
             --report-month "${{ inputs.report_month || '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Include source coverage in review
+        run: |
+          set -euo pipefail
+          cat data/output/monthly_report_bundle/source_coverage.md >> data/output/monthly_report_bundle/ai_review_input.md
+          cat data/output/monthly_report_bundle/source_coverage.md >> data/output/monthly_report_bundle/job_summary.md
 
       - name: Append bundle summary
         run: cat data/output/monthly_report_bundle/job_summary.md >> "$GITHUB_STEP_SUMMARY"

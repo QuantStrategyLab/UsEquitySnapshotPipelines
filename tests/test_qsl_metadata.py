@@ -17,5 +17,5 @@ def test_qsl_metadata_has_compat_bundle() -> None:
     assert qsl.get("repo") == "UsEquitySnapshotPipelines"
     compat = qsl["compat"]
     assert compat["bundle"] == "2026.09.1"
-    assert qsl.get("artifact_contract") == "docs/artifact_contract.md"
-    assert qsl.get("snapshot_contract") == "docs/artifact_contract.md"
+    assert qsl.get("artifact_contract") == "docs/artifact-contract.md"
+    assert qsl.get("snapshot_contract") == "docs/artifact-contract.md"

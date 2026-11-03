@@ -1,0 +1,127 @@
+name: RS04 Archived Core Retrospective
+
+on:
+  pull_request:
+    paths:
+      - scripts/rs04_archived_core_retrospective.py
+      - tests/rs04_archived_core_retrospective_cases.py
+      - .github/workflows/rs04-archived-core-retrospective.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/rs04_archived_core_retrospective.py
+      - tests/rs04_archived_core_retrospective_cases.py
+      - .github/workflows/rs04-archived-core-retrospective.yml
+  workflow_dispatch:
+    inputs:
+      plan_uri:
+        description: Immutable private control plan
+        required: true
+        type: string
+      plan_generation:
+        description: Exact plan generation
+        required: true
+        type: string
+      plan_bytes:
+        description: Exact plan bytes (at most 16 KiB)
+        required: true
+        type: string
+      plan_sha256:
+        description: Exact plan SHA256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rs04-archived-core-retrospective
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Prepare isolated locked runtime and exact research overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+          uv pip install --python .venv/bin/python --no-deps \
+            'quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@7840127862ea715e44c8f70b03155a399dc817de' \
+            'us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@de8af865b89d3f21062c62aa8feb0b4773a6ec00'
+          uv pip install --python .venv/bin/python 'pytest==9.1.1' 'ruff==0.15.9'
+      - name: Explicit synthetic acceptance with zero skips or failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/rs04_archived_core_retrospective.py --verify-runtime
+          if ! .venv/bin/python -m ruff check scripts/rs04_archived_core_retrospective.py \
+            tests/rs04_archived_core_retrospective_cases.py > "$RUNNER_TEMP/rs04-lint.log" 2>&1; then
+            echo 'status=LINT_FAILED'
+            exit 1
+          fi
+          if ! .venv/bin/python -m pytest -q -o xfail_strict=true tests/rs04_archived_core_retrospective_cases.py \
+            --junitxml="$RUNNER_TEMP/rs04-offline.xml" > "$RUNNER_TEMP/rs04-tests.log" 2>&1; then
+            echo 'status=OFFLINE_FAILED'
+            exit 1
+          fi
+          .venv/bin/python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'rs04-offline.xml').getroot()
+          suites = list(root.iter('testsuite'))
+          counts = {k: sum(int(s.get(k, '0')) for s in suites) for k in ('tests', 'skipped', 'failures', 'errors')}
+          assert counts['tests'] > 0 and all(counts[k] == 0 for k in ('skipped', 'failures', 'errors'))
+          assert not list(root.iter('skipped'))
+          print('status=OFFLINE_PASSED cases=' + str(counts['tests']))
+          PY
+
+  cloud:
+    needs: offline
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: market-data-nonlive
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Prepare same locked runtime and verify research identities before authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'uv==0.11.19'
+          env -u UV_PYTHON -u VIRTUAL_ENV uv sync --locked --no-dev --no-editable --python 3.11
+          uv pip install --python .venv/bin/python --no-deps \
+            'quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@7840127862ea715e44c8f70b03155a399dc817de' \
+            'us-equity-strategies @ git+https://github.com/QuantStrategyLab/UsEquityStrategies.git@de8af865b89d3f21062c62aa8feb0b4773a6ec00'
+          .venv/bin/python scripts/rs04_archived_core_retrospective.py --verify-runtime
+      - name: Authenticate existing protected research identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Bounded create-only private comparison
+        env:
+          RS04_ENVIRONMENT: market-data-nonlive
+          RS04_SUMMARY_FILE: ${{ runner.temp }}/rs04-technical-summary.json
+        run: .venv/bin/python scripts/rs04_archived_core_retrospective.py

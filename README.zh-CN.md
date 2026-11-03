@@ -71,7 +71,7 @@ python -m pytest -q
 
 ## 延伸文档
 
-- [`docs/artifact_contract.md`](docs/artifact_contract.md)
+- [`docs/artifact-contract.md`](docs/artifact-contract.md)
 - [`docs/crisis-context-research-v2.md`](docs/crisis-context-research-v2.md)
 - [`docs/crisis-response-live-promotion-spec.md`](docs/crisis-response-live-promotion-spec.md)
 - [`docs/crisis-response-research-roadmap.md`](docs/crisis-response-research-roadmap.md)
@@ -79,7 +79,7 @@ python -m pytest -q
 - [`docs/global-etf-rotation-snapshot-management.md`](docs/global-etf-rotation-snapshot-management.md)
 - [`docs/leveraged-strategy-candidate-research.md`](docs/leveraged-strategy-candidate-research.md)
 - [`docs/live-strategy-health-report.md`](docs/live-strategy-health-report.md)
-- [`docs/live-strategy-optimization-feedback-20260603.md`](docs/live-strategy-optimization-feedback-20260603.md)
+- [`docs/live-strategy-optimization-feedback.md`](docs/live-strategy-optimization-feedback.md)
 - [`docs/mega-cap-leader-rotation-dynamic-validation.md`](docs/mega-cap-leader-rotation-dynamic-validation.md)
 - [`docs/snapshot-ai-audit-automation.md`](docs/snapshot-ai-audit-automation.md)
 - [`docs/tqqq-p3-strategy-performance-contract.md`](docs/tqqq-p3-strategy-performance-contract.md)
@@ -87,6 +87,8 @@ python -m pytest -q
 - [`docs/tqqq-validation-and-shadow-policy.md`](docs/tqqq-validation-and-shadow-policy.md)
 
 ## 安全和贡献说明
+
+- AI 助手与维护者遵循 [AGENTS.md](AGENTS.md)。
 
 - 除非产物明确设计为公开且已有文档说明，否则不要把生成数据、凭据或私人账户信息提交到 Git。
 - 优先提供可复现命令，并显式指定输出目录。

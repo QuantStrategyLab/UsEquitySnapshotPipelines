@@ -3,6 +3,14 @@ name: Alpaca SIP Access Diagnostic
 on:
   workflow_dispatch:
     inputs:
+      diagnostic_mode:
+        description: Existing access classification or one fixed SOXL three-day probe.
+        required: true
+        default: access
+        type: choice
+        options:
+          - access
+          - soxl-three-day
       date_cutoff:
         description: Exact YYYY-MM-DD cutoff to compare with a daily P1 request.
         required: true
@@ -26,6 +34,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Classify explicit historical and recent feed segments
+        if: inputs.diagnostic_mode == 'access' || inputs.diagnostic_mode == ''
         env:
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
@@ -34,6 +43,13 @@ jobs:
           ALPACA_FEED_HISTORICAL: ${{ vars.ALPACA_FEED_HISTORICAL || 'sip' }}
           ALPACA_FEED_RECENT: ${{ vars.ALPACA_FEED_RECENT || 'iex' }}
         run: python scripts/alpaca_access_diagnostic.py
+      - name: Probe fixed SOXL three-day schema once
+        if: inputs.diagnostic_mode == 'soxl-three-day'
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DATE_CUTOFF: ${{ inputs.date_cutoff }}
+        run: python scripts/alpaca_soxl_three_day_probe.py
       - name: Upload sanitized diagnostic only
         if: always()
         uses: actions/upload-artifact@v4

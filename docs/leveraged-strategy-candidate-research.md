@@ -1,6 +1,6 @@
 # Leveraged Strategy Candidate Research Gate
 
-Related summary: [`live-strategy-optimization-feedback-20260603.md`](./live-strategy-optimization-feedback-20260603.md).
+Related summary: [`live-strategy-optimization-feedback.md`](./live-strategy-optimization-feedback.md).
 
 This note documents the research-only gate for the current TQQQ/SOXL live proxies, parameter variants of those existing strategies, and a bounded set of genuinely new leveraged supplemental strategies.
 

@@ -2052,7 +2052,7 @@ directory is present in monthly output.
 
 Goal: keep expanding the live-strategy design space without reopening broad
 parameter mining. The detailed pre-registration source for the next idea batch is
-`docs/live-strategy-research-expansion-20260620.md`.
+`docs/live-strategy-research-expansion.md`.
 
 The next candidates are intentionally split into diagnostics and independent
 satellites:

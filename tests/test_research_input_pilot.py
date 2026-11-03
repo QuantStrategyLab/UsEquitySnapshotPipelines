@@ -164,6 +164,36 @@ def test_summary_excludes_private_locators_and_response_bodies():
     assert result["release_status"] == "PARKED" and result["approved_plugin_set"] is False
 
 
+@pytest.mark.parametrize("start,end,dates", [
+    ("2024-01-02", "2024-01-06", ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"]),
+    ("2024-01-12", "2024-01-15", ["2024-01-12"]),
+])
+def test_non_session_end_keeps_exact_provider_window(monkeypatch, start, end, dates):
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "synthetic-key")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "synthetic-credential")
+
+    class Provider:
+        def get(self, url, _headers):
+            query = parse_qs(urlsplit(url).query)
+            assert query["end"][0].split("T")[0] == end
+            if "corporate-actions" in url:
+                return pilot.encode({"corporate_actions": {}, "next_page_token": None})
+            bars = [{"t": d + "T05:00:00Z", "o": 10, "h": 10, "l": 10, "c": 10, "v": 1} for d in dates]
+            return pilot.encode({"bars": bars, "next_page_token": None})
+
+    class Store:
+        def create(self, _name, body):
+            return {"sha256": pilot.sha(body), "generation": "1", "bytes": len(body)}
+
+    p = plan() | {"end": end, "instruments": [{"symbol": "TEST", "start": start, "inception": "2020-01-01"}]}
+    result = pilot.acquire_alpaca(p, Provider(), Store())
+    for row in result[:2]:
+        assert row["coverage"]["requested_end"] == end
+        assert row["coverage"]["observations"] == len(dates) and row["coverage"]["coverage_complete"]
+
+
 def test_manual_workflow_has_no_publish_schedule_or_arbitrary_command():
     text = (ROOT / ".github/workflows/research-input-pilot.yml").read_text()
     assert "workflow_dispatch:" in text and "schedule:" not in text and "workflow_run:" not in text

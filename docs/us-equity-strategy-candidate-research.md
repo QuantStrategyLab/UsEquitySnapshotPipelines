@@ -1,6 +1,6 @@
 # US Equity Strategy Candidate Research Gate
 
-Related summary: [`live-strategy-optimization-feedback-20260603.md`](./live-strategy-optimization-feedback-20260603.md).
+Related summary: [`live-strategy-optimization-feedback.md`](./live-strategy-optimization-feedback.md).
 
 This note documents the research-only gate for comparing the current live US equity snapshot strategy against ordinary ETF, new snapshot-backed, and parameter-optimization candidates.
 

@@ -128,9 +128,9 @@ jobs:
       INPUT_MARKET_REGIME_GCS_PREFIX: ${{ inputs.market_regime_gcs_prefix }}
       INPUT_MARKET_REGIME_SOXL_GCS_PREFIX: ${{ inputs.market_regime_soxl_gcs_prefix }}
       INPUT_MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: ${{ inputs.market_regime_soxl_strategy_gcs_prefix }}
-      MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/market_regime_control' }}
-      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/market_regime_notification/plugins/market_regime_control' }}
-      MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_STRATEGY_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/soxl_soxx_trend_income/plugins/market_regime_control' }}
+      MARKET_REGIME_TQQQ_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_GCS_PREFIX }}
+      MARKET_REGIME_SOXL_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_GCS_PREFIX }}
+      MARKET_REGIME_SOXL_STRATEGY_GCS_PREFIX: ${{ vars.MARKET_REGIME_CONTROL_SOXL_STRATEGY_GCS_PREFIX }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_TARGET_TYPE: ${{ matrix.target_type }}
@@ -457,7 +457,7 @@ jobs:
       PLUGIN_ALERT_SIGNAL_GLOB: data/output/**/plugins/market_regime_control/latest_signal.json
       STRATEGY_PLUGIN_ALERT_CHANNELS: ${{ vars.STRATEGY_PLUGIN_ALERT_CHANNELS || 'telegram' }}
       STRATEGY_PLUGIN_ALERT_LANG: ${{ vars.STRATEGY_PLUGIN_ALERT_LANG || 'zh' }}
-      STRATEGY_PLUGIN_ALERT_STATE_GCS_URI: ${{ vars.STRATEGY_PLUGIN_ALERT_STATE_GCS_URI || 'gs://qsl-runtime-logs-shared/strategy-plugin-alert-state/market_regime_control' }}
+      STRATEGY_PLUGIN_ALERT_STATE_GCS_URI: ${{ vars.STRATEGY_PLUGIN_ALERT_STATE_GCS_URI }}
       STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_RECIPIENTS }}
       STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SENDER_EMAIL }}
       STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST: ${{ vars.STRATEGY_PLUGIN_ALERT_EMAIL_SMTP_HOST }}
@@ -601,7 +601,7 @@ jobs:
       INPUT_IBIT_ZSCORE_GCS_PREFIX: ${{ inputs.ibit_zscore_gcs_prefix }}
       INPUT_IBIT_ZSCORE_METRICS_URL: ${{ inputs.ibit_zscore_metrics_url }}
       INPUT_IBIT_ZSCORE_METRICS_URLS: ${{ inputs.ibit_zscore_metrics_urls }}
-      IBIT_ZSCORE_GCS_PREFIX: ${{ vars.IBIT_ZSCORE_EXIT_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/ibit_smart_dca/plugins/ibit_zscore_exit' }}
+      IBIT_ZSCORE_GCS_PREFIX: ${{ vars.IBIT_ZSCORE_EXIT_GCS_PREFIX }}
       IBIT_ZSCORE_METRICS_URLS: ${{ vars.IBIT_ZSCORE_METRICS_URLS }}
       IBIT_ZSCORE_METRICS_URL: ${{ vars.IBIT_ZSCORE_METRICS_URL || 'https://api.bitcoin-data.com/v1/mvrv-zscore' }}
       BGEOMETRICS_API_TOKEN: ${{ secrets.BGEOMETRICS_API_TOKEN }}
@@ -963,7 +963,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       INPUT_TQQQ_GCS_PREFIX: ${{ inputs.gcs_prefix }}
-      TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/crisis_response_shadow' }}
+      TQQQ_GCS_PREFIX: ${{ vars.CRISIS_RESPONSE_SHADOW_GCS_PREFIX }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: ${{ matrix.strategy_profile }}
       PLUGIN_NAME: crisis_response_shadow
@@ -1183,7 +1183,7 @@ jobs:
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
       INPUT_TACO_GCS_PREFIX: ${{ inputs.taco_gcs_prefix }}
-      TACO_GCS_PREFIX: ${{ vars.TACO_REBOUND_SHADOW_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/tqqq_growth_income/plugins/taco_rebound_shadow' }}
+      TACO_GCS_PREFIX: ${{ vars.TACO_REBOUND_SHADOW_GCS_PREFIX }}
       YFINANCE_PROXY: ${{ secrets.YFINANCE_PROXY }}
       STRATEGY_PROFILE: tqqq_growth_income
       PLUGIN_NAME: taco_rebound_shadow

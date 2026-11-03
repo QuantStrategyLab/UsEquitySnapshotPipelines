@@ -41,8 +41,8 @@ jobs:
       GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       PROFILE: ${{ matrix.profile }}
       MAX_MONTH_LAG: ${{ inputs.max_month_lag || '1' }}
-      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/russell_top50_leader_rotation_staging' }}
-      SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX || 'gs://qsl-runtime-logs-shared/strategy-artifacts/us_equity/global_etf_rotation' }}
+      SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_RUSSELL_TOP50_LEADER_ROTATION_GCS_PREFIX }}
+      SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX: ${{ vars.SCHEDULED_GLOBAL_ETF_ROTATION_GCS_PREFIX }}
 
     steps:
       - name: Checkout
