@@ -35,6 +35,10 @@ class FakeGH:
         self.runs = runs
         self.artifacts = artifacts
         self.downloads = []
+        # API artifacts carry publication timestamps independently of run creation.
+        for source in runs:
+            for item in artifacts.get(source["id"], []):
+                item.setdefault("created_at", source["created_at"])
 
     def pages(self, endpoint, key):
         if key == "workflow_runs":
@@ -49,7 +53,8 @@ class FakeGH:
             for filename in (f"{profile}_feature_snapshot_latest.csv",
                              f"{profile}_feature_snapshot_latest.csv.manifest.json",
                              f"{profile}_ranking_latest.csv"):
-                (target / filename).write_text("fake evidence")
+                content = "symbol,value\nFAKE,1\n" if filename.endswith(".csv") else "{}"
+                (target / filename).write_text(content)
             (target / "release_status_summary.json").write_text(json.dumps({"strategy_profile": profile}))
 
 
@@ -180,7 +185,7 @@ def test_incomplete_or_mismatched_download_blocks(tmp_path, failure):
     assert collect(tmp_path, gh) == 1
     report = json.loads((tmp_path / "report/source_coverage.json").read_text())
     assert report["status"] == "UNKNOWN"
-    assert report["profiles"][ETF]["status"] == "UNKNOWN"
+    assert report["profiles"][ETF]["status"] == "INVALID"
 
 
 def test_api_failure_never_becomes_missing_or_pass(tmp_path):
@@ -209,4 +214,122 @@ def test_newest_run_selected_even_when_api_order_differs(tmp_path):
 def test_future_timestamp_and_invalid_trigger_block(tmp_path):
     gh = FakeGH([run(1, "2026-05-06T00:00:00Z")], {1: [artifact(ETF, 1), artifact(RUSSELL, 1)]})
     assert collect(tmp_path, gh, source_run_id=999) == 1
+    assert gh.downloads == []
+
+
+def coverage(tmp_path):
+    return json.loads((tmp_path / "report/source_coverage.json").read_text())
+
+
+def pair(number, **fields):
+    return [artifact(profile, number, **fields) for profile in (ETF, RUSSELL)]
+
+
+def test_expired_newest_fallback_is_disclosed_in_both_outputs(tmp_path):
+    gh = FakeGH([run(2), run(1, "2026-05-03T00:00:00Z")], {
+        2: [artifact(ETF, 2)], 1: pair(1)})
+    gh.artifacts[2][0]["expired"] = True
+    assert collect(tmp_path, gh) == 0
+    item = coverage(tmp_path)["profiles"][ETF]
+    assert item["run_id"] == 1 and item["fallback"] is True
+    assert item["skipped_sources"][0]["reason"] == "EXPIRED"
+    assert item["skipped_sources"][0]["run_id"] == 2
+    markdown = (tmp_path / "report/source_coverage.md").read_text()
+    assert "fallback" in markdown.lower() and "EXPIRED" in markdown
+
+
+@pytest.mark.parametrize("updated", [False, True])
+def test_publication_order_and_age_ignore_original_run_creation(tmp_path, updated):
+    fresh = {"created_at": "2026-05-04T12:00:00Z"}
+    if updated:
+        fresh = {"created_at": "2026-04-01T00:00:00Z", "updated_at": "2026-05-04T12:00:00Z"}
+    gh = FakeGH([run(2, "2026-05-03T00:00:00Z"), run(1, "2026-04-01T00:00:00Z")], {
+        2: pair(2, created_at="2026-05-03T01:00:00Z"), 1: pair(1, **fresh)})
+    assert collect(tmp_path, gh) == 0
+    assert {item[0] for item in gh.downloads} == {1}
+    assert {item["published_at"] for item in coverage(tmp_path)["profiles"].values()} == {
+        "2026-05-04T12:00:00+00:00"}
+
+
+@pytest.mark.parametrize("fault", ["manifest-json", "manifest-utf8", "manifest-array", "snapshot-utf8",
+                                        "ranking-utf8", "csv-quotes", "csv-width", "summary-json"])
+def test_invalid_contract_never_collects_or_falls_back(tmp_path, fault):
+    gh = FakeGH([run(2), run(1, "2026-05-03T00:00:00Z")], {2: pair(2), 1: pair(1)})
+    download = gh.download
+
+    def corrupt(run_id, name, target):
+        download(run_id, name, target)
+        if fault.startswith("manifest"):
+            path = target / f"{ETF}_feature_snapshot_latest.csv.manifest.json"
+            content = {"manifest-json": b"{SYNTHETIC_DIAGNOSTIC", "manifest-utf8": b"\xff",
+                       "manifest-array": b"[]"}[fault]
+        elif fault == "summary-json":
+            path, content = target / "release_status_summary.json", b"{SYNTHETIC_DIAGNOSTIC"
+        else:
+            suffix = "ranking" if fault == "ranking-utf8" else "feature_snapshot"
+            path = target / f"{ETF}_{suffix}_latest.csv"
+            content = {"csv-quotes": b'symbol,value\n"unterminated',
+                       "csv-width": b"symbol,value\nFAKE,1,2\n"}.get(fault, b"\xff")
+        path.write_bytes(content)
+
+    gh.download = corrupt
+    assert collect(tmp_path, gh) == 1
+    report = coverage(tmp_path)
+    assert report["profiles"][ETF]["status"] == "INVALID"
+    assert report["status"] != "COLLECTED"
+    assert {item[0] for item in gh.downloads} == {2}
+    assert "SYNTHETIC_DIAGNOSTIC" not in json.dumps(report)
+    assert "SYNTHETIC_DIAGNOSTIC" not in (tmp_path / "report/source_coverage.md").read_text()
+
+
+@pytest.mark.parametrize("field,value", [("created_at", None), ("created_at", "2026-05-04"),
+    ("created_at", "2026-05-04T00:00:00"), ("created_at", "not-a-date"),
+    ("created_at", "2026-02-30T00:00:00Z"), ("created_at", "2026-05-05T00:00:01Z"),
+    ("updated_at", "2026-05-05T00:00:01Z"), ("updated_at", "bad"),
+    ("updated_at", "2026-05-03T00:00:00Z")])
+def test_invalid_publication_metadata_blocks_without_run_time_fallback(tmp_path, field, value):
+    gh = FakeGH([run(2), run(1)], {2: pair(2), 1: pair(1)})
+    if value is None:
+        gh.artifacts[2][0].pop(field)
+    else:
+        gh.artifacts[2][0][field] = value
+    assert collect(tmp_path, gh) == 1
+    assert coverage(tmp_path)["status"] == "UNKNOWN"
+    assert gh.downloads == []
+
+
+@pytest.mark.parametrize("date,expected", [("2026-04-28T00:00:00Z", "COLLECTED"),
+    ("2026-04-27T23:59:59Z", "STALE"), ("2026-05-04T01:00:00+01:00", "COLLECTED")])
+def test_publication_age_boundary_and_offsets(tmp_path, date, expected):
+    gh = FakeGH([run(1, "2026-04-01T00:00:00Z")], {1: pair(1, created_at=date)})
+    assert collect(tmp_path, gh) == (0 if expected == "COLLECTED" else 1)
+    assert {item["status"] for item in coverage(tmp_path)["profiles"].values()} == {expected}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_equal_publication_instants_have_deterministic_run_id_tie_break(tmp_path, reverse):
+    runs = [run(1), run(2, "2026-05-03T00:00:00Z")]
+    gh = FakeGH(runs[::-1] if reverse else runs, {
+        1: pair(1, created_at="2026-05-04T01:00:00+01:00"),
+        2: pair(2, created_at="2026-05-04T00:00:00Z")})
+    assert collect(tmp_path, gh) == 0
+    assert {item[0] for item in gh.downloads} == {2}
+
+
+def test_empty_publications_remain_missing(tmp_path):
+    assert collect(tmp_path, FakeGH([], {})) == 1
+    assert coverage(tmp_path)["status"] == "INCOMPLETE"
+    assert {item["status"] for item in coverage(tmp_path)["profiles"].values()} == {"MISSING"}
+
+
+def test_single_publication_still_collects_both_strategies(tmp_path):
+    gh = FakeGH([run(1)], {1: pair(1)})
+    assert collect(tmp_path, gh) == 0
+    assert len(gh.downloads) == 2
+    assert {item["run_id"] for item in coverage(tmp_path)["profiles"].values()} == {1}
+
+
+def test_duplicate_profile_artifacts_block_even_after_newest_match(tmp_path):
+    gh = FakeGH([run(2), run(1)], {2: pair(2), 1: pair(1) + [artifact(ETF, 1)]})
+    assert collect(tmp_path, gh) == 1
     assert gh.downloads == []

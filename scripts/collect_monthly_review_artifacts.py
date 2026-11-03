@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import subprocess
@@ -45,7 +46,7 @@ def timestamp(value: str) -> datetime:
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.tzinfo is None:
         raise ValueError("Source timestamp needs a timezone")
-    return result
+    return result.astimezone(UTC)
 
 
 def eligible(run: dict) -> bool:
@@ -74,6 +75,26 @@ def validate_snapshot(directory: Path, profile: str) -> None:
         raise ValueError("Incomplete snapshot publication")
     if json.loads(summaries[0].read_text(encoding="utf-8"))["strategy_profile"] != profile:
         raise ValueError("Snapshot profile mismatch")
+    manifest = json.loads((root / required[1]).read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid snapshot manifest")
+    for name in (required[0], required[2]):
+        with (root / name).open(encoding="utf-8", newline="") as stream:
+            rows = csv.reader(stream, strict=True)
+            header = next(rows)
+            if not header or any(not column.strip() for column in header):
+                raise ValueError("Invalid snapshot CSV header")
+            for row in rows:
+                if len(row) != len(header):
+                    raise ValueError("Invalid snapshot CSV row")
+
+
+def publication_time(item: dict, now: datetime) -> datetime:
+    created = timestamp(item["created_at"])
+    published = timestamp(item.get("updated_at", item["created_at"]))
+    if published < created or published > now:
+        raise ValueError("Invalid publication timestamp")
+    return published
 
 
 def collect(gh: GitHub, output: Path, report: Path, *, now: datetime,
@@ -91,36 +112,38 @@ def collect(gh: GitHub, output: Path, report: Path, *, now: datetime,
             raise ValueError("Invalid maximum age")
         runs = gh.pages("actions/workflows/publish-snapshot-artifacts.yml/runs"
                         "?branch=main&status=success&per_page=100", "workflow_runs")
-        runs = sorted((run for run in runs if eligible(run)),
-                      key=lambda run: (timestamp(run["created_at"]), positive_id(run["id"])), reverse=True)
+        candidates = {profile: [] for profile in PROFILES}
         selected = {}
         trigger_artifacts = None
+        # Run creation order cannot bound artifact publication order after reruns.
         for run in runs:
+            if not eligible(run):
+                continue
             run_id = positive_id(run["id"])
-            age = now - timestamp(run["created_at"])
-            if age < timedelta(0):
-                raise ValueError("Future publication timestamp")
             artifacts = artifacts_for(gh, run_id)
             if run_id == source_run_id:
                 trigger_artifacts = (run_id, artifacts)
             for profile in PROFILES:
-                if profile in selected:
-                    continue
                 matches = [a for a in artifacts if a["name"] == f"us-equity-snapshot-{profile}-{run_id}"]
                 if len(matches) > 1:
                     raise ValueError("Ambiguous snapshot artifacts")
-                if not matches:
-                    continue
-                item = matches[0]
+                if matches:
+                    item = matches[0]
+                    candidates[profile].append((publication_time(item, now), run_id, item["id"], item))
+        for profile, sources in candidates.items():
+            skipped = []
+            for published, run_id, artifact_id, item in sorted(sources, key=lambda source: source[:3], reverse=True):
                 if item["expired"]:
-                    if coverage[profile]["status"] == "MISSING":
-                        coverage[profile] = {"status": "EXPIRED"}
+                    skipped.append({"reason": "EXPIRED", "run_id": run_id, "artifact_id": artifact_id,
+                                    "published_at": published.isoformat()})
+                    coverage[profile] = {"status": "EXPIRED", "skipped_sources": skipped}
                     continue
+                age = now - published
                 selected[profile] = (run_id, item)
                 coverage[profile] = {"status": "STALE" if age > timedelta(days=max_age_days) else "AVAILABLE",
-                                     "run_id": run_id, "artifact_id": item["id"],
-                                     "published_at": run["created_at"]}
-            if len(selected) == len(PROFILES) and (source_run_id is None or trigger_artifacts is not None):
+                                     "run_id": run_id, "artifact_id": artifact_id,
+                                     "published_at": published.isoformat(),
+                                     "fallback": bool(skipped), "skipped_sources": skipped}
                 break
         if source_run_id is not None and trigger_artifacts is None:
             raise ValueError("Trigger is not an eligible publication")
@@ -128,7 +151,12 @@ def collect(gh: GitHub, output: Path, report: Path, *, now: datetime,
             for profile, (run_id, item) in selected.items():
                 coverage[profile]["status"] = "UNKNOWN"
                 gh.download(run_id, item["name"], output / profile)
-                validate_snapshot(output / profile, profile)
+                try:
+                    validate_snapshot(output / profile, profile)
+                except Exception:
+                    coverage[profile]["status"] = "INVALID"
+                    # Do not replace unreadable evidence with an older snapshot.
+                    raise
                 coverage[profile]["status"] = "COLLECTED"
             # Keep ancillary evidence from the trigger without importing an older
             # strategy snapshot that could win the bundle's recursive discovery.
@@ -148,12 +176,15 @@ def collect(gh: GitHub, output: Path, report: Path, *, now: datetime,
         # Fixed diagnostic only: metadata, parser and transport exceptions are untrusted.
         manifest["status"] = "UNKNOWN"
         for item in coverage.values():
-            if item["status"] != "COLLECTED":
+            if item["status"] not in {"COLLECTED", "INVALID"}:
                 item["status"] = "UNKNOWN"
     (report / "source_coverage.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     lines = ["## Snapshot source coverage", "", f"Collection: {manifest['status']}",
              f"Maximum publication age: {max_age_days} days (not snapshot/PIT or live validation).", ""]
-    lines.extend(f"- {profile}: {item['status']}" for profile, item in coverage.items())
+    for profile, item in coverage.items():
+        skipped = item.get("skipped_sources", [])
+        detail = f"; fallback after {len(skipped)} newer EXPIRED publication(s)" if item.get("fallback") else ""
+        lines.append(f"- {profile}: {item['status']}{detail}")
     (report / "source_coverage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return exit_code
 
