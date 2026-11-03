@@ -96,3 +96,12 @@ def test_manual_source_input_publish_dispatches_live_snapshot_profiles() -> None
     assert '--field universe_path="${OUTPUT_PREFIX%/}/r1000_latest_holdings_snapshot.csv"' in workflow
     assert '--field source_input_manifest_path="${source_input_manifest_path}"' in workflow
     assert '--field execute_publish="true"' in workflow
+
+
+def test_monthly_review_collects_profiles_independently_and_reports_coverage() -> None:
+    workflow = MONTHLY_REVIEW.read_text(encoding="utf-8")
+    assert "scripts/collect_monthly_review_artifacts.py" in workflow
+    assert '--source-run-id "$SOURCE_RUN_ID"' in workflow
+    assert "--report-dir data/output/monthly_report_bundle" in workflow
+    assert "source_coverage.md" in workflow
+    assert 'gh run download "${{ steps.source.outputs.run_id }}"' not in workflow

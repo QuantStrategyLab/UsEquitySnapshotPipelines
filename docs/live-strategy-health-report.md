@@ -44,6 +44,24 @@ useq-build-live-strategy-health-report \
 - `strategy_health_report.md`: Markdown report for review issues or PRs.
 - `run_manifest.json`: command metadata and policy thresholds.
 
+The monthly review first runs `scripts/collect_monthly_review_artifacts.py`.
+It independently selects the latest unexpired artifact for Global ETF Rotation
+and Russell Top50 Leader Rotation from successful `main` runs of
+`publish-snapshot-artifacts.yml`, with paginated run and artifact discovery.
+A triggering run supplies ancillary evidence only; it does not restrict strategy
+coverage. Manual `source_run_id` has the same ancillary-only meaning. Without a
+source run, both strategy snapshots are still collected.
+
+The collector requires a fresh output directory and all four snapshot contract
+files, with a release summary identifying the expected strategy. Publications
+older than seven days are stale; this is a publication-age bound, not validation
+of snapshot dates, point-in-time coverage or live readiness. Missing, expired,
+stale or unreadable sources stop bundle creation and issue updates. The workflow
+uploads `source_coverage.json` and `source_coverage.md` even on collection failure
+and includes coverage in successful review issues. CLI diagnostics are suppressed
+to avoid leaking account or transport details. Restart with a clean isolated
+runner rather than reusing partial inputs.
+
 The monthly review workflow runs `scripts/build_monthly_live_strategy_health_reports.py` before assembling the AI review bundle. The helper scans the monthly artifact root for `portfolio_and_tracker_returns.csv`, infers strategy return columns by excluding `as_of` and `buy_hold_*` tracker columns, and writes a health report back into the same artifact root.
 
 `scripts/run_monthly_report_bundle.py` then automatically discovers directories containing `strategy_health_summary.csv` under the monthly artifact root. When present, the monthly AI review issue includes the strategy health summary. If any strategy is marked `review_for_retirement`, the monthly bundle status becomes `warning` so the review cannot silently ignore it.
