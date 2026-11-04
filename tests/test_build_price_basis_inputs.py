@@ -106,6 +106,60 @@ class ProducerTests(unittest.TestCase):
         self.assertAlmostEqual(build.nav(state, state["marks"]), 1004.5)
         self.assertAlmostEqual(result["return"], 0.0045)
 
+    def test_flow_unitization_preserves_pre_flow_carry_and_overnight_return(self):
+        for flow in (1000, -500):
+            for shares in (0, 50):
+                with self.subTest(flow=flow, shares=shares):
+                    source = fixture()
+                    source["costs"]["cash_yield"].update(status="modeled", bps=36525)
+                    source["external_flows"]["2023-01-04"] = flow
+                    row = source["market"][2]
+                    row["raw_ohlc"]["SYNTH"].update(open=12, close=13, high=13)
+                    state = {"cash": 1000 - shares * 10, "shares": {"SYNTH": shares},
+                             "marks": {"SYNTH": 10}, "session": "2023-01-03"}
+                    decision = {"signals": {}, "weights": {}, "threshold_distances": {}}
+                    result = build.step(state, row, decision, source, 0)
+                    expected = ((1000 - shares * 10) * 1.01 + shares * 12) / 1000 - 1
+                    self.assertAlmostEqual(result["return"], expected)
+
+    def test_flow_unitization_chains_pre_and_post_flow_gains(self):
+        source = fixture()
+        source["external_flows"]["2023-01-04"] = 1000
+        row = source["market"][2]
+        row["raw_ohlc"]["SYNTH"].update(open=12, high=13, close=13)
+        state = {"cash": 500, "shares": {"SYNTH": 50}, "marks": {"SYNTH": 10}, "session": "2023-01-03"}
+        decision = {"signals": {}, "weights": {"SYNTH": 600 / 2100}, "threshold_distances": {}}
+        result = build.step(state, row, decision, source, 0)
+        self.assertAlmostEqual(result["return"], (1100 / 1000) * (2150 / 2100) - 1)
+
+    def test_named_calendar_accepts_full_interval_and_rejects_unknown_name(self):
+        import exchange_calendars as xcals
+
+        product = self.produce()
+        metadata = product["metadata"]
+        metadata["calendar"] = "XNYS"
+        calendar = xcals.get_calendar("XNYS", start="2021-01-06", end="2023-01-06")
+        sessions = [s.date().isoformat() for s in calendar.sessions_in_range("2021-01-06", "2023-01-06")]
+        build.validate_reporting_sessions(metadata, sessions)
+        with self.assertRaisesRegex(build.consumer.ResearchStop, "SESSION_COVERAGE_INCOMPLETE"):
+            build.validate_reporting_sessions(metadata, sessions[:10] + sessions[11:])
+        metadata["calendar"] = "INVALID_FIXTURE_CALENDAR"
+        with self.assertRaisesRegex(build.consumer.ResearchStop, "EXCHANGE_CALENDAR_UNAVAILABLE"):
+            build.validate_reporting_sessions(metadata, sessions)
+
+    def test_named_calendar_rejects_missing_reporting_history(self):
+        source = fixture()
+        source["calendar"]["name"] = "XNYS"
+        with self.assertRaisesRegex(build.consumer.ResearchStop, "SESSION_COVERAGE_INCOMPLETE"):
+            self.produce(source)
+
+    def test_product_validation_rejects_relabelled_sparse_calendar(self):
+        product = self.produce()
+        product["metadata"]["calendar"] = "XNYS"
+        product["product_sha256"] = build.digest({k: v for k, v in product.items() if k != "product_sha256"})
+        with self.assertRaisesRegex(build.consumer.ResearchStop, "SESSION_COVERAGE_INCOMPLETE"):
+            build.validate_product(product)
+
     def test_external_flow_is_not_return(self):
         source = fixture()
         source["external_flows"]["2023-01-05"] = 100
@@ -288,7 +342,8 @@ class ManifestTests(unittest.TestCase):
                         "review": {"status": "PASS", "reviewer": "synthetic-reviewer", "reviewed_at": "2023-01-07",
                                    "product_sha256": product["product_sha256"]}}]
             entries[0]["review"].update(metadata_sha256=build.digest(product["metadata"]),
-                                         replay_bundle_reference_sha256=build.digest(entries[0]["replay_bundle"]))
+                                         replay_bundle_reference_sha256=build.digest(entries[0]["replay_bundle"]),
+                                         producer_evidence_sha256=build.digest(product["qualification"]))
             manifest = build.build_manifest(entries, "gs://example-fixtures/research/synthetic")
             self.assertEqual(len(build.validate_reviewed_manifest(manifest,
                                                                   "gs://example-fixtures/research/synthetic")), 1)
@@ -300,6 +355,18 @@ class ManifestTests(unittest.TestCase):
             tampered["targets"][0]["metadata"]["as_of"] = "2023-01-05"
             with self.assertRaisesRegex(build.consumer.ResearchStop, "BUNDLE_REVIEW_REQUIRED"):
                 build.validate_reviewed_manifest(tampered, "gs://example-fixtures/research/synthetic")
+            for field in ("engine_sha256", "adapter_sha256"):
+                with self.subTest(identity_field=field):
+                    tampered = copy.deepcopy(manifest)
+                    evidence = tampered["targets"][0]["producer_evidence"]
+                    evidence[field] = "f" * 64
+                    evidence["review"][field] = "f" * 64
+                    with self.assertRaisesRegex(build.consumer.ResearchStop, "REPLAY_CODE_IDENTITY_MISMATCH"):
+                        build.validate_reviewed_manifest(tampered, 'gs://example-fixtures/research/synthetic')
+            tampered = copy.deepcopy(manifest)
+            tampered["targets"][0]["producer_evidence"]["review"]["reviewer"] = "other-reviewer"
+            with self.assertRaisesRegex(build.consumer.ResearchStop, "BUNDLE_REVIEW_REQUIRED"):
+                build.validate_reviewed_manifest(tampered, 'gs://example-fixtures/research/synthetic')
             del manifest["targets"][0]["bundle_review"]
             with self.assertRaisesRegex(build.consumer.ResearchStop, "BUNDLE_REVIEW_REQUIRED"):
                 build.validate_reviewed_manifest(manifest, "gs://example-fixtures/research/synthetic")

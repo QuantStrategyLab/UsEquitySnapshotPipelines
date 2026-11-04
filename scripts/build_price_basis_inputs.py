@@ -165,8 +165,6 @@ def step(state, row, decision, inputs, stress):
     invested = sum(state["shares"][s] * state["marks"][s] for s in state["shares"])
     state["cash"] += max(0, state["cash"]) * costs["cash_yield"]["bps"] / 10000 * elapsed
     state["cash"] -= invested * costs["fund_expenses"]["bps"] / 10000 * elapsed * stress
-    state["cash"] += flow
-    denominator = positive(pre_flow + flow)
     # Splits precede ex-dividend cash, both on inherited pre-fill holdings.
     events = [e for e in inputs["corporate_actions"] if e["session"] == row["session"]]
     for event in sorted(events, key=lambda e: e["kind"] != "split"):
@@ -178,7 +176,10 @@ def step(state, row, decision, inputs, stress):
         else:
             state["cash"] += state["shares"][symbol] * event["cash_per_share"]
     opens = {s: b["open"] for s, b in row["raw_ohlc"].items()}
-    prefill_nav = positive(nav(state, opens))
+    # Unitize after carry, corporate actions and overnight marks, before fills.
+    flow_nav = positive(nav(state, opens))
+    state["cash"] += flow
+    prefill_nav = positive(flow_nav + flow)
     weights = decision["weights"]
     target = {s: math.floor(prefill_nav * weights.get(s, 0) / opens[s]) for s in opens}
     orders, fills, notional = {}, 0, 0.0
@@ -203,7 +204,24 @@ def step(state, row, decision, inputs, stress):
     closing_nav = positive(nav(state, state["marks"]))
     actual_weights = {s: state["shares"][s] * opens[s] / prefill_nav for s in opens}
     return {**copy.deepcopy(decision), "weights": actual_weights, "orders": orders, "turnover": notional / prefill_nav,
-            "trade_count": fills, "return": closing_nav / denominator - 1}
+            "trade_count": fills, "return": (flow_nav / pre_flow) * (closing_nav / prefill_nav) - 1}
+
+
+def validate_reporting_sessions(metadata, sessions):
+    """Check named exchange coverage independently of the supplied replay list."""
+    if metadata["calendar"] == 'SYNTHETIC':
+        return
+    as_of, inception, two_years = consumer.reporting_dates(metadata)
+    lower = min(inception, two_years) if inception else two_years
+    try:
+        import exchange_calendars as xcals
+
+        calendar = xcals.get_calendar(metadata["calendar"], start=lower, end=as_of)
+        expected = [s.date().isoformat() for s in calendar.sessions_in_range(lower, as_of)]
+    except Exception:
+        raise consumer.ResearchStop("EXCHANGE_CALENDAR_UNAVAILABLE") from None
+    supplied = [s for s in sessions if lower <= consumer.day(s) <= as_of]
+    require(supplied == expected, "SESSION_COVERAGE_INCOMPLETE")
 
 
 def produce(inputs, adapter):
@@ -232,6 +250,7 @@ def produce(inputs, adapter):
     if "inception" in inputs:
         metadata["inception"] = inputs["inception"]
     consumer.validate_metadata(metadata)
+    validate_reporting_sessions(metadata, sessions)
     as_of, inception, two_years = consumer.reporting_dates(metadata)
     boundaries = {"trailing_two_years": two_years}
     if inception is not None:
@@ -284,7 +303,7 @@ def produce(inputs, adapter):
     return product
 
 
-def validate_qualification(evidence):
+def validate_qualification(evidence, metadata):
     require(isinstance(evidence, dict), "PRODUCER_EVIDENCE_REQUIRED")
     for key in ("engine_sha256", "adapter_sha256", "input_sha256"):
         require(isinstance(evidence.get(key), str) and consumer.SHA.fullmatch(evidence[key]),
@@ -293,6 +312,8 @@ def validate_qualification(evidence):
             "PRODUCER_EVIDENCE_REQUIRED")
     require(evidence.get("status") in ("SYNTHETIC_ONLY", "REVIEW_BOUND_EQUITY_ONLY"),
             "REAL_QUALIFICATION_REQUIRED")
+    require(metadata["shared"]["replay_code_sha256"] == digest({k: evidence[k] for k in
+            ("engine_sha256", "adapter_sha256", "adapter_name", "python")}), "REPLAY_CODE_IDENTITY_MISMATCH")
     if evidence["status"] == "REVIEW_BOUND_EQUITY_ONLY":
         review = evidence.get("review", {})
         require(review.get("status") == "PASS" and review.get("scope") == "equity_only"
@@ -307,10 +328,8 @@ def validate_qualification(evidence):
 
 def validate_product(product):
     complete(product)
-    validate_qualification(product.get("qualification"))
-    evidence = product["qualification"]
-    require(product["metadata"]["shared"]["replay_code_sha256"] == digest({k: evidence[k] for k in
-            ("engine_sha256", "adapter_sha256", "adapter_name", "python")}), "REPLAY_CODE_IDENTITY_MISMATCH")
+    validate_qualification(product.get("qualification"), product["metadata"])
+    validate_reporting_sessions(product["metadata"], product["replay_sessions"])
     require(product["bundle_sha256"] == digest(product["bundle"]), "BUNDLE_DIGEST_MISMATCH")
     require(product["product_sha256"] == digest({k: v for k, v in product.items() if k != "product_sha256"}),
             "PRODUCT_DIGEST_MISMATCH")
@@ -334,7 +353,8 @@ def build_manifest(entries, root, synthetic=False):
             require(review.get("status") == "PASS" and bool(review.get("reviewer"))
                     and review.get("product_sha256") == product["product_sha256"]
                     and review.get("metadata_sha256") == digest(product["metadata"])
-                    and review.get("replay_bundle_reference_sha256") == digest(ref), "BUNDLE_REVIEW_REQUIRED")
+                    and review.get("replay_bundle_reference_sha256") == digest(ref)
+                    and review.get("producer_evidence_sha256") == digest(product["qualification"]), "BUNDLE_REVIEW_REQUIRED")
             consumer.day(review.get("reviewed_at"))
         ready += sum(v["status"] == "AGGREGATED" for v in result["windows"].values())
         targets.append({"alias": entry["alias"], "metadata": product["metadata"], "replay_bundle": ref,
@@ -359,14 +379,15 @@ def validate_reviewed_manifest(manifest, root, synthetic=False):
                                           "targets": manifest.get("targets")}, root)
     for target in targets:
         evidence = target.get("producer_evidence", {})
-        validate_qualification(evidence)
+        validate_qualification(evidence, target["metadata"])
         if not synthetic:
             require(evidence.get("status") == "REVIEW_BOUND_EQUITY_ONLY", "REAL_QUALIFICATION_REQUIRED")
             review = target.get("bundle_review", {})
             require(review.get("status") == "PASS" and bool(review.get("reviewer"))
                     and review.get("product_sha256") == target.get("product_sha256")
                     and review.get("metadata_sha256") == digest(target["metadata"])
-                    and review.get("replay_bundle_reference_sha256") == digest(target["replay_bundle"]),
+                    and review.get("replay_bundle_reference_sha256") == digest(target["replay_bundle"])
+                    and review.get("producer_evidence_sha256") == digest(evidence),
                     "BUNDLE_REVIEW_REQUIRED")
             consumer.day(review.get("reviewed_at"))
     expected_windows = sum(1 + (consumer.reporting_dates(t["metadata"])[1] is not None) for t in targets)
