@@ -50,6 +50,16 @@ The manifest supports at most 32 public aliases (`target-1` etc.).
 
 ## Supply a reviewed manifest
 
+The local producer `scripts/build_price_basis_inputs.py` checks reporting sessions
+against the named exchange calendar independently of the supplied session list.
+Its explicit fixture calendar remains available for fabricated offline tests.
+External flows occur at opening NAV after carry and corporate actions; returns
+chain the pre-flow and post-flow periods. Exported producer evidence must match
+`metadata.shared.replay_code_sha256`. The bundle review also requires
+`producer_evidence_sha256`, the SHA256 of the canonical producer qualification,
+to bind the complete exported evidence. Earlier reviews missing this binding
+must be regenerated before manifest validation.
+
 Prepare the manifest in the permitted cloud environment, review the full object
 references and metadata, then record its generation and SHA256. An input catalog
 or effective-config projection alone is not a comparison manifest. The manifest
