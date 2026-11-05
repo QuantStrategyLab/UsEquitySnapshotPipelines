@@ -42,8 +42,8 @@ def test_tqqq_workflow_uses_scoped_alpaca_headers_and_one_shot_p1_to_p3_path() -
     assert "Re-verify non-live scope record" in workflow
     assert workflow.index("Resolve non-live scope record before P1 acquisition") < workflow.index("Acquire and verify P1 root")
     assert "inputs.mandate_receipt_sha256" not in workflow
-    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
-    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
+    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" not in workflow
+    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" not in workflow
     assert "--api-key" not in workflow
     assert "--api-secret" not in workflow
     assert "--no-clobber" in workflow

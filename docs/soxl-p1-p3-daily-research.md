@@ -1,5 +1,7 @@
 # SOXL P1--P3 Daily Research Driver
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 The scheduled driver attempts one new candidate-bound SOXL P1 root after the
 preceding XNYS close.  It derives the cutoff from the pinned XNYS calendar,
 uses only the frozen P2 v3 identity, and uploads raw P1 members create-only.

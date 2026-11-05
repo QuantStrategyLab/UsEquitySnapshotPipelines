@@ -22,8 +22,8 @@ def test_batch_a_v2_workflow_is_manual_main_only_nonlive() -> None:
     assert "id-token: write" in workflow
     assert "workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" in workflow
     assert "service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}" in workflow
-    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
-    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
+    assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" not in workflow
+    assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" not in workflow
     assert "scripts/acquire_batch_a_v2_price_snapshots_alpaca.py" in workflow
     assert "--execute" in workflow
     assert "--batch-id" in workflow

@@ -1,5 +1,7 @@
 # TQQQ P2 v5 Daily Research Contract
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 `tqqq_core_only_p2_v5` is a frozen, research-only candidate for the daily
 P1-to-P3 lane.  It does not alter the TQQQ strategy rule, source revision,
 runtime configuration, tradable universe, costs, or parameter values used by

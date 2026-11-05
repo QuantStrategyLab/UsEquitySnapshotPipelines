@@ -1,5 +1,7 @@
 # TQQQ Validation and Shadow Policy
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 TQQQ strategy performance is evaluated in P3 with historical data; it does not
 wait for a new year of calendar time before the first meaningful result.
 

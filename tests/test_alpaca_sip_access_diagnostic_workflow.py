@@ -21,8 +21,8 @@ def test_fixed_probe_is_opt_in_and_uses_same_protected_secret_entry():
     assert "if: inputs.diagnostic_mode == 'access' || inputs.diagnostic_mode == ''" in workflow
     assert 'run: python scripts/alpaca_soxl_three_day_probe.py' in workflow
     probe_step = workflow.split('- name: Probe fixed SOXL three-day schema once')[1].split('- name: Upload')[0]
-    assert 'ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}' in probe_step
-    assert 'ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}' in probe_step
+    assert 'ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}' not in probe_step
+    assert 'ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}' not in probe_step
     assert 'DATE_CUTOFF: ${{ inputs.date_cutoff }}' in probe_step
     assert 'vars.' not in probe_step
     assert 'cancel-in-progress: false' in workflow

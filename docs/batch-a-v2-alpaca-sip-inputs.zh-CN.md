@@ -1,5 +1,7 @@
 # Batch A v2 Alpaca SIP 采集入口
 
+> 迁移说明：本仓库的 Alpaca 采集工作流已停用，公共行情采集迁至 [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit)。`market-data-nonlive` 中的两项 Alpaca 密钥已删除。下文采集操作仅供历史参考；当前行为见 [迁移说明](alpaca-migration.md)。
+
 审计 §9.15.27 D1。本入口只服务 `qsl.research.price_snapshot.v2`，与旧 Global ETF learning / R3 / Yahoo / `private-root` / v1 schema **互不复用、无兼容层**。
 
 ## 固定范围
@@ -21,7 +23,7 @@
 # 默认 PLAN_ONLY：不读凭据、不联网、不写文件
 python scripts/acquire_batch_a_v2_price_snapshots_alpaca.py
 
-# 仅允许 main GitHub Actions + market-data-nonlive；必须显式 batch id
+# 历史执行示例：当前工作流已停用，不再执行采集
 python scripts/acquire_batch_a_v2_price_snapshots_alpaca.py --execute --batch-id <batch_id>
 ```
 
@@ -34,7 +36,7 @@ python scripts/acquire_batch_a_v2_price_snapshots_alpaca.py --execute --batch-id
 - 仅 `workflow_dispatch`
 - `github.ref == refs/heads/main` guard
 - 输入：`execute`（boolean，默认 false）与显式 `batch_id`
-- 默认只打印 plan；`execute=true` 时使用既有 WIF（`GCP_WORKLOAD_IDENTITY_*`）与 `market-data-nonlive` 中的 Alpaca secrets
+- 当前工作流只报告迁移并失败；原 `execute=true` 采集路径已停用，`market-data-nonlive` 中的 Alpaca secrets 已删除。脚本本地默认 plan 仍可离线查看
 - **不新增**云资源、secret 或调度；本工程任务不触发真实采集
 
 ## Manifest

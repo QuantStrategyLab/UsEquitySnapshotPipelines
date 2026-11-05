@@ -16,7 +16,23 @@ permissions:
   id-token: write
 
 jobs:
+  alpaca-migration:
+    name: Alpaca acquisition moved to QuantPlatformKit
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Stop retired Alpaca acquisition
+        shell: bash
+        run: |
+          message='ALPACA_ACQUISITION_MOVED: Public market-data acquisition belongs to QuantStrategyLab/QuantPlatformKit. This UESP acquisition path is disabled; no fetch, replay, or publication was attempted. See docs/alpaca-migration.md.'
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s\n' "$message"
+          exit 1
+
   p1:
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     environment: market-data-nonlive
     outputs:
@@ -85,8 +101,6 @@ jobs:
       - name: Acquire and assess one daily P1 root
         id: acquire
         env:
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           DATE_CUTOFF: ${{ steps.binding.outputs.date_cutoff }}
         run: |
           set -euo pipefail
@@ -347,8 +361,10 @@ jobs:
           retention-days: 35
 
   p3:
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    if: ${{ false }}
     needs: p1
-    if: needs.p1.outputs.status == 'ACCEPTED'
+    # Previous condition: needs.p1.outputs.status == 'ACCEPTED'
     runs-on: ubuntu-latest
     environment: market-data-nonlive
     outputs:
@@ -651,8 +667,10 @@ jobs:
           retention-days: 35
 
   publish-control-plane:
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    if: ${{ false }}
     needs: [p1, p3]
-    if: always()
+    # Previous condition: always()
     runs-on: ubuntu-latest
     environment: market-data-nonlive
     permissions:
