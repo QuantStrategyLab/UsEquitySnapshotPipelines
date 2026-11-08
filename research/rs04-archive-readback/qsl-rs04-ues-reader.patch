@@ -1,0 +1,79 @@
+diff --git a/src/us_equity_strategies/research/kelly_private_runner.py b/src/us_equity_strategies/research/kelly_private_runner.py
+index b0547b4..f636f2b 100644
+--- a/src/us_equity_strategies/research/kelly_private_runner.py
++++ b/src/us_equity_strategies/research/kelly_private_runner.py
+@@ -18,0 +19 @@ import json
++import math
+@@ -72,0 +74,34 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++    bars, actions, _ = _load_archive(root, symbols, expected_manifest_sha256, with_payments=False)
++    return bars, actions
++
++
++def load_accounting_archive(
++    root: Path, symbols: Sequence[str], expected_manifest_sha256: str,
++) -> tuple[dict[str, list[RawBar]], dict[str, CorporateActions], dict[str, tuple[tuple[date, date, float], ...]]]:
++    """Read the same verified archive and retain (ex-date, payable-date, rate).
++
++    Provider process dates are not payment or historical availability evidence.
++    """
++    return _load_archive(root, symbols, expected_manifest_sha256, with_payments=True)
++
++
++def _accounting_action_id(row: Mapping, symbol: str, seen_ids: set[str]) -> str | None:
++    # The producer permits an absent symbol; an explicit mismatch is unusable.
++    if row.get("symbol") not in (None, symbol):
++        raise PrivateRunError(f"ACTION_SYMBOL_MISMATCH:{symbol}")
++    if row.get("currency", "USD") != "USD":
++        raise PrivateRunError(f"ACTION_CURRENCY_UNSUPPORTED:{symbol}")
++    revision_fields = ("cancelled", "canceled", "replaced_by", "replaces", "superseded_by", "replacement_id", "revision")
++    if row.get("status", "active") != "active" or any(row.get(field) for field in revision_fields):
++        raise PrivateRunError(f"ACTION_REVISION_UNSUPPORTED:{symbol}")
++    native_id = row.get("id")
++    if native_id is not None:
++        if not isinstance(native_id, str) or not 0 < len(native_id) <= 256 or native_id != native_id.strip():
++            raise PrivateRunError(f"ACTION_ID_INVALID:{symbol}")
++        if native_id in seen_ids:
++            raise PrivateRunError(f"ACTION_ID_DUPLICATE:{symbol}")
++        seen_ids.add(native_id)
++    return native_id
++
++
++def _load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: str, *, with_payments: bool):
+@@ -79,0 +115,2 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++    payments: dict[str, tuple[tuple[date, date, float], ...]] = {}
++    accounting_ids: set[str] = set()
+@@ -91,0 +129,2 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++        cash_events = []
++        dividend_identity_by_date: dict[date, bool] = {}
+@@ -98 +137,6 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                splits.append((date.fromisoformat(e["ex_date"]), float(e["new_rate"]) / float(e["old_rate"])))
++                new_rate, old_rate = float(e["new_rate"]), float(e["old_rate"])
++                if with_payments:
++                    _accounting_action_id(e, symbol, accounting_ids)
++                    if not all(math.isfinite(rate) and rate > 0 for rate in (new_rate, old_rate)):
++                        raise PrivateRunError(f"SPLIT_RATE_INVALID:{symbol}")
++                splits.append((date.fromisoformat(e["ex_date"]), new_rate / old_rate))
+@@ -100 +144 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                if e.get("symbol", symbol) != symbol:
++                if not with_payments and e.get("symbol", symbol) != symbol:
+@@ -102 +146,14 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                dividends.append((date.fromisoformat(e["ex_date"]), float(e["rate"])))
++                ex_date, rate = date.fromisoformat(e["ex_date"]), float(e["rate"])
++                dividends.append((ex_date, rate))
++                if with_payments:
++                    has_identity = _accounting_action_id(e, symbol, accounting_ids) is not None
++                    if ex_date in dividend_identity_by_date and not (has_identity and dividend_identity_by_date[ex_date]):
++                        raise PrivateRunError(f"DIVIDEND_SAME_DAY_AMBIGUOUS:{symbol}")
++                    dividend_identity_by_date[ex_date] = has_identity
++                    try:
++                        payable_date = date.fromisoformat(e.get("payable_date"))
++                    except (TypeError, ValueError):
++                        raise PrivateRunError(f"DIVIDEND_PAYMENT_DATE_UNVERIFIED:{symbol}") from None
++                    if payable_date < ex_date:
++                        raise PrivateRunError(f"DIVIDEND_PAYMENT_DATE_UNVERIFIED:{symbol}")
++                    cash_events.append((ex_date, payable_date, rate))
+@@ -104 +161,3 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-    return bars, actions
++        if with_payments:
++            payments[symbol] = tuple(cash_events)
++    return bars, actions, payments
