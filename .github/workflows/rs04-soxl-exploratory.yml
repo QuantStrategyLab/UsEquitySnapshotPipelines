@@ -33,7 +33,16 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
+      - name: Verify protected build binding
+        id: plan
+        env:
+          RS04_SOXL_EXPLORATORY_PLAN: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN }}
+          RS04_SOXL_EXPLORATORY_PLAN_SHA256: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN_SHA256 }}
+          RS04_SOXL_EXPLORATORY_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python research/rs04-soxl-exploratory/plan_tree.py
       - name: Prepare frozen replay sources
+        env:
+          EXPECTED_UES_TREE: ${{ steps.plan.outputs.ues_tree }}
         shell: bash
         run: |
           set -euo pipefail
@@ -48,7 +57,7 @@ jobs:
           pin_repo UsEquityStrategies a93fea4ae37de22938f4ecc398e54460f276f85a "$RUNNER_TEMP/ues"
           pin_repo QuantPlatformKit c5d6b2f68ffb75b672ec764bcc33d75159df77ee "$RUNNER_TEMP/qpk"
           git -C "$RUNNER_TEMP/ues" apply --unidiff-zero --index "$base/frozen-ues.patch"
-          test "$(git -C "$RUNNER_TEMP/ues" write-tree)" = e341e17612051874817ed8dfc21c82b564a96871
+          test "$(git -C "$RUNNER_TEMP/ues" write-tree)" = "$EXPECTED_UES_TREE"
           python -m pip install 'uv==0.11.19'
           uv sync --locked --extra test --no-dev --no-editable --python 3.11
       - name: Run offline entry and output tests
@@ -58,7 +67,7 @@ jobs:
           base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
           export PYTHONPATH="$base:$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$GITHUB_WORKSPACE/research/rs04-archive-readback"
           export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-          .venv/bin/python -m pytest -q "$base/check_protected_exploratory.py" "$base/check_exploratory.py" "$base/check_private_result.py" "$base/check_exploratory_e2e.py"
+          .venv/bin/python -m pytest -q "$base/check_plan_tree.py" "$base/check_protected_exploratory.py" "$base/check_exploratory.py" "$base/check_private_result.py" "$base/check_exploratory_e2e.py"
       - name: Verify reviewed plan and prepare existing identity
         shell: bash
         env:
