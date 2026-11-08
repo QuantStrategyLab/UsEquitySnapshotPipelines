@@ -1,0 +1,91 @@
+name: RS04 SOXL group event reconciliation
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed and merged main SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rs04-soxl-event-reconciliation
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1 && github.sha == inputs.expected_sha
+    runs-on: ubuntu-latest
+    environment: market-data-nonlive
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Prepare pinned reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin_repo() {
+            local repo="$1" revision="$2" dst="$3"
+            git init -q "$dst"
+            git -C "$dst" fetch -q --depth=1 "https://github.com/QuantStrategyLab/$repo.git" "$revision"
+            git -C "$dst" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$dst" rev-parse HEAD)" = "$revision"
+          }
+          base="$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          pin_repo UsEquityStrategies a93fea4ae37de22938f4ecc398e54460f276f85a "$RUNNER_TEMP/ues"
+          pin_repo QuantPlatformKit c5d6b2f68ffb75b672ec764bcc33d75159df77ee "$RUNNER_TEMP/qpk"
+          git -C "$RUNNER_TEMP/ues" apply --unidiff-zero "$base/qsl-rs04-ues-reader.patch"
+          python -m pip install 'uv==0.11.19'
+          uv sync --locked --no-dev --no-editable --python 3.11
+          uv pip install --python .venv/bin/python 'google-cloud-storage==3.12.0' 'exchange-calendars==4.13.2'
+          PYTHONPATH="$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$base" .venv/bin/python -c 'import inspect_gcs; inspect_gcs.registered_calendar()'
+      - name: Verify SOXL group comparison with local fixtures
+        shell: bash
+        run: |
+          .venv/bin/python -m unittest discover -s research/rs04-archive-readback/soxl -v
+      - name: Validate private archive binding and mask identity fields
+        shell: bash
+        env:
+          RS04_HIST01_BINDING: ${{ secrets.RS04_HIST01_BINDING }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          PYTHONPATH="$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$base" \
+            .venv/bin/python "$base/inspect_gcs.py" --prepare-identity
+      - name: Confirm existing research identity and root
+        shell: bash
+        env:
+          RS04_SCOPE_MATCHES: ${{ env.RS04_WIF_PROVIDER == vars.GCP_WORKLOAD_IDENTITY_PROVIDER && env.RS04_WIF_SERVICE_ACCOUNT == vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT && env.RS04_GCP_PROJECT == vars.GCP_PROJECT_ID && env.RS04_HIST01_ROOT == vars.RS04_INPUT_ROOT }}
+        run: |
+          if [[ "$RS04_SCOPE_MATCHES" != true ]]; then
+            echo '{"status":"PARKED","reason_code":"EXISTING_RESEARCH_SCOPE_MISMATCH"}' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 2
+          fi
+      - name: Authenticate existing research OIDC identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ env.RS04_WIF_PROVIDER }}
+          service_account: ${{ env.RS04_WIF_SERVICE_ACCOUNT }}
+          project_id: ${{ env.RS04_GCP_PROJECT }}
+      - name: Compare the three fixed action pages and emit aggregate counts
+        shell: bash
+        env:
+          RS04_HIST01_BINDING: ${{ secrets.RS04_HIST01_BINDING }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          PYTHONPATH="$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$base" \
+            .venv/bin/python "$base/soxl/soxl_readback.py" | tee -a "$GITHUB_STEP_SUMMARY"
