@@ -1,5 +1,4 @@
 diff --git a/docs/research/rs04-cloud-archive-registration.md b/docs/research/rs04-cloud-archive-registration.md
-index f388cc2..e616003 100644
 --- a/docs/research/rs04-cloud-archive-registration.md
 +++ b/docs/research/rs04-cloud-archive-registration.md
 @@ -37,0 +38,8 @@ trial universe. Existing qualification gates still return `PARKED` with
@@ -12,7 +11,6 @@ index f388cc2..e616003 100644
 +payable dates; a provider process date is not a substitute. The existing core
 +return loader retains its original ex-date behavior.
 diff --git a/src/us_equity_strategies/research/fractional_kelly_walk_forward.py b/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
-index 7fc6792..d959058 100644
 --- a/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
 +++ b/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
 @@ -114 +114 @@ def fit_fractional_kelly(strategy: Sequence[float], cash: Sequence[float], c: fl
@@ -24,7 +22,6 @@ index 7fc6792..d959058 100644
 +    if any(not math.isfinite(value) for value in itertools.chain(strategy, cash)):
 +        raise ValueError("TRAINING_RETURNS_INVALID")
 diff --git a/src/us_equity_strategies/research/kelly_core_return_generator.py b/src/us_equity_strategies/research/kelly_core_return_generator.py
-index b2817ae..9d1df17 100644
 --- a/src/us_equity_strategies/research/kelly_core_return_generator.py
 +++ b/src/us_equity_strategies/research/kelly_core_return_generator.py
 @@ -234 +234,2 @@ def _replay(strategy_key: str, sessions: Sequence[date], asset_returns: Mapping[
@@ -105,7 +102,6 @@ index b2817ae..9d1df17 100644
 +                   {a: _first_index(bars.get(a), sessions) for a in ("QQQM", "BOXX")},
 +                   observe_decision=observe_decision)
 diff --git a/src/us_equity_strategies/research/kelly_private_runner.py b/src/us_equity_strategies/research/kelly_private_runner.py
-index b0547b4..f636f2b 100644
 --- a/src/us_equity_strategies/research/kelly_private_runner.py
 +++ b/src/us_equity_strategies/research/kelly_private_runner.py
 @@ -18,0 +19 @@ import json
@@ -184,7 +180,6 @@ index b0547b4..f636f2b 100644
 +            payments[symbol] = tuple(cash_events)
 +    return bars, actions, payments
 diff --git a/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py b/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
-index 796fb9f..50cde24 100644
 --- a/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
 +++ b/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
 @@ -183 +182,0 @@ def fit_portfolio_kelly(assets: Sequence[str], strategy: Mapping[str, Sequence[f
@@ -192,7 +187,6 @@ index 796fb9f..50cde24 100644
 @@ -188,0 +188 @@ def fit_portfolio_kelly(assets: Sequence[str], strategy: Mapping[str, Sequence[f
 +    singles = {a: rs04.fit_fractional_kelly(strategy[a], cash, 0.5) for a in assets}
 diff --git a/src/us_equity_strategies/research/rs04_b3_cloud.py b/src/us_equity_strategies/research/rs04_b3_cloud.py
-index 0ae9f4e..1e9c945 100644
 --- a/src/us_equity_strategies/research/rs04_b3_cloud.py
 +++ b/src/us_equity_strategies/research/rs04_b3_cloud.py
 @@ -65,3 +65,21 @@ def inspect_manifest(manifest: Mapping, identity: Mapping) -> dict:
@@ -230,7 +224,6 @@ index 0ae9f4e..1e9c945 100644
 +            "declares_raw": raw_adjustment,
 +            "required_symbol_coverage_present": coverage,
 diff --git a/src/us_equity_strategies/research/rs04_b3_runner.py b/src/us_equity_strategies/research/rs04_b3_runner.py
-index e9e96cb..f63d3f2 100644
 --- a/src/us_equity_strategies/research/rs04_b3_runner.py
 +++ b/src/us_equity_strategies/research/rs04_b3_runner.py
 @@ -20 +20 @@ from .rs04_b3 import (Bar, Features, State, advance, build_features, cap_targets
@@ -251,7 +244,6 @@ index e9e96cb..f63d3f2 100644
 +                    fee_schedule.commission_per_share_usd*abs(change), fee_schedule.commission_bps/10000*notional)
 +                slippage = cost_multiplier*fee_schedule.slippage_including_spread_bps/10000*notional
 diff --git a/tests/research/test_fractional_kelly_walk_forward.py b/tests/research/test_fractional_kelly_walk_forward.py
-index 18184cd..a2b5635 100644
 --- a/tests/research/test_fractional_kelly_walk_forward.py
 +++ b/tests/research/test_fractional_kelly_walk_forward.py
 @@ -210,0 +211,13 @@ def test_weak_or_negative_edge_goes_to_cash():
@@ -269,7 +261,6 @@ index 18184cd..a2b5635 100644
 +
 +
 diff --git a/tests/research/test_kelly_core_return_generator.py b/tests/research/test_kelly_core_return_generator.py
-index 10d9f81..4097216 100644
 --- a/tests/research/test_kelly_core_return_generator.py
 +++ b/tests/research/test_kelly_core_return_generator.py
 @@ -613,0 +614,141 @@ def test_call_receipt_cli_ci_guard_never_calls_runner(tmp_path, monkeypatch, ci_
@@ -415,7 +406,6 @@ index 10d9f81..4097216 100644
 +            bars, {}, days, effective_core_config={**config, "blend_gate_volatility_delever_redirect_symbol": "QQQ"},
 +        )
 diff --git a/tests/research/test_rs04_b3_cloud.py b/tests/research/test_rs04_b3_cloud.py
-index d4d4aa7..583a781 100644
 --- a/tests/research/test_rs04_b3_cloud.py
 +++ b/tests/research/test_rs04_b3_cloud.py
 @@ -163,0 +164,31 @@ def test_native_reader_rejects_another_root_before_subprocess(monkeypatch):
