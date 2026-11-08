@@ -77,7 +77,7 @@ def issuer_events(source):
     return events
 
 
-def archive_events(data, read_exact):
+def archive_events(data, read_exact, *, symbols=SYMBOLS):
     regref = reference(data["registration"], 128 * 1024)
     manref = reference(data["manifest"], 128 * 1024)
     reg = json.loads(read_exact("registration.json", regref))
@@ -97,7 +97,7 @@ def archive_events(data, read_exact):
         raise Stop("DUPLICATE_REGISTERED_MEMBER")
     result = {}
     ids = set()
-    for symbol in SYMBOLS:
+    for symbol in symbols:
         items = [x for x in manifest["inputs"] if x["kind"] == "actions" and x["symbol"] == symbol]
         if (len(items) != 1 or items[0]["complete_pagination"] is not True
                 or items[0]["count"] != sum(COUNTS[symbol]) or len(items[0]["pages"]) != 1):
