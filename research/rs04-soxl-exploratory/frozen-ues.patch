@@ -1,0 +1,442 @@
+diff --git a/docs/research/rs04-cloud-archive-registration.md b/docs/research/rs04-cloud-archive-registration.md
+--- a/docs/research/rs04-cloud-archive-registration.md
++++ b/docs/research/rs04-cloud-archive-registration.md
+@@ -37,0 +38,8 @@ trial universe. Existing qualification gates still return `PARKED` with
++
++B3 metadata inspection recognizes the registered raw SIP input schema and reports
++whether each required symbol declares complete bars and actions pagination. These
++are declarations only: independent license, historical PIT, baseline and other
++qualification requirements remain in force. The archive accounting loader retains
++cash-dividend ex-date and payable-date separately and rejects missing or invalid
++payable dates; a provider process date is not a substitute. The existing core
++return loader retains its original ex-date behavior.
+diff --git a/src/us_equity_strategies/research/fractional_kelly_walk_forward.py b/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
+--- a/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
++++ b/src/us_equity_strategies/research/fractional_kelly_walk_forward.py
+@@ -114 +114 @@ def fit_fractional_kelly(strategy: Sequence[float], cash: Sequence[float], c: fl
+-    """Fit one training sample; PARKED (f=0) when the sample cannot support it."""
++    """Fit aligned finite returns; park valid samples that cannot support a fit."""
+@@ -115,0 +116,4 @@ def fit_fractional_kelly(strategy: Sequence[float], cash: Sequence[float], c: fl
++    if len(cash) != n:
++        raise ValueError("SESSIONS_NOT_ALIGNED")
++    if any(not math.isfinite(value) for value in itertools.chain(strategy, cash)):
++        raise ValueError("TRAINING_RETURNS_INVALID")
+diff --git a/src/us_equity_strategies/research/kelly_core_return_generator.py b/src/us_equity_strategies/research/kelly_core_return_generator.py
+--- a/src/us_equity_strategies/research/kelly_core_return_generator.py
++++ b/src/us_equity_strategies/research/kelly_core_return_generator.py
+@@ -234 +234,2 @@ def _replay(strategy_key: str, sessions: Sequence[date], asset_returns: Mapping[
+-            trade_start: date | None, available_from: Mapping[str, int] | None = None) -> CorePath:
++            trade_start: date | None, available_from: Mapping[str, int] | None = None,
++            observe_decision: Callable[[date, dict[str, float]], None] | None = None) -> CorePath:
+@@ -284,0 +286,2 @@ def _replay(strategy_key: str, sessions: Sequence[date], asset_returns: Mapping[
++        if observe_decision is not None:
++            observe_decision(sessions[i], dict(pending))
+@@ -294,0 +298,16 @@ def _filtered_kwargs(fn: Callable, config: Mapping[str, object], drop: Sequence[
++def _research_planner_config(fn, defaults, overrides, runtime_fields, effective_core_config, *, identity_fields=()):
++    config = dict(defaults)
++    if effective_core_config is not None:
++        planner_fields = set(inspect.signature(fn).parameters) - set(runtime_fields)
++        supported = planner_fields | set(identity_fields)
++        required = (supported & defaults.keys()) - overrides.keys()
++        supplied = effective_core_config.keys()
++        if supplied - supported:
++            raise CoreGeneratorError("EFFECTIVE_CORE_CONFIG_FIELDS_UNSUPPORTED")
++        if required - supplied:
++            raise CoreGeneratorError("EFFECTIVE_CORE_CONFIG_INCOMPLETE")
++        config.update(effective_core_config)
++    config.update(overrides)
++    return config
++
++
+@@ -299 +318,3 @@ def generate_soxl_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-                            indicator_history_bars: int = LIVE_INDICATOR_HISTORY_BARS) -> CorePath:
++                            indicator_history_bars: int = LIVE_INDICATOR_HISTORY_BARS,
++                            observe_decision: Callable[[date, dict[str, float]], None] | None = None,
++                            effective_core_config: Mapping[str, object] | None = None) -> CorePath:
+@@ -305,3 +326,13 @@ def generate_soxl_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-    config = dict(soxl_soxx_trend_income_manifest.default_config)
+-    config.update(SOXL_NO_PLUGIN_OVERRIDES)
+-    kwargs = _filtered_kwargs(build_rebalance_plan, config, ("indicators", "account_state", "translator"))
++    runtime_fields = ("indicators", "account_state", "translator", "observer")
++    config = _research_planner_config(
++        build_rebalance_plan, soxl_soxx_trend_income_manifest.default_config, SOXL_NO_PLUGIN_OVERRIDES,
++        runtime_fields, effective_core_config,
++    )
++    if effective_core_config is not None and any(
++        config[key] not in SOXL_SIGNAL_SYMBOLS for key in (
++            "blend_gate_trend_source", "blend_gate_volatility_delever_symbol",
++            "blend_gate_volatility_delever_redirect_symbol",
++        )
++    ):
++        raise CoreGeneratorError("SOXL_UNSUPPORTED_CORE_SYMBOL")
++    kwargs = _filtered_kwargs(build_rebalance_plan, config, runtime_fields)
+@@ -379,0 +411,4 @@ def generate_soxl_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
++        if effective_core_config is not None and any(
++            symbol not in SOXL_ASSETS and float(value or 0.0) > 0 for symbol, value in targets.items()
++        ):
++            raise CoreGeneratorError("SOXL_UNEXPECTED_TARGET_SYMBOLS")
+@@ -386 +421,2 @@ def generate_soxl_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-                   SOXL_ASSETS, decide, trade_start, {"BOXX": _first_index(bars.get("BOXX"), sessions)})
++                   SOXL_ASSETS, decide, trade_start, {"BOXX": _first_index(bars.get("BOXX"), sessions)},
++                   observe_decision=observe_decision)
+@@ -391 +427,3 @@ def generate_tqqq_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-                            min_history: int = 252, signal_price_basis: str = SIGNAL_TOTAL_RETURN) -> CorePath:
++                            min_history: int = 252, signal_price_basis: str = SIGNAL_TOTAL_RETURN,
++                            observe_decision: Callable[[date, dict[str, float]], None] | None = None,
++                            effective_core_config: Mapping[str, object] | None = None) -> CorePath:
+@@ -398,4 +436,8 @@ def generate_tqqq_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-    config = dict(tqqq_growth_income_manifest.default_config)
+-    config.update(TQQQ_NO_PLUGIN_OVERRIDES)
+-    kwargs = _filtered_kwargs(build_rebalance_plan, config,
+-                              ("qqq_history", "snapshot", "signal_text_fn", "translator"))
++    runtime_fields = ("qqq_history", "snapshot", "signal_text_fn", "translator")
++    config = _research_planner_config(
++        build_rebalance_plan, tqqq_growth_income_manifest.default_config, TQQQ_NO_PLUGIN_OVERRIDES,
++        runtime_fields, effective_core_config, identity_fields=("benchmark_symbol",),
++    )
++    if effective_core_config is not None and config["benchmark_symbol"] != TQQQ_SIGNAL_SYMBOL:
++        raise CoreGeneratorError("BENCHMARK_SYMBOL_CHANGED")
++    kwargs = _filtered_kwargs(build_rebalance_plan, config, runtime_fields)
+@@ -444 +486,2 @@ def generate_tqqq_core_path(bars: Mapping[str, Sequence[RawBar]], actions: Mappi
+-                   {a: _first_index(bars.get(a), sessions) for a in ("QQQM", "BOXX")})
++                   {a: _first_index(bars.get(a), sessions) for a in ("QQQM", "BOXX")},
++                   observe_decision=observe_decision)
+diff --git a/src/us_equity_strategies/research/kelly_private_runner.py b/src/us_equity_strategies/research/kelly_private_runner.py
+--- a/src/us_equity_strategies/research/kelly_private_runner.py
++++ b/src/us_equity_strategies/research/kelly_private_runner.py
+@@ -18,0 +19 @@ import json
++import math
+@@ -72,0 +74,34 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++    bars, actions, _ = _load_archive(root, symbols, expected_manifest_sha256, with_payments=False)
++    return bars, actions
++
++
++def load_accounting_archive(
++    root: Path, symbols: Sequence[str], expected_manifest_sha256: str,
++) -> tuple[dict[str, list[RawBar]], dict[str, CorporateActions], dict[str, tuple[tuple[date, date, float], ...]]]:
++    """Read the same verified archive and retain (ex-date, payable-date, rate).
++
++    Provider process dates are not payment or historical availability evidence.
++    """
++    return _load_archive(root, symbols, expected_manifest_sha256, with_payments=True)
++
++
++def _accounting_action_id(row: Mapping, symbol: str, seen_ids: set[str]) -> str | None:
++    # The producer permits an absent symbol; an explicit mismatch is unusable.
++    if row.get("symbol") not in (None, symbol):
++        raise PrivateRunError(f"ACTION_SYMBOL_MISMATCH:{symbol}")
++    if row.get("currency", "USD") != "USD":
++        raise PrivateRunError(f"ACTION_CURRENCY_UNSUPPORTED:{symbol}")
++    revision_fields = ("cancelled", "canceled", "replaced_by", "replaces", "superseded_by", "replacement_id", "revision")
++    if row.get("status", "active") != "active" or any(row.get(field) for field in revision_fields):
++        raise PrivateRunError(f"ACTION_REVISION_UNSUPPORTED:{symbol}")
++    native_id = row.get("id")
++    if native_id is not None:
++        if not isinstance(native_id, str) or not 0 < len(native_id) <= 256 or native_id != native_id.strip():
++            raise PrivateRunError(f"ACTION_ID_INVALID:{symbol}")
++        if native_id in seen_ids:
++            raise PrivateRunError(f"ACTION_ID_DUPLICATE:{symbol}")
++        seen_ids.add(native_id)
++    return native_id
++
++
++def _load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: str, *, with_payments: bool):
+@@ -79,0 +115,2 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++    payments: dict[str, tuple[tuple[date, date, float], ...]] = {}
++    accounting_ids: set[str] = set()
+@@ -91,0 +129,2 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
++        cash_events = []
++        dividend_identity_by_date: dict[date, bool] = {}
+@@ -98 +137,6 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                splits.append((date.fromisoformat(e["ex_date"]), float(e["new_rate"]) / float(e["old_rate"])))
++                new_rate, old_rate = float(e["new_rate"]), float(e["old_rate"])
++                if with_payments:
++                    _accounting_action_id(e, symbol, accounting_ids)
++                    if not all(math.isfinite(rate) and rate > 0 for rate in (new_rate, old_rate)):
++                        raise PrivateRunError(f"SPLIT_RATE_INVALID:{symbol}")
++                splits.append((date.fromisoformat(e["ex_date"]), new_rate / old_rate))
+@@ -100 +144 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                if e.get("symbol", symbol) != symbol:
++                if not with_payments and e.get("symbol", symbol) != symbol:
+@@ -102 +146,14 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-                dividends.append((date.fromisoformat(e["ex_date"]), float(e["rate"])))
++                ex_date, rate = date.fromisoformat(e["ex_date"]), float(e["rate"])
++                dividends.append((ex_date, rate))
++                if with_payments:
++                    has_identity = _accounting_action_id(e, symbol, accounting_ids) is not None
++                    if ex_date in dividend_identity_by_date and not (has_identity and dividend_identity_by_date[ex_date]):
++                        raise PrivateRunError(f"DIVIDEND_SAME_DAY_AMBIGUOUS:{symbol}")
++                    dividend_identity_by_date[ex_date] = has_identity
++                    try:
++                        payable_date = date.fromisoformat(e.get("payable_date"))
++                    except (TypeError, ValueError):
++                        raise PrivateRunError(f"DIVIDEND_PAYMENT_DATE_UNVERIFIED:{symbol}") from None
++                    if payable_date < ex_date:
++                        raise PrivateRunError(f"DIVIDEND_PAYMENT_DATE_UNVERIFIED:{symbol}")
++                    cash_events.append((ex_date, payable_date, rate))
+@@ -104 +161,3 @@ def load_archive(root: Path, symbols: Sequence[str], expected_manifest_sha256: s
+-    return bars, actions
++        if with_payments:
++            payments[symbol] = tuple(cash_events)
++    return bars, actions, payments
+diff --git a/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py b/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
+--- a/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
++++ b/src/us_equity_strategies/research/portfolio_kelly_walk_forward.py
+@@ -183 +182,0 @@ def fit_portfolio_kelly(assets: Sequence[str], strategy: Mapping[str, Sequence[f
+-    singles = {a: rs04.fit_fractional_kelly(strategy[a], cash, 0.5) for a in assets}
+@@ -188,0 +188 @@ def fit_portfolio_kelly(assets: Sequence[str], strategy: Mapping[str, Sequence[f
++    singles = {a: rs04.fit_fractional_kelly(strategy[a], cash, 0.5) for a in assets}
+diff --git a/src/us_equity_strategies/research/rs04_b3_cloud.py b/src/us_equity_strategies/research/rs04_b3_cloud.py
+--- a/src/us_equity_strategies/research/rs04_b3_cloud.py
++++ b/src/us_equity_strategies/research/rs04_b3_cloud.py
+@@ -65,3 +65,21 @@ def inspect_manifest(manifest: Mapping, identity: Mapping) -> dict:
+-    schema = manifest.get("schema")
+-    recognised = schema == "qsl.research.price_snapshot.v2"
+-    symbols = manifest.get("symbols", [])
++    recognised = manifest.get("schema") == "qsl.research.price_snapshot.v2"
++    raw_sip = manifest.get("schema_version") == "qsl.research.raw_sip_input.v1"
++    required_symbols = {"SOXL", "SOXX", "QQQ", "TQQQ", "QQQM", "BOXX"}
++    if raw_sip:
++        provider_is_alpaca = manifest.get("source") == "alpaca.stocks.bars.v2_and_corporate_actions.v1"
++        raw_adjustment = manifest.get("price_adjustment") == "raw"
++        inputs = manifest.get("inputs")
++        members = {
++            (item["symbol"], item["kind"])
++            for item in (inputs if isinstance(inputs, list) else ())
++            if isinstance(item, Mapping)
++            and isinstance(item.get("symbol"), str)
++            and isinstance(item.get("kind"), str)
++            and item.get("complete_pagination") is True
++        }
++        coverage = all((symbol, kind) in members for symbol in required_symbols for kind in ("bars", "actions"))
++    else:
++        provider_is_alpaca = manifest.get("provider") == "alpaca"
++        raw_adjustment = manifest.get("adjustment") == "raw"
++        symbols = manifest.get("symbols")
++        coverage = isinstance(symbols, list) and all(symbol in symbols for symbol in required_symbols)
+@@ -70,4 +88,4 @@ def inspect_manifest(manifest: Mapping, identity: Mapping) -> dict:
+-            "declares_alpaca_sip": manifest.get("provider") == "alpaca" and manifest.get("feed") == "sip",
+-            "declares_raw": manifest.get("adjustment") == "raw",
+-            "required_symbol_coverage_present": isinstance(symbols, list) and
+-                set(("SOXL", "SOXX", "QQQ", "TQQQ", "QQQM", "BOXX")).issubset(symbols),
++            "recognised_raw_sip_input_v1": raw_sip,
++            "declares_alpaca_sip": provider_is_alpaca and manifest.get("feed") == "sip",
++            "declares_raw": raw_adjustment,
++            "required_symbol_coverage_present": coverage,
+diff --git a/src/us_equity_strategies/research/rs04_b3_runner.py b/src/us_equity_strategies/research/rs04_b3_runner.py
+--- a/src/us_equity_strategies/research/rs04_b3_runner.py
++++ b/src/us_equity_strategies/research/rs04_b3_runner.py
+@@ -20 +20 @@ from .rs04_b3 import (Bar, Features, State, advance, build_features, cap_targets
+-from .rs04_b3_config import CONFIG, config_identity
++from .rs04_b3_config import CONFIG, Registration, config_identity
+@@ -53 +53,2 @@ class Ledger:
+-                  loss_per_share: Mapping[str, float] | None = None) -> dict[str, float]:
++                  loss_per_share: Mapping[str, float] | None = None,
++                  fee_schedule: Registration = CONFIG) -> dict[str, float]:
+@@ -59 +60 @@ class Ledger:
+-        if cost_multiplier not in CONFIG.cost_multipliers:
++        if cost_multiplier not in fee_schedule.cost_multipliers:
+@@ -78,3 +79,3 @@ class Ledger:
+-                commission = cost_multiplier*max(CONFIG.minimum_commission_usd,
+-                    CONFIG.commission_per_share_usd*abs(change), CONFIG.commission_bps/10000*notional)
+-                slippage = cost_multiplier*CONFIG.slippage_including_spread_bps/10000*notional
++                commission = cost_multiplier*max(fee_schedule.minimum_commission_usd,
++                    fee_schedule.commission_per_share_usd*abs(change), fee_schedule.commission_bps/10000*notional)
++                slippage = cost_multiplier*fee_schedule.slippage_including_spread_bps/10000*notional
+diff --git a/tests/research/test_fractional_kelly_walk_forward.py b/tests/research/test_fractional_kelly_walk_forward.py
+--- a/tests/research/test_fractional_kelly_walk_forward.py
++++ b/tests/research/test_fractional_kelly_walk_forward.py
+@@ -210,0 +211,13 @@ def test_weak_or_negative_edge_goes_to_cash():
++@pytest.mark.parametrize("cash_count", [57, 253])
++def test_direct_fit_rejects_incomplete_or_extra_cash_sessions(cash_count):
++    sample = [0.02, -0.01] * 126
++    with pytest.raises(ValueError, match="SESSIONS_NOT_ALIGNED"):
++        rs04.fit_fractional_kelly(sample, [0.0] * cash_count, 0.25)
++
++
++def test_direct_fit_rejects_nonfinite_cash():
++    sample = [0.02, -0.01] * 126
++    with pytest.raises(ValueError, match="TRAINING_RETURNS_INVALID"):
++        rs04.fit_fractional_kelly(sample, [0.0] * 251 + [float("nan")], 0.25)
++
++
+diff --git a/tests/research/test_kelly_core_return_generator.py b/tests/research/test_kelly_core_return_generator.py
+--- a/tests/research/test_kelly_core_return_generator.py
++++ b/tests/research/test_kelly_core_return_generator.py
+@@ -613,0 +614,141 @@ def test_call_receipt_cli_ci_guard_never_calls_runner(tmp_path, monkeypatch, ci_
++
++
++@pytest.mark.parametrize("payable_date", ["2020-01-07", None, "2020-01-02"])
++def test_accounting_archive_preserves_payment_date_without_retiming_legacy_returns(tmp_path, payable_date):
++    ex_date = date(2020, 1, 3)
++    bars = {"SOXL": [gen.RawBar(ex_date, 100.0, 100.0)]}
++    dividend = {"ex_date": str(ex_date), "rate": "0.25", "process_date": "2020-01-06"}
++    if payable_date is not None:
++        dividend["payable_date"] = payable_date
++    sha = _write_archive(tmp_path, bars, {"SOXL": {"cash_dividends": [dividend]}})
++    legacy_bars, legacy_actions = runner.load_archive(tmp_path, ["SOXL"], sha)
++    assert legacy_actions["SOXL"].dividends == ((ex_date, 0.25),)
++
++    if payable_date == "2020-01-07":
++        new_bars, new_actions, payments = runner.load_accounting_archive(tmp_path, ["SOXL"], sha)
++        assert new_bars == legacy_bars and new_actions == legacy_actions
++        assert payments == {"SOXL": ((ex_date, date(2020, 1, 7), 0.25),)}
++    else:
++        with pytest.raises(runner.PrivateRunError, match="DIVIDEND_PAYMENT_DATE_UNVERIFIED:SOXL"):
++            runner.load_accounting_archive(tmp_path, ["SOXL"], sha)
++
++
++def test_registered_manifest_and_accounting_archive_share_synthetic_input(tmp_path, monkeypatch):
++    from us_equity_strategies.research import rs04_b3_cloud as cloud
++
++    symbols = ("SOXL", "SOXX", "QQQ", "TQQQ", "QQQM", "BOXX")
++    ex_date = date(2020, 1, 3)
++    bars = {s: [gen.RawBar(ex_date, 100.0, 100.0)] for s in symbols}
++    _write_archive(tmp_path, bars, {"SOXL": {"cash_dividends": [{
++        "ex_date": str(ex_date), "payable_date": "2020-01-07", "rate": "0.25",
++    }]}})
++    manifest_path = tmp_path / "manifest.json"
++    manifest = json.loads(manifest_path.read_text())
++    manifest.update(schema_version="qsl.research.raw_sip_input.v1",
++                    source="alpaca.stocks.bars.v2_and_corporate_actions.v1",
++                    feed="sip", price_adjustment="raw")
++    manifest_path.write_text(json.dumps(manifest))
++    sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
++    monkeypatch.setenv("RS04_INPUT_ROOT", "gs://synthetic-study-inputs/research/v2/input/")
++    report = cloud.cloud_report(execute=True, cloud=True, today=date(2026, 10, 15),
++        sources=[cloud.input_root() + "fixture/manifest.json"],
++        reader=lambda _: (manifest, {"generation": "1", "sha256": sha}))
++    metadata = report["source_metadata"][0]
++    assert metadata["required_symbol_coverage_present"] and metadata["declares_raw"]
++    assert not metadata["raw_plus_actions_qualified"] and report["status"] == "PARKED"
++    assert "RAW_OHLC_ACTIONS_LICENSE_PIT_NOT_BOUND" in report["blockers"]
++    _, actions, payments = runner.load_accounting_archive(tmp_path, symbols, sha)
++    assert actions["SOXL"].dividends == ((ex_date, 0.25),)
++    assert payments["SOXL"] == ((ex_date, date(2020, 1, 7), 0.25),)
++    with pytest.raises(runner.PrivateRunError, match="ARCHIVE_MANIFEST_SHA256_MISMATCH"):
++        runner.load_accounting_archive(tmp_path, symbols, "0" * 64)
++
++
++@pytest.mark.parametrize(("kind", "changes", "reason"), [
++    ("forward_splits", [{"symbol": "TQQQ", "new_rate": "2", "old_rate": "1"}], "ACTION_SYMBOL_MISMATCH"),
++    ("forward_splits", [{"new_rate": "-2", "old_rate": "-1"}], "SPLIT_RATE_INVALID"),
++    ("cash_dividends", [{"currency": "CAD"}], "ACTION_CURRENCY_UNSUPPORTED"),
++    ("cash_dividends", [{"status": "cancelled"}], "ACTION_REVISION_UNSUPPORTED"),
++    ("cash_dividends", [{"id": "same"}, {"id": "same", "rate": "0.5"}], "ACTION_ID_DUPLICATE"),
++    ("cash_dividends", [{}, {"rate": "0.5"}], "DIVIDEND_SAME_DAY_AMBIGUOUS"),
++])
++def test_accounting_archive_rejects_conflicting_action_evidence(tmp_path, kind, changes, reason):
++    ex_date = date(2020, 1, 3)
++    bars = {"SOXL": [gen.RawBar(ex_date, 100.0, 100.0)]}
++    fields = {"symbol": "SOXL", "ex_date": str(ex_date), "payable_date": "2020-01-07", "rate": "0.25"}
++    rows = [fields | change for change in changes]
++    digest = _write_archive(tmp_path, bars, {"SOXL": {kind: rows}})
++    with pytest.raises(runner.PrivateRunError, match=f"{reason}:SOXL"):
++        runner.load_accounting_archive(tmp_path, ["SOXL"], digest)
++    # Preserve the legacy historical returns path's original behavior.
++    assert runner.load_archive(tmp_path, ["SOXL"], digest)[0] == bars
++
++
++def test_accounting_archive_retains_distinct_same_day_dividend_ids(tmp_path):
++    ex_date = date(2020, 1, 3)
++    bars = {"SOXL": [gen.RawBar(ex_date, 100.0, 100.0)]}
++    base = {"symbol": "SOXL", "ex_date": str(ex_date), "payable_date": "2020-01-07", "rate": "0.25"}
++    rows = [base | {"id": "one", "symbol": None}, base | {"id": "two", "payable_date": "2020-01-08"}]
++    digest = _write_archive(tmp_path, bars, {"SOXL": {"cash_dividends": rows}})
++    _, _, payments = runner.load_accounting_archive(tmp_path, ["SOXL"], digest)
++    assert payments["SOXL"] == ((ex_date, date(2020, 1, 7), 0.25), (ex_date, date(2020, 1, 8), 0.25))
++
++
++
++def test_accounting_archive_rejects_cross_symbol_duplicate_action_id(tmp_path):
++    ex_date = date(2020, 1, 3)
++    symbols = ("SOXL", "TQQQ")
++    bars = {symbol: [gen.RawBar(ex_date, 100.0, 100.0)] for symbol in symbols}
++    rows = {symbol: {"cash_dividends": [{
++        "symbol": symbol, "id": "same", "ex_date": str(ex_date), "payable_date": "2020-01-07", "rate": "0.25",
++    }]} for symbol in symbols}
++    digest = _write_archive(tmp_path, bars, rows)
++    with pytest.raises(runner.PrivateRunError, match="ACTION_ID_DUPLICATE:TQQQ"):
++        runner.load_accounting_archive(tmp_path, symbols, digest)
++
++
++def test_bound_tqqq_core_config_changes_targets_and_keeps_no_plugin_boundary():
++    from us_equity_strategies.manifests import tqqq_growth_income_manifest
++    from us_equity_strategies.strategies.tqqq_growth_income import build_rebalance_plan
++
++    days = _days(315)
++    bars = {symbol: [gen.RawBar(day, 100 * 1.003 ** i, 100 * 1.003 ** i)
++                     for i, day in enumerate(days)] for symbol in ("QQQ", "QQQM", "TQQQ", "BOXX")}
++    manifest = tqqq_growth_income_manifest.default_config
++    config = gen._filtered_kwargs(build_rebalance_plan, manifest, ("qqq_history", "snapshot", "signal_text_fn", "translator"))
++    config["benchmark_symbol"] = "QQQ"
++    legacy = gen.generate_tqqq_core_path(bars, {}, days)
++    assert gen.generate_tqqq_core_path(bars, {}, days, effective_core_config=config) == legacy
++    changed = gen.generate_tqqq_core_path(
++        bars, {}, days, effective_core_config={**config, "dual_drive_qqq_weight": 0.25},
++    )
++    assert changed.weights != legacy.weights
++    with pytest.raises(gen.CoreGeneratorError, match="BENCHMARK_SYMBOL_CHANGED"):
++        gen.generate_tqqq_core_path(bars, {}, days, effective_core_config={**config, "benchmark_symbol": "SPY"})
++    with pytest.raises(gen.CoreGeneratorError, match="EFFECTIVE_CORE_CONFIG_FIELDS_UNSUPPORTED"):
++        gen.generate_tqqq_core_path(bars, {}, days, effective_core_config={**config, "managed_symbols": ["SPY"]})
++
++
++def test_bound_soxl_core_config_changes_targets_without_reusing_manifest_defaults():
++    from us_equity_strategies.manifests import soxl_soxx_trend_income_manifest
++    from us_equity_strategies.strategies.soxl_soxx_trend_income import build_rebalance_plan
++
++    days, bars = _soxl_bars(520)
++    config = gen._filtered_kwargs(
++        build_rebalance_plan, soxl_soxx_trend_income_manifest.default_config,
++        ("indicators", "account_state", "translator", "observer"),
++    )
++    legacy = gen.generate_soxl_core_path(bars, {}, days, trade_start=days[350])
++    assert gen.generate_soxl_core_path(bars, {}, days, trade_start=days[350], effective_core_config=config) == legacy
++    changed = gen.generate_soxl_core_path(
++        bars, {}, days, trade_start=days[350],
++        effective_core_config={**config, "blend_gate_soxl_weight": 0.30, "trend_ma_window": 120},
++    )
++    assert changed.weights != legacy.weights
++    missing = {key: value for key, value in config.items() if key != "trend_ma_window"}
++    with pytest.raises(gen.CoreGeneratorError, match="EFFECTIVE_CORE_CONFIG_INCOMPLETE"):
++        gen.generate_soxl_core_path(bars, {}, days, effective_core_config=missing)
++    with pytest.raises(gen.CoreGeneratorError, match="SOXL_UNSUPPORTED_CORE_SYMBOL"):
++        gen.generate_soxl_core_path(
++            bars, {}, days, effective_core_config={**config, "blend_gate_volatility_delever_redirect_symbol": "QQQ"},
++        )
+diff --git a/tests/research/test_rs04_b3_cloud.py b/tests/research/test_rs04_b3_cloud.py
+--- a/tests/research/test_rs04_b3_cloud.py
++++ b/tests/research/test_rs04_b3_cloud.py
+@@ -163,0 +164,31 @@ def test_native_reader_rejects_another_root_before_subprocess(monkeypatch):
++
++
++@pytest.mark.parametrize("include_actions", [True, False])
++def test_registered_producer_manifest_declarations_do_not_qualify_real_replay(
++    monkeypatch, include_actions,
++):
++    monkeypatch.setenv("RS04_INPUT_ROOT", "gs://synthetic-study-inputs/research/v2/input/")
++    symbols = ("SOXL", "SOXX", "QQQ", "TQQQ", "QQQM", "BOXX")
++    manifest = {
++        "schema_version": "qsl.research.raw_sip_input.v1",
++        "source": "alpaca.stocks.bars.v2_and_corporate_actions.v1",
++        "feed": "sip",
++        "price_adjustment": "raw",
++        "inputs": [
++            {"symbol": symbol, "kind": kind, "complete_pagination": True}
++            for symbol in symbols for kind in ("bars", "actions")
++            if include_actions or (symbol, kind) != ("BOXX", "actions")
++        ],
++    }
++    report = cloud_report(
++        execute=True, cloud=True, today=date(2026, 10, 15),
++        sources=[input_root() + "fixture/manifest.json"],
++        reader=lambda _uri: (manifest, {"generation": "1", "sha256": RS04_ARCHIVE_SHA256}),
++    )
++    metadata = report["source_metadata"][0]
++    assert metadata["recognised_raw_sip_input_v1"] is True
++    assert metadata["recognised_price_snapshot_v2"] is False
++    assert metadata["declares_alpaca_sip"] and metadata["declares_raw"]
++    assert metadata["required_symbol_coverage_present"] is include_actions
++    assert metadata["raw_plus_actions_qualified"] is False
++    assert report["real_bars_read"] == 0 and report["status"] == "PARKED"

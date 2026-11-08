@@ -1,0 +1,151 @@
+{
+  "authorization": "INPUTS_FOR_REVIEW_NOT_RUN_APPROVAL",
+  "classification": "RESEARCH_MANIFEST_DEFAULTS_ONLY",
+  "descriptive_tail": [
+    "2026-07-13",
+    "2026-08-25"
+  ],
+  "effective_core_configs": {
+    "SOXL": {
+      "attack_allocation_mode": "soxx_gate_tiered_blend",
+      "blend_gate_active_soxx_weight": 0.2,
+      "blend_gate_bollinger_cap_enabled": true,
+      "blend_gate_defensive_soxx_weight": 0.15,
+      "blend_gate_dynamic_rsi_threshold_enabled": true,
+      "blend_gate_mid_soxl_weight": 0.65,
+      "blend_gate_overlay_stack_triggers": true,
+      "blend_gate_rsi_cap_enabled": true,
+      "blend_gate_rsi_threshold": 70.0,
+      "blend_gate_soxl_weight": 0.7,
+      "blend_gate_trend_source": "SOXX",
+      "blend_gate_volatility_delever_dynamic_cap": 0.75,
+      "blend_gate_volatility_delever_dynamic_floor": 0.5,
+      "blend_gate_volatility_delever_dynamic_lookback": 252,
+      "blend_gate_volatility_delever_dynamic_min_periods": 126,
+      "blend_gate_volatility_delever_dynamic_percentile": 0.95,
+      "blend_gate_volatility_delever_enabled": true,
+      "blend_gate_volatility_delever_max_retention_ratio": 0.5,
+      "blend_gate_volatility_delever_redirect_symbol": "SOXX",
+      "blend_gate_volatility_delever_retention_context_required": false,
+      "blend_gate_volatility_delever_retention_mode": "none",
+      "blend_gate_volatility_delever_retention_policy": "soxl_step_rebound_0.25_0.50",
+      "blend_gate_volatility_delever_retention_ratio": 0.0,
+      "blend_gate_volatility_delever_symbol": "SOXX",
+      "blend_gate_volatility_delever_threshold": 0.55,
+      "blend_gate_volatility_delever_threshold_mode": "rolling_percentile",
+      "blend_gate_volatility_delever_window": 10,
+      "cash_reserve_ratio": 0.03,
+      "income_layer_activation_band_ratio": 0.2,
+      "income_layer_allocations": {
+        "DGRO": 0.1,
+        "QQQI": 0.01,
+        "SCHD": 0.15,
+        "SGOV": 0.7,
+        "SPYI": 0.04
+      },
+      "income_layer_base_drawdown_budget_ratio": 0.45,
+      "income_layer_core_stress_drawdown_ratio": 0.45,
+      "income_layer_drawdown_budget_decay_per_double": 0.05,
+      "income_layer_enabled": false,
+      "income_layer_income_stress_drawdown_ratio": 0.06,
+      "income_layer_max_ratio": 0.95,
+      "income_layer_min_drawdown_budget_ratio": 0.25,
+      "income_layer_ratio_mode": "log_total_drawdown_budget",
+      "income_layer_start_usd": 150000.0,
+      "market_regime_control_apply_risk_off": false,
+      "market_regime_control_apply_risk_reduced": false,
+      "market_regime_control_enabled": false,
+      "min_trade_floor": 100.0,
+      "min_trade_ratio": 0.01,
+      "rebalance_threshold_ratio": 0.01,
+      "trend_entry_buffer": 0.08,
+      "trend_exit_buffer": 0.02,
+      "trend_ma_window": 140,
+      "trend_mid_buffer": 0.06
+    },
+    "TQQQ": {
+      "attack_allocation_mode": "fixed_qqq_tqqq_pullback",
+      "benchmark_symbol": "QQQ",
+      "cash_reserve_ratio": 0.02,
+      "dual_drive_allow_pullback": true,
+      "dual_drive_cash_reserve_ratio": 0.02,
+      "dual_drive_crisis_defense_enabled": false,
+      "dual_drive_macro_risk_governor_enabled": false,
+      "dual_drive_pullback_rebound_threshold": 0.0,
+      "dual_drive_pullback_rebound_threshold_mode": "volatility_scaled",
+      "dual_drive_pullback_rebound_volatility_multiplier": 2.0,
+      "dual_drive_pullback_rebound_window": 20,
+      "dual_drive_qqq_weight": 0.45,
+      "dual_drive_require_ma20_slope": true,
+      "dual_drive_tqqq_weight": 0.45,
+      "dual_drive_unlevered_symbol": "QQQM",
+      "dual_drive_volatility_delever_dynamic_cap": 0.36,
+      "dual_drive_volatility_delever_dynamic_floor": 0.24,
+      "dual_drive_volatility_delever_dynamic_lookback": 252,
+      "dual_drive_volatility_delever_dynamic_min_periods": 126,
+      "dual_drive_volatility_delever_dynamic_percentile": 0.9,
+      "dual_drive_volatility_delever_enabled": true,
+      "dual_drive_volatility_delever_exit_threshold": 0.28,
+      "dual_drive_volatility_delever_max_retention_ratio": 0.5,
+      "dual_drive_volatility_delever_retention_context_required": true,
+      "dual_drive_volatility_delever_retention_mode": "none",
+      "dual_drive_volatility_delever_retention_policy": "tqqq_step_softzero_0.25_0.50",
+      "dual_drive_volatility_delever_retention_ratio": 0.0,
+      "dual_drive_volatility_delever_taco_veto_enabled": false,
+      "dual_drive_volatility_delever_threshold": 0.28,
+      "dual_drive_volatility_delever_threshold_mode": "rolling_percentile",
+      "dual_drive_volatility_delever_window": 5,
+      "income_layer_activation_band_ratio": 0.2,
+      "income_layer_allocations": {
+        "DGRO": 0.2,
+        "QQQI": 0.02,
+        "SCHD": 0.3,
+        "SGOV": 0.4,
+        "SPYI": 0.08
+      },
+      "income_layer_base_drawdown_budget_ratio": 0.45,
+      "income_layer_core_stress_drawdown_ratio": 0.45,
+      "income_layer_drawdown_budget_decay_per_double": 0.05,
+      "income_layer_enabled": false,
+      "income_layer_income_stress_drawdown_ratio": 0.08,
+      "income_layer_max_ratio": 0.55,
+      "income_layer_min_drawdown_budget_ratio": 0.25,
+      "income_layer_ratio_mode": "log_total_drawdown_budget",
+      "income_layer_start_usd": 250000.0,
+      "market_regime_control_enabled": false,
+      "rebalance_threshold_ratio": 0.01
+    }
+  },
+  "fee_scenarios_bps_proposed": [
+    [
+      0,
+      0
+    ],
+    [
+      2,
+      5
+    ],
+    [
+      5,
+      10
+    ]
+  ],
+  "main_window": [
+    "2024-04-05",
+    "2026-07-10"
+  ],
+
+  "production_effective": false,
+  "registered_research_caps": {
+    "SOXL": {
+      "SOXL_nominal": 0.679,
+      "drawdown": 0.2,
+      "total_nominal": 0.97
+    },
+    "TQQQ": {
+      "drawdown": 0.2,
+      "total_nominal": 0.98
+    }
+  },
+  "scope": "no_plugin_core"
+}
