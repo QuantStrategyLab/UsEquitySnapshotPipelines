@@ -1,0 +1,129 @@
+name: RS04 SOXL exploratory research
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed and merged main SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rs04-soxl-exploratory
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: github.repository == 'QuantStrategyLab/UsEquitySnapshotPipelines' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && github.sha == inputs.expected_sha
+    runs-on: ubuntu-latest
+    environment: market-data-nonlive
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Prepare frozen replay sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin_repo() {
+            local repo="$1" revision="$2" dst="$3"
+            git init -q "$dst"
+            git -C "$dst" fetch -q --depth=1 "https://github.com/QuantStrategyLab/$repo.git" "$revision"
+            git -C "$dst" checkout -q --detach FETCH_HEAD
+            test "$(git -C "$dst" rev-parse HEAD)" = "$revision"
+          }
+          base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
+          pin_repo UsEquityStrategies a93fea4ae37de22938f4ecc398e54460f276f85a "$RUNNER_TEMP/ues"
+          pin_repo QuantPlatformKit c5d6b2f68ffb75b672ec764bcc33d75159df77ee "$RUNNER_TEMP/qpk"
+          git -C "$RUNNER_TEMP/ues" apply --unidiff-zero --index "$base/frozen-ues.patch"
+          test "$(git -C "$RUNNER_TEMP/ues" write-tree)" = e341e17612051874817ed8dfc21c82b564a96871
+          python -m pip install 'uv==0.11.19'
+          uv sync --locked --extra test --no-dev --no-editable --python 3.11
+      - name: Run offline entry and output tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
+          export PYTHONPATH="$base:$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+          .venv/bin/python -m pytest -q "$base/check_protected_exploratory.py" "$base/check_exploratory.py" "$base/check_private_result.py" "$base/check_exploratory_e2e.py"
+      - name: Verify reviewed plan and prepare existing identity
+        shell: bash
+        env:
+          RS04_HIST01_BINDING: ${{ secrets.RS04_HIST01_BINDING }}
+          RS04_SOXL_EXPLORATORY_PLAN: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN }}
+          RS04_SOXL_EXPLORATORY_PLAN_SHA256: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN_SHA256 }}
+          RS04_SOXL_EXPLORATORY_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
+          export PYTHONPATH="$base:$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          if ! .venv/bin/python - "$base" >/dev/null 2>&1 <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          from inspect_gcs import binding
+          from protected_exploratory import qualify, runner_ok
+          if not runner_ok(os.environ):
+              raise SystemExit(2)
+          package = Path(sys.argv[1])
+          qualify(os.environ['RS04_SOXL_EXPLORATORY_PLAN'].encode(),
+                  os.environ['RS04_SOXL_EXPLORATORY_PLAN_SHA256'], os.environ['GITHUB_SHA'], binding(),
+                  (package / 'research-baseline-defaults.json').read_bytes(),
+                  (package / 'issuer-soxl.csv').read_bytes())
+          PY
+          then
+            echo '{"status":"PARKED","reason_code":"SOXL_EXPLORATORY_BINDINGS_STOPPED","classification":"EXPLORATORY"}' >> "$GITHUB_STEP_SUMMARY"
+            exit 2
+          fi
+          .venv/bin/python "$GITHUB_WORKSPACE/research/rs04-archive-readback/inspect_gcs.py" --prepare-identity 2>/dev/null
+      - name: Confirm original research identity and root
+        shell: bash
+        env:
+          RS04_SCOPE_MATCHES: ${{ env.RS04_WIF_PROVIDER == vars.GCP_WORKLOAD_IDENTITY_PROVIDER && env.RS04_WIF_SERVICE_ACCOUNT == vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT && env.RS04_GCP_PROJECT == vars.GCP_PROJECT_ID && env.RS04_HIST01_ROOT == vars.RS04_INPUT_ROOT }}
+        run: |
+          if [[ "$RS04_SCOPE_MATCHES" != true ]]; then
+            echo '{"status":"PARKED","reason_code":"EXISTING_RESEARCH_SCOPE_MISMATCH"}' >> "$GITHUB_STEP_SUMMARY"
+            exit 2
+          fi
+      - name: Authenticate existing research OIDC identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ env.RS04_WIF_PROVIDER }}
+          service_account: ${{ env.RS04_WIF_SERVICE_ACCOUNT }}
+          project_id: ${{ env.RS04_GCP_PROJECT }}
+      - name: Execute fixed history and conditionally create one private result
+        shell: bash
+        env:
+          RS04_HIST01_BINDING: ${{ secrets.RS04_HIST01_BINDING }}
+          RS04_SOXL_EXPLORATORY_PLAN: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN }}
+          RS04_SOXL_EXPLORATORY_PLAN_SHA256: ${{ secrets.RS04_SOXL_EXPLORATORY_PLAN_SHA256 }}
+          RS04_SOXL_EXPLORATORY_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
+          export PYTHONPATH="$base:$RUNNER_TEMP/ues/src:$RUNNER_TEMP/qpk/src:$GITHUB_WORKSPACE/research/rs04-archive-readback"
+          rc=0
+          receipt=$(.venv/bin/python "$base/protected_exploratory.py" 2>/dev/null) || rc=$?
+          case "$rc:$receipt" in
+            '0:{"status": "CREATED", "reason_code": "SOXL_EXPLORATORY_RESULT_CREATED", "classification": "EXPLORATORY"}')
+              echo '{"status":"CREATED","reason_code":"SOXL_EXPLORATORY_RESULT_CREATED","classification":"EXPLORATORY"}' >> "$GITHUB_STEP_SUMMARY" ;;
+            '2:{"status": "PARKED", "reason_code": "SOXL_EXPLORATORY_WRITE_UNCONFIRMED", "classification": "EXPLORATORY"}')
+              echo '{"status":"PARKED","reason_code":"SOXL_EXPLORATORY_WRITE_UNCONFIRMED","classification":"EXPLORATORY"}' >> "$GITHUB_STEP_SUMMARY"
+              exit 2 ;;
+            *)
+              echo '{"status":"PARKED","reason_code":"SOXL_EXPLORATORY_REPLAY_STOPPED","classification":"EXPLORATORY"}' >> "$GITHUB_STEP_SUMMARY"
+              exit 2 ;;
+          esac
