@@ -2,7 +2,7 @@
 from datetime import date
 
 from input_qualification import PROFILE_SYMBOLS, select_profiles
-from inspect_registered_archive import MANIFEST_SHA256, registered_calendar
+from inspect_registered_archive import registered_calendar
 from replay import FOLD_SESSIONS, PURGE_SESSIONS, TRAIN_SESSIONS
 from risk_observations import DRAWDOWN_LIMIT
 from study_matrix import FEE_SCHEDULES, PRIMARY_FEES, PROFILES, evaluate_study_matrix, prepare_replay_inputs
@@ -37,11 +37,11 @@ def registered_windows(sessions):
     return main, tail
 
 
-def evaluate_registered_history(source, *, effective_core_configs, input_bindings, confirmed_research_caps,
+def evaluate_registered_history(source, *, expected_manifest_sha256, effective_core_configs, input_bindings, confirmed_research_caps,
                                 cash_source, confirmed_cost_policy=None, observe_checkpoint=None, resume=None,
                                 profiles=PROFILES):
     """Use bound inputs in the approved environment; no data or run authority is inferred."""
-    if source.receipt.get("manifest_sha256") != MANIFEST_SHA256:
+    if source.receipt.get("manifest_sha256") != expected_manifest_sha256:
         raise ValueError("REGISTERED_HISTORY_MANIFEST_MISMATCH")
     selected = select_profiles(profiles)
     if confirmed_research_caps != {profile: REGISTERED_CAPS[profile] for profile in selected}:
@@ -74,7 +74,7 @@ def evaluate_registered_history(source, *, effective_core_configs, input_binding
         selected_profiles=selected,
     )
     result["registered_history"] = {
-        "manifest_sha256": MANIFEST_SHA256, "calendar_version": calendar_version,
+        "manifest_sha256": expected_manifest_sha256, "calendar_version": calendar_version,
         "development_start": DEVELOPMENT_START, "main_sessions": len(main), "tail_sessions": len(tail),
         "cost_policy": dict(REGISTERED_COST_POLICY),
         "profiles": selected,

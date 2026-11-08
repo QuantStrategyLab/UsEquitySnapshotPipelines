@@ -53,6 +53,8 @@ def qualify(plan_bytes, plan_digest, source_sha, data, config_bytes, issuer_byte
         not re.fullmatch(r"gs://[a-z0-9._-]+/research/v2/input/?", root)
         or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
         or plan["source_sha"] != source_sha
+        or not re.fullmatch(r"[0-9a-f]{64}", plan.get("manifest_sha256", ""))
+        or plan["manifest_sha256"] != data["manifest"]["sha256"]
         or plan["archive_binding"] != {key: data[key] for key in ARCHIVE_KEYS}
         or plan["result_uri"] != f"gs://{root.split('/')[2]}/{RESULT_OBJECT}"
     ):

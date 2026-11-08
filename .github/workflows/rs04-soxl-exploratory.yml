@@ -43,6 +43,8 @@ jobs:
       - name: Prepare frozen replay sources
         env:
           EXPECTED_UES_TREE: ${{ steps.plan.outputs.ues_tree }}
+          UES_REVISION: ${{ steps.plan.outputs.ues_revision }}
+          QPK_REVISION: ${{ steps.plan.outputs.qpk_revision }}
         shell: bash
         run: |
           set -euo pipefail
@@ -54,8 +56,8 @@ jobs:
             test "$(git -C "$dst" rev-parse HEAD)" = "$revision"
           }
           base="$GITHUB_WORKSPACE/research/rs04-soxl-exploratory"
-          pin_repo UsEquityStrategies a93fea4ae37de22938f4ecc398e54460f276f85a "$RUNNER_TEMP/ues"
-          pin_repo QuantPlatformKit c5d6b2f68ffb75b672ec764bcc33d75159df77ee "$RUNNER_TEMP/qpk"
+          pin_repo UsEquityStrategies "$UES_REVISION" "$RUNNER_TEMP/ues"
+          pin_repo QuantPlatformKit "$QPK_REVISION" "$RUNNER_TEMP/qpk"
           git -C "$RUNNER_TEMP/ues" apply --unidiff-zero --index "$base/frozen-ues.patch"
           test "$(git -C "$RUNNER_TEMP/ues" write-tree)" = "$EXPECTED_UES_TREE"
           python -m pip install 'uv==0.11.19'

@@ -14,7 +14,7 @@ def qualification():
     evidence = {s: ("synthetic " + s).encode() for s in c.SYMBOLS}
     plan = {
         "schema": "rs04.soxl.local-plan.v1",
-        "manifest_sha256": c.MANIFEST_SHA256,
+        "manifest_sha256": "b" * 64,
         "split_coverage": {
             s: {
                 "start": "2022-12-28" if s == "BOXX" else "2021-12-01",
@@ -123,7 +123,6 @@ def setup_objects(monkeypatch):
             "sha256": c.digest(objects["registration.json"]),
         },
     }
-    monkeypatch.setattr(c, "MANIFEST_SHA256", manifest_ref["sha256"])
     return objects, data
 
 
@@ -139,13 +138,13 @@ def test_fixed_scope_events_before_prices(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(c, "normalize_archive", lambda *a, **kw: SimpleNamespace(receipt={}))
-    assert len(c.prepare(tmp_path, data, read, ISSUER).receipt["archive_source_binding"]) == 64
+    assert len(c.prepare(tmp_path, data, read, ISSUER, data["manifest"]["sha256"]).receipt["archive_source_binding"]) == 64
     assert set(calls) == c.NAMES and len(calls) == 8
     assert all(name.startswith("actions/") for name in calls[2:5])
     calls.clear()
     bad = ISSUER.replace(b"0.290590", b"0.29")
     with pytest.raises(ValueError, match="EVENT_MISMATCH"):
-        c.prepare(tmp_path, data, read, bad)
+        c.prepare(tmp_path, data, read, bad, data["manifest"]["sha256"])
     assert len(calls) == 5 and not any(x.startswith("bars/") for x in calls)
 
 
@@ -243,6 +242,6 @@ def test_gcs_reader_complete_request_budget(tmp_path, monkeypatch):
 
     monkeypatch.setattr(c, "registered_calendar", lambda: ({s: [] for s in c.SYMBOLS}, "synthetic"))
     monkeypatch.setattr(c, "normalize_archive", lambda *a, **kw: SimpleNamespace(receipt={}))
-    c.prepare(tmp_path, data, c.gcs_reader(Client(), data), ISSUER)
+    c.prepare(tmp_path, data, c.gcs_reader(Client(), data), ISSUER, data["manifest"]["sha256"])
     assert len(calls) == 16 and sum(k == "metadata" for k, _ in calls) == 8
     assert {n.removeprefix("research/v2/input/fixture/") for _, n in calls} == c.NAMES

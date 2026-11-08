@@ -8,7 +8,6 @@ from pathlib import Path
 
 from archive_bridge import normalize_archive
 from registered_history import (
-    MANIFEST_SHA256,
     REGISTERED_CAPS,
     REGISTERED_COST_POLICY,
     evaluate_registered_history,
@@ -18,7 +17,7 @@ from private_result import project_result
 from soxl_reconcile import SYMBOLS, archive_events, issuer_events, reference
 
 ISSUER_SHA = "7c0308adae85aec65b9cf791bc8cedb1d3c8caaeb126990a5a184f78f56371e1"
-CONFIG_SHA = "c551145c35cc8ea2b85154ac9d36cf78b717487c4f7cd1b161ad77995d94069e"
+CONFIG_SHA = "99bfd7446da13d39cfe734fd4bbbf86ca6722d411cbf71a7f68059d9d4abffaa"
 NAMES = frozenset(
     {"registration.json", "manifest.json"}
     | {f"{kind}/{symbol}/page-001.json" for kind in ("actions", "bars") for symbol in SYMBOLS}
@@ -37,7 +36,7 @@ def qualify(plan_bytes, reviewed_digest, config_bytes, issuer_bytes):
         raise ValueError("FROZEN_INPUT_MISMATCH")
     plan = json.loads(plan_bytes)
     if (plan.get("schema") != "rs04.soxl.exploratory-plan.v1"
-            or plan.get("manifest_sha256") != MANIFEST_SHA256
+            or not re.fullmatch(r"[0-9a-f]{64}", plan.get("manifest_sha256", ""))
             or plan.get("independent_full_split_coverage") != "UNPROVEN"):
         raise ValueError("EXPLORATORY_SCOPE_MISMATCH")
     config = json.loads(config_bytes)
@@ -46,9 +45,9 @@ def qualify(plan_bytes, reviewed_digest, config_bytes, issuer_bytes):
     return config["effective_core_configs"]["SOXL"]
 
 
-def prepare(scratch, data, read_exact, issuer_bytes):
+def prepare(scratch, data, read_exact, issuer_bytes, expected_manifest_sha256):
     """Fetch actions and compare all events before fetching any price page."""
-    if data["manifest"]["sha256"] != MANIFEST_SHA256:
+    if data["manifest"]["sha256"] != expected_manifest_sha256:
         raise ValueError("MANIFEST_MISMATCH")
     remaining, cache = set(NAMES), {}
 
@@ -99,7 +98,7 @@ def prepare(scratch, data, read_exact, issuer_bytes):
     calendar, _ = registered_calendar()
     source = normalize_archive(
         Path(scratch),
-        MANIFEST_SHA256,
+        expected_manifest_sha256,
         expected_sessions={s: calendar[s] for s in SYMBOLS},
         event_coverage=None,
         profiles=("SOXL",),
@@ -126,10 +125,14 @@ def run_local(
     config = qualify(plan_bytes, reviewed_digest, config_bytes, issuer_bytes)
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("SOURCE_SHA_INVALID")
+    expected_manifest_sha256 = json.loads(plan_bytes)["manifest_sha256"]
+    if data["manifest"]["sha256"] != expected_manifest_sha256:
+        raise ValueError("MANIFEST_MISMATCH")
     read_exact = client_factory()
-    source = prepare(scratch, data, read_exact, issuer_bytes)
+    source = prepare(scratch, data, read_exact, issuer_bytes, expected_manifest_sha256)
     result = evaluate_registered_history(
         source,
+        expected_manifest_sha256=expected_manifest_sha256,
         effective_core_configs={"SOXL": config},
         input_bindings={"SOXL": reviewed_digest},
         confirmed_research_caps={"SOXL": REGISTERED_CAPS["SOXL"]},
@@ -140,7 +143,7 @@ def run_local(
     result["d10"] = REGISTERED_COST_POLICY
     result["provenance"] = {
         "source_sha": source_sha,
-        "manifest_sha256": MANIFEST_SHA256,
+        "manifest_sha256": expected_manifest_sha256,
         "issuer_csv_sha256": ISSUER_SHA,
         "plan_sha256": reviewed_digest,
         "archive_source_binding": source.receipt["archive_source_binding"],

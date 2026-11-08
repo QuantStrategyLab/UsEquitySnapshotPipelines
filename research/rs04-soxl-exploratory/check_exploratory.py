@@ -13,7 +13,7 @@ def test_explicit_limit_before_any_read(tmp_path):
     calls = []
     for marker in (None, 'PROVEN'):
         plan = json.dumps({'schema': 'rs04.soxl.exploratory-plan.v1',
-                           'manifest_sha256': e.MANIFEST_SHA256,
+                           'manifest_sha256': "b" * 64,
                            'independent_full_split_coverage': marker}).encode()
         with pytest.raises(ValueError, match='EXPLORATORY_SCOPE_MISMATCH'):
             e.run_local(plan_bytes=plan, reviewed_digest=e.digest(plan), config_bytes=CONFIG,

@@ -5,7 +5,6 @@ import math
 import random
 
 import exploratory as c
-import registered_history
 from check_local_candidate import CONFIG, ISSUER, setup_objects
 
 
@@ -45,8 +44,6 @@ def test_same_call_e2e(tmp_path, monkeypatch):
             "sha256": c.digest(objects["registration.json"]),
         },
     )
-    monkeypatch.setattr(c, "MANIFEST_SHA256", manifest_ref["sha256"])
-    monkeypatch.setattr(registered_history, "MANIFEST_SHA256", manifest_ref["sha256"])
     plan = json.dumps({"schema": "rs04.soxl.exploratory-plan.v1",
                        "manifest_sha256": manifest_ref["sha256"],
                        "independent_full_split_coverage": "UNPROVEN"}).encode()

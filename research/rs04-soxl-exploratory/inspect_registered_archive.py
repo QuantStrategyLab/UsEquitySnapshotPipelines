@@ -11,7 +11,6 @@ from archive_bridge import read_archive_members
 from input_qualification import RESEARCH_SYMBOLS, validate_historical_members
 
 
-MANIFEST_SHA256 = "d5d40dfc54f55fe59c0eba57302ef9b018d006a0835f33f969053e52d05cc9e7"
 END_SESSION = date(2026, 8, 25)
 
 
@@ -89,10 +88,13 @@ def inspect_members(root, manifest_sha256, expected):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive-dir", type=Path, required=True)
+    parser.add_argument("--manifest-sha256", required=True)
     args = parser.parse_args(argv)
     try:
         expected, calendar_version = registered_calendar()
-        result = inspect_members(args.archive_dir, MANIFEST_SHA256, expected)
+        if not re.fullmatch(r"[0-9a-f]{64}", args.manifest_sha256):
+            raise ValueError("MANIFEST_MISMATCH")
+        result = inspect_members(args.archive_dir, args.manifest_sha256, expected)
         result.update(calendar="XNYS", calendar_version=calendar_version)
     except ImportError:
         result = {"status": "PARKED", "reason_code": "XNYS_CALENDAR_UNAVAILABLE"}

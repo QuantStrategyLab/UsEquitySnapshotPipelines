@@ -10,10 +10,10 @@ def fixture():
     data = {
         'input_root': 'gs://synthetic/research/v2/input', 'dataset': 'fixture',
         'producer_revision': 'a' * 40, 'registration': {'generation': '1'},
-        'manifest': {'sha256': p.local.MANIFEST_SHA256},
+        'manifest': {'sha256': "b" * 64},
         'workload_identity_provider': 'provider', 'service_account': 'service', 'project_id': 'project',
     }
-    plan = {'schema': 'rs04.soxl.exploratory-plan.v1', 'manifest_sha256': p.local.MANIFEST_SHA256,
+    plan = {'schema': 'rs04.soxl.exploratory-plan.v1', 'manifest_sha256': "b" * 64,
             'independent_full_split_coverage': 'UNPROVEN', 'source_sha': 'c' * 40,
             'archive_binding': data.copy(), 'result_uri': 'gs://synthetic/' + p.RESULT_OBJECT}
     raw = json.dumps(plan).encode()
@@ -81,3 +81,14 @@ def test_replay_failure_and_exception_hidden(capsys, monkeypatch):
     monkeypatch.setenv('RUNNER_TEMP', '/tmp')
     assert p.main() == 2
     assert 'private sentinel' not in capsys.readouterr().out
+
+
+def test_manifest_mismatch_stops_before_client():
+    data, args = fixture()
+    plan = json.loads(args['plan_bytes'])
+    plan['manifest_sha256'] = 'c' * 64
+    args['plan_bytes'] = json.dumps(plan).encode()
+    args['plan_digest'] = sha256(args['plan_bytes']).hexdigest()
+    calls = []
+    assert p.deliver(lambda project: calls.append(project), data, **args) == 'SOXL_EXPLORATORY_BINDINGS_STOPPED'
+    assert calls == []

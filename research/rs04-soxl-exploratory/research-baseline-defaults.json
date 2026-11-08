@@ -134,7 +134,7 @@
     "2024-04-05",
     "2026-07-10"
   ],
-  "manifest_sha256": "d5d40dfc54f55fe59c0eba57302ef9b018d006a0835f33f969053e52d05cc9e7",
+
   "production_effective": false,
   "registered_research_caps": {
     "SOXL": {
@@ -147,6 +147,5 @@
       "total_nominal": 0.98
     }
   },
-  "scope": "no_plugin_core",
-  "ues_source": "a93fea4ae37de22938f4ecc398e54460f276f85a"
+  "scope": "no_plugin_core"
 }

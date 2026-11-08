@@ -16,20 +16,23 @@ def expected_tree(plan_bytes, digest, source_sha, expected_sha):
     plan = json.loads(plan_bytes)
     if not isinstance(plan, dict):
         raise ValueError("PLAN_UNBOUND")
-    tree = plan.get("ues_tree")
-    if plan.get("source_sha") != source_sha or not isinstance(tree, str) or not re.fullmatch(r"[0-9a-f]{40}", tree):
+    values = {key: plan.get(key) for key in ("ues_tree", "ues_revision", "qpk_revision")}
+    if (plan.get("source_sha") != source_sha or any(
+            not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value)
+            for value in values.values())):
         raise ValueError("PLAN_UNBOUND")
-    return tree
+    return values
 
 
 def main():
     try:
-        tree = expected_tree(os.environ["RS04_SOXL_EXPLORATORY_PLAN"].encode(),
+        values = expected_tree(os.environ["RS04_SOXL_EXPLORATORY_PLAN"].encode(),
                              os.environ["RS04_SOXL_EXPLORATORY_PLAN_SHA256"],
                              os.environ["GITHUB_SHA"], os.environ["RS04_SOXL_EXPLORATORY_EXPECTED_SHA"])
-        print(f"::add-mask::{tree}")
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            output.write(f"ues_tree={tree}\n")
+            for name, value in values.items():
+                print(f"::add-mask::{value}")
+                output.write(f"{name}={value}\n")
     except (KeyError, ValueError, TypeError, OSError):
         print("SOXL_EXPLORATORY_BINDINGS_STOPPED")
         return 2
