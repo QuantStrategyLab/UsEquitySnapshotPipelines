@@ -1,14 +1,28 @@
 import hashlib
+import importlib.util
 import io
 import json
 import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, patch
 
-from boxx_readback import main
+READBACK_DIR = Path(__file__).resolve().parents[1]
+with patch.object(sys, "path", [str(READBACK_DIR / "soxl"), *sys.path]):
+    from boxx_readback import main
+
+# Exercise the actual generation-bound reader without importing the unrelated
+# full archive inspection dependencies in the repository test environment.
+reader_spec = importlib.util.spec_from_file_location(
+    "boxx_test_inspect_gcs", READBACK_DIR / "inspect_gcs.py"
+)
+reader = importlib.util.module_from_spec(reader_spec)
+archive_inspection = Mock()
+with patch.dict(sys.modules, {"inspect_registered_archive": archive_inspection}):
+    reader_spec.loader.exec_module(reader)
 
 
 EXPECTED_MEMBERS = ("registration.json", "manifest.json", "actions/BOXX/page-001.json")
@@ -88,8 +102,8 @@ class BoxxReadbackTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with (
             patch.dict(os.environ, {"RUNNER_OS": "Linux", "RUNNER_TEMP": "/fixture"}),
-            patch.dict(sys.modules, {"google.cloud": cloud}),
-            patch("inspect_gcs.binding", return_value=data),
+            patch.dict(sys.modules, {"google.cloud": cloud, "inspect_gcs": reader}),
+            patch.object(reader, "binding", return_value=data),
             redirect_stdout(out), redirect_stderr(err),
         ):
             status = main()
@@ -161,7 +175,7 @@ class BoxxReadbackTests(unittest.TestCase):
         out = io.StringIO()
         with (
             patch.dict(os.environ, {"RUNNER_OS": "fixture", "RUNNER_TEMP": "/fixture"}),
-            patch("inspect_gcs.binding") as binding,
+            patch.object(reader, "binding") as binding,
             redirect_stdout(out),
         ):
             self.assertEqual(main(), 2)
