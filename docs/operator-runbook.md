@@ -1,5 +1,7 @@
 # Operator Runbook
 
+Production publication checks the latest main-branch CI run with the [organization prepublication check](https://github.com/QuantStrategyLab/.github/blob/main/docs/deployment-workflows.md#check-ci-before-artifact-publication). The workflow keeps its market-specific validation and publish plan.
+
 [简体中文](operator-runbook.zh-CN.md)
 
 This repo is the upstream artifact producer for snapshot-backed US equity strategies. Broker platform repos remain downstream consumers.
