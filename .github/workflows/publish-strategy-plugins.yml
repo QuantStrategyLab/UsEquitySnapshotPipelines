@@ -65,11 +65,10 @@ jobs:
     permissions:
       actions: read
     steps:
-      - uses: actions/checkout@v6
       - name: Verify main CI succeeded before publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/verify_main_ci_success.sh
+        uses: QuantStrategyLab/.github/actions/verify-main-ci@f0c00df157149cb29a41b615d2502af07eb233ea
 
   market-regime-control:
     needs: verify-main-ci

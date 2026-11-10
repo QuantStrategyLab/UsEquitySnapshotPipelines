@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH_SNAPSHOT = ROOT / ".github/workflows/publish-snapshot-artifacts.yml"
 PUBLISH_PLUGINS = ROOT / ".github/workflows/publish-strategy-plugins.yml"
-VERIFY_SCRIPT = ROOT / ".github/scripts/verify_main_ci_success.sh"
+SHARED_CI_CHECK = r"uses: QuantStrategyLab/\.github/actions/verify-main-ci@[0-9a-f]{40}"
 
 
 def test_publish_snapshot_artifacts_requires_main_ci_before_publish() -> None:
@@ -16,7 +17,7 @@ def test_publish_snapshot_artifacts_requires_main_ci_before_publish() -> None:
 
     assert "actions: read" in workflow
     assert "Verify main CI succeeded before publish" in workflow
-    assert "bash .github/scripts/verify_main_ci_success.sh" in workflow
+    assert re.search(SHARED_CI_CHECK, workflow)
     assert "github.event_name == 'schedule'" in workflow
     assert "github.event_name == 'workflow_run'" in workflow
     assert "inputs.execute_publish == true" in workflow
@@ -36,13 +37,4 @@ def test_publish_strategy_plugins_uses_shared_ci_gate_job() -> None:
     assert "verify-main-ci:" in workflow
     assert "needs: verify-main-ci" in workflow
     assert "needs.verify-main-ci.result == 'success' || needs.verify-main-ci.result == 'skipped'" in workflow
-    assert workflow.count("bash .github/scripts/verify_main_ci_success.sh") >= 1
-
-
-def test_verify_main_ci_success_script_checks_latest_main_run() -> None:
-    script = VERIFY_SCRIPT.read_text(encoding="utf-8")
-
-    assert 'workflow="${CI_WORKFLOW:-ci.yml}"' in script
-    assert 'branch="${VERIFY_BRANCH:-main}"' in script
-    assert "gh run list" in script
-    assert 'conclusion}" != "success"' in script
+    assert re.search(SHARED_CI_CHECK, workflow)
