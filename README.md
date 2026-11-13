@@ -1,5 +1,7 @@
 # UsEquitySnapshotPipelines
 
+Public market-data acquisition now belongs to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit). Legacy Alpaca acquisition workflows here are disabled; see the [migration note](docs/alpaca-migration.md).
+
 
 ## QSL architecture role
 

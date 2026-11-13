@@ -24,7 +24,23 @@ permissions:
   contents: read
 
 jobs:
+  alpaca-migration:
+    name: Alpaca acquisition moved to QuantPlatformKit
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Stop retired Alpaca acquisition
+        shell: bash
+        run: |
+          message='ALPACA_ACQUISITION_MOVED: Public market-data acquisition belongs to QuantStrategyLab/QuantPlatformKit. This UESP acquisition path is disabled; no fetch, replay, or publication was attempted. See docs/alpaca-migration.md.'
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s\n' "$message"
+          exit 1
+
   classify-sip-access:
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     environment: market-data-nonlive
@@ -36,8 +52,6 @@ jobs:
       - name: Classify explicit historical and recent feed segments
         if: inputs.diagnostic_mode == 'access' || inputs.diagnostic_mode == ''
         env:
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           DATE_CUTOFF: ${{ inputs.date_cutoff }}
           ALPACA_SIP_MIN_DELAY_MINUTES: ${{ vars.ALPACA_SIP_MIN_DELAY_MINUTES || '16' }}
           ALPACA_FEED_HISTORICAL: ${{ vars.ALPACA_FEED_HISTORICAL || 'sip' }}
@@ -46,8 +60,6 @@ jobs:
       - name: Probe fixed SOXL three-day schema once
         if: inputs.diagnostic_mode == 'soxl-three-day'
         env:
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           DATE_CUTOFF: ${{ inputs.date_cutoff }}
         run: python scripts/alpaca_soxl_three_day_probe.py
       - name: Upload sanitized diagnostic only

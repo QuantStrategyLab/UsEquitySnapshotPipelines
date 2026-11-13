@@ -12,7 +12,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  alpaca-migration:
+    name: Alpaca acquisition moved to QuantPlatformKit
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Stop retired Alpaca acquisition
+        shell: bash
+        run: |
+          message='ALPACA_ACQUISITION_MOVED: Public market-data acquisition belongs to QuantStrategyLab/QuantPlatformKit. This UESP acquisition path is disabled; no fetch, replay, or publication was attempted. See docs/alpaca-migration.md.'
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s\n' "$message"
+          exit 1
+
   research-case:
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: market-data-nonlive
@@ -34,8 +50,6 @@ jobs:
       - name: Run one-shot non-live research case
         env:
           GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/run_russell_core_case.py --run | tee "$RUNNER_TEMP/russell-core-summary.json"

@@ -18,8 +18,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  alpaca-migration:
+    name: Alpaca acquisition moved to QuantPlatformKit
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Stop retired Alpaca acquisition
+        shell: bash
+        run: |
+          message='ALPACA_ACQUISITION_MOVED: Public market-data acquisition belongs to QuantStrategyLab/QuantPlatformKit. This UESP acquisition path is disabled; no fetch, replay, or publication was attempted. See docs/alpaca-migration.md.'
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s\n' "$message"
+          exit 1
+
   learning-inputs:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    # Previous condition: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: market-data-nonlive
@@ -46,9 +62,6 @@ jobs:
           uv run --no-sync python scripts/acquire_global_etf_learning_inputs_alpaca.py
       - name: Execute one-time cloud acquisition
         if: ${{ inputs.execute }}
-        env:
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/acquire_global_etf_learning_inputs_alpaca.py --execute-cloud \

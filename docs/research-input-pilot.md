@@ -1,5 +1,7 @@
 # Cloud-only research input pilot
 
+> Migration: Alpaca acquisition workflows here are retired. Public market-data acquisition moved to [QuantPlatformKit](https://github.com/QuantStrategyLab/QuantPlatformKit); the two Alpaca secrets were removed from `market-data-nonlive`. Acquisition instructions below are historical. See [current migration behavior](alpaca-migration.md).
+
 For exact readback of a predeclared benchmark window from an existing archive,
 see [frozen benchmark input readback](benchmark-reference-readback.md). It retains
 provider-adjusted security returns as a diagnostic, without issuing account policy.
@@ -8,7 +10,7 @@ The manual `Research Input Pilot` workflow inventories exact-generation objects
 and acquires explicitly configured historical inputs into a new private prefix.
 It has no strategy replay, publisher, broker, release or deployment entry point.
 
-Use the existing `market-data-nonlive` environment, protected Alpaca client and
+The retired acquisition path used the `market-data-nonlive` environment, protected Alpaca client and
 research storage identity. `RS04_INPUT_ROOT` supplies the private research root;
 no private resource is a source-code default. Insufficient access stops the run.
 The workflow does not create identities, permissions, variables or secrets.

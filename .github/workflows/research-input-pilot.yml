@@ -29,8 +29,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  alpaca-migration:
+    name: Alpaca acquisition moved to QuantPlatformKit
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Stop retired Alpaca acquisition
+        shell: bash
+        run: |
+          message='ALPACA_ACQUISITION_MOVED: Public market-data acquisition belongs to QuantStrategyLab/QuantPlatformKit. This UESP acquisition path is disabled; no fetch, replay, or publication was attempted. See docs/alpaca-migration.md.'
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '::error::%s\n' "$message"
+          exit 1
+
   inputs:
-    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    # Acquisition migrated; keep dependent replay/publication jobs parked too.
+    # Previous condition: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: market-data-nonlive
@@ -56,8 +72,6 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
       - name: Run create-only input pilot
         env:
-          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           RESEARCH_INPUT_ROOT: ${{ vars.RS04_INPUT_ROOT }}
           PILOT_PLAN_URI: ${{ inputs.plan_uri }}
           PILOT_PLAN_GENERATION: ${{ inputs.plan_generation }}
