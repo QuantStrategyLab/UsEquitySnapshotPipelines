@@ -21,7 +21,6 @@ data/input/*
 # personal global ignore excludes Markdown.
 !AGENTS.md
 !CLAUDE.md
-!.github/engineering.md
 
 # Section 6 of the organization style guide: notes that must stay out of Git.
 .local/
@@ -42,3 +41,9 @@ docs/audits/
 docs/plans/
 docs/handoffs/
 docs/superpowers/
+
+# Working notes are drafts, not documentation.
+docs/changes/
+docs/acceptance-policy.md
+.claude/
+.codex/

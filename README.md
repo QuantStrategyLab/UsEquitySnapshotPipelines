@@ -102,13 +102,13 @@ python -m pytest -q
 - Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for maintainer and contributor conduct.
 - Report credential, automation, broker, exchange, or cloud-resource vulnerabilities through [SECURITY.md](SECURITY.md); do not open public issues for secrets or live-execution risk.
 
-## License
-
-See [LICENSE](LICENSE).
-
 ## Crisis research
 
 The crisis response and context algorithms are maintained in QuantStrategyPlugins.
 This repository uses the dependency revision declared in `pyproject.toml` and exposes
 the `useq-backtest-crisis-response` and `useq-build-crisis-context-pack` commands.
 Frozen research results retain the code versions recorded with those results.
+
+## License
+
+See [LICENSE](LICENSE).
