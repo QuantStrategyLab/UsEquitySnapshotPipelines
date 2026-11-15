@@ -100,13 +100,13 @@ python -m pytest -q
 - 讨论、issue 和 review 请遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 - 涉及密钥、自动化、券商/交易所或云资源的漏洞请按 [SECURITY.md](SECURITY.md) 私密报告；不要为 secret 或实盘风险开公开 issue。
 
-## 许可证
-
-详见 [LICENSE](LICENSE)。
-
 ## 危机研究
 
 危机响应和危机上下文算法由 QuantStrategyPlugins 维护。
 本仓库使用 `pyproject.toml` 声明的依赖版本，提供 `useq-backtest-crisis-response`
 和 `useq-build-crisis-context-pack` 命令。
 固定的研究结果保留生成时记录的代码版本。
+
+## 许可证
+
+详见 [LICENSE](LICENSE)。
