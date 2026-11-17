@@ -1,3 +1,5 @@
+[English](r3-v2-free-source-assurance.md) | 简体中文
+
 # R3-v2 免费双源全量 OHLCV 保障诊断
 
 R3-v2 是本仓内独立的研究诊断切片，只对 `QQQ`、`TQQQ`、`SOXX`、`SOXL` 做 Twelve Data 与 Yahoo Finance 的 split-adjusted 日线比对。它要求 open/high/low/close 与 volume 全部一致，并用 XNYS 已完成交易日做覆盖校验；结果仅为脱敏诊断，不是研究输入发布身份。

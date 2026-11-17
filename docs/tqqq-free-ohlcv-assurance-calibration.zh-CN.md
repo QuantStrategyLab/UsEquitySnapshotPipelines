@@ -1,3 +1,5 @@
+[English](tqqq-free-ohlcv-assurance-calibration.md) | 简体中文
+
 # TQQQ 免费 OHLCV 双源校准边界
 
 TQQQ 的免费 P1 固定使用 Twelve Data 为 canonical、Yahoo Finance 为 verifier。两者都成功返回数据，但其 OHLC 字段可能存在微小差异；这与“服务不可用、密钥缺失或覆盖不足”不同。

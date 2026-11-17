@@ -1,3 +1,5 @@
+[English](tqqq-free-ohlcv-assurance-watch.md) | 简体中文
+
 # TQQQ 免费 OHLCV 数据源校准观察
 
 `TQQQ V9 Free OHLCV Assurance Calibration` 在每个已完成的美股交易日后，以 Twelve Data 与 Yahoo 的拆股调整日线做三次单日、只读交叉验证：最新完成交易日（T+0）、前一交易日（T+1）和前二交易日（T+2）。同一交易日因此会在连续三次任务中留下固定时间点的证据。

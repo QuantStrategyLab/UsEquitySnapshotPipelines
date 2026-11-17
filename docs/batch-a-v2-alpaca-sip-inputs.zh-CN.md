@@ -1,3 +1,5 @@
+[English](batch-a-v2-alpaca-sip-inputs.md) | 简体中文
+
 # Batch A v2 Alpaca SIP 采集入口
 
 审计 §9.15.27 D1。本入口只服务 `qsl.research.price_snapshot.v2`，与旧 Global ETF learning / R3 / Yahoo / `private-root` / v1 schema **互不复用、无兼容层**。

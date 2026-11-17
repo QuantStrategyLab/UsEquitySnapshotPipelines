@@ -1,3 +1,5 @@
+[English](twelve-data-shadow-source.md) | 简体中文
+
 # Twelve Data 免费日线影子来源
 
 `us_equity_snapshot_pipelines.twelve_data_daily` 使用 Twelve Data 的固定 HTTPS `time_series` 日线请求，并设置 `interval=1day`、`adjust=all`、固定起止日期。密钥只通过 `Authorization: apikey ...` 请求头传递，不会放入 URL、日志、诊断或产物。

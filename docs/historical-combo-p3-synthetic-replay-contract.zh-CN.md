@@ -1,3 +1,5 @@
+[English](historical-combo-p3-synthetic-replay-contract.md) | 简体中文
+
 # 历史组合 P3 合成成本 / OOS 回放契约
 
 `qsl.us-equity-historical-combo-p3-synthetic-replay.v1` 是既有组合 P1/P2/P3

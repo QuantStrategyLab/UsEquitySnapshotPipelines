@@ -1,3 +1,5 @@
+[English](soxl-v7-long-horizon-risk-observation.md) | 简体中文
+
 # SOXL V7 长期风险观察件
 
 `soxl_core_only_v7_long_horizon_risk_observation.py` 把一次已经完成的、冻结的 SOXL V7 P3 回放转换为并行的 `qsl.long_horizon_risk_observation.v1` 与 `qsl.long_horizon_risk_observation.v2` 私有观察件，供 `QuantRuntimeSettings` 的长期复利风险 Composer 使用。

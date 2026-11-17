@@ -1,3 +1,5 @@
+[English](r3-v2-price-only-assurance.md) | 简体中文
+
 # R3-v2 免费双源 price-only 保障诊断
 
 R3-v2 price-only 是本仓内**独立于全量 OHLCV 合同**的研究诊断切片。它仍对 `QQQ`、`TQQQ`、`SOXX`、`SOXL` 做 Twelve Data 与 Yahoo Finance 的 split-adjusted 日线比对，但只消费并比较 open/high/low/close，并用完整 XNYS 已完成交易日做覆盖校验。
