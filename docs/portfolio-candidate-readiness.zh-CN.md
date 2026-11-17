@@ -1,3 +1,5 @@
+[English](portfolio-candidate-readiness.md) | 简体中文
+
 # 组合候选自动重评估（研究限定）
 
 `portfolio-candidate-readiness` 是一个低频、脱敏的自动重评估器。它只读取

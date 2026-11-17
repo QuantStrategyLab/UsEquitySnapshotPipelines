@@ -1,3 +1,5 @@
+[English](historical-combo-p1-p3-input-contract.md) | 简体中文
+
 # 历史组合 P1 输入与 P3 前置验证契约
 
 这份切片把既有的组合研究契约接到一起，但**不运行回测**：

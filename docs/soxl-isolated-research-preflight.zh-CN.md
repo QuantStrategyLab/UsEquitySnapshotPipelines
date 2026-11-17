@@ -1,3 +1,5 @@
+[English](soxl-isolated-research-preflight.md) | 简体中文
+
 # SOXL 九输入独立研究预检
 
 本入口为新的隔离开发研究读取既有私有输入包。默认模式只做预检；显式 development 模式执行回测，但不执行外部模型、订单或晋级，不消耗旧候选的 mandate，不更新旧包或旧账本。

@@ -1,3 +1,5 @@
+[English](free-daily-source-crosscheck.md) | 简体中文
+
 # 免费日线来源交叉校验
 
 SOXL、SOXX、BOXX 的免费日线影子校验使用两份独立获取路径：Twelve Data 的有密钥日线接口，以及项目已存在的 Yahoo Finance chart 下载通道。为保证口径可验证，两者均采用**仅拆分调整**日线：Twelve 显式请求 `adjust=splits`，Yahoo 使用未做股息总回报调整的 `close` 价格。两者都先产生独立、不可变的日线快照，再交给 `quant_platform_kit` 的多源一致性关卡比较。

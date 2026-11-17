@@ -1,3 +1,5 @@
+[English](soxl-v7-nonlive-forward-observation.md) | 简体中文
+
 # SOXL V7 自动前瞻观察
 
 `SOXL V7 Non-Live Forward Observation` 在每个已完整结束的 XNYS 交易日后运行，针对冻结候选
