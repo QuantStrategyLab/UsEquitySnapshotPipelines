@@ -67,7 +67,10 @@ Snapshot artifact 的作用是让策略判断可复现：包括 ranking 输入�
 ```bash
 python -m pip install -e .
 python -m pytest -q
+useq --help
 ```
+
+所有流水线、研究、shadow 和发布入口既可以通过独立的 `useq-*` 命令调用，也可以作为子命令通过统一 `useq` CLI 调用（例如 `useq publish-snapshot-artifacts --help` 或 `useq backtest-global-etf-offensive-rotation --help`）。
 
 ## 延伸文档
 

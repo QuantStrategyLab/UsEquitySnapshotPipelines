@@ -69,7 +69,10 @@ For the scheduled TQQQ P1/P3 research flow, a terminal, P3-verified run also pub
 ```bash
 python -m pip install -e .
 python -m pytest -q
+useq --help
 ```
+
+All pipeline, research, shadow, and publish entrypoints are available both as standalone `useq-*` console scripts and as subcommands under the unified `useq` CLI (for example, `useq publish-snapshot-artifacts --help` or `useq backtest-global-etf-offensive-rotation --help`).
 
 ## Useful docs
 
