@@ -87,7 +87,7 @@ def test_strategy_plugin_publish_workflow_publishes_shadow_artifact() -> None:
     assert "publish-market-regime-alerts:" in workflow
     assert "needs: market-regime-control" in workflow
     assert "Download market-regime artifacts" in workflow
-    assert "actions/download-artifact@v7" in workflow
+    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in workflow
     assert "pattern: strategy-plugin-market-regime-control-*-${{ github.run_id }}" in workflow
     assert "merge-multiple: true" in workflow
     assert "PLUGIN_ALERT_OUTPUT_DIR: data/output/market_regime_alerts" in workflow
@@ -199,7 +199,7 @@ def test_strategy_plugin_alert_state_settings_uses_qpk_project_id_keyword() -> N
 def test_russell_live_ledger_workflow_upload_artifact_guard() -> None:
     workflow = RUSSELL_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "uses: actions/upload-artifact@v4" in workflow
+    assert "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
     assert "if-no-files-found: error" in workflow
     assert "retention-days: 7" in workflow
 

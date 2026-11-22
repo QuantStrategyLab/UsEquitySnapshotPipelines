@@ -121,7 +121,7 @@ jobs:
           PY
       - name: Upload sanitized readiness record
         if: steps.artifacts.outputs.available == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: portfolio-candidate-readiness-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/portfolio-candidate-readiness/portfolio-candidate-readiness.json
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Create or update one bounded AI research task
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           PROPOSAL_ID: ${{ needs.assess.outputs.proposal_id }}
           READINESS_SHA256: ${{ needs.assess.outputs.readiness_sha256 }}
@@ -182,7 +182,7 @@ jobs:
       issues: write
     steps:
       - name: Create, update, or resolve one research-input availability alert
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           ASSESS_RESULT: ${{ needs.assess.result }}
           TERMINAL_ARTIFACTS_AVAILABLE: ${{ needs.assess.outputs.terminal_artifacts_available }}

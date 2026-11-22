@@ -339,7 +339,7 @@ jobs:
           printf 'DECISION_DATA_PROJECTION_TERMINAL_STATUS=%s\n' "$status" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P1 terminal status
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tqqq-p1-terminal-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tqqq-daily-research/p1-terminal-status.json
@@ -494,7 +494,7 @@ jobs:
           gcloud storage cp --quiet --no-clobber "$status_path" "$destination" >/dev/null
           printf 'P3_DAILY_STATUS_UPLOAD=CREATE_ONLY_COMPLETE\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P3 terminal status
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tqqq-daily-research/daily-research-status.json
@@ -619,7 +619,7 @@ jobs:
           PY
       - name: Upload bounded P2 v6 plugin observation
         if: steps.plugin_observation.outputs.status == 'OBSERVATION_RECORDED'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tqqq-p2-v6-plugin-observation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tqqq-daily-research/p2-v6-plugin-observation.v1.json
@@ -643,7 +643,7 @@ jobs:
           printf 'P3_RESEARCH_PERFORMANCE=BUILT\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized P3 research performance observation
         if: steps.terminal.outputs.status == 'EVIDENCE_V3_COMPLETE'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tqqq-p3-research-performance-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tqqq-daily-research/strategy_performance.v2.json
@@ -780,7 +780,7 @@ jobs:
           printf 'P3_DAILY_STATUS=NOT_RUN\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Upload unavailable P3 terminal state
         if: always() && steps.p3_unavailable.outputs.available == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: tqqq-p3-terminal-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tqqq-daily-research/p3-unavailable-status.json

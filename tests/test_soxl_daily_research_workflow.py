@@ -45,7 +45,7 @@ def test_soxl_daily_research_defers_unavailable_p1_and_requires_remote_completio
     assert "--decision-projection-status" in workflow
     assert "strategy_performance.v2.json" in workflow
     assert "build_soxl_p3_strategy_performance.py" in workflow
-    assert "actions/upload-artifact@v7" in workflow
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in workflow
     assert "retention-days: 35" in workflow
     p3_job = workflow.split("  p3:", maxsplit=1)[1]
     assert "ALPACA_API_KEY_ID" not in p3_job

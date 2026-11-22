@@ -222,7 +222,7 @@ def test_daily_research_workflow_uses_bound_data_and_sanitized_status_only() -> 
     assert "decision_projection_terminal" in workflow
     assert "DECISION_DATA_PROJECTION_TERMINAL_STATUS" in workflow
     assert "--decision-projection-status" in workflow
-    assert "actions/upload-artifact@v7" in workflow
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in workflow
     assert "Upload sanitized P3 terminal status" in workflow
     assert "Upload sanitized P1 terminal status" in workflow
     assert "Record P3 unavailable terminal state" in workflow
