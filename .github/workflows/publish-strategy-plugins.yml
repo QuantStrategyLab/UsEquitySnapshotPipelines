@@ -71,7 +71,7 @@ jobs:
       - name: Verify main CI succeeded before publish
         env:
           GH_TOKEN: ${{ github.token }}
-        uses: QuantStrategyLab/.github/actions/verify-main-ci@f0c00df157149cb29a41b615d2502af07eb233ea
+        uses: QuantStrategyLab/.github/actions/verify-main-ci@1de428f00aeef77ba939edfd3420b202c7166953
 
   market-regime-control:
     needs: verify-main-ci
