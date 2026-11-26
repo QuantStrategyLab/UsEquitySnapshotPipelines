@@ -9,8 +9,8 @@ Rules fixed before running:
   traded instruments (TQQQ/QLD -> QQQ, SOXL -> SOXX, SOXX -> BIL in the SOXL risk-off leg).
 - Costs, on a fresh USD 1,500 account per period: holdings drift between signal changes;
   every trade to a new target pays its own symbol's bid-ask spread (1 bp 1x ETFs, 3 bp
-  2x/3x ETFs; stress x2, x3) and one IBKR minimum commission (USD 0.35); a configurable yearly tax (example 20%) on
-  each calendar year's positive gain (an upper bound treating gains as realized yearly).
+  2x/3x ETFs; stress x2, x3) and one IBKR minimum commission (USD 0.35); a configurable yearly tax (default 0%,
+  example 20% stress profile via --tax-rate or QSL_RESEARCH_TAX_RATE) on each calendar year's positive gain (an upper bound treating gains as realized yearly).
   Fund expense ratios and 3x financing are already inside adjusted prices.
 - Periods: full 2011-04-01 onward, and 2023-01-01 onward reported separately (a later
   historical subperiod, not an untouched holdout). Prices download from 2009-01-01 to warm
@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -46,8 +47,29 @@ FULL_START = "2011-04-01"  # SOXL trades from 2010-03; a year of history warms u
 OOS_START = "2023-01-01"
 STARTING_EQUITY_USD = 1500.0
 MIN_COMMISSION_USD = 0.35
-CN_TAX_RATE = 0.20
+DEFAULT_TAX_RATE = 0.0
+TAX_RATE_ENV_VAR = "QSL_RESEARCH_TAX_RATE"
 SPREAD_BPS_1X = 1.0
+
+
+def validate_tax_rate(rate: float) -> float:
+    """Validate a configured annual gain tax rate in [0.0, 1.0]."""
+    value = float(rate)
+    if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        raise ValueError(f"tax_rate must be a finite value between 0.0 and 1.0, got {rate!r}")
+    return value
+
+
+def default_tax_rate() -> float:
+    """Read optional annual gain tax rate from environment (defaults to 0.0)."""
+    raw = os.environ.get(TAX_RATE_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_TAX_RATE
+    try:
+        parsed = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{TAX_RATE_ENV_VAR} must be numeric, got {raw!r}") from exc
+    return validate_tax_rate(parsed)
 SPREAD_BPS_LEVERED = 3.0
 STRESS_MULTIPLIERS = (1.0, 2.0, 3.0)
 BALANCED_MAX_DRAWDOWN = 0.30
@@ -161,7 +183,7 @@ def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None =
 
 def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_multiplier: float = 1.0,
                      starting_equity: float = STARTING_EQUITY_USD, min_commission: float = MIN_COMMISSION_USD,
-                     tax_rate: float = CN_TAX_RATE, min_change: float = 1e-12) -> pd.Series:
+                     tax_rate: float | None = None, min_change: float = 1e-12) -> pd.Series:
     """Small-account path: holdings drift between signal changes; every trade pays costs.
 
     targets: target weights applied to each session's returns (index = session).
@@ -171,6 +193,7 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
     notional and one minimum commission. Between changes the holdings drift. At each new
     calendar year, tax_rate of the prior year's positive gain is paid pro rata.
     """
+    effective_tax_rate = default_tax_rate() if tax_rate is None else validate_tax_rate(tax_rate)
     symbols = list(targets.columns)
     holdings = {s: 0.0 for s in symbols}
     cash = starting_equity
@@ -183,8 +206,8 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
         opening = value
         if year is not None and session.year != year:
             gain = value - year_start
-            if gain > 0 and value > 0:
-                scale = 1.0 - tax_rate * gain / value
+            if gain > 0 and value > 0 and effective_tax_rate > 0:
+                scale = 1.0 - effective_tax_rate * gain / value
                 # Paying the tax sells part of every holding; each sale pays its costs.
                 sale_costs = sum(h * (1.0 - scale) * symbol_spread_bps(s) * spread_multiplier / 10_000.0
                                  + min_commission for s, h in holdings.items() if h * (1.0 - scale) > 0.01)
@@ -253,7 +276,8 @@ def deflated_sharpe_probability(sharpe_annual: float, sessions: int, skew: float
     return float(norm.cdf((sr - sr0) * math.sqrt(sessions - 1) / denom))
 
 
-def run(price_history: pd.DataFrame, *, end_date: str | None = None) -> dict:
+def run(price_history: pd.DataFrame, *, end_date: str | None = None, tax_rate: float | None = None) -> dict:
+    effective_tax_rate = default_tax_rate() if tax_rate is None else validate_tax_rate(tax_rate)
     validate_coverage(price_history, FULL_START, end_date)
     close = _normalize_price_history(price_history)
     if end_date:
@@ -271,7 +295,7 @@ def run(price_history: pd.DataFrame, *, end_date: str | None = None) -> dict:
                 if len(window) < 2:
                     raise ValueError(f"price history cannot produce the registered {period} period")
                 # Each period is a fresh USD 1,500 account opened at the period start.
-                net = simulate_account(window, returns, spread_multiplier=multiplier)
+                net = simulate_account(window, returns, spread_multiplier=multiplier, tax_rate=effective_tax_rate)
                 rows.append({"pair": variant.pair, "variant": variant.label, "leverage": variant.leverage,
                              "stress": multiplier, "period": period, **metrics(net)})
             registry.append({"trial": variant.label, "spread_stress": multiplier,
@@ -283,7 +307,7 @@ def run(price_history: pd.DataFrame, *, end_date: str | None = None) -> dict:
         frame.loc[group.index, "dsr"] = [
             deflated_sharpe_probability(r.sharpe, r.sessions, r.skew, r.kurtosis, trial_sharpes)
             for r in group.itertuples()]
-    return {"rows": frame, "registry": registry, "decisions": decide(frame)}
+    return {"rows": frame, "registry": registry, "decisions": decide(frame), "tax_rate": effective_tax_rate}
 
 
 def decide(frame: pd.DataFrame) -> list[dict]:
@@ -312,10 +336,11 @@ def decide(frame: pd.DataFrame) -> list[dict]:
 
 def render_markdown(output: dict) -> str:
     rows = output["rows"]
+    tax_rate = float(output.get("tax_rate", DEFAULT_TAX_RATE))
     lines = ["# Small-account cost comparison (pre-registered 2026-11-26, research only)", "",
              "live_ready=False · no_order=True · each period is a fresh USD 1,500 account; holdings drift between"
-             " signal changes; each trade pays its own spread and a USD 0.35 minimum commission; example 20% tax on"
-             " positive yearly gains; expense ratios already in adjusted prices.", "",
+             " signal changes; each trade pays its own spread and a USD 0.35 minimum commission;"
+             f" configurable yearly tax ({tax_rate:.0%}) on positive yearly gains; expense ratios already in adjusted prices.", "",
              "| Pair | Variant | Period | Spread stress | CAGR | Max DD | Calmar | Sharpe | DSR |",
              "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for r in rows.itertuples():
@@ -379,11 +404,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--end-date", required=True, help="last price date (YYYY-MM-DD), within the mandate")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--tax-rate", type=float, default=None,
+                        help=f"annual gain tax rate in [0, 1] (default env {TAX_RATE_ENV_VAR} or 0.0)")
     args = parser.parse_args(argv)
     verify_mandate(MANDATE_PATH, args.end_date)  # before any provider access
     end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat()
     prices = download_price_history(required_symbols(), start=DOWNLOAD_START, end=end_exclusive)
-    output = run(prices, end_date=args.end_date)
+    output = run(prices, end_date=args.end_date, tax_rate=args.tax_rate)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "report.md").write_text(render_markdown(output), encoding="utf-8")
     payload = {"rows": output["rows"].to_dict("records"), "decisions": output["decisions"],

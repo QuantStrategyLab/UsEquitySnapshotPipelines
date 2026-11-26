@@ -64,11 +64,29 @@ def test_holdings_drift_without_trading_between_signal_changes():
     assert (1 + net).prod() * 1000.0 == pytest.approx(expected, rel=1e-9)
 
 
+def test_yearly_tax_default_is_zero_and_env_override(monkeypatch):
+    targets = _frame([[1.0]] * 6, ["QQQ"])
+    returns = _frame([[0], [0.10], [0], [0], [0], [0]], ["QQQ"])
+    monkeypatch.delenv(study.TAX_RATE_ENV_VAR, raising=False)
+    net_default = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.0,
+                                         spread_multiplier=0.0)
+    assert (1 + net_default).prod() * 1000.0 == pytest.approx(1100.0, rel=1e-9)
+
+    monkeypatch.setenv(study.TAX_RATE_ENV_VAR, "0.20")
+    net_env = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.0,
+                                     spread_multiplier=0.0)
+    assert (1 + net_env).prod() * 1000.0 == pytest.approx(1100.0 - 0.2 * 100.0, rel=1e-9)
+
+    monkeypatch.setenv(study.TAX_RATE_ENV_VAR, "1.5")
+    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+        study.default_tax_rate()
+
+
 def test_yearly_tax_on_positive_gain():
     targets = _frame([[1.0]] * 6, ["QQQ"])
     returns = _frame([[0], [0.10], [0], [0], [0], [0]], ["QQQ"])
     net = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.0,
-                                 spread_multiplier=0.0)
+                                 spread_multiplier=0.0, tax_rate=0.20)
     gain = 100.0
     assert (1 + net).prod() * 1000.0 == pytest.approx(1100.0 - 0.2 * gain, rel=1e-9)
 
@@ -77,7 +95,7 @@ def test_opening_session_earns_no_return_and_tax_sales_pay_costs():
     targets = _frame([[1.0]] * 6, ["QQQ"])
     returns = _frame([[0.50], [0.10], [0], [0], [0], [0]], ["QQQ"])
     net = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.35,
-                                 spread_multiplier=0.0)
+                                 spread_multiplier=0.0, tax_rate=0.20)
     opened = 1000.0 - 0.35
     year_end = opened * 1.10
     after_tax = year_end - 0.2 * (year_end - 1000.0) - 0.35

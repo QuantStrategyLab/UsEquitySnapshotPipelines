@@ -31,7 +31,7 @@ notebooks. How much of it survives a strict replay, and where does the gap come 
      baseline is `original_simulator`.
    - `strict`: the same targets executed at the next session's close on a fresh USD 1,500
      account. Each trade pays its own spread (3 bp for 3x ETFs, 1 bp for 1x ETFs; stress x2 and
-     x3) and a USD 0.35 minimum commission. A 20% tax applies to each calendar year's positive
+     x3) and a USD 0.35 minimum commission. A configurable yearly tax (`--tax-rate` / `QSL_RESEARCH_TAX_RATE`, default 0%; example 20% stress profile) applies to each calendar year's positive
      gain. Trades occur only when a target weight moves by more than 1 percentage point, the
      strategy's own `rebalance_threshold_ratio`.
 5. **Reading.** The gap between `original_simulator` and `strict` measures what same-close
