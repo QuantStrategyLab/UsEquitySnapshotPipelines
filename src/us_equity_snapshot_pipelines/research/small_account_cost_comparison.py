@@ -129,11 +129,16 @@ def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None =
     in_window = frame["as_of"] >= pd.Timestamp(start)
     if end:
         in_window &= frame["as_of"] <= pd.Timestamp(end)
-    sessions = pd.DatetimeIndex(sorted(frame.loc[in_window, "as_of"].unique()))
-    if len(sessions) == 0:
+    observed = pd.DatetimeIndex(sorted(frame.loc[in_window, "as_of"].unique()))
+    if len(observed) == 0:
         raise ValueError("price history has no sessions in the evaluation window")
-    if end and (pd.Timestamp(end) - sessions[-1]).days > max_gap_days:
-        raise ValueError(f"price history ends {sessions[-1].date()}, before {end}")
+    import exchange_calendars as xcals  # independent completeness reference, not the download itself
+
+    last = pd.Timestamp(end) if end else observed[-1]
+    sessions = pd.DatetimeIndex(xcals.get_calendar("XNYS").sessions_in_range(
+        max(pd.Timestamp(start), pd.Timestamp("2006-01-03")), last)).tz_localize(None).normalize()
+    if end and (pd.Timestamp(end) - observed[-1]).days > max_gap_days:
+        raise ValueError(f"price history ends {observed[-1].date()}, before {end}")
     signal_windows: dict[str, int] = {}
     for variant in build_variants():
         symbol = variant.spec.signal_symbol.upper()
@@ -158,8 +163,9 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
     """Small-account path: holdings drift between signal changes; every trade pays costs.
 
     targets: target weights applied to each session's returns (index = session).
-    On the first session and whenever the target changes, the account trades to the new
-    target at the prior close: each traded symbol pays its own spread on the traded
+    The account opens with a trade at its first session's close and earns returns from the
+    next session. Whenever the target changes later, it trades to the new target at the
+    prior close: each traded symbol pays its own spread on the traded
     notional and one minimum commission. Between changes the holdings drift. At each new
     calendar year, tax_rate of the prior year's positive gain is paid pro rata.
     """
@@ -167,6 +173,7 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
     holdings = {s: 0.0 for s in symbols}
     cash = starting_equity
     previous_target = None
+    first_session = True
     year, year_start = None, starting_equity
     out = []
     for session, target_row in targets.iterrows():
@@ -176,8 +183,11 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
             gain = value - year_start
             if gain > 0 and value > 0:
                 scale = 1.0 - tax_rate * gain / value
+                # Paying the tax sells part of every holding; each sale pays its costs.
+                sale_costs = sum(h * (1.0 - scale) * symbol_spread_bps(s) * spread_multiplier / 10_000.0
+                                 + min_commission for s, h in holdings.items() if h * (1.0 - scale) > 0.01)
                 holdings = {s: h * scale for s, h in holdings.items()}
-                cash *= scale
+                cash = cash * scale - sale_costs
                 value = cash + sum(holdings.values())
             year_start = value
         year = session.year
@@ -192,6 +202,12 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
             holdings = {s: target[s] * value for s in symbols}
             cash = value - sum(holdings.values())
             previous_target = target
+        if first_session:
+            # A fresh account opens at its first session's close: no return before that trade.
+            first_session = False
+            closing = cash + sum(holdings.values())
+            out.append(closing / opening - 1.0 if opening > 0 else 0.0)
+            continue
         for s in symbols:
             r = returns.at[session, s] if s in returns.columns else float("nan")
             if pd.isna(r):

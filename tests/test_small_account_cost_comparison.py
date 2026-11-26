@@ -66,11 +66,29 @@ def test_holdings_drift_without_trading_between_signal_changes():
 
 def test_yearly_tax_on_positive_gain():
     targets = _frame([[1.0]] * 6, ["QQQ"])
-    returns = _frame([[0.10], [0], [0], [0], [0], [0]], ["QQQ"])
+    returns = _frame([[0], [0.10], [0], [0], [0], [0]], ["QQQ"])
     net = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.0,
                                  spread_multiplier=0.0)
     gain = 100.0
     assert (1 + net).prod() * 1000.0 == pytest.approx(1100.0 - 0.2 * gain, rel=1e-9)
+
+
+def test_opening_session_earns_no_return_and_tax_sales_pay_costs():
+    targets = _frame([[1.0]] * 6, ["QQQ"])
+    returns = _frame([[0.50], [0.10], [0], [0], [0], [0]], ["QQQ"])
+    net = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.35,
+                                 spread_multiplier=0.0)
+    opened = 1000.0 - 0.35
+    year_end = opened * 1.10
+    after_tax = year_end - 0.2 * (year_end - 1000.0) - 0.35
+    assert (1 + net).prod() * 1000.0 == pytest.approx(after_tax, rel=1e-9)
+
+
+def test_missing_exchange_session_fails_coverage():
+    prices = _prices()
+    holiday_free = prices.loc[prices["as_of"] != pd.Timestamp("2015-03-10")]
+    with pytest.raises(ValueError, match="misses"):
+        study.validate_coverage(holiday_free, study.FULL_START)
 
 
 def test_missing_symbol_fails_coverage():
