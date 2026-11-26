@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -25,7 +26,34 @@ from scripts.soxl_v7_review_checkpoint import BUCKET, CreateOnlyStore
 
 PROFILE = "soxl_soxx_core_only_p2_v7_longterm_compounding_cash_reserve"
 CONFIG = "843ab4e93e81985c2b3becc61a2f0b971508ccf25afa59acf402e75f574514d1"
-CONSOLE = "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+SYNC_PATH = "/api/internal/sync-research-promotion-ticket"
+TICKET_PATH = "/api/internal/research-promotion-ticket"
+_HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def console_origin(sync_url: str, approved_origin: str) -> str:
+    """Return the console origin when the sync URL is exact and matches the approved origin.
+
+    Both values come from protected configuration; the bearer token is sent only to
+    the origin named independently in ``QSL_CONSOLE_ORIGIN``.
+    """
+    parsed = urlsplit(sync_url)
+    origin = f"https://{parsed.hostname}"
+    if (_HOST.fullmatch(parsed.hostname or "") is None
+            or sync_url != origin + SYNC_PATH
+            or approved_origin != origin):
+        raise ValueError("V7 research console binding unavailable")
+    return origin
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Authenticated console calls never follow a redirect to another location."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_open = urllib.request.build_opener(_NoRedirect()).open
 
 
 def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload=None):
@@ -38,7 +66,7 @@ def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload
         headers["Content-Type"] = "application/json"
         request = urllib.request.Request(endpoint, data=json.dumps(payload, sort_keys=True).encode(),
                                          method="POST", headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _open(request, timeout=timeout) as response:
         return json.loads(response.read()) if payload is None else response.status
 
 
@@ -107,15 +135,16 @@ def main(argv=None):
         from google.cloud import storage
         url = os.environ.get("RESEARCH_PROMOTION_SYNC_URL", "")
         token = os.environ.get("RESEARCH_PROMOTION_SYNC_TOKEN", "")
-        expected = CONSOLE + "/api/internal/sync-research-promotion-ticket"
-        if url != expected or not token or urlsplit(url).query:
+        # The console origin comes from vars.RESEARCH_PROMOTION_SYNC_URL, not from source.
+        console = console_origin(url, os.environ.get("QSL_CONSOLE_ORIGIN", ""))
+        if not token:
             raise ValueError("V7 research console binding unavailable")
         pull = make_console_research_promotion_pull(
-            endpoint_url=CONSOLE + "/api/internal/research-promotion-ticket", sync_token=token,
+            endpoint_url=console + TICKET_PATH, sync_token=token,
             raise_on_unavailable=True, printer=lambda *_a, **_k: None, get_json=_console_request,
         )
         sync = make_console_research_promotion_sync(
-            endpoint_url=url, sync_token=token, pull_console=pull, printer=lambda *_a, **_k: None,
+            endpoint_url=console + SYNC_PATH, sync_token=token, pull_console=pull, printer=lambda *_a, **_k: None,
             post_json=_console_request,
         )
         prepared = json.loads(args.prepared_ticket.read_text()) if args.prepared_ticket else None

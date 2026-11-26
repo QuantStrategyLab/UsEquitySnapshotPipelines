@@ -57,6 +57,7 @@
 开启前需核实原 WIF 身份对该前缀的读取和创建权限，以及 environment `market-data-nonlive`
 中的 `RESEARCH_PROMOTION_SYNC_URL` / `RESEARCH_PROMOTION_SYNC_TOKEN` 专用绑定。
 URL 必须是量化控制台的 `/api/internal/sync-research-promotion-ticket`；不得借用其他 token。
+还需设置 `QSL_CONSOLE_ORIGIN` 为控制台的纯来源地址（例如 `https://console.example.com`）；同步 URL 必须恰好等于该来源加上上述路径，否则在发送 token 前即停放投递。
 默认未设置开关即不启用新增远端链路。本地实现/测试不证明这些生产绑定已完成。
 
 QPK 736 的票据客户端使用 `scripts/requirements-soxl-v7-review-control.txt` 的独立环境；

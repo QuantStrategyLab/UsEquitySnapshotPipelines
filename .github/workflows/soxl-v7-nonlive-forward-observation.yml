@@ -334,6 +334,7 @@ jobs:
         if: steps.review.outputs.admitted == 'true'
         env:
           RESEARCH_PROMOTION_SYNC_URL: ${{ vars.RESEARCH_PROMOTION_SYNC_URL }}
+          QSL_CONSOLE_ORIGIN: ${{ vars.QSL_CONSOLE_ORIGIN }}
           RESEARCH_PROMOTION_SYNC_TOKEN: ${{ secrets.RESEARCH_PROMOTION_SYNC_TOKEN }}
         run: |
           set -euo pipefail

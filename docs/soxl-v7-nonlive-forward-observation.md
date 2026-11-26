@@ -48,7 +48,7 @@ Subsequent runs recover this pinned result instead of re-acquiring data or re-ru
 
 These objects reside in a separate prefix of the existing bucket,
 `strategy-lifecycle/v1/us_equity/soxl-v7-research-review/`, isolated from the date-ordered observation records directory.
-Before enabling, operators must verify read/create permissions on that prefix for the existing WIF identity and configure dedicated `RESEARCH_PROMOTION_SYNC_URL` and `RESEARCH_PROMOTION_SYNC_TOKEN` bindings in environment `market-data-nonlive`.
+Before enabling, operators must verify read/create permissions on that prefix for the existing WIF identity and configure dedicated `RESEARCH_PROMOTION_SYNC_URL` and `RESEARCH_PROMOTION_SYNC_TOKEN` bindings in environment `market-data-nonlive`. Also set `QSL_CONSOLE_ORIGIN` to the bare console origin (for example `https://console.example.com`); the sync URL must equal that origin followed by `/api/internal/sync-research-promotion-ticket`, otherwise delivery parks before the token is sent.
 The URL must target the console's `/api/internal/sync-research-promotion-ticket` endpoint; borrowing other tokens is forbidden.
 With the flag unset by default, no remote review-sync path is active. Local tests do not verify those production bindings.
 

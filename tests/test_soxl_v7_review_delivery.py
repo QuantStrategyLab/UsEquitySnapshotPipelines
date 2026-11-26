@@ -4,7 +4,6 @@ import io
 import json
 from types import SimpleNamespace
 from urllib.error import HTTPError
-import urllib.request
 
 import pytest
 
@@ -151,7 +150,8 @@ def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path
     store, calls, remote = Store(), [], {}
     monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(bucket=lambda _: None))
     monkeypatch.setattr(delivery, "CreateOnlyStore", lambda _: store)
-    monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_URL", delivery.CONSOLE + "/api/internal/sync-research-promotion-ticket")
+    monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_URL", "https://console.example.com" + delivery.SYNC_PATH)
+    monkeypatch.setenv("QSL_CONSOLE_ORIGIN", "https://console.example.com")
     monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_TOKEN", "synthetic-review")
     path = tmp_path / "ticket.json"
     path.write_text(json.dumps(prepared))
@@ -169,10 +169,70 @@ def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path
         response.status = 200
         return response
 
-    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(delivery, "_open", open_request)
     assert delivery.main(["--prepared-ticket", str(path)]) == (2 if forbidden else 0)
     assert calls.count("POST") == (0 if forbidden else 1)
     if forbidden:
         assert store.read("attempted.json") is None
     else:
         assert store.read("attempted.json") == prepared
+
+
+
+ORIGIN = "https://console.example.com"
+
+
+@pytest.mark.parametrize("url", [
+    "", "http://console.example.com" + delivery.SYNC_PATH,
+    "https://user@console.example.com" + delivery.SYNC_PATH,
+    "https://@console.example.com" + delivery.SYNC_PATH,
+    "https://console.example.com:8443" + delivery.SYNC_PATH,
+    "https://console.example.com/other",
+    "https://console.example.com" + delivery.SYNC_PATH + "?x=1",
+    "https://console.example.com" + delivery.SYNC_PATH + "?",
+    "https://console.example.com" + delivery.SYNC_PATH + "#",
+    "https://Console.example.com" + delivery.SYNC_PATH,
+    "https://console.exa\tmple.com" + delivery.SYNC_PATH,
+    "https://127.0.0.1" + delivery.SYNC_PATH,
+])
+def test_console_origin_rejects_inexact_sync_url(url):
+    with pytest.raises(ValueError):
+        delivery.console_origin(url, ORIGIN)
+
+
+@pytest.mark.parametrize("approved", ["", "https://other.example.com", ORIGIN + "/"])
+def test_console_origin_requires_independently_approved_origin(approved):
+    with pytest.raises(ValueError):
+        delivery.console_origin(ORIGIN + delivery.SYNC_PATH, approved)
+
+
+def test_console_origin_comes_from_configured_sync_url():
+    assert delivery.console_origin(ORIGIN + delivery.SYNC_PATH, ORIGIN) == ORIGIN
+
+
+def test_console_request_does_not_follow_redirects():
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(HTTPError):
+            delivery._console_request(endpoint=f"http://127.0.0.1:{server.server_port}/ticket",
+                                      bearer_token="synthetic", timeout=5, ticket_id="t")
+    finally:
+        server.shutdown()
+    assert hits == ["/ticket?ticket_id=t"]
