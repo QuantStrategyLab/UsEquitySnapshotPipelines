@@ -1,0 +1,23 @@
+{
+  "schema_version": "qsl.research-data-mandate.v1",
+  "mandate_id": "soxl-strict-replay-2026-11-26",
+  "study": "us_equity_snapshot_pipelines.research.soxl_strict_replay",
+  "preregistration": "docs/research/soxl-strict-replay.md",
+  "scope": {
+    "provider": "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE",
+    "symbols": ["BIL", "SOXL", "SOXX", "SPY"],
+    "download_start": "2009-01-01",
+    "latest_end_date": "2026-11-30",
+    "strategy_source": "QuantStrategyLab/UsEquityStrategies@1fcfeac3dfad95db6b70ed3af19ce49c62f2c3ef soxl_trend_simulator (core-only, default parameters)",
+    "purpose": "Pre-registered strict replay of the SOXL core-only strategy; research evidence only",
+    "no_order": true,
+    "no_paper": true,
+    "no_live": true,
+    "no_capital": true,
+    "publishes": "workflow summary and 30-day artifact only"
+  },
+  "attestation": {
+    "approved_on": "2026-11-26",
+    "expires_at": "2026-12-26T00:00:00Z"
+  }
+}
