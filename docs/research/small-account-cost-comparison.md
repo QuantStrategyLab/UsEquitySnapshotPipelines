@@ -1,7 +1,7 @@
 # Small-account cost comparison: pre-registration
 
-Registered 2026-11-26, approved by the Owner before any run. Amended the same day,
-still before any run, after review: the full period starts 2011-04-01 so every trend signal
+Registered 2026-11-26, before any run. Amended the same day, still before any run, after
+review: the full period starts 2011-04-01 so every trend signal
 is warmed up, and signals execute at the next close. Research only: no live
 change, no orders, no frozen baseline rewritten.
 
@@ -23,7 +23,8 @@ cost?
    only. Nothing is committed. Access is gated by the reviewed, expiring record
    `config/research_mandates/small-account-cost-comparison-2026-11-26.json`, which binds
    the provider, symbols, start date, latest end date and no-order scope; a run outside it
-   stops before any download. A run also fails if any required symbol misses a session.
+   stops before any download. The record's SHA-256 is pinned in the study module, and the
+   workflow runs only on `main`, so changing the scope needs a reviewed, merged PR. A run also fails if any required symbol misses a session.
 3. **Periods.** Full history from 2011-04-01 (after a full year of SOXL history, so every trend signal is warmed up), and 2023-01-01 onward reported separately.
    The later period is a historical subperiod, not an untouched holdout. Each period starts
    a fresh USD 1,500 account.

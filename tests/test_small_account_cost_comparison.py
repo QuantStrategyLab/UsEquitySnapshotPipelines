@@ -127,6 +127,12 @@ def test_mandate_gates_data_access(tmp_path):
     for end, now in (("2026-12-15", "2026-11-27"), ("2026-11-20", "2027-01-01")):
         with pytest.raises(SystemExit):
             study.verify_mandate(mandate, end, now=pd.Timestamp(now, tz="UTC"))
+    import subprocess
+    import sys
+    entry = subprocess.run([sys.executable, "-m", study.STUDY_ID, "--end-date", "2027-06-30", "--output-dir",
+                            str(tmp_path / "o")], capture_output=True, text=True,
+                           cwd=Path(__file__).resolve().parents[1])
+    assert "rejected: end_date" in entry.stderr + entry.stdout  # the workflow's entry point reaches the scope check
     tampered = json.loads(mandate.read_text())
     tampered["scope"]["no_live"] = False
     path = tmp_path / "m.json"

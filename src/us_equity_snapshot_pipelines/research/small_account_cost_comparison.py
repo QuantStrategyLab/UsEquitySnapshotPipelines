@@ -25,6 +25,7 @@ Constant: live_ready=False, no_order=True. Every variant run is listed in the tr
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from dataclasses import dataclass, replace
@@ -321,17 +322,23 @@ def _json_safe(value):
     return value
 
 
+STUDY_ID = "us_equity_snapshot_pipelines.research.small_account_cost_comparison"
 MANDATE_PATH = Path("config/research_mandates") / f"{AUTHORIZATION_ID}.json"
+# The reviewed mandate is pinned here: changing either needs a reviewed, merged PR.
+MANDATE_SHA256 = "3e65f961b4d3ad00efbaf4607ebc45aef3cef9e7413e83bda88931f8b8fcf785"
 
 
 def verify_mandate(path: Path, end_date: str, *, now: pd.Timestamp | None = None) -> dict:
     """Accept only the merged, unexpired mandate whose scope covers this exact run."""
-    record = json.loads(path.read_text(encoding="utf-8"))
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != MANDATE_SHA256:
+        raise SystemExit("research data mandate rejected: not the reviewed record")
+    record = json.loads(raw.decode("utf-8"))
     scope = record.get("scope") or {}
     attestation = record.get("attestation") or {}
     now = now or pd.Timestamp.now(tz="UTC")
     problems = []
-    if record.get("mandate_id") != AUTHORIZATION_ID or record.get("study") != __name__:
+    if record.get("mandate_id") != AUTHORIZATION_ID or record.get("study") != STUDY_ID:
         problems.append("identity")
     if scope.get("provider") != "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE" or scope.get("download_start") != DOWNLOAD_START:
         problems.append("source")
@@ -353,10 +360,9 @@ def main(argv=None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--end-date", required=True, help="last price date (YYYY-MM-DD), within the mandate")
-    parser.add_argument("--mandate", type=Path, default=MANDATE_PATH)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    verify_mandate(args.mandate, args.end_date)  # before any provider access
+    verify_mandate(MANDATE_PATH, args.end_date)  # before any provider access
     end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat()
     prices = download_price_history(required_symbols(), start=DOWNLOAD_START, end=end_exclusive)
     output = run(prices, end_date=args.end_date)

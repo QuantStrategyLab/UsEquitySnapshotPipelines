@@ -5,7 +5,14 @@
   "preregistration": "docs/research/small-account-cost-comparison.md",
   "scope": {
     "provider": "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE",
-    "symbols": ["BIL", "QQQ", "SOXL", "SOXX", "SPY", "TQQQ"],
+    "symbols": [
+      "BIL",
+      "QQQ",
+      "SOXL",
+      "SOXX",
+      "SPY",
+      "TQQQ"
+    ],
     "download_start": "2009-01-01",
     "latest_end_date": "2026-11-30",
     "purpose": "Pre-registered 3x vs 1x small-account cost comparison; research evidence only",
@@ -18,7 +25,6 @@
   "attestation": {
     "approved_by": "Owner",
     "approved_on": "2026-11-26",
-    "recorded_by": "Pigbibi",
     "expires_at": "2026-12-26T00:00:00Z"
   }
 }
