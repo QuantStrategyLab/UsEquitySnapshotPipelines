@@ -34,7 +34,7 @@ cost?
    - Holdings drift between signal changes. Every trade to a new target pays its own
      symbol's bid-ask spread (1 bp for 1x ETFs, 3 bp for 2x/3x ETFs; stress x2 and x3) and
      one IBKR minimum commission of USD 0.35.
-   - a configurable yearly tax (example 20%) on each calendar year's positive return, paid at the start of the next
+   - a configurable yearly tax profile (`--tax-rate` / `QSL_RESEARCH_TAX_RATE`, default 0%; example 20% stress run) on each calendar year's positive return, paid at the start of the next
      year. This is an upper bound: it treats every gain as realized yearly. US dividend
      withholding (10%) is creditable against it in gain years; in a year without a
      portfolio gain the withholding is not modelled separately, which slightly flatters

@@ -9,7 +9,7 @@ Two methods on the same frozen strategy parameters and the same data:
   traded at that same close, 5 bp turnover cost, no tax, no commission.
 - ``strict``: the same targets executed at the next session's close, each trade paying its
   own spread (3 bp 3x, 1 bp 1x; stress x2, x3) and a USD 0.35 minimum commission on a fresh
-  USD 1,500 account, and a 20% yearly tax upper bound (see small_account_cost_comparison).
+  USD 1,500 account, and a configurable yearly tax upper bound (default 0%, example 20% stress profile; see small_account_cost_comparison).
 
 The strategy and its parameters are not changed. BIL stands in for BOXX, which only trades
 from 2022-12. Constant: live_ready=False, no_order=True.
@@ -65,9 +65,11 @@ def original_replay(targets: pd.DataFrame, close: pd.DataFrame, *, cost_bps: flo
 
 def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd.DataFrame], *,
         end_date: str | None = None,
-        reference: Callable[[pd.DataFrame], pd.Series] | None = None) -> dict:
+        reference: Callable[[pd.DataFrame], pd.Series] | None = None,
+        tax_rate: float | None = None) -> dict:
     """target_builder(close) returns weights per session already lagged one session
     (row d holds the target chosen from the close of the prior session)."""
+    effective_tax_rate = costs.default_tax_rate() if tax_rate is None else costs.validate_tax_rate(tax_rate)
     # Every symbol must trade on every XNYS session before prices are forward-filled.
     costs.validate_coverage(price_history, FULL_START, end_date, symbols=list(SYMBOLS),
                             signal_windows={"SOXX": WARM_UP_SESSIONS, "SOXL": WARM_UP_SESSIONS})
@@ -89,7 +91,7 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
         strict_targets = executed_targets.loc[executed_targets.index >= pd.Timestamp(start)]
         for multiplier in costs.STRESS_MULTIPLIERS:
             net = costs.simulate_account(strict_targets, returns, spread_multiplier=multiplier,
-                                         min_change=REBALANCE_THRESHOLD)
+                                         tax_rate=effective_tax_rate, min_change=REBALANCE_THRESHOLD)
             rows.append({"method": "strict", "stress": multiplier, "period": period, **costs.metrics(net)})
     if reference is not None:
         # The strategy's own simulator, unchanged, as an exact reference for the original method.
@@ -110,14 +112,15 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
         "strict_max_drawdown": float(strict["max_drawdown"]),
         "excluded_on_balanced_tier": bool(abs(strict["max_drawdown"]) > costs.BALANCED_MAX_DRAWDOWN),
     }
-    return {"rows": frame, "summary": summary}
+    return {"rows": frame, "summary": summary, "tax_rate": effective_tax_rate}
 
 
 def render_markdown(output: dict) -> str:
+    tax_rate = float(output.get("tax_rate", costs.DEFAULT_TAX_RATE))
     lines = ["# SOXL core-only strict replay (pre-registered 2026-11-26, research only)", "",
              "live_ready=False · no_order=True · original = same-close execution, 5 bp, no tax;"
              " strict = next-close execution, per-trade spread + USD 0.35 commission on USD 1,500,"
-             " example 20% tax on positive yearly gains. Strategy parameters unchanged; BIL stands in for BOXX.", "",
+             f" configurable yearly tax ({tax_rate:.0%}) on positive yearly gains. Strategy parameters unchanged; BIL stands in for BOXX.", "",
              "| Method | Period | Spread stress | CAGR | Max DD | Calmar | Sharpe |",
              "| --- | --- | ---: | ---: | ---: | ---: | ---: |"]
     for r in output["rows"].itertuples():
@@ -193,6 +196,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--tax-rate", type=float, default=None,
+                        help=f"annual gain tax rate in [0, 1] (default env {costs.TAX_RATE_ENV_VAR} or 0.0)")
     args = parser.parse_args(argv)
     verify_mandate(MANDATE_PATH, args.end_date)  # before any provider access
     import os
@@ -200,11 +205,12 @@ def main(argv=None) -> int:
         raise SystemExit("research data access runs only in the reviewed workflow on main")
     end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat()
     prices = download_price_history(list(SYMBOLS), start=DOWNLOAD_START, end=end_exclusive)
-    output = run(prices, soxl_core_only_targets, end_date=args.end_date, reference=soxl_core_only_reference)
+    output = run(prices, soxl_core_only_targets, end_date=args.end_date, reference=soxl_core_only_reference,
+                 tax_rate=args.tax_rate)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "report.md").write_text(render_markdown(output), encoding="utf-8")
     payload = {"rows": output["rows"].to_dict("records"), "summary": output["summary"],
-               "live_ready": False, "no_order": True}
+               "tax_rate": output["tax_rate"], "live_ready": False, "no_order": True}
     safe = costs._json_safe(payload)
     (args.output_dir / "results.json").write_text(json.dumps(safe, indent=2, allow_nan=False), encoding="utf-8")
     print(render_markdown(output))
