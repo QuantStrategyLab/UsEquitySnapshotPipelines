@@ -115,7 +115,8 @@ def required_symbols() -> list[str]:
 
 
 def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None = None,
-                      *, max_gap_days: int = 5) -> None:
+                      *, max_gap_days: int = 5, symbols: list[str] | None = None,
+                      signal_windows: dict[str, int] | None = None) -> None:
     """Fail unless every required symbol trades on every session of the window.
 
     Sessions are the union of dates any symbol traded. Each required symbol must cover all
@@ -139,11 +140,12 @@ def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None =
         max(pd.Timestamp(start), pd.Timestamp("2006-01-03")), last)).tz_localize(None).normalize()
     if end and (pd.Timestamp(end) - observed[-1]).days > max_gap_days:
         raise ValueError(f"price history ends {observed[-1].date()}, before {end}")
-    signal_windows: dict[str, int] = {}
-    for variant in build_variants():
-        symbol = variant.spec.signal_symbol.upper()
-        signal_windows[symbol] = max(signal_windows.get(symbol, 0), int(variant.spec.trend_window))
-    for symbol in required_symbols():
+    if signal_windows is None:
+        signal_windows = {}
+        for variant in build_variants():
+            symbol = variant.spec.signal_symbol.upper()
+            signal_windows[symbol] = max(signal_windows.get(symbol, 0), int(variant.spec.trend_window))
+    for symbol in (symbols if symbols is not None else required_symbols()):
         dates = pd.DatetimeIndex(sorted(frame.loc[frame["symbol"].eq(symbol), "as_of"].unique()))
         if len(dates) == 0 or dates.min() > pd.Timestamp(start):
             raise ValueError(f"price history does not cover {symbol} from {start}")
@@ -159,7 +161,7 @@ def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None =
 
 def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_multiplier: float = 1.0,
                      starting_equity: float = STARTING_EQUITY_USD, min_commission: float = MIN_COMMISSION_USD,
-                     tax_rate: float = CN_TAX_RATE) -> pd.Series:
+                     tax_rate: float = CN_TAX_RATE, min_change: float = 1e-12) -> pd.Series:
     """Small-account path: holdings drift between signal changes; every trade pays costs.
 
     targets: target weights applied to each session's returns (index = session).
@@ -192,7 +194,7 @@ def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_mul
             year_start = value
         year = session.year
         target = {s: float(target_row[s]) for s in symbols}
-        if previous_target is None or any(abs(target[s] - previous_target[s]) > 1e-12 for s in symbols):
+        if previous_target is None or any(abs(target[s] - previous_target[s]) > min_change for s in symbols):
             costs = 0.0
             for s in symbols:
                 trade = target[s] * value - holdings[s]
