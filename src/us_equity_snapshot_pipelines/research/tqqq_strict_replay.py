@@ -337,6 +337,7 @@ def main(argv=None) -> int:
     payload = {
         "rows": output["rows"].to_dict("records"),
         "summary": output["summary"],
+        "tax_rate": output["tax_rate"],
         "live_ready": False,
         "no_order": True,
         "income_layer_active_on_starting_equity": False,

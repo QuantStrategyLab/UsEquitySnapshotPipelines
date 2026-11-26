@@ -414,7 +414,8 @@ def main(argv=None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "report.md").write_text(render_markdown(output), encoding="utf-8")
     payload = {"rows": output["rows"].to_dict("records"), "decisions": output["decisions"],
-               "registry": output["registry"], "live_ready": False, "no_order": True}
+               "registry": output["registry"], "tax_rate": output["tax_rate"],
+               "live_ready": False, "no_order": True}
     (args.output_dir / "results.json").write_text(json.dumps(_json_safe(payload), indent=2, default=str,
                                                              allow_nan=False), encoding="utf-8")
     print(render_markdown(output))

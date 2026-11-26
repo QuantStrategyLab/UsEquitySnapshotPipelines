@@ -9,6 +9,11 @@ on:
         description: Last price date (YYYY-MM-DD), within the merged research mandate
         required: true
         type: string
+      tax_rate:
+        description: Optional annual gain tax rate in [0, 1] (empty uses env/default 0.0)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -45,10 +50,15 @@ jobs:
       - name: Run the pre-registered comparison
         env:
           END_DATE: ${{ inputs.end_date }}
+          TAX_RATE: ${{ inputs.tax_rate }}
         run: |
           set -euo pipefail
           [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "invalid end_date"; exit 2; }
           args=(--output-dir out --end-date "$END_DATE")
+          if [ -n "$TAX_RATE" ]; then
+            [[ "$TAX_RATE" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "invalid tax_rate"; exit 2; }
+            args+=(--tax-rate "$TAX_RATE")
+          fi
           uv run --no-sync python -m us_equity_snapshot_pipelines.research.tqqq_strict_replay "${args[@]}"
           cat out/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

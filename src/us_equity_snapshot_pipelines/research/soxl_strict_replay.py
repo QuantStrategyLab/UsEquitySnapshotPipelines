@@ -210,7 +210,7 @@ def main(argv=None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "report.md").write_text(render_markdown(output), encoding="utf-8")
     payload = {"rows": output["rows"].to_dict("records"), "summary": output["summary"],
-               "live_ready": False, "no_order": True}
+               "tax_rate": output["tax_rate"], "live_ready": False, "no_order": True}
     safe = costs._json_safe(payload)
     (args.output_dir / "results.json").write_text(json.dumps(safe, indent=2, allow_nan=False), encoding="utf-8")
     print(render_markdown(output))
