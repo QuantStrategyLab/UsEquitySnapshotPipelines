@@ -152,6 +152,7 @@ def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path
     monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(bucket=lambda _: None))
     monkeypatch.setattr(delivery, "CreateOnlyStore", lambda _: store)
     monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_URL", "https://console.example.com" + delivery.SYNC_PATH)
+    monkeypatch.setenv("QSL_CONSOLE_ORIGIN", "https://console.example.com")
     monkeypatch.setenv("RESEARCH_PROMOTION_SYNC_TOKEN", "synthetic-review")
     path = tmp_path / "ticket.json"
     path.write_text(json.dumps(prepared))
@@ -178,18 +179,33 @@ def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path
         assert store.read("attempted.json") == prepared
 
 
+
+ORIGIN = "https://console.example.com"
+
+
 @pytest.mark.parametrize("url", [
     "", "http://console.example.com" + delivery.SYNC_PATH,
     "https://user@console.example.com" + delivery.SYNC_PATH,
+    "https://@console.example.com" + delivery.SYNC_PATH,
     "https://console.example.com:8443" + delivery.SYNC_PATH,
     "https://console.example.com/other",
     "https://console.example.com" + delivery.SYNC_PATH + "?x=1",
+    "https://console.example.com" + delivery.SYNC_PATH + "?",
+    "https://console.example.com" + delivery.SYNC_PATH + "#",
+    "https://Console.example.com" + delivery.SYNC_PATH,
+    "https://console.exa\tmple.com" + delivery.SYNC_PATH,
     "https://127.0.0.1" + delivery.SYNC_PATH,
 ])
 def test_console_origin_rejects_inexact_sync_url(url):
     with pytest.raises(ValueError):
-        delivery.console_origin(url)
+        delivery.console_origin(url, ORIGIN)
+
+
+@pytest.mark.parametrize("approved", ["", "https://other.example.com", ORIGIN + "/"])
+def test_console_origin_requires_independently_approved_origin(approved):
+    with pytest.raises(ValueError):
+        delivery.console_origin(ORIGIN + delivery.SYNC_PATH, approved)
 
 
 def test_console_origin_comes_from_configured_sync_url():
-    assert delivery.console_origin("https://console.example.com" + delivery.SYNC_PATH) == "https://console.example.com"
+    assert delivery.console_origin(ORIGIN + delivery.SYNC_PATH, ORIGIN) == ORIGIN

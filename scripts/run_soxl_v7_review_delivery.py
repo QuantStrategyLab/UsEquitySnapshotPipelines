@@ -31,18 +31,19 @@ TICKET_PATH = "/api/internal/research-promotion-ticket"
 _HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
-def console_origin(sync_url: str) -> str:
-    """Return the console origin from the configured sync URL, or raise when it is not exact."""
+def console_origin(sync_url: str, approved_origin: str) -> str:
+    """Return the console origin when the sync URL is exact and matches the approved origin.
+
+    Both values come from protected configuration; the bearer token is sent only to
+    the origin named independently in ``QSL_CONSOLE_ORIGIN``.
+    """
     parsed = urlsplit(sync_url)
-    try:
-        port = parsed.port
-    except ValueError:
-        port = -1
-    if (parsed.scheme != "https" or parsed.username or parsed.password or port is not None
-            or parsed.query or parsed.fragment or parsed.path != SYNC_PATH
-            or _HOST.fullmatch(parsed.hostname or "") is None):
+    origin = f"https://{parsed.hostname}"
+    if (_HOST.fullmatch(parsed.hostname or "") is None
+            or sync_url != origin + SYNC_PATH
+            or approved_origin != origin):
         raise ValueError("V7 research console binding unavailable")
-    return f"https://{parsed.hostname}"
+    return origin
 
 
 def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload=None):
@@ -125,7 +126,7 @@ def main(argv=None):
         url = os.environ.get("RESEARCH_PROMOTION_SYNC_URL", "")
         token = os.environ.get("RESEARCH_PROMOTION_SYNC_TOKEN", "")
         # The console origin comes from vars.RESEARCH_PROMOTION_SYNC_URL, not from source.
-        console = console_origin(url)
+        console = console_origin(url, os.environ.get("QSL_CONSOLE_ORIGIN", ""))
         if not token:
             raise ValueError("V7 research console binding unavailable")
         pull = make_console_research_promotion_pull(
