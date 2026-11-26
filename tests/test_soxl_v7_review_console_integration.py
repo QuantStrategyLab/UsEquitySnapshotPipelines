@@ -10,11 +10,11 @@ from pathlib import Path
 import subprocess
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-import urllib.request
 
 import pytest
 
 cycle = pytest.importorskip("quant_platform_kit.strategy_lifecycle.research_promotion_cycle")
+from scripts import run_soxl_v7_review_delivery as delivery  # noqa: E402
 from scripts.run_soxl_v7_review_delivery import _console_request, deliver_once  # noqa: E402
 from test_soxl_v7_review_delivery import Store  # noqa: E402
 from test_soxl_v7_research_review import complete_record, materialized, _base_summary, _policy  # noqa: E402,F401
@@ -60,7 +60,7 @@ def test_same_candidate_financial_to_worker_to_durable_decision(monkeypatch, com
         response.status = 200
         return response
 
-    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(delivery, "_open", open_request)
     try:
         pull = cycle.make_console_research_promotion_pull(
             endpoint_url="https://switch.example/api/internal/research-promotion-ticket", sync_token="synthetic",
