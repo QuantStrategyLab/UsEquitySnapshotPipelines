@@ -35,21 +35,48 @@ def test_twins_keep_signal_and_swap_only_instruments():
     assert dict(sx.risk_on_weights) == pytest.approx({"SOXX": 0.57, "BIL": 0.43})
     assert dict(sx.risk_off_weights) == pytest.approx({"BIL": 1.0})
     assert sx.signal_symbol == variants["live_soxl_soxx_trend_57_proxy (3x)"].spec.signal_symbol
-    assert study.spread_bps(sx) == study.SPREAD_BPS_1X
-    assert study.spread_bps(variants["live_soxl_soxx_trend_57_proxy (3x)"].spec) == study.SPREAD_BPS_LEVERED
+    assert study.symbol_spread_bps("SOXL") == study.SPREAD_BPS_LEVERED
+    assert study.symbol_spread_bps("BIL") == study.SPREAD_BPS_1X
 
 
-def test_commission_and_tax_reduce_returns():
-    idx = pd.bdate_range("2020-12-28", periods=6)
-    gross = pd.Series([0.01, 0.0, 0.0, 0.0, 0.0, 0.0], index=idx)
-    weights = pd.DataFrame({"QQQ": [1, 1, 1, 0, 0, 0], "BIL": [0, 0, 0, 1, 1, 1]}, index=idx, dtype=float)
-    net = study.apply_small_account_costs({"portfolio_returns": gross, "weights_history": weights},
-                                          starting_equity=1000.0)
-    equity = 1000.0 * (1.01) - 0.35  # first order on day one
-    assert net.iloc[0] == pytest.approx(equity / 1000.0 - 1.0)
-    # The QQQ->BIL switch on 2020-12-31 costs two orders; the 2020 gain is taxed on 2021-01-01.
-    year_end = equity - 2 * 0.35
-    assert (1 + net).prod() * 1000.0 == pytest.approx(year_end - 0.2 * (year_end - 1000.0), rel=1e-9)
+def _frame(rows, cols):
+    idx = pd.bdate_range("2020-12-28", periods=len(rows))
+    return pd.DataFrame(rows, index=idx, columns=cols, dtype=float)
+
+
+def test_trades_pay_per_symbol_spread_and_minimum_commission():
+    targets = _frame([[1, 0], [1, 0], [0, 1]], ["TQQQ", "BIL"])
+    returns = _frame([[0, 0], [0, 0], [0, 0]], ["TQQQ", "BIL"])
+    net = study.simulate_account(targets, returns, starting_equity=1000.0, tax_rate=0.0)
+    first = 1000.0 * 3 / 10_000 + 0.35  # buy TQQQ: 3 bp + commission
+    assert (1 + net.iloc[0]) * 1000.0 == pytest.approx(1000.0 - first)
+    v = 1000.0 - first
+    switch = v * 3 / 10_000 + 0.35 + v * 1 / 10_000 + 0.35  # sell TQQQ (3 bp) and buy BIL (1 bp)
+    assert (1 + net).prod() * 1000.0 == pytest.approx(v - switch, rel=1e-9)
+
+
+def test_holdings_drift_without_trading_between_signal_changes():
+    targets = _frame([[0.5, 0.5]] * 3, ["QQQ", "BIL"])
+    returns = _frame([[0, 0], [0.10, 0], [0.10, 0]], ["QQQ", "BIL"])
+    net = study.simulate_account(targets, returns, starting_equity=1000.0, tax_rate=0.0)
+    v0 = 1000.0 - (500 * 1e-4 + 0.35) * 2
+    expected = v0 / 2 * 1.1 * 1.1 + v0 / 2  # drifted, never rebalanced
+    assert (1 + net).prod() * 1000.0 == pytest.approx(expected, rel=1e-9)
+
+
+def test_yearly_tax_on_positive_gain():
+    targets = _frame([[1.0]] * 6, ["QQQ"])
+    returns = _frame([[0.10], [0], [0], [0], [0], [0]], ["QQQ"])
+    net = study.simulate_account(targets, returns, starting_equity=1000.0, min_commission=0.0,
+                                 spread_multiplier=0.0)
+    gain = 100.0
+    assert (1 + net).prod() * 1000.0 == pytest.approx(1100.0 - 0.2 * gain, rel=1e-9)
+
+
+def test_missing_symbol_fails_coverage():
+    prices = _prices()
+    with pytest.raises(ValueError, match="TQQQ"):
+        study.validate_coverage(prices.loc[prices["symbol"] != "TQQQ"], study.FULL_START)
 
 
 def test_run_produces_every_trial_and_a_decision_per_pair():
@@ -58,8 +85,8 @@ def test_run_produces_every_trial_and_a_decision_per_pair():
     assert len(output["registry"]) == 4 * len(study.STRESS_MULTIPLIERS)
     assert set(rows["period"]) == {"full", "oos"}
     assert {d["pair"] for d in output["decisions"]} == set(study.PROXY_IDS)
-    assert {d["verdict"] for d in output["decisions"]} <= {"prefer_1x_twin", "rule_out_3x_on_balanced_tier",
-                                                          "report_to_owner"}
+    for d in output["decisions"]:
+        assert ("rule_out_3x_on_balanced_tier" in d["verdicts"]) == d["three_x_out_on_balanced"]
     assert rows["dsr"].between(0, 1).all()
     assert "live_ready=False" in study.render_markdown(output)
 
@@ -70,6 +97,27 @@ def test_higher_spread_stress_never_improves_results():
     for variant, group in full.groupby("variant"):
         cagr = group.sort_values("stress")["cagr"].tolist()
         assert all(a >= b - 1e-12 for a, b in zip(cagr, cagr[1:])), variant
+
+
+def test_decision_rules_are_independent():
+    def frame(three_dd, one_dd, three_calmar, one_calmar):
+        return pd.DataFrame([
+            {"pair": "p", "leverage": "3x", "stress": 1.0, "period": "full", "max_drawdown": three_dd, "calmar": three_calmar},
+            {"pair": "p", "leverage": "1x", "stress": 1.0, "period": "full", "max_drawdown": one_dd, "calmar": one_calmar}])
+    [both_breach] = study.decide(frame(-0.40, -0.35, 1.0, 0.5))
+    assert both_breach["verdicts"] == ["rule_out_3x_on_balanced_tier", "report_to_owner"]
+    [twin_wins] = study.decide(frame(-0.45, -0.20, 0.4, 0.6))
+    assert twin_wins["verdicts"] == ["rule_out_3x_on_balanced_tier", "prefer_1x_twin"]
+
+
+def test_drawdown_counts_from_opening_capital():
+    idx = pd.bdate_range("2021-01-04", periods=3)
+    assert study.metrics(pd.Series([-0.10, 0.0, 0.05], index=idx))["max_drawdown"] == pytest.approx(-0.10)
+
+
+def test_main_requires_authorization(tmp_path):
+    with pytest.raises(SystemExit):
+        study.main(["--authorization", "wrong", "--output-dir", str(tmp_path)])
 
 
 def test_dsr_penalizes_many_trials():

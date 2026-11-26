@@ -5,6 +5,10 @@ name: Small Account Cost Comparison (research)
 on:
   workflow_dispatch:
     inputs:
+      authorization:
+        description: Owner-approved authorization id for this study's source, dates and purpose
+        required: true
+        type: string
       end_date:
         description: Last price date (YYYY-MM-DD); empty uses the latest available
         required: false
@@ -35,9 +39,10 @@ jobs:
       - name: Run the pre-registered comparison
         env:
           END_DATE: ${{ inputs.end_date }}
+          AUTHORIZATION: ${{ inputs.authorization }}
         run: |
           set -euo pipefail
-          args=(--output-dir out)
+          args=(--output-dir out --authorization "$AUTHORIZATION")
           if [ -n "$END_DATE" ]; then
             [[ "$END_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "invalid end_date"; exit 2; }
             args+=(--end-date "$END_DATE")
