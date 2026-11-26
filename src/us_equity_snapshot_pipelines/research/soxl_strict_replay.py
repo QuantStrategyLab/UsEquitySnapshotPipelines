@@ -34,7 +34,8 @@ OOS_START = costs.OOS_START
 DOWNLOAD_START = "2009-01-01"
 SYMBOLS = ("BIL", "SOXL", "SOXX", "SPY")
 ORIGINAL_COST_BPS = 5.0
-REBALANCE_THRESHOLD = 0.01  # the strategy's own rebalance_threshold_ratio
+REBALANCE_THRESHOLD = 0.01
+WARM_UP_SESSIONS = 260  # the simulator's DEFAULT_MIN_HISTORY_DAYS  # the strategy's own rebalance_threshold_ratio
 MANDATE_PATH = Path("config/research_mandates") / f"{AUTHORIZATION_ID}.json"
 MANDATE_SHA256 = "d681de9435c3670ec44b79ee41a34378ffc78b01acbfdca6343a3c8d9123ae1b"
 
@@ -44,7 +45,11 @@ def _close_matrix(price_history: pd.DataFrame) -> pd.DataFrame:
 
 
 def original_replay(targets: pd.DataFrame, close: pd.DataFrame, *, cost_bps: float = ORIGINAL_COST_BPS) -> pd.Series:
-    """The strategy simulator's own convention: trade at the signal's close, flat bp cost."""
+    """Cross-check of the same-close convention with half-turnover cost on targets.
+
+    The unchanged simulator (``original_simulator``) is the reported baseline; it charges
+    both legs against drifted holdings, so this recomputation is slightly cheaper.
+    """
     returns = close.pct_change(fill_method=None)
     out, weights = [], None
     for session, row in targets.iterrows():
@@ -63,6 +68,9 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
         reference: Callable[[pd.DataFrame], pd.Series] | None = None) -> dict:
     """target_builder(close) returns weights per session already lagged one session
     (row d holds the target chosen from the close of the prior session)."""
+    # Every symbol must trade on every XNYS session before prices are forward-filled.
+    costs.validate_coverage(price_history, FULL_START, end_date, symbols=list(SYMBOLS),
+                            signal_windows={"SOXX": WARM_UP_SESSIONS, "SOXL": WARM_UP_SESSIONS})
     close = _close_matrix(price_history)
     if end_date:
         close = close.loc[close.index <= pd.Timestamp(end_date)]
@@ -88,9 +96,12 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
                          **costs.metrics(ref.loc[ref.index >= pd.Timestamp(start)])})
     frame = pd.DataFrame(rows)
     full = frame.loc[frame["period"].eq("full")]
-    original = full.loc[full["method"].eq("original")].iloc[0]
+    # The unchanged simulator is the baseline when available; the recomputation is a cross-check.
+    baseline = "original_simulator" if (full["method"] == "original_simulator").any() else "original"
+    original = full.loc[full["method"].eq(baseline)].iloc[0]
     strict = full.loc[full["method"].eq("strict") & full["stress"].eq(1.0)].iloc[0]
     summary = {
+        "baseline": baseline,
         "original_cagr": float(original["cagr"]), "strict_cagr": float(strict["cagr"]),
         "cagr_gap": float(original["cagr"] - strict["cagr"]),
         "strict_max_drawdown": float(strict["max_drawdown"]),
@@ -110,7 +121,7 @@ def render_markdown(output: dict) -> str:
         lines.append(f"| {r.method} | {r.period} | x{r.stress:.0f} | {r.cagr:.1%} | {r.max_drawdown:.1%}"
                      f" | {r.calmar:.2f} | {r.sharpe:.2f} |")
     s = output["summary"]
-    lines += ["", f"Full-period CAGR: original {s['original_cagr']:.1%} → strict {s['strict_cagr']:.1%}"
+    lines += ["", f"Full-period CAGR: {s['baseline']} {s['original_cagr']:.1%} → strict {s['strict_cagr']:.1%}"
               f" (gap {s['cagr_gap']:.1%}); strict max drawdown {s['strict_max_drawdown']:.1%};"
               f" excluded on the balanced tier: {s['excluded_on_balanced_tier']}.",
               "The 2023+ period is a later historical subperiod, not an untouched holdout."]
@@ -181,6 +192,9 @@ def main(argv=None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     verify_mandate(MANDATE_PATH, args.end_date)  # before any provider access
+    import os
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main":
+        raise SystemExit("research data access runs only in the reviewed workflow on main")
     end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat()
     prices = download_price_history(list(SYMBOLS), start=DOWNLOAD_START, end=end_exclusive)
     output = run(prices, soxl_core_only_targets, end_date=args.end_date, reference=soxl_core_only_reference)

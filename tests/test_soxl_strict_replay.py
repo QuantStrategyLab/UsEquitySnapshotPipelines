@@ -75,3 +75,14 @@ def test_mandate_gates_data_access(tmp_path):
     entry = subprocess.run([sys.executable, "-m", study.STUDY_ID, "--end-date", "2027-06-30", "--output-dir",
                             str(tmp_path / "o")], capture_output=True, text=True, cwd=ROOT)
     assert "rejected: end_date" in entry.stderr + entry.stdout
+    env = {k: v for k, v in __import__("os").environ.items() if k not in ("GITHUB_ACTIONS", "GITHUB_REF")}
+    local = subprocess.run([sys.executable, "-m", study.STUDY_ID, "--end-date", "2026-11-25", "--output-dir",
+                            str(tmp_path / "o")], capture_output=True, text=True, cwd=ROOT, env=env)
+    assert "only in the reviewed workflow on main" in local.stderr + local.stdout
+
+
+def test_missing_session_stops_the_study():
+    prices = _prices()
+    gap = prices["symbol"].eq("SOXL") & prices["as_of"].eq(pd.Timestamp("2015-03-10"))
+    with pytest.raises(ValueError, match="SOXL"):
+        study.run(prices.loc[~gap], _trend_targets)
