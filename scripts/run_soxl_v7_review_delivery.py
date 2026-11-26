@@ -46,6 +46,16 @@ def console_origin(sync_url: str, approved_origin: str) -> str:
     return origin
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Authenticated console calls never follow a redirect to another location."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_open = urllib.request.build_opener(_NoRedirect()).open
+
+
 def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload=None):
     """Use QPK's existing transport hooks with this service's client identity."""
     headers = {"Authorization": "Bearer " + bearer_token, "Accept": "application/json",
@@ -56,7 +66,7 @@ def _console_request(*, endpoint, bearer_token, timeout, ticket_id=None, payload
         headers["Content-Type"] = "application/json"
         request = urllib.request.Request(endpoint, data=json.dumps(payload, sort_keys=True).encode(),
                                          method="POST", headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with _open(request, timeout=timeout) as response:
         return json.loads(response.read()) if payload is None else response.status
 
 

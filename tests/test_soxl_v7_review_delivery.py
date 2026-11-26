@@ -4,7 +4,6 @@ import io
 import json
 from types import SimpleNamespace
 from urllib.error import HTTPError
-import urllib.request
 
 import pytest
 
@@ -170,7 +169,7 @@ def test_main_identifies_client_for_real_qpk_pull_and_sync(monkeypatch, tmp_path
         response.status = 200
         return response
 
-    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(delivery, "_open", open_request)
     assert delivery.main(["--prepared-ticket", str(path)]) == (2 if forbidden else 0)
     assert calls.count("POST") == (0 if forbidden else 1)
     if forbidden:
@@ -209,3 +208,31 @@ def test_console_origin_requires_independently_approved_origin(approved):
 
 def test_console_origin_comes_from_configured_sync_url():
     assert delivery.console_origin(ORIGIN + delivery.SYNC_PATH, ORIGIN) == ORIGIN
+
+
+def test_console_request_does_not_follow_redirects():
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(HTTPError):
+            delivery._console_request(endpoint=f"http://127.0.0.1:{server.server_port}/ticket",
+                                      bearer_token="synthetic", timeout=5, ticket_id="t")
+    finally:
+        server.shutdown()
+    assert hits == ["/ticket?ticket_id=t"]
