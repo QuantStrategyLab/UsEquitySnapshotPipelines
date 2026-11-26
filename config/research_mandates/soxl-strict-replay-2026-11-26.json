@@ -5,10 +5,15 @@
   "preregistration": "docs/research/soxl-strict-replay.md",
   "scope": {
     "provider": "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE",
-    "symbols": ["BIL", "SOXL", "SOXX", "SPY"],
+    "symbols": [
+      "BIL",
+      "SOXL",
+      "SOXX",
+      "SPY"
+    ],
     "download_start": "2009-01-01",
     "latest_end_date": "2026-11-30",
-    "strategy_source": "QuantStrategyLab/UsEquityStrategies@1fcfeac3dfad95db6b70ed3af19ce49c62f2c3ef soxl_trend_simulator (core-only, default parameters)",
+    "strategy_source": "SOXL core-only simulator (default parameters) at the commit pinned in .github/workflows/soxl-strict-replay.yml",
     "purpose": "Pre-registered strict replay of the SOXL core-only strategy; research evidence only",
     "no_order": true,
     "no_paper": true,

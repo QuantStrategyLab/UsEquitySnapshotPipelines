@@ -11,9 +11,9 @@ notebooks. How much of it survives a strict replay, and where does the gap come 
 
 ## Rules fixed before running
 
-1. **Strategy.** `soxl_trend_simulator` from
-   `QuantStrategyLab/UsEquityStrategies@1fcfeac3dfad95db6b70ed3af19ce49c62f2c3ef`, with its
-   default core-only parameters unchanged. BIL stands in for BOXX, which only trades from
+1. **Strategy.** `soxl_trend_simulator` from the strategy package, at the single commit
+   pinned in `.github/workflows/soxl-strict-replay.yml`, with its default core-only
+   parameters unchanged. BIL stands in for BOXX, which only trades from
    2022-12. The workflow installs that exact commit for this study only; the project's own
    dependency pin is unchanged.
 2. **Data.** Public daily adjusted closes from Yahoo Finance (BIL, SOXL, SOXX, SPY), downloaded

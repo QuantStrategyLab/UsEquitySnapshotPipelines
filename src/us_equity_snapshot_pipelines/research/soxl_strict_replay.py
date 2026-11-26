@@ -37,7 +37,7 @@ ORIGINAL_COST_BPS = 5.0
 REBALANCE_THRESHOLD = 0.01
 WARM_UP_SESSIONS = 260  # the simulator's DEFAULT_MIN_HISTORY_DAYS  # the strategy's own rebalance_threshold_ratio
 MANDATE_PATH = Path("config/research_mandates") / f"{AUTHORIZATION_ID}.json"
-MANDATE_SHA256 = "d681de9435c3670ec44b79ee41a34378ffc78b01acbfdca6343a3c8d9123ae1b"
+MANDATE_SHA256 = "85246db3dc588fadbad8ccc91e199d1a5ce65c153435eb8dfdfc6a6766003d60"
 
 
 def _close_matrix(price_history: pd.DataFrame) -> pd.DataFrame:
@@ -75,6 +75,9 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
     if end_date:
         close = close.loc[close.index <= pd.Timestamp(end_date)]
     signal_targets = target_builder(close).fillna(0.0)
+    # Execute at the next session's close: shift on the full history, then slice each period,
+    # so the first session of a period uses the target chosen inside the warm-up history.
+    executed_targets = signal_targets.shift(1).dropna()
     returns = close.pct_change(fill_method=None)
     rows = []
     for period, start in (("full", FULL_START), ("oos", OOS_START)):
@@ -83,7 +86,7 @@ def run(price_history: pd.DataFrame, target_builder: Callable[[pd.DataFrame], pd
             raise ValueError(f"price history cannot produce the registered {period} period")
         rows.append({"method": "original", "stress": 1.0, "period": period,
                      **costs.metrics(original_replay(window, close))})
-        strict_targets = window.shift(1).dropna()  # execute at the next session's close
+        strict_targets = executed_targets.loc[executed_targets.index >= pd.Timestamp(start)]
         for multiplier in costs.STRESS_MULTIPLIERS:
             net = costs.simulate_account(strict_targets, returns, spread_multiplier=multiplier,
                                          min_change=REBALANCE_THRESHOLD)
