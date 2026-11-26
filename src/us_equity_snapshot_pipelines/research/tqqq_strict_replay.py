@@ -273,6 +273,23 @@ def tqqq_growth_income_targets(close: pd.DataFrame) -> pd.DataFrame:
     return targets_frame.reindex(close.index).shift(1)
 
 
+def _spliced_qqqm_series(close: pd.DataFrame) -> pd.Series:
+    """Splice QQQ onto QQQM scaled at QQQM's first close so the transition adds zero price jump."""
+    qqq = close["QQQ"]
+    if "QQQM" not in close.columns:
+        return qqq.copy()
+    qqqm = close["QQQM"]
+    first_idx = qqqm.first_valid_index()
+    if first_idx is None:
+        return qqq.copy()
+    qqq_anchor = float(qqq.loc[first_idx])
+    qqqm_anchor = float(qqqm.loc[first_idx])
+    if qqq_anchor <= 0.0:
+        raise ValueError("QQQ close must be positive at QQQM launch date")
+    scaled_qqq = qqq * (qqqm_anchor / qqq_anchor)
+    return qqqm.combine_first(scaled_qqq)
+
+
 def tqqq_growth_income_reference(close: pd.DataFrame) -> pd.Series:
     """Daily returns of unchanged tqqq_growth_income_archive.run_backtest (same-close, 5 bp)."""
     from .. import tqqq_growth_income_archive as archive
@@ -281,7 +298,7 @@ def tqqq_growth_income_reference(close: pd.DataFrame) -> pd.Series:
     frame["TQQQ"] = close["TQQQ"]
     frame["QQQ"] = close["QQQ"]
     frame["BOXX"] = close["BIL"]
-    frame["QQQM"] = close["QQQM"].combine_first(close["QQQ"]) if "QQQM" in close.columns else close["QQQ"]
+    frame["QQQM"] = _spliced_qqqm_series(close)
     history = frame.stack().rename("close").reset_index()
     history.columns = ["as_of", "symbol", "close"]
     result = archive.run_backtest(

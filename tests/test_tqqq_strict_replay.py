@@ -81,6 +81,22 @@ def test_real_strategy_targets_and_reference_on_synthetic_data():
     assert output["summary"]["baseline"] == "original_simulator"
 
 
+def test_qqq_to_qqqm_splice_rebases_price_levels_without_jump():
+    dates = pd.bdate_range("2020-10-08", periods=6)
+    close = pd.DataFrame(
+        {
+            "QQQ": [300.0, 300.0, 300.0, 303.0, 303.0, 306.0],
+            "QQQM": [float("nan"), float("nan"), 100.0, 101.0, 101.0, 102.0],
+        },
+        index=dates,
+    )
+    spliced = study._spliced_qqqm_series(close)
+    rets = spliced.pct_change().dropna()
+    assert rets.iloc[0] == pytest.approx(0.0)
+    assert rets.iloc[1] == pytest.approx(0.0)
+    assert rets.iloc[2] == pytest.approx(0.01)
+
+
 def test_mandate_gates_data_access(tmp_path):
     mandate = ROOT / study.MANDATE_PATH
     assert study.verify_mandate(mandate, "2026-11-25", now=pd.Timestamp("2026-11-27", tz="UTC"))["scope"]["no_live"]
