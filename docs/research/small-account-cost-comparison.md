@@ -1,6 +1,8 @@
 # Small-account cost comparison: pre-registration
 
-Registered 2026-11-26, approved by the Owner before any run. Research only: no live
+Registered 2026-11-26, approved by the Owner before any run. Amended the same day,
+still before any run, after review: the full period starts 2011-04-01 so every trend signal
+is warmed up, and signals execute at the next close. Research only: no live
 change, no orders, no frozen baseline rewritten.
 
 ## Question
@@ -18,13 +20,16 @@ cost?
 2. **Data (authorized source, dates and purpose).** Public daily adjusted closes from Yahoo
    Finance through the repository's existing `yfinance` helper, downloaded from 2009-01-01
    (warm-up for the 200-session trend filter) to the run's end date, for this comparison
-   only. Nothing is committed. A run must pass the authorization id
-   `small-account-cost-comparison-2026-11-26`, and fails if any required symbol does not
-   cover the window.
-3. **Periods.** Full history from 2010-04-01, and 2023-01-01 onward reported separately.
+   only. Nothing is committed. Access is gated by the reviewed, expiring record
+   `config/research_mandates/small-account-cost-comparison-2026-11-26.json`, which binds
+   the provider, symbols, start date, latest end date and no-order scope; a run outside it
+   stops before any download. A run also fails if any required symbol misses a session.
+3. **Periods.** Full history from 2011-04-01 (after a full year of SOXL history, so every trend signal is warmed up), and 2023-01-01 onward reported separately.
    The later period is a historical subperiod, not an untouched holdout. Each period starts
    a fresh USD 1,500 account.
-4. **Costs.**
+4. **Execution.** A signal computed from one session's close is executed at the next
+   session's close, so no position earns a move it could not have traded.
+5. **Costs.**
    - Holdings drift between signal changes. Every trade to a new target pays its own
      symbol's bid-ask spread (1 bp for 1x ETFs, 3 bp for 2x/3x ETFs; stress x2 and x3) and
      one IBKR minimum commission of USD 0.35.
@@ -35,11 +40,11 @@ cost?
      dividend-heavy holdings such as BIL in loss years.
    - Fund expense ratios and 3x financing and rebalancing costs are already inside adjusted
      prices and are not deducted again.
-5. **Metrics.** CAGR, maximum drawdown, Calmar, Sharpe, and the deflated Sharpe ratio over
+6. **Metrics.** CAGR, maximum drawdown, Calmar, Sharpe, and the deflated Sharpe ratio over
    every trial run.
-6. **Trial registry.** Every variant at every cost tier is listed in the output, whether or
+7. **Trial registry.** Every variant at every cost tier is listed in the output, whether or
    not its result is good.
-7. **Decision**, at base costs on the full period:
+8. **Decision**, at base costs on the full period:
    - the 1x twin is preferred when its maximum drawdown is within 30% and its net Calmar is
      not lower than the 3x proxy's;
    - a 3x proxy whose drawdown exceeds 30% is ruled out on the balanced tier, whatever its

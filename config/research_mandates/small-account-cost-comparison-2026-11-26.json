@@ -1,0 +1,24 @@
+{
+  "schema_version": "qsl.research-data-mandate.v1",
+  "mandate_id": "small-account-cost-comparison-2026-11-26",
+  "study": "us_equity_snapshot_pipelines.research.small_account_cost_comparison",
+  "preregistration": "docs/research/small-account-cost-comparison.md",
+  "scope": {
+    "provider": "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE",
+    "symbols": ["BIL", "QQQ", "SOXL", "SOXX", "SPY", "TQQQ"],
+    "download_start": "2009-01-01",
+    "latest_end_date": "2026-11-30",
+    "purpose": "Pre-registered 3x vs 1x small-account cost comparison; research evidence only",
+    "no_order": true,
+    "no_paper": true,
+    "no_live": true,
+    "no_capital": true,
+    "publishes": "workflow summary and 30-day artifact only"
+  },
+  "attestation": {
+    "approved_by": "Owner",
+    "approved_on": "2026-11-26",
+    "recorded_by": "Pigbibi",
+    "expires_at": "2026-12-26T00:00:00Z"
+  }
+}

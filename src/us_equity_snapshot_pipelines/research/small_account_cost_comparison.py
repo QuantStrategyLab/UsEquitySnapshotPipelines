@@ -12,7 +12,7 @@ Rules fixed before running:
   2x/3x ETFs; stress x2, x3) and one IBKR minimum commission (USD 0.35); 20% China tax on
   each calendar year's positive gain (an upper bound treating gains as realized yearly).
   Fund expense ratios and 3x financing are already inside adjusted prices.
-- Periods: full 2010-04-01 onward, and 2023-01-01 onward reported separately (a later
+- Periods: full 2011-04-01 onward, and 2023-01-01 onward reported separately (a later
   historical subperiod, not an untouched holdout). Prices download from 2009-01-01 to warm
   up the 200-session trend filter; missing coverage of any required symbol fails the run.
 - Decision: the 1x twin is preferred when its max drawdown is within 30% and its net Calmar
@@ -41,7 +41,7 @@ from .leveraged_strategy_candidates import (
 )
 
 PREREGISTRATION_DATE = "2026-11-26"
-FULL_START = "2010-04-01"
+FULL_START = "2011-04-01"  # SOXL trades from 2010-03; a year of history warms up every signal
 OOS_START = "2023-01-01"
 STARTING_EQUITY_USD = 1500.0
 MIN_COMMISSION_USD = 0.35
@@ -113,23 +113,42 @@ def required_symbols() -> list[str]:
                    for s in [*v.spec.risk_on_weights, *v.spec.risk_off_weights, v.spec.signal_symbol]} | {"SPY"})
 
 
-def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None = None) -> None:
-    """Fail unless every required symbol has prices covering the evaluation window."""
+def validate_coverage(price_history: pd.DataFrame, start: str, end: str | None = None,
+                      *, max_gap_days: int = 5) -> None:
+    """Fail unless every required symbol trades on every session of the window.
+
+    Sessions are the union of dates any symbol traded. Each required symbol must cover all
+    of them, start before the window (signal warm-up), reach the window end, and never skip
+    more than ``max_gap_days`` calendar days, so a stale forward-filled close cannot be traded.
+    """
     frame = pd.DataFrame(price_history).copy()
     frame["symbol"] = frame["symbol"].astype(str).str.upper()
     frame["as_of"] = pd.to_datetime(frame["as_of"]).dt.tz_localize(None).dt.normalize()
     frame = frame.dropna(subset=["close"])
-    window = frame["as_of"] >= pd.Timestamp(start)
+    in_window = frame["as_of"] >= pd.Timestamp(start)
     if end:
-        window &= frame["as_of"] <= pd.Timestamp(end)
-    sessions = frame.loc[window, "as_of"].nunique()
+        in_window &= frame["as_of"] <= pd.Timestamp(end)
+    sessions = pd.DatetimeIndex(sorted(frame.loc[in_window, "as_of"].unique()))
+    if len(sessions) == 0:
+        raise ValueError("price history has no sessions in the evaluation window")
+    if end and (pd.Timestamp(end) - sessions[-1]).days > max_gap_days:
+        raise ValueError(f"price history ends {sessions[-1].date()}, before {end}")
+    signal_windows: dict[str, int] = {}
+    for variant in build_variants():
+        symbol = variant.spec.signal_symbol.upper()
+        signal_windows[symbol] = max(signal_windows.get(symbol, 0), int(variant.spec.trend_window))
     for symbol in required_symbols():
-        rows = frame.loc[frame["symbol"].eq(symbol)]
-        if rows.empty or rows["as_of"].min() > pd.Timestamp(start):
+        dates = pd.DatetimeIndex(sorted(frame.loc[frame["symbol"].eq(symbol), "as_of"].unique()))
+        if len(dates) == 0 or dates.min() > pd.Timestamp(start):
             raise ValueError(f"price history does not cover {symbol} from {start}")
-        covered = rows.loc[window[rows.index], "as_of"].nunique()
-        if sessions == 0 or covered / sessions < MIN_COVERAGE:
-            raise ValueError(f"price history for {symbol} covers {covered}/{sessions} sessions")
+        if symbol in signal_windows and (dates < pd.Timestamp(start)).sum() < signal_windows[symbol]:
+            raise ValueError(f"price history for signal {symbol} is too short to warm up before {start}")
+        missing = sessions.difference(dates)
+        if len(missing):
+            raise ValueError(f"price history for {symbol} misses {len(missing)} sessions, first {missing[0].date()}")
+        in_range = dates[(dates >= sessions[0]) & (dates <= sessions[-1])]
+        if len(in_range) > 1 and in_range.to_series().diff().dt.days.max() > max_gap_days:
+            raise ValueError(f"price history for {symbol} has a gap longer than {max_gap_days} days")
 
 
 def simulate_account(targets: pd.DataFrame, returns: pd.DataFrame, *, spread_multiplier: float = 1.0,
@@ -225,12 +244,13 @@ def run(price_history: pd.DataFrame, *, end_date: str | None = None) -> dict:
     for variant in build_variants():
         result = run_candidate_backtest(price_history, variant.spec, start_date=FULL_START, end_date=end_date,
                                         turnover_cost_bps=0.0)
-        targets = pd.DataFrame(result["weights_history"]).fillna(0.0)
+        # A target chosen from close T is executed at close T+1, so it earns returns from T+2.
+        targets = pd.DataFrame(result["weights_history"]).fillna(0.0).shift(1).dropna()
         for multiplier in STRESS_MULTIPLIERS:
             for period, start in (("full", FULL_START), ("oos", OOS_START)):
                 window = targets.loc[targets.index >= pd.Timestamp(start)]
                 if len(window) < 2:
-                    continue  # period not covered by the available history
+                    raise ValueError(f"price history cannot produce the registered {period} period")
                 # Each period is a fresh USD 1,500 account opened at the period start.
                 net = simulate_account(window, returns, spread_multiplier=multiplier)
                 rows.append({"pair": variant.pair, "variant": variant.label, "leverage": variant.leverage,
@@ -301,18 +321,43 @@ def _json_safe(value):
     return value
 
 
+MANDATE_PATH = Path("config/research_mandates") / f"{AUTHORIZATION_ID}.json"
+
+
+def verify_mandate(path: Path, end_date: str, *, now: pd.Timestamp | None = None) -> dict:
+    """Accept only the merged, unexpired mandate whose scope covers this exact run."""
+    record = json.loads(path.read_text(encoding="utf-8"))
+    scope = record.get("scope") or {}
+    attestation = record.get("attestation") or {}
+    now = now or pd.Timestamp.now(tz="UTC")
+    problems = []
+    if record.get("mandate_id") != AUTHORIZATION_ID or record.get("study") != __name__:
+        problems.append("identity")
+    if scope.get("provider") != "YAHOO_FINANCE_PUBLIC_ADJUSTED_CLOSE" or scope.get("download_start") != DOWNLOAD_START:
+        problems.append("source")
+    if sorted(scope.get("symbols") or []) != required_symbols():
+        problems.append("symbols")
+    if not all(scope.get(flag) is True for flag in ("no_order", "no_paper", "no_live", "no_capital")):
+        problems.append("authority")
+    if pd.Timestamp(end_date) > pd.Timestamp(scope.get("latest_end_date", "1900-01-01")):
+        problems.append("end_date")
+    if pd.Timestamp(attestation.get("expires_at", "1900-01-01T00:00:00Z")) <= now:
+        problems.append("expired")
+    if problems:
+        raise SystemExit(f"research data mandate rejected: {', '.join(problems)}")
+    return record
+
+
 def main(argv=None) -> int:
     from ..yfinance_prices import download_price_history
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--authorization", required=True,
-                        help=f"must equal {AUTHORIZATION_ID}: the Owner-approved source, dates and purpose")
-    parser.add_argument("--end-date", default=None)
+    parser.add_argument("--end-date", required=True, help="last price date (YYYY-MM-DD), within the mandate")
+    parser.add_argument("--mandate", type=Path, default=MANDATE_PATH)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.authorization != AUTHORIZATION_ID:
-        raise SystemExit("data access not authorized for this study")
-    end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat() if args.end_date else None
+    verify_mandate(args.mandate, args.end_date)  # before any provider access
+    end_exclusive = (pd.Timestamp(args.end_date) + pd.Timedelta(days=1)).date().isoformat()
     prices = download_price_history(required_symbols(), start=DOWNLOAD_START, end=end_exclusive)
     output = run(prices, end_date=args.end_date)
     args.output_dir.mkdir(parents=True, exist_ok=True)

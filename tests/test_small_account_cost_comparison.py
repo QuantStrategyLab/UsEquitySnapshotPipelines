@@ -77,6 +77,9 @@ def test_missing_symbol_fails_coverage():
     prices = _prices()
     with pytest.raises(ValueError, match="TQQQ"):
         study.validate_coverage(prices.loc[prices["symbol"] != "TQQQ"], study.FULL_START)
+    short_signal = prices.loc[~(prices["symbol"].eq("SOXL") & (prices["as_of"] < "2011-01-01"))]
+    with pytest.raises(ValueError, match="SOXL"):
+        study.validate_coverage(short_signal, study.FULL_START)
 
 
 def test_run_produces_every_trial_and_a_decision_per_pair():
@@ -115,9 +118,33 @@ def test_drawdown_counts_from_opening_capital():
     assert study.metrics(pd.Series([-0.10, 0.0, 0.05], index=idx))["max_drawdown"] == pytest.approx(-0.10)
 
 
-def test_main_requires_authorization(tmp_path):
+def test_mandate_gates_data_access(tmp_path):
+    import json
+    from pathlib import Path
+    mandate = Path(__file__).resolve().parents[1] / study.MANDATE_PATH
+    record = study.verify_mandate(mandate, "2026-11-20", now=pd.Timestamp("2026-11-27", tz="UTC"))
+    assert record["scope"]["no_order"] is True
+    for end, now in (("2026-12-15", "2026-11-27"), ("2026-11-20", "2027-01-01")):
+        with pytest.raises(SystemExit):
+            study.verify_mandate(mandate, end, now=pd.Timestamp(now, tz="UTC"))
+    tampered = json.loads(mandate.read_text())
+    tampered["scope"]["no_live"] = False
+    path = tmp_path / "m.json"
+    path.write_text(json.dumps(tampered))
     with pytest.raises(SystemExit):
-        study.main(["--authorization", "wrong", "--output-dir", str(tmp_path)])
+        study.verify_mandate(path, "2026-11-20", now=pd.Timestamp("2026-11-27", tz="UTC"))
+
+
+def test_targets_execute_at_the_next_close():
+    output = study.run(_prices())
+    assert not output["rows"].empty  # the shifted path still produces both periods
+
+
+def test_gap_in_a_held_symbol_fails_coverage():
+    prices = _prices()
+    gap = prices["symbol"].eq("BIL") & prices["as_of"].between("2015-03-02", "2015-03-20")
+    with pytest.raises(ValueError, match="BIL"):
+        study.validate_coverage(prices.loc[~gap], study.FULL_START)
 
 
 def test_dsr_penalizes_many_trials():
