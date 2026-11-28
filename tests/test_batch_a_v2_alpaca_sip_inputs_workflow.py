@@ -20,8 +20,8 @@ def test_batch_a_v2_workflow_is_manual_main_only_nonlive() -> None:
     assert "environment: market-data-nonlive" in workflow
     assert "contents: read" in workflow
     assert "id-token: write" in workflow
-    assert "workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" in workflow
-    assert "service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}" in workflow
+    assert "workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" in workflow
+    assert "service_account: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}" in workflow
     assert "ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}" in workflow
     assert "ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}" in workflow
     assert "scripts/acquire_batch_a_v2_price_snapshots_alpaca.py" in workflow
