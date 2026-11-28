@@ -78,19 +78,19 @@ jobs:
         if: ${{ inputs.execute == true }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       - name: Execute selected cloud-only operation
         if: ${{ inputs.execute == true && inputs.operation == 'replay' }}
         env:
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/run_global_etf_learning_replay.py --execute-cloud
       - name: Execute cloud-only benchmark comparison
         if: ${{ inputs.execute == true && inputs.operation == 'compare' }}
         env:
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/compare_global_etf_learning_benchmarks.py --execute-cloud

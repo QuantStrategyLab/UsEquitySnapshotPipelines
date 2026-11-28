@@ -3,6 +3,7 @@ import importlib.util
 import copy
 import math
 import json
+import re
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -543,7 +544,12 @@ def test_workflow_is_offline_by_default_and_uses_existing_identity():
     assert "github.ref == 'refs/heads/main'" in cloud and "github.run_attempt == 1" in cloud
     assert "environment: market-data-nonlive" in cloud and "timeout-minutes: 30" in cloud
     assert cloud.index("--verify-runtime") < cloud.index("google-github-actions/auth")
-    assert "secrets." not in cloud and "upload-artifact" not in body and "lifecycle" not in body
+    assert set(re.findall(r"secrets\.([A-Z0-9_]+)", cloud)) == {
+        "GCP_WORKLOAD_IDENTITY_PROVIDER",
+        "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
+        "GCP_PROJECT_ID",
+    }
+    assert "upload-artifact" not in body and "lifecycle" not in body
     assert "${{ inputs.plan_uri }}" not in body and "RS04_PLAN_URI:" not in body
 
 

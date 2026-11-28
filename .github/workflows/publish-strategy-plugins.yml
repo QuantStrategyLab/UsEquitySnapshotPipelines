@@ -121,9 +121,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
@@ -450,9 +450,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PLUGIN_NAME: market_regime_control
       PLUGIN_ALERT_OUTPUT_DIR: data/output/market_regime_alerts
@@ -594,9 +594,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
@@ -958,9 +958,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}
@@ -1178,9 +1178,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'interactivebrokersquant' }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'interactivebrokersquant' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       EXECUTE_PUBLISH: ${{ github.event_name == 'schedule' && 'true' || inputs.execute_publish }}
       PRICE_START: ${{ inputs.price_start || '2010-01-01' }}
       PRICE_END: ${{ inputs.price_end }}

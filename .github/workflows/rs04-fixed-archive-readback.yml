@@ -64,7 +64,7 @@ jobs:
       - name: Confirm existing research identity and root
         shell: bash
         env:
-          RS04_SCOPE_MATCHES: ${{ env.RS04_WIF_PROVIDER == vars.GCP_WORKLOAD_IDENTITY_PROVIDER && env.RS04_WIF_SERVICE_ACCOUNT == vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT && env.RS04_GCP_PROJECT == vars.GCP_PROJECT_ID && env.RS04_HIST01_ROOT == secrets.RS04_INPUT_ROOT }}
+          RS04_SCOPE_MATCHES: ${{ env.RS04_WIF_PROVIDER == secrets.GCP_WORKLOAD_IDENTITY_PROVIDER && env.RS04_WIF_SERVICE_ACCOUNT == secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT && env.RS04_GCP_PROJECT == secrets.GCP_PROJECT_ID && env.RS04_HIST01_ROOT == secrets.RS04_INPUT_ROOT }}
         run: |
           if [[ "$RS04_SCOPE_MATCHES" != true ]]; then
             echo '{"status":"PARKED","reason_code":"EXISTING_RESEARCH_SCOPE_MISMATCH"}' | tee -a "$GITHUB_STEP_SUMMARY"
