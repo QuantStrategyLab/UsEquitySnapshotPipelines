@@ -40,7 +40,7 @@ jobs:
       DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA: 'true'
       GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       RS04_MODE: ${{ inputs.mode }}
-      RS04_INPUT_ROOT: ${{ inputs.input_root || vars.RS04_INPUT_ROOT }}
+      RS04_INPUT_ROOT: ${{ inputs.input_root || secrets.RS04_INPUT_ROOT }}
       RS04_DATASET_ID: ${{ inputs.dataset_id }}
       RS04_EFFECTIVE_CONFIG_URI: ${{ inputs.effective_config_uri }}
     steps:

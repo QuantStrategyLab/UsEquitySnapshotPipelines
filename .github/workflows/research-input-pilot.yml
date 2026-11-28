@@ -58,7 +58,7 @@ jobs:
         env:
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
-          RESEARCH_INPUT_ROOT: ${{ vars.RS04_INPUT_ROOT }}
+          RESEARCH_INPUT_ROOT: ${{ secrets.RS04_INPUT_ROOT }}
           PILOT_PLAN_URI: ${{ inputs.plan_uri }}
           PILOT_PLAN_GENERATION: ${{ inputs.plan_generation }}
           PILOT_PLAN_BYTES: ${{ inputs.plan_bytes }}
